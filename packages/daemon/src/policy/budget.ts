@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import type { Actor, AgentActor, BudgetAllocation, BudgetSubject, EventRefs } from '@acc/protocol';
+import {
+  type Actor,
+  type AgentActor,
+  type BudgetAllocation,
+  type BudgetSubject,
+  type EventRefs,
+  RunStatus,
+  isTerminalRunStatus,
+} from '@acc/protocol';
 import type { BudgetReservation, BudgetService } from '../contracts';
 import type { DaemonContext } from '../core/context';
 import { budgetExceeded, conflict, forbidden, invalidParams } from '../core/errors';
@@ -164,6 +172,17 @@ export class BudgetManager implements BudgetService {
       throw conflict(
         `budget ${budget.id} has $${current.reservedUsd} reserved by in-flight calls; settle or cancel them first`,
         { budgetId: budget.id, reservedUsd: current.reservedUsd },
+      );
+    }
+    // Agent runtimes book their cost afterwards (no reservation), and orchestrator / chat runs
+    // hold none between calls: a budget is in use for as long as a run on it has not ended.
+    const user = ctx.repos.runs
+      .find({ where: { status: RunStatus.options.filter((s) => !isTerminalRunStatus(s)) } })
+      .find((r) => r.budgetId === budget.id);
+    if (user) {
+      throw conflict(
+        `budget ${budget.id} is in use by run ${user.id}; cancel the run or wait for it to end first`,
+        { budgetId: budget.id, runId: user.id },
       );
     }
     const unused = Math.max(0, freeMicro(current));

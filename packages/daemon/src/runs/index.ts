@@ -55,12 +55,32 @@ export const runsModule = defineModule({
 
       defineMethod('run.retry', {
         scope: (p) => runScope(p.runId),
-        handler: (p, call) => {
+        handler: async (p, call) => {
           const prev = repos.runs.require(p.runId);
           if (!(RETRYABLE as readonly string[]).includes(prev.status)) {
             throw conflict('失敗・キャンセル・中断した Run だけを再試行できます', {
               status: prev.status,
             });
+          }
+          // A Task's worker: task.retry keeps the Task's state machine (running → review) and
+          // applies the delegation, worker-limit and budget rules (with the caller's rights).
+          if (prev.kind === 'agent' && prev.taskId) {
+            const r = await ctx.call(call.actor, 'task.retry', { taskId: prev.taskId });
+            return { runId: r.runId };
+          }
+          if (repos.integrations.find({}).some((i) => i.resolverRunId === prev.id)) {
+            throw conflict(
+              'Integrator の Run は再試行できません。統合からもう一度 Integrator に任せてください',
+            );
+          }
+          if (ctx.hasService('policy')) {
+            ctx
+              .service('policy')
+              .assertAgentMayStartRun(
+                call.actor,
+                repos.sessions.require(prev.sessionId),
+                'run.retry',
+              );
           }
           const run = manager.start({
             sessionId: prev.sessionId,

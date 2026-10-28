@@ -85,6 +85,19 @@ export const sessionsModule = defineModule({
           db.transaction(() => {
             if (p.projectId) repos.projects.require(p.projectId);
             if (p.workspaceId) repos.workspaces.require(p.workspaceId);
+            if (p.workspaceId || p.projectId) {
+              // Runs of the session write to its workspace (or its task's): they must stay in
+              // the session's project, or a project-limited agent reaches another project.
+              const cur = repos.sessions.require(p.sessionId);
+              const projectId = p.projectId ?? cur.projectId;
+              const wsId = p.workspaceId ?? cur.workspaceId;
+              if (projectId && wsId && repos.workspaces.get(wsId)?.projectId !== projectId) {
+                throw invalidParams('workspace belongs to a different project');
+              }
+              if (projectId && cur.taskId && repos.tasks.get(cur.taskId)?.projectId !== projectId) {
+                throw invalidParams('task belongs to a different project');
+              }
+            }
             const changes: string[] = [];
             const session = repos.sessions.update(p.sessionId, (cur) => {
               const next: Session = { ...cur };
@@ -153,8 +166,18 @@ export const sessionsModule = defineModule({
 
       defineMethod('session.send', {
         scope: (p) => sessionScope(p.sessionId),
-        handler: (p, call) =>
-          db.transaction(() => {
+        handler: (p, call) => {
+          // Outside the transaction, so a refusal stays on the audit trail (policy.denied).
+          if (ctx.hasService('policy')) {
+            ctx
+              .service('policy')
+              .assertAgentMayStartRun(
+                call.actor,
+                repos.sessions.require(p.sessionId),
+                'session.send',
+              );
+          }
+          return db.transaction(() => {
             const session = repos.sessions.require(p.sessionId);
             if (session.archivedAt) {
               throw conflict('アーカイブ済みのセッションには送信できません');
@@ -194,7 +217,8 @@ export const sessionsModule = defineModule({
               budgetId: sessionBudgetId(ctx, session.id),
             });
             return { messageId: message.id, runId: run.id };
-          }),
+          });
+        },
       }),
 
       defineMethod('session.search', {

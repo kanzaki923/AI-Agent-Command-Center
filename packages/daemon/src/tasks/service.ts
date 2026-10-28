@@ -9,7 +9,7 @@ import {
   type TaskStatus,
 } from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
-import { conflict, invalidParams } from '../core/errors';
+import { conflict, forbidden, invalidParams } from '../core/errors';
 
 /** statusReason values set by automatic readiness. Blocks with other reasons are manual. */
 export const DEPENDENCY_REASONS = {
@@ -137,7 +137,17 @@ export class TaskService {
       assign('description', p.description);
       assign('acceptanceCriteria', p.acceptanceCriteria);
       assign('priority', p.priority);
-      if (p.assigneeSessionId) ctx.repos.sessions.require(p.assigneeSessionId);
+      if (p.assigneeSessionId) {
+        // The assignee is what task.retry resumes: it must be this project's session, and an
+        // agent may only point it at a session made for this very task.
+        const assignee = ctx.repos.sessions.require(p.assigneeSessionId);
+        if (assignee.projectId !== cur.projectId) {
+          throw invalidParams('担当セッションがタスクと別のプロジェクトに属しています');
+        }
+        if (actor.kind === 'agent' && assignee.taskId !== cur.id) {
+          throw forbidden('エージェントが担当にできるのは、このタスクのセッションだけです');
+        }
+      }
       assign('assigneeSessionId', p.assigneeSessionId);
       assign('resultSummary', p.resultSummary);
       if (p.dependsOn !== undefined) {

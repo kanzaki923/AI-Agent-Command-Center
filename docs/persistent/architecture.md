@@ -77,9 +77,11 @@ packages/cli      `acc` コマンド（Control API クライアント）
 - scope：プロジェクトに関わるメソッドは `scope` で触るプロジェクトを返す。プロジェクト限定の Grant を持つ agent は、範囲外のプロジェクトや、プロジェクトを絞らない一覧（`session.list` で `projectId` なし等）を拒否される。`scope` を持たないメソッド（`system.*` 等）はプロジェクト制限の対象外。
 - Grant の委譲：子 Grant の permissions・scope・limits は親の部分集合でなければ作れない。委譲深さは初期値 1（Orchestrator → Worker まで。Worker は Worker を起動できない）。
   - 判定は `policy/grants.ts`。agent が委譲するとき、親 Grant は (a) `grant.create`（Worker 起動時は `task.spawnWorker`）を持ち、(b) 子の各パターンを包含し（`"*"` ⊇ 全部、`"task.*"` ⊇ `"task.create"`）、(c) 子の projectIds ⊆ 親、(d) limits ≤ 親（`maxDepth` は 1 段ごとに 1 減る）、(e) `depth = 親.depth + 1 <= settings.maxDelegationDepth`。省略した scope・limits・`expiresAt` は親から引き継ぐ（広がらない）。
-  - `limits.maxWorkers` は「その Run が起動し、まだ終わっていない子 Run（`parentRunId`）」の数で判定する（`policy.assertCanSpawnWorker`）。
+  - `limits.maxWorkers` は Grant の subject ごとに「起動して、まだ終わっていない子 Run（`parentRunId`）」の数で判定する（`policy.assertCanSpawnWorker`）。subject が Session なら、そのセッションのどの Run が起動した子も数える（先の Orchestrator Run が終わっても、残った Worker は枠を使い続ける）。
+- agent が `task.spawnWorker` / `task.retry` 以外で Run を始められるのは（`session.send`・`run.retry`）、自分が作ったチャットセッション（`parentSessionId` = 自分のセッション）で、Session Grant を持たないものだけ（`policy.assertAgentMayStartRun`）。強いセッションをその Grant と予算で動かしたり、Worker を委譲・上限の外で増やしたりさせない。
+- セッションのワークスペースと Task は、セッションにプロジェクトがあればそのプロジェクトのものに限る（`session.create` / `session.update`。移動でずれる場合も拒否）。
 - LLM に見せるツールの一覧づくりは呼び出しではないので、外したメソッドを `policy.denied` に記録しない（`PolicyEngine.peek`）。
-- Grant の有効範囲：`run`（その Run の終了で失効）、`session`（期限 `expiresAt` まで）。Session に付けた `lifetime: run` の Grant は「そのセッションの次の Run が終わるまで」有効。剥奪は委譲先へ連鎖する。付与・剥奪は `grant.created` / `grant.revoked`、使用は `tool.called`、agent の拒否は `policy.denied` として残る。
+- Grant の有効範囲：`run`（その Run の終了で失効）、`session`（期限 `expiresAt` まで）。Session に付けた `lifetime: run` の Grant は「そのセッションの次の Run が終わるまで」有効（クラッシュで中断された Run も同じ：起動時のスイープが、Grant の後に終わった Run があるセッションの `lifetime: run` Grant を失効させる）。剥奪は委譲先へ連鎖する。付与・剥奪は `grant.created` / `grant.revoked`、使用は `tool.called`、agent の拒否は `policy.denied` として残る。
 
 ### 2.5 Budget
 
@@ -87,7 +89,7 @@ packages/cli      `acc` コマンド（Control API クライアント）
 - 不変条件：`allocated + reserved + spent <= limit`（例外は下記の「消費の事実を優先」）。LLM の 1 回の呼び出し（chat / orchestrator Run）は reserve → settle（差額を解放）、事後にしかわからない消費（Agent Runtime）は `recordSpend`（§2.6）。子の終了で未使用分を親へ返却。
 - コストの出どころを `reported`（LiteLLM が返した値）/ `estimated`（トークン数×単価）/ `unknown` で区別する。
 - 実装は `policy/budget.ts`（`ctx.service('budget')`）。金額は内部で整数マイクロドルとして扱い、検査と更新は 1 つの `BEGIN IMMEDIATE` トランザクションで行う（別接続からの同時予約でも超過しない）。予約は `budget_reservations` に永続化し、再起動時に未確定のものを取り消す。
-- 返却：release は子孫から先に閉じ、空き（limit − allocated − reserved − spent）だけを親の `allocatedUsd` から減らす。消費済み分は親の `allocatedUsd` に残る。予約が残っている Budget は release できない（`conflict`）。実際の消費が予約を超えた場合は、消費の事実を優先して記録する（以後その Budget には空きがない）。
+- 返却：release は子孫から先に閉じ、空き（limit − allocated − reserved − spent）だけを親の `allocatedUsd` から減らす。消費済み分は親の `allocatedUsd` に残る。予約が残っている Budget、終わっていない Run が `budgetId` に持つ Budget は release できない（`conflict`）。返却済みの Budget で Run は始められない。実際の消費が予約を超えた場合は、消費の事実を優先して記録する（以後その Budget には空きがない）。
 - agent が配分できるのは自分の Budget（自分の Run・Session・担当 Task が subject、または `run.budgetId`）からだけで、返却できるのは自分の Budget とその直下だけ。ルート Budget は人間だけが作る。
 
 ### 2.6 Run ライフサイクル
@@ -97,13 +99,14 @@ packages/cli      `acc` コマンド（Control API クライアント）
 - 同時実行数の上限（`settings.maxConcurrentRuns`、既定 10）を超えた Run は `queued` で待ち、空きができた順（FIFO）に始まる。実行枠は `running` と `awaiting_approval` が占有する（承認待ちもプロセスやロックを持ったままのため）。
 - 1 つの worktree に書き込める Run は同時に 1 つ（ワークスペースロック）。ロック待ちの Run は `queued` のまま残り、後ろの Run は先に始まってよい。
 - 1 セッションで同時に動く Run は 1 つ（2 つ目の `session.send` は `conflict`、ユーザーメッセージも残らない）。
+- `run.retry`：Task の Worker（`agent` で `taskId` あり）は `task.retry` として行う（Task の状態・権限・上限・予算の規則がそのまま効く）。Integrator の Run は再試行できない（統合から改めて Integrator に任せる）。
 - 実際の処理は Run の種類ごとの Executor（`ctx.service('runs').registerExecutor(kind, fn)`）が `RunController` 経由で行う（`chat` は sessions、`agent` は runtime、`orchestrator` は orchestrator）。登録は各モジュールの `start()` で行う。終端状態は RunManager だけが決める。
 - `agent` Run で `workspaceId` を省くと、セッション → Task のワークスペースを Run に記録してそのロックを取る（Executor が書き込む先と、ロックの対象を一致させる）。`chat` Run はロックを取らない。
 - キャンセルは即座に `cancelled` にして signal を abort する。実行枠とロックは Executor が止まってから返す（止まらなければ 10 秒で強制解放）。デーモン停止時は `running` / `queued` を `interrupted`（`daemon_shutdown`）にする。
 - 「いま何をしているか」は `Run.activity`。変化は `run.updated`（`changes: ["activity"]`）で届き、使用量の加算も `run.updated`（`["usage"]`）。activity は実行中だけ意味を持つ。
 - 予算（Budget を持つ Run）：
   - LLM 呼び出しの前に `ctl.reserveBudget()` で `settings.llmCallReserveUsd`（既定 $0.25）を予約し、終わったら `hold.settle(usage)` で実額に確定、失敗した呼び出しは `hold.cancel()`。予約が入らない（空き < 予約額）呼び出しは拒否するので、同じ Budget を共有する Run が同時に動いても、1 回の実額が予約額以下である限り上限を超えない（`runToolLoop` が使う）。Run の終了時に残った予約は取り消す。
-  - Agent Runtime は使用量を事後に `reportUsage` で報告し、そのたびに `recordSpend` する。始める前に空きがなければ `ctl.assertBudgetLeft()` で拒否する。
+  - Agent Runtime は使用量を事後に `reportUsage` で報告し、そのたびに `recordSpend` する。始める前に空きがなければ（または返却済みなら）`ctl.assertBudgetLeft()` で拒否する。消費を Budget に記録できなかった Run は、上限なしに続けさせず予算切れとして止める（使用量は Run に残る）。
   - 残り（limit − allocated − reserved − spent）が 0 以下になった Run、予約できずに拒否された Run は `failed`（`statusReason: budget_exhausted`、エラー `budget_exceeded`）。
 - 終了時に実行枠とロックを返し、その Run に紐づく `lifetime: run` の Grant は policy モジュールが失効させる（`grant.revoked`）。
 
@@ -172,7 +175,7 @@ Orchestrator は**セッション種別ではなく役割**（concept §3.1）�
 - **`task.spawnWorker`**：`ready` / `failed` / 人間待ちの `blocked` の Task だけ。`policy.assertCanSpawnWorker`（権限・プロジェクト・`maxWorkers`・深さ）→ worktree（Task に既にあれば再利用、なければ Task 名で作成）→ Worker セッション（`agent`、`parentSessionId` = 呼び出し元、Task・ワークスペース付き）→ `agent` Run（`parentRunId` = 呼び出し元の Run、`runtime` は指定 → `settings.defaultRuntime` → `mock` を解決して記録）→ Task を `running`（`assigneeSessionId`・`workspaceId`）。worktree 作成以外は 1 トランザクションで、上限の判定から Run 開始まで await を挟まない。
   - agent が呼ぶと、Worker の Run に委譲 Grant（既定 `WORKER_DEFAULT_PERMISSIONS` = Task / ワークスペース / Artifact の読み取りを親が持つ範囲で、`lifetime: run`、`limits { maxWorkers: 0, maxDepth: 0 }`）を付ける。Worker は Worker を起動できず、Grant も作れない。
   - 予算：呼び出し元の Run に Budget があれば、そこから `budgetUsd`（省略時は空き ÷（残りの Worker 枠 + 1）。1 つ分は呼び出し元が自分の LLM 呼び出しのために残す）を切り出して Worker セッションの Budget にする。
-- **`task.retry({ taskId, feedback?, integrationId? })`**：元の Worker に差し戻す。`review` / `failed` / `ready` / 人間待ちの `blocked` の Task で、Worker セッションと worktree が残っていれば、そのセッションに差し戻しメッセージ（指摘＋ `integrationId` があればその統合のエラー・テストコマンド・出力の末尾 4000 文字）を足し、同じ worktree・ブランチで新しい `agent` Run（`retryOfRunId` = 前の Run、Runtime は自分のセッションを再開）を始めて Task を `running` にする。権限・上限・委譲 Grant は spawn と同じで、Budget は前の Run のものがまだ有効なら使い続ける。Worker が一度もいない Task は `task.spawnWorker` と同じ（指摘は追加の指示になる）。
+- **`task.retry({ taskId, feedback?, integrationId? })`**：元の Worker に差し戻す。「元の Worker」は担当セッションのうち、その Task のために作られ（`session.taskId`）、同じプロジェクトで、Session Grant を持たない `agent` セッションだけ（それ以外なら新しい Worker を起動する）。前の Run の Budget を使い続けるのも、それがそのセッションに切り出したものであるときだけ。agent は `task.update` で担当セッションをその Task のセッション以外に向けられない（別プロジェクトのセッションは誰でも不可）。`review` / `failed` / `ready` / 人間待ちの `blocked` の Task で、Worker セッションと worktree が残っていれば、そのセッションに差し戻しメッセージ（指摘＋ `integrationId` があればその統合のエラー・テストコマンド・出力の末尾 4000 文字）を足し、同じ worktree・ブランチで新しい `agent` Run（`retryOfRunId` = 前の Run、Runtime は自分のセッションを再開）を始めて Task を `running` にする。権限・上限・委譲 Grant は spawn と同じで、Budget は前の Run のものがまだ有効なら使い続ける。Worker が一度もいない Task は `task.spawnWorker` と同じ（指摘は追加の指示になる）。
 - **Worker の終了**（`run.status_changed` の終端を orchestrator モジュールが購読）：その Task を担当中（`running` かつ担当セッション）なら、`completed` → `review`（変更なしは `statusReason: no_changes`、`resultSummary` に最後の発言）、`failed` / `cancelled` → `failed`（`worker_failed` / `worker_cancelled`）、`interrupted`（デーモンの停止・再起動）→ `ready`（`statusReason: interrupted`。`task.retry` で同じ worktree から再開できる）。worktree とブランチは残す。人間がキャンセルした Task などはそのまま。起動時にも同じ照合をする。
 - **Orchestrator の再開**（concept §8.4、`orchestrator/resume.ts`）：起動時（全モジュールの start の後）、`daemon_restart` / `daemon_shutdown` で `interrupted` になり、まだセッションの最新 Run である `orchestrator` Run ごとに、そのセッションへ system メッセージ（`ORCHESTRATOR_RESUME_NOTICE` で始まり、中断した Run の ID・そのセッションが作った Task と統合の状態）を 1 回だけ投稿する。`settings.autoResumeOrchestrators`（既定 true）かつセッションの Orchestrator Grant がまだ有効なら、そのメッセージを起点に新しい `orchestrator` Run を始める（`lifetime: run` の Grant は中断で失効しているので、通知だけになる）。モデルは `task.list` で状態を読み直し、中断された Task を `task.retry` で再開して計画を続ける。
 - **待機**：`task.wait({ taskIds, mode: any|all, until: settled|review_or_terminal|terminal, timeoutMs })` は状態を確かめてから `bus.waitFor` で眠り（ポーリングしない）、`call.signal` で打ち切る。返すのは `reached`（ID）と全 Task の `TaskSnapshot`（状態・理由・ブランチ・最新 Run と activity・承認待ち数・diff 統計・要約）。`integration.wait` は統合が `awaiting_approval` / `conflict` / `failed` / 確定状態になるまで待つ。LLM のループは「spawn → task.wait(all) → integration.create → run → integration.wait → 報告」だけで済む。

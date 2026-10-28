@@ -81,13 +81,20 @@ export class SessionService {
     const { repos } = ctx;
     return ctx.db.transaction(() => {
       const project = input.projectId ? repos.projects.require(input.projectId) : null;
+      // The session's runs write to the workspace (or the task's): both must be in its project,
+      // or a project-limited caller could reach another project's worktree through them.
       if (input.workspaceId) {
         const ws = repos.workspaces.require(input.workspaceId);
         if (project && ws.projectId !== project.id) {
           throw invalidParams('workspace belongs to a different project');
         }
       }
-      if (input.taskId) repos.tasks.require(input.taskId);
+      if (input.taskId) {
+        const task = repos.tasks.require(input.taskId);
+        if (project && task.projectId !== project.id) {
+          throw invalidParams('task belongs to a different project');
+        }
+      }
       if (input.parentSessionId) repos.sessions.require(input.parentSessionId);
       const now = ctx.clock.iso();
       const session = repos.sessions.insert({

@@ -174,6 +174,14 @@ export class RunManager implements RunsService {
       if (busy) {
         throw conflict('このセッションでは別の Run が実行中です', { runId: busy.id });
       }
+      if (input.budgetId) {
+        const budget = ctx.repos.budgets.get(input.budgetId);
+        if (budget?.status !== 'active') {
+          throw conflict('この予算は返却済みのため、新しい Run には使えません', {
+            budgetId: input.budgetId,
+          });
+        }
+      }
       const attempt = input.retryOfRunId
         ? ctx.repos.runs.require(input.retryOfRunId).attempt + 1
         : 1;
@@ -741,7 +749,11 @@ export class RunManager implements RunsService {
       assertBudgetLeft: () => {
         const budgetId = a.run.budgetId;
         if (!budgetId || !ctx.hasService('budget')) return;
-        if (remainingMicroUsd(ctx.service('budget').get(budgetId)) <= 0) {
+        const budget = ctx.service('budget').get(budgetId);
+        if (budget.status !== 'active') {
+          throw budgetExceeded('予算が返却されているため、これ以上実行できません', { budgetId });
+        }
+        if (remainingMicroUsd(budget) <= 0) {
           throw budgetExceeded('予算の上限に達したため、これ以上実行できません', { budgetId });
         }
       },
@@ -785,13 +797,17 @@ export class RunManager implements RunsService {
     book: (budget: BudgetService, budgetId: string) => void,
   ): void {
     const budget = this.ctx.service('budget');
-    let exhausted = false;
+    let exhausted: boolean;
     try {
       book(budget, budgetId);
       exhausted = remainingMicroUsd(budget.get(budgetId)) <= 0;
     } catch (err) {
-      if (err instanceof ApiError && err.code === 'budget_exceeded') exhausted = true;
-      else this.ctx.log.error('failed to record run spend', { runId: a.runId, err });
+      // Fail closed: a run whose spend cannot be booked (budget released, gone) must not go
+      // on spending unaccounted. Its usage is already on the run.
+      exhausted = true;
+      if (!(err instanceof ApiError && err.code === 'budget_exceeded')) {
+        this.ctx.log.error('failed to record run spend; stopping the run', { runId: a.runId, err });
+      }
     }
     if (exhausted) this.stopForBudget(a);
   }

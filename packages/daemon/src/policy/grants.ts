@@ -7,6 +7,7 @@ import {
   type GrantLimits,
   type GrantScope,
   type GrantSubject,
+  type Session,
   TERMINAL_RUN_STATUSES,
   isTerminalRunStatus,
   matchAnyPattern,
@@ -161,6 +162,42 @@ export class PolicyService implements PolicyEngine {
 
   sessionAllows(sessionId: string, permission: string): boolean {
     return this.sessionGrantsAllowing(sessionId, permission).length > 0;
+  }
+
+  /**
+   * Agents start runs outside task.spawnWorker / task.retry (session.send, run.retry) only
+   * in chat sessions they delegated (`parentSessionId` = their session) that hold no session
+   * grants. Otherwise a weak agent would drive a stronger session with that session's
+   * grants and budget, or start worker runs that skip the delegation and maxWorkers rules.
+   */
+  assertAgentMayStartRun(actor: Actor, session: Session, method: string): void {
+    if (actor.kind !== 'agent') return;
+    const deny = (message: string): never => {
+      const error = forbidden(message);
+      this.recordDenial(actor, method, message, {
+        projectIds: session.projectId ? [session.projectId] : [],
+      });
+      throw error;
+    };
+    if (session.kind === 'agent') {
+      deny(
+        'Worker のやり直しは task.retry で行ってください（権限・上限・予算の規則が適用されます）',
+      );
+    }
+    if (session.parentSessionId !== actor.sessionId) {
+      deny('エージェントが Run を始められるのは、自分が作ったセッションだけです');
+    }
+    if (this.hasSessionGrants(session.id)) {
+      deny('権限を持つセッションでは、エージェントは Run を始められません');
+    }
+  }
+
+  /** Whether the session holds any active session-subject grant. */
+  hasSessionGrants(sessionId: string): boolean {
+    const now = this.ctx.clock.iso();
+    return this.ctx.repos.grants
+      .find({ where: { revoked_at: null, subject_kind: 'session', subject_id: sessionId } })
+      .some((g) => this.isActive(g, now));
   }
 
   /** Every grant delegated (directly or transitively) from `grantId`. */
@@ -520,7 +557,9 @@ export class PolicyService implements PolicyEngine {
 
   /**
    * Startup sweep: runs that ended while nobody listened (e.g. interrupted by recovery
-   * before modules registered) still hold run grants. Revoke those.
+   * before modules registered) still hold run grants, and their sessions' run-lifetime
+   * grants ("this chat's next run only") were never expired. Revoke both, by the same rules
+   * as a run ending while the daemon runs — a crash must not keep a grant a clean stop ends.
    */
   sweepEndedRuns(): number {
     const { ctx } = this;
@@ -533,6 +572,21 @@ export class PolicyService implements PolicyEngine {
       const run = ctx.repos.runs.get(runId);
       if (run && isTerminalRunStatus(run.status)) count += this.expireForRun(run.id, null).length;
     }
+    const actor: Actor = { kind: 'system', component: 'policy' };
+    const sessionRunGrants = ctx.repos.grants
+      .find({ where: { revoked_at: null, subject_kind: 'session' }, direction: 'asc' })
+      .filter((g) => g.lifetime === 'run');
+    for (const g of sessionRunGrants) {
+      if (g.subject.kind !== 'session' || ctx.repos.grants.get(g.id)?.revokedAt) continue;
+      // A run of the session ended after the grant was given: that was its "next run".
+      const ended = ctx.repos.runs.findOne({
+        where: { session_id: g.subject.sessionId, status: [...TERMINAL_RUN_STATUSES] },
+        sql: { clause: "json_extract(data, '$.endedAt') > ?", params: [g.createdAt] },
+      });
+      if (!ended) continue;
+      ctx.db.transaction(() => this.revokeTree(g, actor, RUN_ENDED));
+      count += 1;
+    }
     return count;
   }
 
@@ -540,10 +594,22 @@ export class PolicyService implements PolicyEngine {
   // Limits
   // -------------------------------------------------------------------------
 
-  /** Worker runs started by this run that have not ended yet. */
-  activeWorkerCount(parentRunId: string): number {
+  /**
+   * Worker runs spawned under a grant subject that have not ended yet: children of the run,
+   * or — for a session grant (`maxWorkers` is per subject) — children of any run of that
+   * session, so workers a finished orchestrator run left behind still count.
+   */
+  activeWorkerCount(subject: GrantSubject): number {
+    const status = [...NON_TERMINAL_RUN_STATUSES];
+    if (subject.kind === 'run') {
+      return this.ctx.repos.runs.count({ where: { parent_run_id: subject.runId, status } });
+    }
     return this.ctx.repos.runs.count({
-      where: { parent_run_id: parentRunId, status: [...NON_TERMINAL_RUN_STATUSES] },
+      where: { status },
+      sql: {
+        clause: 'parent_run_id IN (SELECT id FROM runs WHERE session_id = ?)',
+        params: [subject.sessionId],
+      },
     });
   }
 
@@ -578,9 +644,9 @@ export class PolicyService implements PolicyEngine {
       deny(forbidden(`no capability grant allows "${permission}" for this run`));
     }
     const maxDepth = this.ctx.settings.get().maxDelegationDepth;
-    const active = this.activeWorkerCount(actor.runId);
     let firstError: ApiError | null = null;
     for (const g of candidates) {
+      const active = this.activeWorkerCount(g.subject);
       if (g.depth + 1 > maxDepth || (g.limits.maxDepth !== undefined && g.limits.maxDepth < 1)) {
         firstError ??= limitExceeded(
           `this run's grant (depth ${g.depth}) cannot spawn workers: the maximum delegation depth is ${maxDepth}`,

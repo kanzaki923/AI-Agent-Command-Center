@@ -143,7 +143,7 @@ export class WorkerService {
             runtime,
             budgetUsd: budget?.limitUsd ?? null,
             grant: parentGrant,
-            active: callerRun ? policy.activeWorkerCount(callerRun.id) : null,
+            active: parentGrant ? policy.activeWorkerCount(parentGrant.subject) : null,
           }),
           taskIds: [cur.id],
           sessionIds: [session.id],
@@ -179,11 +179,22 @@ export class WorkerService {
     policy.assertCanSpawnWorker(actor, { projectId: task.projectId });
     const feedback = this.retryFeedback(task, p.feedback, p.integrationId);
 
-    const session = task.assigneeSessionId
+    const assignee = task.assigneeSessionId
       ? ctx.repos.sessions.get(task.assigneeSessionId)
       : undefined;
+    // Only the task's own worker session (made for this task, in its project, running on
+    // nothing but per-run grants) is "the original worker": any other session would lend
+    // the retry its project, budget and session grants.
+    const session =
+      assignee &&
+      assignee.kind === 'agent' &&
+      assignee.taskId === task.id &&
+      assignee.projectId === task.projectId &&
+      !policy.hasSessionGrants(assignee.id)
+        ? assignee
+        : undefined;
     const ws = task.workspaceId ? ctx.repos.workspaces.get(task.workspaceId) : undefined;
-    if (!session || session.kind !== 'agent' || !ws || ws.status !== 'ready') {
+    if (!session || !ws || ws.status !== 'ready' || ws.projectId !== task.projectId) {
       return this.spawn(
         {
           taskId: task.id,
@@ -218,7 +229,9 @@ export class WorkerService {
       });
       const kept = prev?.budgetId ? ctx.repos.budgets.get(prev.budgetId) : undefined;
       const budget =
-        kept?.status === 'active'
+        kept?.status === 'active' &&
+        kept.subject.kind === 'session' &&
+        kept.subject.id === session.id
           ? kept
           : this.carveBudget(undefined, callerRun, parentGrant, session.id, actor);
       const run = ctx.service('runs').start({
@@ -649,7 +662,7 @@ export class WorkerService {
       if (amount === undefined) {
         // An equal share among the worker slots left plus one kept by the caller, which
         // still needs budget for its own (reserved) LLM calls while it supervises.
-        const active = this.ctx.service('policy').activeWorkerCount(callerRun.id);
+        const active = grant ? this.ctx.service('policy').activeWorkerCount(grant.subject) : 0;
         const slots = Math.max(1, (grant?.limits.maxWorkers ?? 2) - active) + 1;
         amount = Math.floor((freeUsd(parent) / slots) * 1e6) / 1e6;
       }
