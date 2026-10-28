@@ -10,6 +10,8 @@ export const systemModule = defineModule({
       defineMethod('system.health', {
         handler: () => ({
           ok: true as const,
+          service: 'acc-daemon' as const,
+          pid: process.pid,
           version: ctx.version,
           protocolVersion: PROTOCOL_VERSION,
           uptimeMs: Math.max(0, ctx.clock.now() - Date.parse(ctx.startedAt)),

@@ -4,6 +4,7 @@ import {
   ArtifactId,
   BudgetId,
   Cursor,
+  ErrorInfo,
   GrantId,
   IntegrationId,
   Limit,
@@ -135,8 +136,55 @@ export const WorkspaceDiff = z.object({
 });
 export type WorkspaceDiff = z.infer<typeof WorkspaceDiff>;
 
+/** Task statuses `task.wait` treats as "settled" (nothing more happens without someone acting). */
+export const SETTLED_TASK_STATUSES = [
+  'review',
+  'done',
+  'failed',
+  'cancelled',
+  'blocked',
+] as const satisfies TaskStatus[];
+
+/** Compact view of a task for supervisors (what `task.wait` returns per task). */
+export const TaskSnapshot = z.object({
+  id: TaskId,
+  title: z.string(),
+  status: TaskStatus,
+  statusReason: z.string().nullable(),
+  assigneeSessionId: SessionId.nullable(),
+  workspaceId: WorkspaceId.nullable(),
+  branch: z.string().nullable().describe('Work branch of the task workspace'),
+  run: z
+    .object({
+      id: RunId,
+      status: RunStatus,
+      activity: z.string().nullable().describe('What the worker is doing right now'),
+      error: ErrorInfo.nullable(),
+    })
+    .nullable()
+    .describe('Latest run on the task'),
+  pendingApprovals: z.int().nonnegative().describe('Approvals waiting for a human'),
+  diff: DiffStats.nullable().describe('Stats of the latest diff artifact'),
+  resultSummary: z.string().nullable(),
+  updatedAt: Timestamp,
+});
+export type TaskSnapshot = z.infer<typeof TaskSnapshot>;
+
+/** Integration statuses `integration.wait` returns on. */
+export const SETTLED_INTEGRATION_STATUSES = [
+  'awaiting_approval',
+  'conflict',
+  'failed',
+  'applied',
+  'rejected',
+  'cancelled',
+] as const satisfies IntegrationStatus[];
+
 export const SystemHealth = z.object({
   ok: z.literal(true),
+  /** Identifies the process as this daemon (launchers check it together with `pid`). */
+  service: z.literal('acc-daemon'),
+  pid: z.int(),
   version: z.string(),
   protocolVersion: z.int(),
   uptimeMs: z.int().nonnegative(),
@@ -186,6 +234,26 @@ export const api = defineApi({
     params: empty(),
     result: SystemInfo,
     description: 'Daemon version, data directory, implemented methods and basic counters.',
+  },
+  'system.setupDemo': {
+    params: params({
+      name: z
+        .string()
+        .regex(/^[a-z0-9][a-z0-9-]{0,39}$/, 'lowercase letters, digits and "-"')
+        .default('auth-demo')
+        .describe('Folder name under <ACC_HOME>/demo'),
+    }),
+    result: z.object({
+      project: Project,
+      session: Session,
+      grant: CapabilityGrant,
+      repoPath: z.string(),
+      created: z.boolean().describe('False when everything already existed'),
+    }),
+    description:
+      'Prepare demo mode (idempotent): a small local git repository with tests, a project for it and an orchestrator chat session using the offline mock/orchestrator model.',
+    tool: false,
+    mutates: true,
   },
 
   // ---- settings / models ----
@@ -460,9 +528,14 @@ export const api = defineApi({
         .optional()
         .describe('Capabilities delegated to the worker (subset of the caller)'),
     }),
-    result: z.object({ sessionId: SessionId, runId: RunId, workspaceId: WorkspaceId }),
+    result: z.object({
+      sessionId: SessionId,
+      runId: RunId,
+      workspaceId: WorkspaceId,
+      budgetId: BudgetId.nullable().default(null).describe('Budget carved for the worker'),
+    }),
     description:
-      'Start a worker for a task: creates a git worktree, a worker session and a run. Returns immediately.',
+      'Start a worker (a coding agent) for a ready task: creates a git worktree, a worker session and an agent run, and marks the task running. Returns immediately; the task moves to "review" when the worker finishes (its changes are committed and recorded as a diff) or to "failed". Supervise with task.wait.',
     mutates: true,
   },
   'task.wait': {
@@ -470,17 +543,23 @@ export const api = defineApi({
       taskIds: z.array(TaskId).min(1).max(100),
       timeoutMs: z.int().min(0).max(600_000).default(60_000),
       until: z
-        .enum(['terminal', 'review_or_terminal'])
-        .default('review_or_terminal')
-        .describe('Which statuses count as "reached"'),
+        .enum(['settled', 'review_or_terminal', 'terminal'])
+        .default('settled')
+        .describe(
+          'Which statuses count as reached. settled: review, done, failed, cancelled or blocked (default). review_or_terminal: review, done, failed or cancelled. terminal: done, failed or cancelled.',
+        ),
+      mode: z
+        .enum(['any', 'all'])
+        .default('any')
+        .describe('Return when ANY listed task is reached (default) or only when ALL are'),
     }),
     result: z.object({
-      reached: z.array(Task).describe('Tasks that reached the requested state'),
-      tasks: z.array(Task).describe('Current state of all requested tasks'),
-      timedOut: z.boolean(),
+      reached: z.array(TaskId).describe('Listed tasks that are in a reached status'),
+      tasks: z.array(TaskSnapshot).describe('Compact current state of every listed task'),
+      timedOut: z.boolean().describe('True when the condition was not met before the timeout'),
     }),
     description:
-      'Block until ANY of the given tasks reaches review/terminal state, or the timeout elapses. Use this instead of polling.',
+      'Block until ANY (or, with mode "all", every) listed task is settled (review/done/failed/cancelled/blocked) or the timeout elapses, then return a compact snapshot of all listed tasks. Use this instead of polling. With mode "any", pass only the tasks you are still waiting for.',
     longPoll: true,
   },
 
@@ -624,6 +703,21 @@ export const api = defineApi({
       "Merge the sources in order (git merge --no-ff) and run the project's test command. Returns immediately; follow integration.updated events. Ends in awaiting_approval, conflict or failed.",
     mutates: true,
   },
+  'integration.wait': {
+    params: params({
+      integrationId: IntegrationId,
+      timeoutMs: z.int().min(0).max(600_000).default(60_000),
+    }),
+    result: z.object({
+      integration: Integration,
+      timedOut: z
+        .boolean()
+        .describe('True when it was still pending/running/verifying at the timeout'),
+    }),
+    description:
+      'Block until an integration settles (awaiting_approval, conflict, failed, applied, rejected or cancelled) or the timeout elapses. Call after integration.run instead of polling integration.get.',
+    longPoll: true,
+  },
   'integration.approve': {
     params: params({ integrationId: IntegrationId, note: z.string().max(5000).optional() }),
     result: Integration,
@@ -669,6 +763,41 @@ export const api = defineApi({
     params: params({ grantId: GrantId, reason: z.string().max(2000).optional() }),
     result: CapabilityGrant,
     description: 'Revoke a grant (and every grant delegated from it).',
+    mutates: true,
+  },
+
+  'session.grantOrchestration': {
+    params: params({
+      sessionId: SessionId,
+      projectId: ProjectId.optional().describe("Project to orchestrate; defaults to the session's"),
+      maxWorkers: z.int().min(1).max(16).default(2),
+      lifetime: GrantLifetime.default('run').describe(
+        'run: only the next run of the session; session: until revoked or expiresAt',
+      ),
+      budgetUsd: z
+        .number()
+        .positive()
+        .optional()
+        .describe("Root budget for the session's runs; workers get slices of it"),
+      expiresAt: Timestamp.optional(),
+    }),
+    result: z.object({ grant: CapabilityGrant, budget: BudgetAllocation.nullable() }),
+    description:
+      'Turn a chat session into an orchestrator for a project: grants the orchestrator preset (tasks, workers, supervision, integration without approve) limited to that project, maxWorkers and depth 1. Humans only.',
+    tool: false,
+    mutates: true,
+  },
+
+  // ---- orchestrator ----
+  'orchestrator.recordDecision': {
+    params: params({
+      decision: z.string().min(1).max(300).describe('What you decided, one line'),
+      rationale: z.string().min(1).max(4000).describe('Why, briefly'),
+      taskIds: z.array(TaskId).max(100).optional(),
+    }),
+    result: Ok,
+    description:
+      'Record a planning/supervision decision with its rationale (shown to the human in the timeline). Call it when you decompose work, start workers, decide to integrate, or stop.',
     mutates: true,
   },
 

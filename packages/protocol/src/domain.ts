@@ -450,6 +450,18 @@ export type ApprovalKind = z.infer<typeof ApprovalKind>;
 export const ApprovalStatus = z.enum(['pending', 'approved', 'rejected', 'expired', 'cancelled']);
 export type ApprovalStatus = z.infer<typeof ApprovalStatus>;
 
+/** How dangerous a tool use looks (decided by the daemon, not the agent). */
+export const ToolRisk = z.enum(['low', 'medium', 'high']);
+export type ToolRisk = z.infer<typeof ToolRisk>;
+
+/** `Approval.payload` of a `tool_use` approval. */
+export const ToolApprovalPayload = z.object({
+  toolName: z.string(),
+  input: z.unknown(),
+  risk: ToolRisk,
+});
+export type ToolApprovalPayload = z.infer<typeof ToolApprovalPayload>;
+
 /** A decision a human (or authorized agent) must make before work continues. */
 export const Approval = z.object({
   id: ApprovalId,

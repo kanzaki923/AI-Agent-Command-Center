@@ -1,4 +1,4 @@
-import type { Message, Run } from '@acc/protocol';
+import type { Message, Run, Session } from '@acc/protocol';
 import type { RunExecutor } from '../contracts';
 import type { DaemonContext } from '../core/context';
 import { invalidParams } from '../core/errors';
@@ -49,28 +49,40 @@ export function createChatExecutor(ctx: DaemonContext): RunExecutor {
   return async (ctl) => {
     const run = ctl.run;
     const session = ctx.repos.sessions.require(run.sessionId);
-    const model = run.model ?? resolveChatModel(ctx, session.model);
-    if (!model) {
-      throw invalidParams(
-        'モデルが設定されていません。セッションか設定で既定のモデルを指定してください',
-      );
-    }
-    const skip = retryChain(ctx, run);
-    const history: Message[] = ctx.repos.messages
-      .find({
-        where: { session_id: session.id },
-        orderBy: 'id',
-        direction: 'desc',
-        limit: CHAT_HISTORY_LIMIT,
-      })
-      .reverse()
-      .filter((m) => !m.runId || !skip.has(m.runId));
+    const model = requireChatModel(ctx, run, session);
     await runToolLoop({
       ctx,
       ctl,
       model,
-      messages: toChatMessages(history, { systemPrompt: session.systemPrompt }),
+      messages: toChatMessages(chatHistory(ctx, run, session), {
+        systemPrompt: session.systemPrompt,
+      }),
       tools: apiTools(ctx, ctl.actor),
     });
   };
+}
+
+/** The run's model, or a user-facing error when nothing is configured. */
+export function requireChatModel(ctx: DaemonContext, run: Run, session: Session): string {
+  const model = run.model ?? resolveChatModel(ctx, session.model);
+  if (!model) {
+    throw invalidParams(
+      'モデルが設定されていません。セッションか設定で既定のモデルを指定してください',
+    );
+  }
+  return model;
+}
+
+/** Latest messages of the session for a run, without partial output of retried attempts. */
+export function chatHistory(ctx: DaemonContext, run: Run, session: Session): Message[] {
+  const skip = retryChain(ctx, run);
+  return ctx.repos.messages
+    .find({
+      where: { session_id: session.id },
+      orderBy: 'id',
+      direction: 'desc',
+      limit: CHAT_HISTORY_LIMIT,
+    })
+    .reverse()
+    .filter((m) => !m.runId || !skip.has(m.runId));
 }

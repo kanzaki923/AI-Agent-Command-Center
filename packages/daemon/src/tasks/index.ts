@@ -9,6 +9,7 @@ export {
   compareTasks,
   isTerminalTaskStatus,
   readinessOf,
+  type TaskStatusPatch,
 } from './service';
 
 /**
@@ -16,17 +17,8 @@ export {
  *
  * Implemented: task.create, task.list, task.get, task.update, task.cancel.
  * Service: `tasks` (TaskService: setStatus, readyTasks, topoOrder, dependents).
- *
- * TODO(integration): task.spawnWorker / task.wait.
- * - task.spawnWorker: `ctx.service('policy').assertCanSpawnWorker(actor, { projectId })`
- *   right before `runs.start`; workspace (ctx.service('workspaces')) + worker session
- *   (kind "agent", parentSessionId = caller's session) + run (ctx.service('runs'),
- *   parentRunId = caller's run); delegate a child grant
- *   (`policy.createGrant(..., { via: 'task.spawnWorker' })` with the grant returned by the
- *   assert as parentGrantId) and budget (`budget.allocate`) from the caller when it is an
- *   agent; `tasks.setStatus(taskId, 'running', ...)`.
- * - task.wait: long poll. Check current state first, then `ctx.bus.waitFor` on task.updated
- *   with `call.signal` (aborted when the client disconnects) and the timeout.
+ * task.spawnWorker / task.wait live in the orchestrator module (they combine workspaces,
+ * sessions, runs and policy).
  */
 export const tasksModule = defineModule({
   name: 'tasks',

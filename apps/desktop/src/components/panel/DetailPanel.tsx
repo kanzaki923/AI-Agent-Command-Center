@@ -1,9 +1,10 @@
-import type { Event, Run, Session } from '@acc/protocol';
+import type { Event, Run, Session, TaskStatus } from '@acc/protocol';
 import { CheckCircle2, CircleX, X } from 'lucide-react';
 import { motion } from 'motion/react';
 import { Tabs } from 'radix-ui';
 import { type ReactNode, useMemo } from 'react';
 import { useArtifacts, useDiff, useEventHistory, useEventLogVersion, useGrants, useRuns, useSessions, useWorkspace } from '../../daemon/queries';
+import { makeOrchestrator, runTask } from '../../daemon/actions';
 import { useRuntime } from '../../daemon/runtime';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { cn } from '../../lib/cn';
@@ -15,7 +16,7 @@ import { parsePatch } from '../../model/diff';
 import { describeEvent } from '../../model/timeline';
 import { useBoard } from '../../model/useBoard';
 import { PANEL_TABS, type PanelTab, useUi } from '../../store/ui';
-import { IconButton } from '../ui/Button';
+import { Button, IconButton } from '../ui/Button';
 import { Kbd } from '../ui/Kbd';
 import { Cost, ElapsedTime, TimeStamp } from '../ui/Meta';
 import { ResizeHandle } from '../ui/ResizeHandle';
@@ -24,6 +25,9 @@ import { useTimelineSelection } from '../timeline/TimelineView';
 import { DiffBrowser, DiffStatText } from './DiffViewer';
 
 const NONE: never[] = [];
+
+/** Task statuses a human can (re)start a worker for ("このTaskを実行"). */
+const RUNNABLE_TASK: readonly TaskStatus[] = ['ready', 'failed'];
 
 const TAB_LABEL: Record<PanelTab, string> = { overview: '概要', changes: '変更', tests: 'テスト', logs: 'ログ' };
 
@@ -82,6 +86,7 @@ function SessionOverview({ session, runs }: { session: Session; runs: Run[] }) {
   const parent = session.parentSessionId ? sessions.find((s) => s.id === session.parentSessionId) : null;
   const usage = sumUsage(runs.map((r) => r.usage));
   const openSession = useUi((s) => s.openSession);
+  const rt = useRuntime();
   const activeGrant = grants.find((g) => !g.revokedAt);
   const run = item?.run ?? runs[0] ?? null;
   const range = item ? elapsedRange(item) : { start: null, end: null };
@@ -101,7 +106,20 @@ function SessionOverview({ session, runs }: { session: Session; runs: Run[] }) {
       {item?.task && (
         <Field label="Task">
           <div>{item.task.title}</div>
-          <div className="text-meta text-fg-3">{TASK_STATUS_LABEL[item.task.status]}</div>
+          <div className="flex items-center gap-2 text-meta text-fg-3">
+            {TASK_STATUS_LABEL[item.task.status]}
+            {RUNNABLE_TASK.includes(item.task.status) && (
+              <Button
+                size="sm"
+                onClick={() => {
+                  const taskId = item.task!.id;
+                  void runTask(rt, taskId).then((sessionId) => sessionId && openSession(sessionId));
+                }}
+              >
+                このTaskを実行
+              </Button>
+            )}
+          </div>
         </Field>
       )}
       {parent && (
@@ -120,6 +138,13 @@ function SessionOverview({ session, runs }: { session: Session; runs: Run[] }) {
               {activeGrant.expiresAt && <> · {formatClockSeconds(activeGrant.expiresAt)} まで</>}
             </div>
           </div>
+        ) : session.kind === 'chat' && session.projectId ? (
+          <span className="flex items-center gap-2">
+            <span className="text-fg-3">なし</span>
+            <Button size="sm" hint="Task を分けて Worker を率いる権限を、次の 1 回だけ与えます" onClick={() => void makeOrchestrator(rt, session)}>
+              Orchestrator にする
+            </Button>
+          </span>
         ) : (
           <span className="text-fg-3">{session.kind === 'agent' ? 'worktree 内 · 既定の権限' : 'なし'}</span>
         )}

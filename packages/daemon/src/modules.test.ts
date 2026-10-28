@@ -14,10 +14,15 @@ describe('system', () => {
   it('health and info', async () => {
     d = await createTestDaemon();
     const health = await d.call(HUMAN, 'system.health', {});
-    expect(health).toMatchObject({ ok: true, protocolVersion: 1 });
+    expect(health).toMatchObject({
+      ok: true,
+      service: 'acc-daemon',
+      pid: process.pid,
+      protocolVersion: 1,
+    });
     const info = await d.call(HUMAN, 'system.info', {});
     expect(info.methods).toContain('session.create');
-    expect(info.methods).not.toContain('task.spawnWorker');
+    expect(info.methods).toContain('task.spawnWorker');
     expect(info.dataDir).toBe(d.home);
     expect(info.stats).toEqual({ projects: 0, sessions: 0, activeRuns: 0, lastEventSeq: 0 });
   });

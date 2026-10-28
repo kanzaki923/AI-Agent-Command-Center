@@ -10,6 +10,7 @@ export { MockAgentRuntime } from './mock/runtime';
 export { RuntimeRegistry, MOCK_RUNTIME_ID } from './registry';
 export { createAgentExecutor, buildAgentPrompt } from './executor';
 export { decideToolPermission } from './policy';
+export { classifyToolRisk, isHighRiskCommand } from './risk';
 
 /**
  * Agent Runtime abstraction (architecture.md §2.3).

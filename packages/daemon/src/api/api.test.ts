@@ -46,7 +46,8 @@ function insertGrant(daemon: TestDaemonNoServer, patch: Partial<CapabilityGrant>
 
 describe('dispatcher', () => {
   it('rejects unknown and unimplemented methods with not_found', async () => {
-    d = await createTestDaemon();
+    // Without the orchestrator module, task.wait is declared but not implemented.
+    d = await createTestDaemon({ modules: modules.filter((m) => m.name !== 'orchestrator') });
     const e1 = await expectCode(d.call(HUMAN, 'nope.nope' as never, {} as never), 'not_found');
     expect(e1.data).toEqual({ reason: 'unknown_method' });
     const e2 = await expectCode(d.call(HUMAN, 'task.wait', {} as never), 'not_found');

@@ -39,7 +39,12 @@ describe('server', () => {
     const d = await start();
     const res = await fetch(`${d.url}/health`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ ok: true, version: d.ctx.version });
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      service: 'acc-daemon',
+      pid: process.pid,
+      version: d.ctx.version,
+    });
     const info = JSON.parse(readFileSync(join(d.home, 'daemon.json'), 'utf8')) as Record<
       string,
       unknown
@@ -151,7 +156,9 @@ describe('server', () => {
         );
       },
     });
-    const d = await start({ modules: [...modules, slow] });
+    const d = await start({
+      modules: [...modules.filter((m) => m.name !== 'orchestrator'), slow],
+    });
     const client = await connectTestClient(d, { reconnect: false });
     const taskId = d.ctx.ids.next('task');
     const pending = client

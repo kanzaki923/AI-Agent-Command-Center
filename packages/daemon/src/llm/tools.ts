@@ -57,13 +57,20 @@ export interface ApiToolsOptions {
  */
 export function apiTools(ctx: DaemonContext, actor: Actor, opts: ApiToolsOptions = {}): LoopTool[] {
   const tools: LoopTool[] = [];
+  // Listing tools is not a call: do not audit the methods left out as denials.
+  const { policy } = ctx;
+  const allowed = (permission: string) =>
+    (policy.peek
+      ? policy.peek(actor, permission, undefined)
+      : policy.check(actor, permission, undefined)
+    ).allowed;
   for (const name of ctx.methods.names()) {
     if (!isMethodName(name)) continue;
     const spec = api[name];
     if (!spec.tool) continue;
     if (opts.include && !matchAnyPattern(opts.include, name)) continue;
     if (opts.exclude && matchAnyPattern(opts.exclude, name)) continue;
-    if (!ctx.policy.check(actor, spec.permission, undefined).allowed) continue;
+    if (!allowed(spec.permission)) continue;
     tools.push({
       name: toolNameForMethod(name),
       description: spec.description,

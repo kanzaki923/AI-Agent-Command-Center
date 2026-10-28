@@ -109,6 +109,25 @@ describe('db', () => {
     expect(calls).toEqual(['outer']);
   });
 
+  it('runs hooks in registration order even when a hook commits another transaction', () => {
+    const { db } = track(setup());
+    const calls: string[] = [];
+    db.transaction(() => {
+      db.afterCommit(() => calls.push('a'));
+      // e.g. a run started inside a transaction is launched by a hook that writes again.
+      db.afterCommit(() => {
+        calls.push('launch');
+        db.transaction(() => db.afterCommit(() => calls.push('launch-event')));
+        db.afterCommit(() => calls.push('launch-direct'));
+      });
+      db.afterCommit(() => calls.push('b'));
+    });
+    expect(calls).toEqual(['a', 'launch', 'b', 'launch-event', 'launch-direct']);
+    // Outside any transaction and hook, afterCommit still runs immediately.
+    db.afterCommit(() => calls.push('now'));
+    expect(calls.at(-1)).toBe('now');
+  });
+
   it('rejects async transaction callbacks', () => {
     const { db } = track(setup());
     expect(() => db.transaction(() => Promise.resolve(1))).toThrow(/synchronous/);
