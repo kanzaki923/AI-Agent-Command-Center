@@ -1,8 +1,8 @@
 import { AccClientError } from '@acc/client';
 import { describe, expect, it } from 'vitest';
 import { createFakeClient } from '../test/fakeClient';
-import { id, session } from '../test/fixtures';
-import { makeOrchestrator, runTask } from './actions';
+import { id, run, session } from '../test/fixtures';
+import { makeOrchestrator, retryRun, runTask } from './actions';
 import { createRuntime } from './runtime';
 
 describe('makeOrchestrator ("Orchestrator にする")', () => {
@@ -39,5 +39,31 @@ describe('runTask ("このTaskを実行")', () => {
       },
     });
     expect(await runTask(createRuntime(fake.client), id('tsk'))).toBeNull();
+  });
+});
+
+describe('retryRun ("再試行" / "再開")', () => {
+  const ok = { sessionId: id('ses'), runId: id('run'), workspaceId: id('wsp'), budgetId: null };
+
+  it("resumes a worker's run through its task, so the task follows the new run", async () => {
+    const fake = createFakeClient({ 'task.retry': () => ok, 'run.retry': () => ({}) });
+    const taskId = id('tsk');
+    const worker = session({ kind: 'agent', taskId });
+    await retryRun(createRuntime(fake.client), run(worker, { kind: 'agent', status: 'interrupted' }));
+    expect(fake.calls).toEqual([{ method: 'task.retry', params: { taskId } }]);
+  });
+
+  it('retries other runs (chat, orchestrator, a task-less agent) with run.retry', async () => {
+    const fake = createFakeClient({ 'run.retry': () => ({}) });
+    const rt = createRuntime(fake.client);
+    const chat = session({ kind: 'chat' });
+    const r1 = run(chat, { kind: 'chat', status: 'failed' });
+    const r2 = run(session({ kind: 'agent' }), { kind: 'agent', status: 'interrupted', taskId: null });
+    await retryRun(rt, r1);
+    await retryRun(rt, r2);
+    expect(fake.calls).toEqual([
+      { method: 'run.retry', params: { runId: r1.id } },
+      { method: 'run.retry', params: { runId: r2.id } },
+    ]);
   });
 });

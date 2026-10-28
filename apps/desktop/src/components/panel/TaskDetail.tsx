@@ -1,7 +1,17 @@
-import { ArrowRight, Check, Circle, CornerUpLeft, GitBranch, GitMerge, Play, X } from 'lucide-react';
+import {
+  ArrowRight,
+  Check,
+  Circle,
+  CornerUpLeft,
+  GitBranch,
+  GitMerge,
+  Play,
+  RotateCcw,
+  X,
+} from 'lucide-react';
 import { type ReactNode, useMemo, useState } from 'react';
 import { confirmCancelTask } from '../../app/commands';
-import { spawnWorker, startIntegration } from '../../daemon/orchestration';
+import { resumeTask, spawnWorker, startIntegration } from '../../daemon/orchestration';
 import { useDiff, useIntegrations, useMethods } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { parsePatch } from '../../model/diff';
@@ -9,6 +19,7 @@ import { INTEGRATION_STATUS_LABEL } from '../../model/integration';
 import {
   type TaskNode,
   canCancel,
+  canResume,
   canRework,
   canRun,
   flattenTasks,
@@ -83,6 +94,20 @@ export function TaskDetail({ taskId }: { taskId: string }) {
             }
           >
             {t.status === 'failed' ? 'もう一度実行' : 'このTaskを実行'}
+          </Button>
+        )}
+        {canResume(t) && (
+          <Button
+            variant="primary"
+            icon={<RotateCcw size={12} strokeWidth={1.75} />}
+            disabled={!connected}
+            shortcut="runTask"
+            hint="同じ worktree と Worker の会話から作業を続けます"
+            onClick={() =>
+              void resumeTask(rt, t).then((r) => r && openSession(r.sessionId, { from: 'command' }))
+            }
+          >
+            再開
           </Button>
         )}
         {canRework(node) && (

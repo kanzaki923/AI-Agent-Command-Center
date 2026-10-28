@@ -193,8 +193,17 @@ export async function cancelRun(rt: AppRuntime, run: Run): Promise<void> {
   }
 }
 
+/**
+ * Retry / resume a run. A worker's run goes through its task (`task.retry`): the task moves
+ * back to running with the new run, so finishing it lands the task in review as usual —
+ * run.retry would start a run the task does not know about (it stays ready / failed).
+ */
 export async function retryRun(rt: AppRuntime, run: Run): Promise<void> {
   try {
+    if (run.kind === 'agent' && run.taskId) {
+      await rt.client.call('task.retry', { taskId: run.taskId });
+      return;
+    }
     await rt.client.call('run.retry', { runId: run.id });
   } catch (err) {
     toastError(err, '再試行できませんでした');

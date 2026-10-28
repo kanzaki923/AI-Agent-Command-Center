@@ -101,6 +101,8 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
+        // OS notifications (src/lib/notify.ts calls plugin:notification|notify etc.)
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![get_connection])
         .setup(|app| {
             // Pre-warm: start the daemon while the WebView boots, so the first

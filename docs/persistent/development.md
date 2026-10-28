@@ -75,6 +75,7 @@ pnpm --filter @acc/desktop tauri:dev    # Tauri アプリだけ（デーモン�
 pnpm --filter @acc/desktop screenshots  # Playwright で主要画面を撮る（scene に対して。出力は OS の一時ディレクトリ。--theme light、--size 1100x720、--prefix、--only a,b）
 pnpm --filter @acc/desktop e2e:slice    # 本物のデーモン + Vite を一時 ACC_HOME で起動し、オンボーディング → デモ → 送信 → 承認 → 統合の反映まで通す（--daemon-root で別チェックアウトのデーモンも使える）
 pnpm --filter @acc/desktop e2e:board    # 本物のデーモンで Task ボード（T → j → R で Worker を起動）とパレットのメッセージ検索（session.search → 該当メッセージへ移動）を通す
+pnpm --filter @acc/desktop e2e:conflict # 本物のデーモンで README.md がコンフリクトする統合を作り、レビュー画面の「Integrator に解消を任せる」→ 解消 → 反映待ちまで通す（main は動かないことも確かめる）
 pnpm --filter @acc/desktop e2e:perf     # 本番ビルドで 10 本同時ストリーミングのフレーム間隔と長いタスクを測る（--profile で内訳、--dev で開発サーバ）
 ```
 

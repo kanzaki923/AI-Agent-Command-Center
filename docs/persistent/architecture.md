@@ -181,7 +181,8 @@ Orchestrator は**セッション種別ではなく役割**（concept §3.1）�
 - Tauri 2 のシェルは Core Daemon を起動（未起動なら）して接続情報をフロントへ渡すだけ。ロジックは持たない。
   - `get_connection`（`src-tauri/src/daemon.rs`）：`daemon.json` + `/health`（`service`・`pid` 一致）で既存デーモンを再利用、なければ detach 起動（Windows は `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`、可能なら `CREATE_BREAKAWAY_FROM_JOB`）して `daemon.json` を待つ。UI を閉じてもデーモンは残る。起動に失敗したら今回の起動ログの末尾を日本語のメッセージに付けて UI に返す。
   - 起動方法：`tauri dev` は `node --import tsx packages/daemon/src/main.ts`、ビルド済みアプリは同梱の `acc-node.exe`（固定版の公式 Node）+ `resources/daemon/main.mjs`（esbuild の 1 ファイル）。`ACC_DAEMON_ENTRY` で差し替え可能。
-  - single-instance（2 つ目の起動は既存ウィンドウを前面に）、window-state（位置・大きさ・最大化を復元。表示は最初のページ読み込み後）、枠なし + HTML のタイトルバー。
+  - single-instance（2 つ目の起動は既存ウィンドウを前面に）、window-state（位置・大きさ・最大化を復元。表示は最初のページ読み込み後）、notification（OS 通知。capability は `is_permission_granted` / `request_permission` / `notify` だけ。UI は `lib/notify.ts` から直接 invoke）、枠なし + HTML のタイトルバー。
+  - アプリを開いたまま `system.shutdown` すると、UI の再接続でシェルが新しいデーモンを起動する。だから UI の停止ボタンはデスクトップアプリでは `再起動` と呼ぶ。
   - Claude Code の CLI は同梱しない。デーモンが実行ファイルを探して Agent SDK に渡す（`runtime/claude/locate.ts`、見つからなければ理由つきで Run が失敗）。
 - ブラウザ（`pnpm dev`）でも同じ UI が動く（Vite の開発ミドルウェアが `daemon.json` を渡す）。E2E テストはこの経路で行う。
 - 状態：サーバ状態は TanStack Query、イベントストリームで無効化・差分反映。UI 状態は Zustand。

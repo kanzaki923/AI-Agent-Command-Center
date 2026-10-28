@@ -53,7 +53,7 @@ import {
 import { archiveSession, setPinned } from '../../daemon/actions';
 import { qk } from '../../daemon/keys';
 import { startDemo } from '../../app/demo';
-import { revokeGrant, spawnWorker } from '../../daemon/orchestration';
+import { resumeTask, revokeGrant, spawnWorker } from '../../daemon/orchestration';
 import {
   useIntegrations,
   useMethods,
@@ -72,7 +72,7 @@ import { STATE_LABEL } from '../../lib/status';
 import { describeApproval } from '../../model/approval';
 import { attentionCounts, untitled } from '../../model/board';
 import { INTEGRATION_STATUS_LABEL, integrationState } from '../../model/integration';
-import { canCancel, canRun } from '../../model/tasks';
+import { canCancel, canResume, canRun } from '../../model/tasks';
 import { useBoard } from '../../model/useBoard';
 import { useTimeline } from '../../store/timeline';
 import { toastError } from '../../store/toast';
@@ -367,6 +367,10 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
     }
   }
   const selectedTask = selectedId?.startsWith('tsk_') ? tasks.find((t) => t.id === selectedId) : undefined;
+  if (selectedTask && canResume(selectedTask)) {
+    const t = selectedTask;
+    suggest.push({ id: 'task.resume', label: '中断した Task を再開', hint: t.title, icon: I(RotateCcw), keywords: ['task resume saikai retry interrupted'], shortcut: 'runTask', run: () => void resumeTask(rt, t) });
+  }
   if (selectedTask && canRun(selectedTask)) {
     const t = selectedTask;
     suggest.push({ id: 'task.run', label: 'このTaskを実行', hint: t.title, icon: I(Play), keywords: ['task run jikkou spawn worker'], shortcut: 'runTask', run: () => void spawnWorker(rt, t) });

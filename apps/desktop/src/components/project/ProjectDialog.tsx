@@ -2,8 +2,8 @@ import type { Project } from '@acc/protocol';
 import { Check, FolderGit2, GitBranch, TestTube2, TriangleAlert } from 'lucide-react';
 import { type ReactNode, useRef, useState } from 'react';
 import { createProject, inspectRepo, updateProject } from '../../daemon/orchestration';
-import { useMethods, useProjects } from '../../daemon/queries';
-import { type RepoInspection, dirtyText } from '../../model/repo';
+import { useProjects } from '../../daemon/queries';
+import { type RepoInspection, branchText, dirtyText, suggestedRoot } from '../../model/repo';
 import { useRuntime } from '../../daemon/runtime';
 import { toast } from '../../store/toast';
 import { useUi } from '../../store/ui';
@@ -33,8 +33,7 @@ export function NewProjectForm({
   compact?: boolean;
 }) {
   const rt = useRuntime();
-  const methods = useMethods();
-  const canInspect = !!methods?.has('project.inspectRepo');
+  const projects = useProjects().data ?? NONE;
   const [path, setPath] = useState('');
   const [name, setName] = useState('');
   // The test command and whether the person typed it (a detected one never overwrites theirs).
@@ -47,13 +46,18 @@ export function NewProjectForm({
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inspection = check && check.path === path.trim() && !check.pending ? check.result : null;
   const checking = !!check?.pending && check.path === path.trim();
-  const derived = name.trim() || inspection?.name || folderName(inspection?.root ?? path);
+  const derived = name.trim() || inspection?.suggestedName || folderName(path);
+  const rootHint = suggestedRoot(inspection, path);
+  const existing = inspection?.existingProjectId
+    ? (projects.find((p) => p.id === inspection.existingProjectId) ?? null)
+    : null;
+  const defaultBranch = branch.trim() || inspection?.defaultBranch || '';
 
   /** Validate the folder while typing (debounced), before anything is created. */
   const inspect = (value: string, delay: number) => {
     if (timer.current) clearTimeout(timer.current);
     const p = value.trim();
-    if (!canInspect || !p) {
+    if (!p) {
       setCheck(null);
       return;
     }
@@ -62,22 +66,30 @@ export function NewProjectForm({
       void inspectRepo(rt, p).then((result) => {
         setCheck((cur) => (cur?.path === p ? { path: p, result, pending: false } : cur));
         // Prefill what the repository tells (never over what the user typed).
-        const detected = result?.testCommand;
+        const detected = result?.suggestedTestCommand;
         if (detected) setTest((cur) => (cur.touched || cur.value ? cur : { value: detected, touched: false }));
       });
     }, delay);
   };
 
-  const blocked = !!inspection && !inspection.isRepo;
+  const adoptPath = (value: string) => {
+    setPath(value);
+    setError(null);
+    inspect(value, 0);
+  };
+
+  // Not a repository root, or already a project: nothing to create (the daemon would accept
+  // a duplicate; the form points at the existing project instead).
+  const blocked = !!inspection && (!inspection.ok || !!inspection.existingProjectId);
 
   const submit = async () => {
     if (!path.trim() || busy || blocked) return;
     setBusy(true);
     setError(null);
     const r = await createProject(rt, {
-      repoPath: inspection?.root ?? path.trim(),
+      repoPath: inspection?.repoRoot ?? path.trim(),
       name: derived || 'プロジェクト',
-      ...(branch.trim() ? { defaultBranch: branch.trim() } : {}),
+      ...(defaultBranch ? { defaultBranch } : {}),
       ...(testCommand.trim() ? { testCommand: testCommand.trim() } : {}),
     });
     setBusy(false);
@@ -115,6 +127,15 @@ export function NewProjectForm({
             setError(null);
             inspect(e.target.value, 350);
           }}
+          onPaste={(e) => {
+            // A pasted path is complete: check it at once instead of after the typing pause
+            // (and drop the quotes of Explorer's "Copy as path").
+            const pasted = e.clipboardData.getData('text').trim().replace(/^"(.*)"$/, '$1');
+            if (pasted && !path) {
+              e.preventDefault();
+              adoptPath(pasted);
+            }
+          }}
           onBlur={() => {
             if (path.trim() && check?.path !== path.trim()) inspect(path, 0);
           }}
@@ -128,29 +149,59 @@ export function NewProjectForm({
             <p className="mt-1 text-meta text-st-failed">{error}</p>
           ) : checking ? (
             <p className="mt-1 text-meta text-fg-3">フォルダを確認しています…</p>
-          ) : inspection && !inspection.isRepo ? (
-            <p className="mt-1 text-meta text-st-failed">{inspection.error}</p>
+          ) : inspection && !inspection.ok ? (
+            <p className="mt-1 flex flex-wrap items-center gap-x-2 text-meta text-st-failed">
+              <span>{inspection.reason ?? 'このフォルダはプロジェクトにできません'}</span>
+              {rootHint && (
+                <button
+                  type="button"
+                  className="min-w-0 truncate text-accent hover:underline"
+                  onClick={() => adoptPath(rootHint)}
+                >
+                  ルート {rootHint} を使う
+                </button>
+              )}
+            </p>
           ) : inspection ? (
             <p className="mt-1 flex flex-wrap items-center gap-x-2 text-meta text-fg-3">
               <span className="flex items-center gap-1 text-st-completed">
                 <Check size={12} strokeWidth={2} />
                 git リポジトリ
               </span>
-              {inspection.branch && (
+              {branchText(inspection) && (
                 <span className="flex items-center gap-1 font-mono">
                   <GitBranch size={11} strokeWidth={1.75} />
-                  {inspection.branch}
+                  {branchText(inspection)}
                 </span>
-              )}
-              {inspection.root && inspection.root.replace(/[\\/]+$/, '') !== path.trim().replace(/[\\/]+$/, '') && (
-                <span className="min-w-0 truncate">ルート {inspection.root} を使います</span>
               )}
             </p>
           ) : (
             <Hint>リポジトリのルート（.git があるフォルダ）を絶対パスで指定します。</Hint>
           )}
         </div>
-        {inspection?.isRepo && dirtyText(inspection.dirty) && (
+        {inspection?.ok && inspection.existingProjectId && (
+          <div
+            className="mt-2 flex items-center gap-2 rounded-sm bg-canvas px-2.5 py-2 text-meta text-fg-2"
+            data-testid="existing-project"
+          >
+            <FolderGit2 size={13} strokeWidth={1.75} className="shrink-0 text-fg-3" />
+            <span className="min-w-0 flex-1">
+              このリポジトリは{existing ? `プロジェクト「${existing.name}」` : '既にプロジェクト'}として追加されています。
+            </span>
+            {existing && (
+              <Button
+                size="sm"
+                onClick={() => {
+                  useUi.getState().setProject(existing.id);
+                  onDone(existing);
+                }}
+              >
+                このプロジェクトを開く
+              </Button>
+            )}
+          </div>
+        )}
+        {inspection?.ok && !inspection.existingProjectId && dirtyText(inspection.isDirty) && (
           <div
             className="mt-2 flex gap-2 rounded-sm px-2.5 py-2 text-meta text-fg-2"
             style={{ background: 'color-mix(in oklch, var(--st-awaiting_approval) 10%, transparent)' }}
@@ -158,7 +209,7 @@ export function NewProjectForm({
           >
             <TriangleAlert size={13} strokeWidth={1.75} className="mt-px shrink-0 text-st-awaiting_approval" />
             <span>
-              {dirtyText(inspection.dirty)}。Worker の worktree は最後のコミットから作られるため、未コミットの変更は Worker
+              {dirtyText(inspection.isDirty)}。Worker の worktree は最後のコミットから作られるため、未コミットの変更は Worker
               に見えません。必要ならコミットしてから始めてください。
             </span>
           </div>
@@ -172,7 +223,7 @@ export function NewProjectForm({
             className={inputClass}
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder={inspection?.name || folderName(inspection?.root ?? path) || 'my-repo'}
+            placeholder={inspection?.suggestedName || folderName(path) || 'my-repo'}
           />
         </div>
         <div>
@@ -182,7 +233,7 @@ export function NewProjectForm({
             className={inputClass}
             value={branch}
             onChange={(e) => setBranch(e.target.value)}
-            placeholder={inspection?.branch ? `${inspection.branch}（検出）` : '自動で検出'}
+            placeholder={inspection?.defaultBranch ? `${inspection.defaultBranch}（検出）` : '自動で検出'}
             spellCheck={false}
           />
         </div>
@@ -198,7 +249,9 @@ export function NewProjectForm({
           spellCheck={false}
         />
         <Hint>
-          {inspection?.testCommand && !test.touched && testCommand === inspection.testCommand
+          {inspection?.suggestedTestCommand &&
+          !test.touched &&
+          testCommand === inspection.suggestedTestCommand
             ? 'リポジトリから検出しました。統合のあとにこのコマンドで検証します。'
             : '統合のあとにこのコマンドで検証します。空なら検証を省略します。'}
         </Hint>
@@ -211,7 +264,13 @@ export function NewProjectForm({
           type="submit"
           variant="primary"
           disabled={!path.trim() || busy || blocked}
-          hint={blocked ? 'git リポジトリのフォルダを指定してください' : undefined}
+          hint={
+            !blocked
+              ? undefined
+              : inspection?.existingProjectId
+                ? 'このリポジトリは追加済みです'
+                : 'git リポジトリのルートフォルダを指定してください'
+          }
         >
           {busy ? '確認しています…' : 'プロジェクトを追加'}
         </Button>
