@@ -31,6 +31,13 @@ export const Project = z.object({
   defaultBranch: z.string().nullable(),
   /** Default model for new sessions in this project. */
   defaultModel: z.string().nullable(),
+  /** Shell command that verifies the project (e.g. "pnpm test"); run after integration merges. */
+  testCommand: z.string().nullable().default(null),
+  /** Git identity for commits made by the daemon; null uses "AI Agent Command Center <acc@localhost>". */
+  commitAuthor: z
+    .object({ name: z.string().min(1), email: z.string().min(1) })
+    .nullable()
+    .default(null),
   createdAt: Timestamp,
   updatedAt: Timestamp,
   archivedAt: Timestamp.nullable(),
@@ -41,7 +48,9 @@ export type Project = z.infer<typeof Project>;
 // Workspace
 // ---------------------------------------------------------------------------
 
-export const WorkspaceKind = z.enum(['worktree', 'directory']);
+/** `main`: the project's own repository checkout (registered lazily, never removed). */
+export const WorkspaceKind = z.enum(['worktree', 'directory', 'main']);
+export type WorkspaceKind = z.infer<typeof WorkspaceKind>;
 export const WorkspaceStatus = z.enum(['creating', 'ready', 'removing', 'removed', 'error']);
 export type WorkspaceStatus = z.infer<typeof WorkspaceStatus>;
 
@@ -360,6 +369,7 @@ export const IntegrationStatus = z.enum([
   'running', // merging task branches into the integration branch
   'verifying', // build/test after merge
   'awaiting_approval', // ready for human review
+  'conflict', // a merge conflicted; the merge was aborted and nothing was lost
   'applied', // merged into the target branch
   'failed',
   'rejected',
@@ -368,6 +378,7 @@ export const IntegrationStatus = z.enum([
 export type IntegrationStatus = z.infer<typeof IntegrationStatus>;
 
 export const IntegrationStepKind = z.enum(['merge', 'verify', 'fix', 'apply', 'note']);
+export type IntegrationStepKind = z.infer<typeof IntegrationStepKind>;
 export const IntegrationStepStatus = z.enum([
   'pending',
   'running',
@@ -387,6 +398,12 @@ export const IntegrationStep = z.object({
   detail: z.string().nullable(),
   startedAt: Timestamp.nullable(),
   endedAt: Timestamp.nullable(),
+  /** Source workspace of a merge step. */
+  workspaceId: WorkspaceId.nullable().default(null),
+  /** Source branch of a merge step. */
+  branch: z.string().nullable().default(null),
+  /** Files that conflicted (merge steps that failed with a conflict). */
+  conflictFiles: z.array(z.string()).default([]),
 });
 export type IntegrationStep = z.infer<typeof IntegrationStep>;
 
@@ -396,13 +413,23 @@ export const Integration = z.object({
   title: z.string(),
   status: IntegrationStatus,
   taskIds: z.array(TaskId),
+  /** Source workspaces, in merge order. */
+  workspaceIds: z.array(WorkspaceId).default([]),
   /** Integration branch, e.g. "acc/integration/<id>". */
   branch: z.string().nullable(),
   /** Target ref the result will be applied to. */
   targetRef: z.string().nullable(),
   workspaceId: WorkspaceId.nullable(),
   steps: z.array(IntegrationStep),
+  /** Target commit the latest attempt started from. */
+  baseSha: z.string().nullable().default(null),
+  /** Integration branch head after the latest successful merge + verification. */
+  headSha: z.string().nullable().default(null),
   approvalId: ApprovalId.nullable(),
+  /** Who approved or rejected it, when, and why. */
+  decidedBy: Actor.nullable().default(null),
+  decidedAt: Timestamp.nullable().default(null),
+  decisionNote: z.string().nullable().default(null),
   error: ErrorInfo.nullable(),
   createdBy: Actor,
   createdAt: Timestamp,

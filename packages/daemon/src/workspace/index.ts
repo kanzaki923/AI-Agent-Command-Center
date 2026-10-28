@@ -1,22 +1,119 @@
+import { defineMethod } from '../api/registry';
+import { invalidParams } from '../core/errors';
 import { defineModule } from '../module';
+import { WorkspaceService } from './service';
+
+export { WorkspaceService, DEFAULT_COMMIT_AUTHOR, slugify, shortId } from './service';
+export type { WorkspaceDiffResult, CreateWorktreeInput } from './service';
+export { GitError, git, gitOut } from './git';
+
+declare module '../core/context' {
+  interface Services {
+    /** Concrete workspace service (superset of `workspaces`) for modules that need more. */
+    workspaceManager: WorkspaceService;
+  }
+}
 
 /**
- * Git worktree management (architecture.md §2.3).
+ * Git worktree management (architecture.md §2.8).
  *
- * Owns methods: workspace.create, workspace.list, workspace.get, workspace.remove, workspace.diff.
- *
- * TODO(workspace):
- * - Create worktrees under `ctx.paths.worktrees` from project.repoPath (git CLI via
- *   child_process.execFile, never a shell string). Branch naming: `acc/<task-or-ws-id>`.
- * - workspace.diff: diff against baseRef including uncommitted changes (stats + per-file).
- * - Locks: Workspace.lockedByRunId; refuse concurrent writers with `conflict`.
- * - Emit workspace.created / workspace.updated / workspace.removed.
- * - Provide `ctx.provide('workspaces', ...)` for tasks/integration/runtime.
+ * Methods: workspace.create, workspace.list, workspace.get, workspace.remove, workspace.diff.
+ * Services: `workspaces` (contracts.ts WorkspacesService) and `workspaceManager` (the same
+ * object typed as WorkspaceService: list / remove / ensureMain / hold / identityEnv …).
  */
 export const workspaceModule = defineModule({
   name: 'workspace',
-  register(_ctx) {
-    // Not implemented yet. Methods owned by this module answer `not_found`
-    // ({ reason: "not_implemented" }) until registered here.
+  register(ctx) {
+    const service = new WorkspaceService(ctx);
+    ctx.provide('workspaces', service);
+    ctx.provide('workspaceManager', service);
+
+    const wsScope = (workspaceId: string) => {
+      const ws = ctx.repos.workspaces.get(workspaceId);
+      return { projectIds: ws ? [ws.projectId] : [] };
+    };
+
+    ctx.methods.register(
+      defineMethod('workspace.create', {
+        scope: (p) => ({ projectIds: [p.projectId] }),
+        handler: async (p, call) => {
+          if (p.kind === 'main') return service.ensureMain(p.projectId, call.actor);
+          if (p.kind === 'directory') {
+            throw invalidParams('kind "directory" のワークスペースにはまだ対応していません');
+          }
+          return service.createWorktree({
+            projectId: p.projectId,
+            ...(p.branch ? { branch: p.branch } : {}),
+            ...(p.baseRef ? { baseRef: p.baseRef } : {}),
+            ...(p.label ? { label: p.label } : {}),
+            taskId: p.taskId ?? null,
+            actor: call.actor,
+          });
+        },
+      }),
+
+      defineMethod('workspace.list', {
+        scope: (p) => ({ projectIds: p.projectId ? [p.projectId] : [] }),
+        handler: async (p, call) => {
+          if (p.projectId) {
+            // Register the repository checkout itself on first sight (best effort: a project
+            // whose repoPath is missing or not a git repo simply has no main workspace).
+            const project = ctx.repos.projects.require(p.projectId);
+            if (project.repoPath) {
+              await service.ensureMain(project.id, call.actor).catch((err: unknown) => {
+                ctx.log.debug('main workspace not registered', { projectId: project.id, err });
+              });
+            }
+          }
+          return {
+            items: service.list({
+              ...(p.projectId ? { projectId: p.projectId } : {}),
+              ...(p.taskId ? { taskId: p.taskId } : {}),
+              includeRemoved: p.includeRemoved,
+            }),
+          };
+        },
+      }),
+
+      defineMethod('workspace.get', {
+        scope: (p) => wsScope(p.workspaceId),
+        handler: async (p, call) => {
+          const ws = service.get(p.workspaceId);
+          if (ws.kind === 'main' && ws.status === 'ready') {
+            return service.ensureMain(ws.projectId, call.actor).catch(() => ws);
+          }
+          return ws;
+        },
+      }),
+
+      defineMethod('workspace.remove', {
+        scope: (p) => wsScope(p.workspaceId),
+        handler: async (p, call) => {
+          await service.remove(p.workspaceId, { force: p.force, actor: call.actor });
+          return { ok: true as const };
+        },
+      }),
+
+      defineMethod('workspace.diff', {
+        scope: (p) => wsScope(p.workspaceId),
+        handler: async (p) => {
+          const d = await service.diff(p.workspaceId, p.baseRef);
+          return {
+            workspaceId: d.workspaceId,
+            baseRef: d.baseRef,
+            patch: d.patch,
+            stats: d.stats,
+            files: d.files,
+          };
+        },
+      }),
+    );
+
+    return {
+      start() {
+        const cleared = service.clearStaleLocks();
+        if (cleared.length > 0) ctx.log.warn('cleared stale workspace locks', { cleared });
+      },
+    };
   },
 });

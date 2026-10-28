@@ -30,6 +30,8 @@ export const projectsModule = defineModule({
               repoPath: p.repoPath ?? null,
               defaultBranch: p.defaultBranch ?? null,
               defaultModel: p.defaultModel ?? null,
+              testCommand: p.testCommand?.trim() ?? null,
+              commitAuthor: p.commitAuthor ?? null,
               createdAt: now,
               updatedAt: now,
               archivedAt: null,
@@ -74,6 +76,17 @@ export const projectsModule = defineModule({
               assign('repoPath', p.repoPath);
               assign('defaultBranch', p.defaultBranch);
               assign('defaultModel', p.defaultModel);
+              assign(
+                'testCommand',
+                p.testCommand === undefined ? undefined : (p.testCommand?.trim() ?? null),
+              );
+              if (
+                p.commitAuthor !== undefined &&
+                JSON.stringify(p.commitAuthor) !== JSON.stringify(cur.commitAuthor)
+              ) {
+                next.commitAuthor = p.commitAuthor;
+                changes.push('commitAuthor');
+              }
               if (p.archived !== undefined && p.archived !== (cur.archivedAt !== null)) {
                 next.archivedAt = p.archived ? ctx.clock.iso() : null;
                 changes.push('archivedAt');

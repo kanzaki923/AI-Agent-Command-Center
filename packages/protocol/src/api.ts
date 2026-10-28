@@ -161,6 +161,11 @@ export const SystemInfo = z.object({
 });
 export type SystemInfo = z.infer<typeof SystemInfo>;
 
+const CommitAuthor = params({
+  name: z.string().min(1).max(200),
+  email: z.string().min(1).max(200),
+}).describe('Git identity for commits made by the daemon');
+
 const ContentInput = z.union([
   z.string().min(1).describe('Plain text'),
   z.array(ContentPart).min(1).describe('Structured content parts'),
@@ -222,6 +227,13 @@ export const api = defineApi({
       repoPath: z.string().min(1).optional().describe('Absolute path of a local git repository'),
       defaultBranch: z.string().min(1).optional(),
       defaultModel: z.string().min(1).optional(),
+      testCommand: z
+        .string()
+        .min(1)
+        .max(2000)
+        .optional()
+        .describe('Shell command that verifies the project, e.g. "pnpm test"'),
+      commitAuthor: CommitAuthor.optional(),
     }),
     result: Project,
     description: 'Create a project (a repository plus settings).',
@@ -245,6 +257,8 @@ export const api = defineApi({
       repoPath: z.string().min(1).nullable().optional(),
       defaultBranch: z.string().min(1).nullable().optional(),
       defaultModel: z.string().min(1).nullable().optional(),
+      testCommand: z.string().min(1).max(2000).nullable().optional(),
+      commitAuthor: CommitAuthor.nullable().optional(),
       archived: z.boolean().optional(),
     }),
     result: Project,
@@ -477,6 +491,11 @@ export const api = defineApi({
       branch: z.string().min(1).optional().describe('Branch to create; generated if omitted'),
       baseRef: z.string().min(1).optional().describe("Defaults to the project's default branch"),
       taskId: TaskId.optional(),
+      label: z
+        .string()
+        .max(200)
+        .optional()
+        .describe('Short label used in the generated branch name'),
     }),
     result: Workspace,
     description: 'Create an isolated workspace (git worktree) for a project.',
@@ -542,6 +561,7 @@ export const api = defineApi({
       sessionId: SessionId.optional(),
       runId: RunId.optional(),
       taskId: TaskId.optional(),
+      workspaceId: WorkspaceId.optional(),
       kind: ArtifactKind.optional(),
       limit: Limit(200, 50),
       cursor: Cursor.optional(),
@@ -559,12 +579,26 @@ export const api = defineApi({
   'integration.create': {
     params: params({
       projectId: ProjectId,
-      taskIds: z.array(TaskId).min(1).describe('Tasks to integrate, in merge order'),
+      taskIds: z
+        .array(TaskId)
+        .min(1)
+        .optional()
+        .describe('Tasks to integrate, in merge order (each must have a workspace)'),
+      workspaceIds: z
+        .array(WorkspaceId)
+        .min(1)
+        .optional()
+        .describe('Workspaces to integrate, in merge order (alternative to taskIds)'),
       title: z.string().max(300).optional(),
-      targetRef: z.string().min(1).optional(),
+      targetRef: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Target branch; defaults to the project's default branch"),
     }),
     result: Integration,
-    description: 'Create an integration of several tasks into one integration branch.',
+    description:
+      'Create an integration branch (in its own worktree) from the target branch for several tasks or workspaces. Pass taskIds or workspaceIds. Then call integration.run.',
     mutates: true,
   },
   'integration.list': {
@@ -585,13 +619,16 @@ export const api = defineApi({
   'integration.run': {
     params: params({ integrationId: IntegrationId }),
     result: Integration,
-    description: 'Merge the tasks in order and run verification. Returns immediately.',
+    description:
+      "Merge the sources in order (git merge --no-ff) and run the project's test command. Returns immediately; follow integration.updated events. Ends in awaiting_approval, conflict or failed.",
     mutates: true,
   },
   'integration.approve': {
     params: params({ integrationId: IntegrationId, note: z.string().max(5000).optional() }),
     result: Integration,
-    description: 'Approve an integration and apply it to the target branch.',
+    description:
+      'Approve an integration and fast-forward the target branch to it. Humans only: agents are always refused.',
+    tool: false,
     mutates: true,
   },
   'integration.reject': {
