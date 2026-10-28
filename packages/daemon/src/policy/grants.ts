@@ -86,6 +86,11 @@ export class PolicyService implements PolicyEngine {
     return decision;
   }
 
+  /** Same decision as `check`, without auditing a denial (e.g. to decide which tools to offer). */
+  peek(actor: Actor, permission: string, scope: CallScope | undefined): PolicyDecision {
+    return this.base.check(actor, permission, scope);
+  }
+
   /** Emit `policy.denied` so refusals show up in the timeline next to tool calls. */
   recordDenial(
     actor: AgentActor,
@@ -138,6 +143,24 @@ export class PolicyService implements PolicyEngine {
     return this.activeGrantsFor(actor).filter(
       (g) => grantAppliesTo(g, actor) && this.isActive(g, now),
     );
+  }
+
+  /**
+   * Active session-subject grants of a session that allow `permission` (project scope not
+   * applied). Decides whether the session's next run starts as an orchestrator.
+   */
+  sessionGrantsAllowing(sessionId: string, permission: string): CapabilityGrant[] {
+    const now = this.ctx.clock.iso();
+    return this.ctx.repos.grants
+      .find({
+        where: { revoked_at: null, subject_kind: 'session', subject_id: sessionId },
+        direction: 'asc',
+      })
+      .filter((g) => this.isActive(g, now) && matchAnyPattern(g.permissions, permission));
+  }
+
+  sessionAllows(sessionId: string, permission: string): boolean {
+    return this.sessionGrantsAllowing(sessionId, permission).length > 0;
   }
 
   /** Every grant delegated (directly or transitively) from `grantId`. */

@@ -1,5 +1,6 @@
 import type { ContentPart, Session } from '@acc/protocol';
 import { defineMethod } from '../api/registry';
+import type { DaemonContext } from '../core/context';
 import { conflict, invalidParams } from '../core/errors';
 import { defineModule } from '../module';
 import { createChatExecutor, resolveChatModel } from './chat';
@@ -7,8 +8,24 @@ import { searchMessages, sessionsMigrations } from './search';
 import { SessionService } from './service';
 
 export { SessionService } from './service';
-export { createChatExecutor, resolveChatModel, OFFLINE_FALLBACK_MODEL } from './chat';
+export {
+  createChatExecutor,
+  chatHistory,
+  requireChatModel,
+  resolveChatModel,
+  OFFLINE_FALLBACK_MODEL,
+} from './chat';
+export type { CreateSessionInput } from './service';
 export { searchMessages, makeSnippet } from './search';
+
+/** The session's own active budget (e.g. from session.grantOrchestration), applied to its runs. */
+function sessionBudgetId(ctx: DaemonContext, sessionId: string): string | null {
+  const budget = ctx.repos.budgets.findOne({
+    where: { subject_kind: 'session', subject_id: sessionId, status: 'active' },
+    direction: 'desc',
+  });
+  return budget?.id ?? null;
+}
 
 /**
  * Sessions and messages: session.create/list/get/update/archive/messages/send/search.
@@ -33,40 +50,7 @@ export const sessionsModule = defineModule({
     ctx.methods.register(
       defineMethod('session.create', {
         scope: (p) => ({ projectIds: p.projectId ? [p.projectId] : [] }),
-        handler: (p, call) =>
-          db.transaction(() => {
-            const project = p.projectId ? repos.projects.require(p.projectId) : null;
-            if (p.workspaceId) {
-              const ws = repos.workspaces.require(p.workspaceId);
-              if (project && ws.projectId !== project.id) {
-                throw invalidParams('workspace belongs to a different project');
-              }
-            }
-            if (p.taskId) repos.tasks.require(p.taskId);
-            if (p.parentSessionId) repos.sessions.require(p.parentSessionId);
-            const now = ctx.clock.iso();
-            const session = repos.sessions.insert({
-              id: ctx.ids.next('session'),
-              projectId: project?.id ?? null,
-              kind: p.kind,
-              title: p.title?.trim() ?? '',
-              model: p.model ?? project?.defaultModel ?? ctx.settings.get().defaultModel,
-              runtime: p.runtime ?? null,
-              systemPrompt: p.systemPrompt ?? null,
-              workspaceId: p.workspaceId ?? null,
-              taskId: p.taskId ?? null,
-              parentSessionId: p.parentSessionId ?? null,
-              activeRunId: null,
-              pinned: false,
-              createdBy: call.actor,
-              createdAt: now,
-              updatedAt: now,
-              lastActivityAt: now,
-              archivedAt: null,
-            });
-            bus.emit({ type: 'session.created', actor: call.actor, payload: { session } });
-            return session;
-          }),
+        handler: (p, call) => service.create(p, call.actor),
       }),
 
       defineMethod('session.list', {
@@ -180,7 +164,15 @@ export const sessionsModule = defineModule({
             if (content.some((c) => c.type === 'tool_result' || c.type === 'tool_call')) {
               throw invalidParams('User messages may only contain text parts');
             }
-            const kind = session.kind === 'agent' ? 'agent' : 'chat';
+            // A chat whose grants allow starting workers runs as an orchestrator (concept §3.1:
+            // orchestration is a role given by capabilities, not a session type).
+            const kind =
+              session.kind === 'agent'
+                ? 'agent'
+                : ctx.hasService('policy') &&
+                    ctx.service('policy').sessionAllows(session.id, 'task.spawnWorker')
+                  ? 'orchestrator'
+                  : 'chat';
             const message = service.appendMessage({
               sessionId: session.id,
               role: 'user',
@@ -194,11 +186,12 @@ export const sessionsModule = defineModule({
               createdBy: call.actor,
               triggerMessageId: message.id,
               model:
-                kind === 'chat'
-                  ? resolveChatModel(ctx, session.model, p.model)
-                  : (p.model ?? session.model),
+                kind === 'agent'
+                  ? (p.model ?? session.model)
+                  : resolveChatModel(ctx, session.model, p.model),
               runtime: session.runtime,
               workspaceId: kind === 'agent' ? session.workspaceId : null,
+              budgetId: sessionBudgetId(ctx, session.id),
             });
             return { messageId: message.id, runId: run.id };
           }),

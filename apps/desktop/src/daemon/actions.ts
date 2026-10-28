@@ -122,6 +122,36 @@ export async function createSession(
   }
 }
 
+/**
+ * "このTaskを実行": start a worker for the task (worktree + agent session + run). The same
+ * Control API method an orchestrator uses. Returns the worker session id.
+ */
+export async function runTask(rt: AppRuntime, taskId: string): Promise<string | null> {
+  try {
+    const r = await rt.client.call('task.spawnWorker', { taskId });
+    return r.sessionId;
+  } catch (err) {
+    toastError(err, 'Task を実行できませんでした');
+    return null;
+  }
+}
+
+/**
+ * "Orchestrator にする": give this chat the orchestrator preset for its project (concept
+ * §3.1). Run lifetime: the next message runs as an orchestrator, then it is a chat again.
+ */
+export async function makeOrchestrator(rt: AppRuntime, session: Session): Promise<boolean> {
+  try {
+    await rt.client.call('session.grantOrchestration', { sessionId: session.id, lifetime: 'run' });
+    await rt.queryClient.invalidateQueries({ queryKey: qk.grants(session.id) });
+    toast({ title: '次のメッセージは Orchestrator として実行されます', tone: 'success', sticky: false });
+    return true;
+  } catch (err) {
+    toastError(err, 'Orchestrator にできませんでした');
+    return false;
+  }
+}
+
 export async function cancelRun(rt: AppRuntime, run: Run): Promise<void> {
   try {
     await rt.client.call('run.cancel', { runId: run.id });

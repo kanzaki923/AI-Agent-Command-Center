@@ -1,7 +1,16 @@
-import type { Actor, ContentPart, Message, Run, Session, Task } from '@acc/protocol';
+import type {
+  Actor,
+  ContentPart,
+  Message,
+  Run,
+  Session,
+  Task,
+  ToolApprovalPayload,
+} from '@acc/protocol';
 import type { AgentEvent, RunController, RunExecutor } from '../contracts';
 import type { DaemonContext } from '../core/context';
 import { abortError } from './async';
+import { classifyToolRisk } from './risk';
 import { RuntimeSessionStore } from './state';
 import { approvalDetailFor, approvalTitleFor, truncate } from './tools';
 
@@ -73,7 +82,11 @@ async function executeAgentRun(
         kind: 'tool_use',
         title: approvalTitleFor(req.toolName),
         detail: approvalDetailFor(req.toolName, req.input, workspace.path) ?? req.title ?? null,
-        payload: { toolName: req.toolName, input: req.input },
+        payload: {
+          toolName: req.toolName,
+          input: req.input,
+          risk: classifyToolRisk({ toolName: req.toolName, input: req.input, cwd: workspace.path }),
+        } satisfies ToolApprovalPayload,
       }),
   });
 

@@ -99,13 +99,7 @@ class SqliteDb implements Db {
     const hooks = this.pendingAfterCommit.pop() ?? [];
     if (depth === 0) {
       this.raw.exec('COMMIT');
-      for (const h of hooks) {
-        try {
-          h();
-        } catch (err) {
-          console.error('[db] afterCommit hook failed', err);
-        }
-      }
+      this.runHooks(hooks);
     } else {
       this.raw.exec(`RELEASE ${sp}`);
       this.pendingAfterCommit[this.pendingAfterCommit.length - 1]?.push(...hooks);
@@ -116,7 +110,35 @@ class SqliteDb implements Db {
   afterCommit(fn: () => void): void {
     const top = this.pendingAfterCommit[this.pendingAfterCommit.length - 1];
     if (top) top.push(fn);
-    else fn();
+    else this.runHooks([fn]);
+  }
+
+  /** Committed hooks waiting to run, in commit order. */
+  private readonly hookQueue: (() => void)[] = [];
+  private draining = false;
+
+  /**
+   * Run hooks strictly in the order they were registered, even when a hook commits another
+   * transaction (its hooks queue behind the remaining ones instead of running first). This
+   * keeps event delivery in `seq` order: e.g. a run started inside a transaction is launched
+   * by a hook, and the launch's events must not reach subscribers before the events emitted
+   * later in the starting transaction.
+   */
+  private runHooks(hooks: (() => void)[]): void {
+    this.hookQueue.push(...hooks);
+    if (this.draining) return;
+    this.draining = true;
+    try {
+      for (let h = this.hookQueue.shift(); h; h = this.hookQueue.shift()) {
+        try {
+          h();
+        } catch (err) {
+          console.error('[db] afterCommit hook failed', err);
+        }
+      }
+    } finally {
+      this.draining = false;
+    }
   }
 
   close(): void {

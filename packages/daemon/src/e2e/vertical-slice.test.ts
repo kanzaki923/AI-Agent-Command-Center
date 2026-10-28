@@ -1,0 +1,349 @@
+/**
+ * THE acceptance test of concept.md §12.1 (Vertical Slice), end to end and offline:
+ * a real daemon (HTTP + WebSocket) driven through @acc/client, a temp git repository with a
+ * test command, the `mock/orchestrator` model and the `mock` agent runtime.
+ *
+ *   human: chat + orchestrator grant + goal
+ *   → orchestrator: 2 tasks → 2 workers in parallel worktrees (one needs an approval)
+ *   → both tasks in review with diffs → integration merges both, tests pass
+ *   → awaiting_approval; agents cannot approve → human approves → target branch has both.
+ */
+import type { AccClient } from '@acc/client';
+import type { Approval, Event, Run } from '@acc/protocol';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { AgentRunInput } from '../contracts';
+import { ApiError } from '../core/errors';
+import { MockAgentRuntime } from '../runtime/mock/runtime';
+import { type TestDaemon, agentActor, connectTestClient, startTestDaemon } from '../testing';
+import { type TempRepo, createTempRepo, isolateGitConfig } from '../workspace/git-fixture';
+
+// Real git, worktrees and `node --test` child processes; Windows is slow under parallel load.
+vi.setConfig({ testTimeout: 180_000, hookTimeout: 60_000 });
+
+const GOAL = '認証まわりのドキュメントとテストを並列で整備して';
+
+let restoreGit: () => void;
+beforeAll(() => {
+  restoreGit = isolateGitConfig();
+});
+afterAll(() => restoreGit());
+
+const cleanups: (() => unknown)[] = [];
+afterEach(async () => {
+  for (const fn of cleanups.splice(0).reverse()) await fn();
+});
+
+async function until<T>(fn: () => T | undefined | null | false, timeoutMs = 60_000): Promise<T> {
+  const started = Date.now();
+  for (;;) {
+    const v = fn();
+    if (v !== undefined && v !== null && v !== false) return v;
+    if (Date.now() - started > timeoutMs) throw new Error('timed out waiting');
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
+async function codeOf(p: Promise<unknown>): Promise<string> {
+  try {
+    await p;
+    return 'ok';
+  } catch (err) {
+    return err instanceof ApiError ? err.code : String(err);
+  }
+}
+
+/** Assert that `events` contains matches for `steps` in this order (other events may interleave). */
+function expectStory(events: Event[], steps: [string, (e: Event) => boolean][]): void {
+  let i = 0;
+  const seen: string[] = [];
+  for (const e of events) {
+    const step = steps[i];
+    if (!step) break;
+    if (step[1](e)) {
+      seen.push(step[0]);
+      i++;
+    }
+  }
+  const dump = events.map((e) => `${e.seq} ${e.type} (${e.actor.kind})`).join('\n');
+  expect(seen, dump).toEqual(steps.map((s) => s[0]));
+}
+
+interface Slice {
+  d: TestDaemon;
+  repo: TempRepo;
+  client: AccClient;
+  events: Event[];
+  approvals: Approval[];
+  projectId: string;
+  sessionId: string;
+}
+
+async function setup(): Promise<Slice> {
+  const repo = await createTempRepo({
+    'test/basic.test.js': [
+      "const test = require('node:test');",
+      "const assert = require('node:assert/strict');",
+      "test('basic', () => assert.equal(1 + 1, 2));",
+      '',
+    ].join('\n'),
+  });
+  cleanups.push(() => repo.cleanup());
+  const d = await startTestDaemon();
+  cleanups.push(() => d.cleanup());
+  d.ctx.service('llm').mock.chunkDelayMs = 0;
+
+  // The offline mock agent without its human-like pauses. Each worker stays alive until both
+  // workers have started: if the daemon ran them one after another this would never happen
+  // (and the test would time out), so passing proves they run in parallel.
+  const fast = new MockAgentRuntime({ stepDelayMs: 0, typingDelayMs: 0 });
+  let started = 0;
+  let releaseAll!: () => void;
+  const bothStarted = new Promise<void>((r) => (releaseAll = r));
+  vi.spyOn(d.ctx.service('runtimes').get('mock'), 'run').mockImplementation(
+    (input: AgentRunInput) => {
+      started += 1;
+      if (started >= 2) releaseAll();
+      return (async function* () {
+        yield* fast.run(input);
+        await bothStarted;
+      })();
+    },
+  );
+
+  const client = await connectTestClient(d);
+  cleanups.push(() => client.close());
+  const events: Event[] = [];
+  const approvals: Approval[] = [];
+  client.subscribe({
+    since: 0,
+    onEvent: (e) => {
+      events.push(e);
+      if (e.type === 'approval.requested') approvals.push(e.payload.approval);
+    },
+  });
+
+  const project = await client.call('project.create', {
+    name: 'auth-service',
+    repoPath: repo.path,
+    defaultBranch: 'main',
+    testCommand: 'node --test',
+  });
+  const session = await client.call('session.create', {
+    projectId: project.id,
+    kind: 'chat',
+    title: '設計チャット',
+    model: 'mock/orchestrator',
+  });
+  return { d, repo, client, events, approvals, projectId: project.id, sessionId: session.id };
+}
+
+async function lastAssistantText(s: Slice): Promise<string> {
+  const msgs = await s.client.call('session.messages', { sessionId: s.sessionId });
+  const last = msgs.items.filter((m) => m.role === 'assistant').at(-1);
+  return (last?.content ?? []).map((p) => (p.type === 'text' ? p.text : '')).join('');
+}
+
+describe('vertical slice (concept §12.1)', () => {
+  it('a chat with an orchestrator grant decomposes a goal, runs 2 workers in parallel, integrates, and the human approves', async () => {
+    const s = await setup();
+    const { d, client, repo } = s;
+
+    // A normal chat becomes an orchestrator by capability (concept §3.1).
+    const { grant } = await client.call('session.grantOrchestration', {
+      sessionId: s.sessionId,
+      lifetime: 'session',
+    });
+    expect(grant).toMatchObject({
+      scope: { projectIds: [s.projectId] },
+      limits: { maxWorkers: 2, maxDepth: 1 },
+    });
+    expect(grant.permissions).not.toContain('integration.approve');
+
+    const { runId: orchRunId } = await client.call('session.send', {
+      sessionId: s.sessionId,
+      content: GOAL,
+    });
+    expect((await client.call('run.get', { runId: orchRunId })).kind).toBe('orchestrator');
+
+    // One worker hits an approval: its test command.
+    const approval = await until(() => s.approvals[0]);
+    expect(approval.kind).toBe('tool_use');
+    expect(approval.payload).toMatchObject({ toolName: 'Bash', risk: 'medium' });
+    const workerRun = d.ctx.repos.runs.require(approval.runId!);
+    expect(workerRun).toMatchObject({ kind: 'agent', parentRunId: orchRunId });
+
+    // A worker (depth 1) can neither start workers nor delegate (enforced by the daemon).
+    const worker = agentActor(workerRun.sessionId, workerRun.id);
+    expect(await codeOf(d.call(worker, 'task.spawnWorker', { taskId: workerRun.taskId! }))).toBe(
+      'forbidden',
+    );
+    expect(
+      await codeOf(
+        d.call(worker, 'grant.create', {
+          subject: { kind: 'run', runId: workerRun.id },
+          permissions: ['task.get'],
+        }),
+      ),
+    ).toBe('forbidden');
+
+    await client.call('approval.respond', { approvalId: approval.id, decision: 'approve' });
+
+    const orchRun: Run = await d.ctx.service('runs').waitForEnd(orchRunId);
+    expect(orchRun.status).toBe('completed');
+
+    // Two tasks, both in review, each in its own worktree with a recorded diff.
+    const tasks = (await client.call('task.list', { projectId: s.projectId })).items;
+    expect(tasks).toHaveLength(2);
+    expect(tasks.map((t) => t.status)).toEqual(['review', 'review']);
+    expect(tasks.every((t) => t.acceptanceCriteria.length > 0)).toBe(true);
+    expect(new Set(tasks.map((t) => t.workspaceId)).size).toBe(2);
+    for (const t of tasks) {
+      const diffs = await client.call('artifact.list', { taskId: t.id, kind: 'diff' });
+      expect(diffs.items).toHaveLength(1);
+    }
+
+    // The two workers ran at the same time in different worktrees.
+    const workers = (await client.call('run.list', { projectId: s.projectId, kind: 'agent' }))
+      .items;
+    expect(workers).toHaveLength(2);
+    const [a, b] = workers as [Run, Run];
+    expect(a.status).toBe('completed');
+    expect(b.status).toBe('completed');
+    expect(a.workspaceId).not.toBe(b.workspaceId);
+    expect(a.parentRunId).toBe(orchRunId);
+    expect(a.startedAt! < b.endedAt! && b.startedAt! < a.endedAt!).toBe(true);
+
+    // The integration merged both branches and the tests passed.
+    const integrations = (await client.call('integration.list', { projectId: s.projectId })).items;
+    expect(integrations).toHaveLength(1);
+    const integ = integrations[0]!;
+    expect(integ.status).toBe('awaiting_approval');
+    expect(integ.steps.map((st) => [st.kind, st.status])).toEqual([
+      ['merge', 'succeeded'],
+      ['merge', 'succeeded'],
+      ['verify', 'succeeded'],
+      ['apply', 'pending'],
+    ]);
+
+    const report = await lastAssistantText(s);
+    expect(report).toContain(
+      '2件のTaskが完了し、統合候補ができました。テスト: 成功。レビューして承認してください',
+    );
+    expect(report).toContain(integ.id);
+    for (const t of tasks) expect(report).toContain(t.id);
+
+    // Agents can never approve an integration — not even the orchestrator with its grant.
+    expect(
+      await codeOf(
+        d.call(agentActor(s.sessionId, orchRunId), 'integration.approve', {
+          integrationId: integ.id,
+        }),
+      ),
+    ).toBe('forbidden');
+
+    const applied = await client.call('integration.approve', { integrationId: integ.id });
+    expect(applied.status).toBe('applied');
+    const files = await repo.git('ls-tree', '-r', '--name-only', 'main');
+    expect(files).toContain('docs/auth.md');
+    expect(files).toContain('test/auth.test.js');
+    expect(await repo.git('show', 'main:README.md')).toContain('docs/auth.md');
+
+    // The events tell the whole story, in order.
+    await until(() =>
+      s.events.some(
+        (e) => e.type === 'integration.updated' && e.payload.integration.status === 'applied',
+      ),
+    );
+    const isTask = (status: string) => (e: Event) =>
+      e.type === 'task.updated' && e.payload.task.status === status;
+    expectStory(s.events, [
+      ['session.created', (e) => e.type === 'session.created' && e.payload.session.kind === 'chat'],
+      ['grant.created', (e) => e.type === 'grant.created' && e.payload.grant.id === grant.id],
+      ['user message', (e) => e.type === 'message.created' && e.payload.message.role === 'user'],
+      [
+        'orchestrator run',
+        (e) => e.type === 'run.created' && e.payload.run.kind === 'orchestrator',
+      ],
+      [
+        'decision: decompose',
+        (e) => e.type === 'orchestrator.decision' && e.actor.kind === 'agent',
+      ],
+      ['task 1', (e) => e.type === 'task.created'],
+      ['task 2', (e) => e.type === 'task.created'],
+      ['worktree 1', (e) => e.type === 'workspace.created'],
+      ['worker 1', (e) => e.type === 'run.created' && e.payload.run.kind === 'agent'],
+      ['task running', isTask('running')],
+      [
+        'decision: worker started',
+        (e) => e.type === 'orchestrator.decision' && e.actor.kind === 'system',
+      ],
+      ['worktree 2', (e) => e.type === 'workspace.created'],
+      ['worker 2', (e) => e.type === 'run.created' && e.payload.run.kind === 'agent'],
+      ['approval requested', (e) => e.type === 'approval.requested'],
+      [
+        'approval resolved',
+        (e) => e.type === 'approval.resolved' && e.payload.approval.status === 'approved',
+      ],
+      ['review 1', isTask('review')],
+      ['review 2', isTask('review')],
+      ['integration created', (e) => e.type === 'integration.created'],
+      [
+        'integration verified',
+        (e) =>
+          e.type === 'integration.updated' && e.payload.integration.status === 'awaiting_approval',
+      ],
+      ['orchestrator done', (e) => e.type === 'run.completed' && e.payload.run.id === orchRunId],
+      [
+        'human approved',
+        (e) =>
+          e.type === 'integration.updated' &&
+          e.payload.integration.status === 'applied' &&
+          e.actor.kind === 'human',
+      ],
+    ]);
+    // The refused agent calls are on the audit trail.
+    expect(
+      s.events.flatMap((e) => (e.type === 'policy.denied' ? [e.payload.permission] : [])),
+    ).toEqual(['task.spawnWorker', 'grant.create', 'integration.approve']);
+  });
+
+  it('a failed worker fails its task and the orchestrator reports instead of integrating', async () => {
+    const s = await setup();
+    const { d, client } = s;
+    await client.call('session.grantOrchestration', { sessionId: s.sessionId });
+    const { runId } = await client.call('session.send', { sessionId: s.sessionId, content: GOAL });
+
+    // The human refuses the test worker's command; its plan treats that as a failure.
+    const approval = await until(() => s.approvals[0]);
+    await client.call('approval.respond', {
+      approvalId: approval.id,
+      decision: 'reject',
+      note: '今はテストを実行しない',
+    });
+
+    expect((await d.ctx.service('runs').waitForEnd(runId)).status).toBe('completed');
+    const tasks = (await client.call('task.list', { projectId: s.projectId })).items;
+    const failed = tasks.find((t) => t.id === approval.taskId)!;
+    expect(failed).toMatchObject({ status: 'failed', statusReason: 'worker_failed' });
+    expect(tasks.find((t) => t.id !== approval.taskId)!.status).toBe('review');
+    // The failed worker's worktree and branch are kept.
+    const ws = await client.call('workspace.get', { workspaceId: failed.workspaceId! });
+    expect(ws.status).toBe('ready');
+
+    expect((await client.call('integration.list', { projectId: s.projectId })).items).toEqual([]);
+    const report = await lastAssistantText(s);
+    expect(report).toContain('統合は見送りました');
+    expect(report).toContain(failed.id);
+    expect(
+      s.events.some(
+        (e) =>
+          e.type === 'orchestrator.decision' &&
+          e.payload.decision === '統合を見送る' &&
+          e.actor.kind === 'agent',
+      ),
+    ).toBe(true);
+    // A run-lifetime grant ended with the orchestrator run.
+    const grants = await client.call('grant.list', { sessionId: s.sessionId });
+    expect(grants.items).toEqual([]);
+  });
+});

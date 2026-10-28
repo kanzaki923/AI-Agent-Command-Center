@@ -55,7 +55,13 @@ export async function startServer(
     if (req.method === 'GET' && url.pathname === HEALTH_PATH) {
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       res.end(
-        JSON.stringify({ ok: true, version: ctx.version, protocolVersion: PROTOCOL_VERSION }),
+        JSON.stringify({
+          ok: true,
+          service: 'acc-daemon',
+          pid: process.pid,
+          version: ctx.version,
+          protocolVersion: PROTOCOL_VERSION,
+        }),
       );
       return;
     }

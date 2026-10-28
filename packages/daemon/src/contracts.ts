@@ -27,7 +27,7 @@ export interface ApprovalRequest {
   kind: ApprovalKind;
   title: string;
   detail?: string | null;
-  /** Kind-specific data, e.g. `{ toolName, input }` for tool_use. */
+  /** Kind-specific data, e.g. `ToolApprovalPayload` (`{ toolName, input, risk }`) for tool_use. */
   payload?: unknown;
 }
 

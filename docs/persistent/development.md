@@ -42,6 +42,15 @@ pnpm --filter @acc/desktop screenshots  # Playwright で主要画面を撮る（
 
 UI とデーモンは同じ `ACC_HOME` を見る（Vite の開発ミドルウェアが `daemon.json` を `/__acc/connection` で渡す）。
 
+### Vertical Slice を試す
+
+- **オフライン（費用なし）**：UI の初回画面で「デモモードで試す」を選ぶ（または `system.setupDemo` を呼ぶ）。`<ACC_HOME>/demo/auth-demo` にサンプルのリポジトリと「デモ: 設計チャット」（`mock/orchestrator` + Orchestrator 権限）ができるので、下書きの目標をそのまま送る。Worker のテスト実行は承認待ちになるので承認し、最後に統合候補を承認する。
+- **本物の経路**：設定（または `ACC_LITELLM_BASE_URL` / `ACC_LITELLM_API_KEY`）で LiteLLM Proxy の URL とキーを入れる。
+  1. 自分のプロジェクトを追加し（`testCommand` を設定すると統合後に検証される）、チャットを作ってモデルに LiteLLM のモデル名（例 `claude-sonnet-4`）を選ぶ。
+  2. そのチャットに `session.grantOrchestration({ sessionId, maxWorkers: 2, lifetime: 'run' })` で Orchestrator 権限を与える（`budgetUsd` で予算も付けられる）。次の 1 回の送信が Orchestrator として動く。
+  3. Worker を Claude Code にするには `settings.update({ defaultRuntime: 'claude-agent-sdk' })`（Run ごとなら `task.spawnWorker` の `runtime`）。LiteLLM が設定されていれば SDK もそこを通り、なければ手元の Claude Code のログインを使う。SDK が読み込めないと Worker の Run は理由つきで失敗する。
+  4. 費用が発生するのはこの経路だけ。テストでは呼ばない（下記 §6）。
+
 ## 2. パッケージ構成
 
 ```
@@ -133,12 +142,12 @@ packages/cli        @acc/cli       `acc` コマンド
   ```
 
 - 任意の状態の Task が要るテストは `insertTestTask(d.ctx, { projectId, ...上書き })`（`@acc/daemon/testing`）を使う。Task のリテラルを手で書かない（スキーマにフィールドが増えるたびに壊れる）。desktop は `src/test/fixtures.ts` の同種のファクトリを使う。
-- モジュールをまたぐ流れ（agent Run → コミット → Artifact → 統合、Task キャンセル → Run 停止）は `src/e2e.test.ts` が本物の全モジュールで確かめる。サービスを偽物に差し替えた単体テストでは継ぎ目の食い違いが見えないため、契約を変えたらここも通す。
+- モジュールをまたぐ流れ（agent Run → コミット → Artifact → 統合、Task キャンセル → Run 停止）は `src/e2e.test.ts` が本物の全モジュールで確かめる。concept §12.1 の Vertical Slice 全体（WS + `@acc/client`、`mock/orchestrator`、並列 Worker、承認、統合、人間の承認、イベントの順序、失敗時の報告）は `src/e2e/vertical-slice.test.ts` が受け入れテスト。サービスを偽物に差し替えた単体テストでは継ぎ目の食い違いが見えないため、契約を変えたらここも通す。
 - 時刻は `createManualClock()` を `createDaemon({ clock })` に渡して制御する。
 - 再起動を伴うテストは `startTestDaemon({ home })` で同じ `ACC_HOME` を使い回す（例：`server.test.ts` のリカバリ）。
 - 本物の有料 LLM API はテストで呼ばない。llm / runtime の mock を使う。
   - `d.ctx.service('llm').mock.chunkDelayMs = 0` で mock の送信間隔をなくす。台本は `mock.define('mock/x', scripted([{ text, toolCalls }, (req, info) => ({ text })]))`（`scripted` は `src/llm` から）。
-  - LiteLLM 経路は `node:http` のローカル偽サーバに `settings.update({ litellm: { baseUrl } })` を向けて試す（例：`llm/llm.test.ts`）。
+  - LiteLLM 経路は `node:http` のローカル偽サーバに `settings.update({ litellm: { baseUrl } })` を向けて試す（例：`llm/llm.test.ts`、Orchestrator は `orchestrator/orchestrator.test.ts`）。Claude Agent SDK は `runtimes.get('claude-agent-sdk')` の `available` / `run` を spy して、選ばれることだけを確かめる。
 - Run の Executor は `ctx.service('runs').registerExecutor(kind, fn)` で差し替えられる（後勝ち）。
 
 ## 7. 約束ごと

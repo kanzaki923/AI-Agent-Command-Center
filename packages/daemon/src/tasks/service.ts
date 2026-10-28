@@ -20,6 +20,10 @@ export const DEPENDENCY_REASONS = {
 
 export const PARENT_CANCELLED = 'parent_cancelled';
 
+export type TaskStatusPatch = Partial<
+  Pick<Task, 'assigneeSessionId' | 'workspaceId' | 'resultSummary'>
+>;
+
 const PRIORITY_RANK: Record<TaskPriority, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
 
 const SCHEDULER: SystemActor = { kind: 'system', component: 'tasks' };
@@ -166,13 +170,26 @@ export class TaskService {
    * Set a task's status (used by workers / integration: running, review, done, failed ...).
    * No-op when nothing changes. Dependents are re-evaluated in the same transaction.
    */
-  setStatus(taskId: string, status: TaskStatus, actor: Actor, reason?: string | null): Task {
+  setStatus(
+    taskId: string,
+    status: TaskStatus,
+    actor: Actor,
+    reason?: string | null,
+    /** Fields changed together with the status (e.g. the worker assignment). */
+    patch: TaskStatusPatch = {},
+  ): Task {
     const { ctx } = this;
     return ctx.db.transaction(() => {
       const cur = ctx.repos.tasks.require(taskId);
       const now = ctx.clock.iso();
       const next: Task = { ...cur };
       const changes = applyStatus(next, status, reason ?? null, now);
+      for (const key of ['assigneeSessionId', 'workspaceId', 'resultSummary'] as const) {
+        const value = patch[key];
+        if (value === undefined || next[key] === value) continue;
+        next[key] = value;
+        changes.push(key);
+      }
       if (changes.length === 0) return cur;
       next.updatedAt = now;
       const task = ctx.repos.tasks.update(cur.id, () => next);

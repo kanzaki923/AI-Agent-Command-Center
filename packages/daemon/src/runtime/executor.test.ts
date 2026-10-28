@@ -299,6 +299,7 @@ describe('agent executor', () => {
         payload: {
           toolName: 'Bash',
           input: expect.objectContaining({ command: expect.any(String) }),
+          risk: 'medium',
         },
       },
     ]);

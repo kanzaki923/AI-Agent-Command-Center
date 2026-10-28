@@ -363,20 +363,4 @@ describe('task methods and capabilities', () => {
     const done = await d.call(HUMAN, 'task.list', { status: ['done'] });
     expect(done.items.map((t) => t.id)).toEqual([ids[1]]);
   });
-
-  it('task.spawnWorker and task.wait stay unimplemented for the integration step', async () => {
-    d = await createTestDaemon();
-    const info = await d.call(HUMAN, 'system.info', {});
-    expect(info.methods).toEqual(
-      expect.arrayContaining([
-        'task.create',
-        'task.list',
-        'task.get',
-        'task.update',
-        'task.cancel',
-      ]),
-    );
-    expect(info.methods).not.toContain('task.spawnWorker');
-    expect(info.methods).not.toContain('task.wait');
-  });
 });

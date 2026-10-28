@@ -18,6 +18,8 @@ export type PolicyDecision =
  */
 export interface PolicyEngine {
   check(actor: Actor, permission: string, scope: CallScope | undefined): PolicyDecision;
+  /** Same decision without side effects such as auditing a denial (used to list LLM tools). */
+  peek?(actor: Actor, permission: string, scope: CallScope | undefined): PolicyDecision;
 }
 
 /** Pure check of one grant against a permission + scope at time `nowIso`. */

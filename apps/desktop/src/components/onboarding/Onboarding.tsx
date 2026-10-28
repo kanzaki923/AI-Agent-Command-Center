@@ -15,6 +15,9 @@ import { Kbd } from '../ui/Kbd';
 
 type Step = 'choose' | 'litellm' | 'project';
 
+/** Goal pre-filled in the demo chat (the mock orchestrator turns it into 2 parallel tasks). */
+const DEMO_GOAL = '認証まわりのドキュメントとテストを並列で整備して';
+
 function ChoiceCard({
   active,
   icon,
@@ -123,16 +126,39 @@ export function Onboarding() {
   const settings = useSettings();
   const sessions = useSessions();
   const connected = useConnectionState() === 'open';
+  const rt = useRuntime();
   const [step, setStep] = useState<Step>('choose');
   const [choice, setChoice] = useState<0 | 1>(0);
+  const [startingDemo, setStartingDemo] = useState(false);
 
   const configured = !!settings.data && (settings.data.litellm.baseUrl != null || settings.data.litellm.hasApiKey);
   const used = (sessions.data?.length ?? 0) > 0;
   if (done || !connected || !settings.data || !sessions.data || (step === 'choose' && (configured || used))) return null;
 
+  // Demo mode: the daemon prepares a sample repo, a project and an orchestrator chat on the
+  // offline mock model (idempotent), and we open that chat with the goal pre-filled.
+  const startDemo = async () => {
+    if (startingDemo) return;
+    setStartingDemo(true);
+    try {
+      const demo = await rt.client.call('system.setupDemo', {});
+      upsertIn(rt.queryClient, qk.projects, demo.project);
+      upsertIn(rt.queryClient, qk.sessions, demo.session);
+      const ui = useUi.getState();
+      ui.setProject(demo.project.id);
+      if (!ui.drafts[demo.session.id]) ui.setDraft(demo.session.id, DEMO_GOAL);
+      ui.openSession(demo.session.id);
+      finish();
+    } catch (err) {
+      toastError(err, 'デモを準備できませんでした');
+    } finally {
+      setStartingDemo(false);
+    }
+  };
+
   const decide = (c: 0 | 1) => {
     if (c === 0) setStep('litellm');
-    else setStep('project');
+    else void startDemo();
   };
 
   return (
@@ -181,8 +207,8 @@ export function Onboarding() {
               <ChoiceCard
                 active={choice === 1}
                 icon={<Play size={16} strokeWidth={1.75} />}
-                title="デモモードで試す"
-                body="組み込みの模擬モデルで、費用をかけずに並列実行を体験できます。"
+                title={startingDemo ? 'デモを準備しています…' : 'デモモードで試す'}
+                body="サンプルのリポジトリと Orchestrator のチャットを用意します。組み込みの模擬モデルで、費用をかけずに並列実行を体験できます。"
                 onClick={() => decide(1)}
                 onFocus={() => setChoice(1)}
               />

@@ -164,10 +164,10 @@ describe('run lifecycle', () => {
   });
 
   it('fails runs whose executor throws or is missing, and retries them as a new attempt', async () => {
-    d = await createTestDaemon();
+    // No executor for "orchestrator" in this daemon (the orchestrator module registers it).
+    d = await createTestDaemon({ modules: modules.filter((m) => m.name !== 'orchestrator') });
     const runs = d.ctx.service('runs');
     const s = await newSession(d);
-    // No executor for "orchestrator" in this daemon.
     const orphan = runs.start({ sessionId: s.id, kind: 'orchestrator', createdBy: HUMAN });
     const failed = await runs.waitForEnd(orphan.id);
     expect(failed).toMatchObject({ status: 'failed', error: { code: 'not_found' } });

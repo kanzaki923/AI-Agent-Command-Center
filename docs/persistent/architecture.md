@@ -21,7 +21,7 @@ packages/cli      `acc` コマンド（Control API クライアント）
 ### 2.1 起動と接続
 
 - データディレクトリ：`ACC_HOME`（既定 `~/.acc`）。`acc.sqlite`、`config.json`（LiteLLM の URL / キーなど。リポジトリには置かない）、`worktrees/`、`daemon.json`（接続情報）。
-- `127.0.0.1:47821`（`ACC_PORT` で変更）で待ち受け。HTTP `GET /health`、WebSocket `/ws?token=...`。
+- `127.0.0.1:47821`（`ACC_PORT` で変更）で待ち受け。HTTP `GET /health`（認証なし。`{ ok, service: "acc-daemon", pid, version, protocolVersion }`。ランチャーは `service` と `pid` で自分のデーモンか確かめる）、WebSocket `/ws?token=...`。
 - 起動時にランダムトークンを生成し `daemon.json` に `{ port, token, pid, startedAt, version }` を書く（終了時に削除）。クライアントはこれを読んで接続する（同一ユーザー以外・ブラウザの任意ページからの操作を防ぐ）。同じ `ACC_HOME` で生きているデーモンがいれば 2 つ目は起動しない。
 - 再起動時、`running` / `queued` / `awaiting_approval` のまま残った Run は `interrupted`（`statusReason: "daemon_restart"`）にし、イベントを残す。あわせてその Run の pending Approval を `cancelled`、ワークスペースロックと `session.activeRunId` を解放する（`core/recovery.ts`）。
 - DB は Node 組み込みの `node:sqlite`（WAL）。ドライバは `core/db.ts` の `Db` インターフェースの裏に隠す。エンティティのテーブルは「絞り込み用のインデックス列 + `data`（エンティティ全体の JSON、読み書き時に zod で検証）」の形。フィールド追加にマイグレーションは要らず、絞り込み列を足すときだけ要る。
@@ -63,7 +63,7 @@ packages/cli      `acc` コマンド（Control API クライアント）
 | `runtime/` | Agent Runtime 抽象、Claude Agent SDK 実装、mock 実装 |
 | `workspace/` | Git worktree の作成・ロック・diff・コミット |
 | `tasks/` | Task・依存 DAG・スケジューラ |
-| `orchestrator/` | LLM 向けツール生成、待機ツール、Orchestrator Run（未実装） |
+| `orchestrator/` | Orchestrator Run、Worker の起動と追従（`task.spawnWorker`）、待機（`task.wait` / `integration.wait`）、`mock/orchestrator`、デモモード |
 | `integration/` | 統合ブランチ、順次マージ、検証、承認後の反映 |
 
 ### 2.4 Control API と Capability
@@ -76,6 +76,7 @@ packages/cli      `acc` コマンド（Control API クライアント）
 - Grant の委譲：子 Grant の permissions・scope・limits は親の部分集合でなければ作れない。委譲深さは初期値 1（Orchestrator → Worker まで。Worker は Worker を起動できない）。
   - 判定は `policy/grants.ts`。agent が委譲するとき、親 Grant は (a) `grant.create`（Worker 起動時は `task.spawnWorker`）を持ち、(b) 子の各パターンを包含し（`"*"` ⊇ 全部、`"task.*"` ⊇ `"task.create"`）、(c) 子の projectIds ⊆ 親、(d) limits ≤ 親（`maxDepth` は 1 段ごとに 1 減る）、(e) `depth = 親.depth + 1 <= settings.maxDelegationDepth`。省略した scope・limits・`expiresAt` は親から引き継ぐ（広がらない）。
   - `limits.maxWorkers` は「その Run が起動し、まだ終わっていない子 Run（`parentRunId`）」の数で判定する（`policy.assertCanSpawnWorker`）。
+- LLM に見せるツールの一覧づくりは呼び出しではないので、外したメソッドを `policy.denied` に記録しない（`PolicyEngine.peek`）。
 - Grant の有効範囲：`run`（その Run の終了で失効）、`session`（期限 `expiresAt` まで）。Session に付けた `lifetime: run` の Grant は「そのセッションの次の Run が終わるまで」有効。剥奪は委譲先へ連鎖する。付与・剥奪は `grant.created` / `grant.revoked`、使用は `tool.called`、agent の拒否は `policy.denied` として残る。
 
 ### 2.5 Budget
@@ -94,7 +95,7 @@ packages/cli      `acc` コマンド（Control API クライアント）
 - 同時実行数の上限（`settings.maxConcurrentRuns`、既定 10）を超えた Run は `queued` で待ち、空きができた順（FIFO）に始まる。実行枠は `running` と `awaiting_approval` が占有する（承認待ちもプロセスやロックを持ったままのため）。
 - 1 つの worktree に書き込める Run は同時に 1 つ（ワークスペースロック）。ロック待ちの Run は `queued` のまま残り、後ろの Run は先に始まってよい。
 - 1 セッションで同時に動く Run は 1 つ（2 つ目の `session.send` は `conflict`、ユーザーメッセージも残らない）。
-- 実際の処理は Run の種類ごとの Executor（`ctx.service('runs').registerExecutor(kind, fn)`）が `RunController` 経由で行う（`chat` は sessions、`agent` は runtime、`orchestrator` は orchestrator（未実装））。登録は各モジュールの `start()` で行う。終端状態は RunManager だけが決める。
+- 実際の処理は Run の種類ごとの Executor（`ctx.service('runs').registerExecutor(kind, fn)`）が `RunController` 経由で行う（`chat` は sessions、`agent` は runtime、`orchestrator` は orchestrator）。登録は各モジュールの `start()` で行う。終端状態は RunManager だけが決める。
 - `agent` Run で `workspaceId` を省くと、セッション → Task のワークスペースを Run に記録してそのロックを取る（Executor が書き込む先と、ロックの対象を一致させる）。`chat` Run はロックを取らない。
 - キャンセルは即座に `cancelled` にして signal を abort する。実行枠とロックは Executor が止まってから返す（止まらなければ 10 秒で強制解放）。デーモン停止時は `running` / `queued` を `interrupted`（`daemon_shutdown`）にする。
 - 「いま何をしているか」は `Run.activity`。変化は `run.updated`（`changes: ["activity"]`）で届き、使用量の加算も `run.updated`（`["usage"]`）。activity は実行中だけ意味を持つ。
@@ -107,6 +108,7 @@ packages/cli      `acc` コマンド（Control API クライアント）
 
 - 封筒に `projectId / sessionId / runId / taskId` を持ち、絞り込みは payload を見ずに行える。`bus.emit` は payload の形（`{ run }`、`{ session }` 等）から参照を自動で埋める。
 - `bus.emit` は呼び出し側のトランザクション内で追記し、**コミット後に**配信する（ロールバックされたイベントは誰にも届かない）。
+- 配信は `seq` 順を保つ：コミット後フック（`Db.afterCommit`）は登録順に 1 本のキューで実行し、フックの中で別のトランザクションがコミットしても、そのフックは残りの後ろに並ぶ（例：トランザクション内で `runs.start` した Run の起動イベントが、同じトランザクションで後から出したイベントより先に届かない）。クライアントは `seq` で重複を除くため、順序が崩れると欠けて見える。
 - 状態を変えるメソッドは、同じトランザクションで「エンティティ更新 + イベント追記」を行う。`*.updated` には変わったフィールド名を `changes` に入れる。
 
 ### 2.8 Workspace と Integration
@@ -135,6 +137,7 @@ packages/cli      `acc` コマンド（Control API クライアント）
 - `ctx.service('runtimes')` に `mock`（オフライン、既定）と `claude-agent-sdk` を登録する。既定は `settings.defaultRuntime`（未登録の名前なら `mock`）。Run が使うのは `run.runtime` → `session.runtime` → 既定の順。
 - `agent` 種別の RunExecutor（`createAgentExecutor`）：ワークスペースのパスで Runtime を動かし、`AgentEvent` を `RunController` に流す。プロンプトは Task（目標・完了条件）＋起動メッセージ。終了時に `workspaces.commitAll` し、変更があれば `artifacts.recordDiff` で diff Artifact を記録する（失敗しても Run は失敗させない）。
 - **ツール権限は `policy.ts` の純関数で決める**（プロンプトに任せない）：読み取り系はワークスペース内なら許可、編集系もワークスペース内なら許可（worktree が隔離されており、統合前に diff を確認するため）、コマンド（Bash / PowerShell）と、ワークスペース外のパスに触れるもの、未知のツールは承認（`tool_use` の Approval）。
+- 承認の payload は `ToolApprovalPayload` `{ toolName, input, risk }`。`risk`（`low` / `medium` / `high`）はデーモンが決める（`runtime/risk.ts`）：`rm -rf`・`git push`・`git reset --hard`・ネットワークからのインストールやダウンロード・`sudo` などのコマンドとワークスペース外への編集は `high`、それ以外のコマンド・外の読み取り・Web・未知のツールは `medium`、ワークスペース内の読み書きは `low`。
 - Claude Agent SDK：SDK は遅延 import（読み込めなくてもデーモンは起動し、`available()` が理由を返す）。`permissionMode: 'default'` と `settingSources: []` を明示し、ユーザー / リポジトリの設定ファイルの allow ルールや hooks を効かせない（そのためリポジトリの CLAUDE.md は読まない）。子プロセスの環境は許可リストで組み立てる（`env.ts`。値はログに出さない）。LiteLLM の URL があれば `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / モデルを渡し、なければユーザーの Claude Code ログインをそのまま使う。
 - 再開：Runtime 自身のセッション ID を `runtime_sessions`（Session × Runtime）に保存し、次の Run に渡す（`Session.runtimeSessionId` にも反映）。SDK の使用量は SDK セッション単位の累積値なので、`runtime_usage_baselines` との差分を Run の使用量として報告する。
 - mock：プロンプト中の ` ```acc-mock ` JSON ブロック（`mock/plan.ts`。`say` / `write` / `append` / `run` / `ask` / `check` / `sleep` / `fail`）に従ってワークスペースを実際に変更する。ブロックがなければ `notes/<タスク名>.md` を作って確認する。デモと E2E はこれを使う。
@@ -147,6 +150,22 @@ packages/cli      `acc` コマンド（Control API クライアント）
 - ツールループ `runToolLoop`（`src/llm`）：モデル → ツール呼び出し → ディスパッチャ経由で `ctx.call(run の agent actor, ...)` → 結果 → モデル…。ツールは API 契約（`tool !== false`）から生成し、actor の Grant で絞る。メソッド名の `.` はツール名では `__`。ツールの失敗は `{ error }` としてモデルに返し、Run は失敗させない。
 - チャット Run はセッション履歴をそのまま送る。セッションに Grant があればその範囲の API がツールとして見える（普通のチャットが Orchestrator になれる）。モデル未設定かつ LiteLLM 未設定なら `mock/echo` を使う。
 - `session.search`：FTS5 の trigram で部分一致（日本語向け）。3 文字未満の語は LIKE で補う。索引はトリガーで同期する。
+- Session 自身の Budget（subject `session`、`active`）があれば、`session.send` の Run はそれを `budgetId` にする。
+
+### 2.12 Orchestrator と Worker
+
+Orchestrator は**セッション種別ではなく役割**（concept §3.1）。チャットに Grant を与えると、そのチャットが他のエージェントを率いる。
+
+- **付与**：`session.grantOrchestration({ sessionId, projectId?, maxWorkers=2, lifetime='run', budgetUsd?, expiresAt? })`（人間だけ）。プリセット `ORCHESTRATOR_PERMISSIONS`（`task.*`、session / run / workspace / artifact / approval / events の読み取り、`run.cancel`、`integration.create/run/get/list/wait`、`orchestrator.*`、`project.get`）を、そのプロジェクト限定・`limits { maxWorkers, maxDepth: 1 }` で付ける。`integration.approve`・`grant.*`・`budget.*`・設定は含めない。`budgetUsd` はセッションのルート Budget になる。
+- **Run 種別**：`session.send` はセッションの Grant が `task.spawnWorker` を許すとき Run を `orchestrator` にする。Executor（`orchestrator/executor.ts`）はチャットと同じツールループに、役割・プロジェクト（`projectId: ...`）・上限を書いた短い system prompt を前置きし、ツールは同じ API 契約とディスパッチャから作る。ターン上限は 80。
+- **`task.spawnWorker`**：`ready` / `failed` / 人間待ちの `blocked` の Task だけ。`policy.assertCanSpawnWorker`（権限・プロジェクト・`maxWorkers`・深さ）→ worktree（Task に既にあれば再利用、なければ Task 名で作成）→ Worker セッション（`agent`、`parentSessionId` = 呼び出し元、Task・ワークスペース付き）→ `agent` Run（`parentRunId` = 呼び出し元の Run、`runtime` は指定 → `settings.defaultRuntime` → `mock` を解決して記録）→ Task を `running`（`assigneeSessionId`・`workspaceId`）。worktree 作成以外は 1 トランザクションで、上限の判定から Run 開始まで await を挟まない。
+  - agent が呼ぶと、Worker の Run に委譲 Grant（既定 `WORKER_DEFAULT_PERMISSIONS` = Task / ワークスペース / Artifact の読み取りを親が持つ範囲で、`lifetime: run`、`limits { maxWorkers: 0, maxDepth: 0 }`）を付ける。Worker は Worker を起動できず、Grant も作れない。
+  - 予算：呼び出し元の Run に Budget があれば、そこから `budgetUsd`（省略時は空き ÷ 残りの Worker 枠）を切り出して Worker セッションの Budget にする。
+- **Worker の終了**（`run.status_changed` の終端を orchestrator モジュールが購読）：その Task を担当中（`running` かつ担当セッション）なら、`completed` → `review`（変更なしは `statusReason: no_changes`、`resultSummary` に最後の発言）、`failed` / `cancelled` / `interrupted` → `failed`（`worker_failed` など）。worktree とブランチは残す。人間がキャンセルした Task などはそのまま。起動時にも同じ照合をする。
+- **待機**：`task.wait({ taskIds, mode: any|all, until: settled|review_or_terminal|terminal, timeoutMs })` は状態を確かめてから `bus.waitFor` で眠り（ポーリングしない）、`call.signal` で打ち切る。返すのは `reached`（ID）と全 Task の `TaskSnapshot`（状態・理由・ブランチ・最新 Run と activity・承認待ち数・diff 統計・要約）。`integration.wait` は統合が `awaiting_approval` / `conflict` / `failed` / 確定状態になるまで待つ。LLM のループは「spawn → task.wait(all) → integration.create → run → integration.wait → 報告」だけで済む。
+- **判断の記録**：`orchestrator.decision` イベント。LLM は `orchestrator.recordDecision` で残し、デーモンも自分の判断（Worker を起動した・Task をレビュー待ち / 失敗にした）を `system` actor で残す。参照は呼び出し元（Orchestrator）のセッションと Run に付ける。
+- **`mock/orchestrator`**（`orchestrator/mockModel.ts`）：ツール結果だけを見て次の手を決める決定的なモデル。目標 → `task.create` ×2（ドキュメントとテスト、完了条件と mock Worker 用の `acc-mock` 計画つき。テスト側はコマンド実行で承認を求め、却下されたら失敗）→ `task.spawnWorker` ×2 → `task.wait` → `integration.*` → 日本語の報告。途中で失敗があれば統合せず報告する。本物のモデルと同じツールしか使わない。
+- **デモモード**：`system.setupDemo({ name='auth-demo' })`（冪等）。`<ACC_HOME>/demo/<name>` に `node --test` が通る小さな Node プロジェクトの git リポジトリを作り、プロジェクト（`testCommand: node --test`）と、`mock/orchestrator` の「デモ: 設計チャット」に `lifetime: session` の Orchestrator 権限を用意する。UI の「デモモードで試す」がこれを呼び、目標を下書きに入れてチャットを開く。
 
 ## 3. Desktop UI
 
