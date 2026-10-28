@@ -17,7 +17,7 @@ describe('system', () => {
     expect(health).toMatchObject({ ok: true, protocolVersion: 1 });
     const info = await d.call(HUMAN, 'system.info', {});
     expect(info.methods).toContain('session.create');
-    expect(info.methods).not.toContain('task.create');
+    expect(info.methods).not.toContain('task.spawnWorker');
     expect(info.dataDir).toBe(d.home);
     expect(info.stats).toEqual({ projects: 0, sessions: 0, activeRuns: 0, lastEventSeq: 0 });
   });

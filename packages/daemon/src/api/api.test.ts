@@ -49,7 +49,7 @@ describe('dispatcher', () => {
     d = await createTestDaemon();
     const e1 = await expectCode(d.call(HUMAN, 'nope.nope' as never, {} as never), 'not_found');
     expect(e1.data).toEqual({ reason: 'unknown_method' });
-    const e2 = await expectCode(d.call(HUMAN, 'task.list', {}), 'not_found');
+    const e2 = await expectCode(d.call(HUMAN, 'task.wait', {} as never), 'not_found');
     expect(e2.data).toEqual({ reason: 'not_implemented' });
   });
 

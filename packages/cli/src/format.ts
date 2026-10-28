@@ -91,6 +91,8 @@ export function summarizeEvent(e: Event): string {
       return e.payload.grant.permissions.join(',');
     case 'grant.revoked':
       return e.payload.grantId;
+    case 'policy.denied':
+      return `${e.payload.permission}: ${truncate(e.payload.reason, 80)}`;
     case 'budget.updated':
       return `$${e.payload.budget.spentUsd.toFixed(2)} / $${e.payload.budget.limitUsd.toFixed(2)}`;
     case 'orchestrator.decision':

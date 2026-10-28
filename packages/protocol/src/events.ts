@@ -87,6 +87,13 @@ export const eventPayloads = {
 
   'grant.created': z.object({ grant: CapabilityGrant }),
   'grant.revoked': z.object({ grantId: GrantId, reason: z.string().nullable() }),
+  /** An agent call was refused by the capability policy (audit trail for denials). */
+  'policy.denied': z.object({
+    permission: z.string(),
+    reason: z.string(),
+    /** Projects the call touched; null for calls without a project scope. */
+    projectIds: z.array(z.string()).nullable(),
+  }),
 
   'budget.updated': z.object({ budget: BudgetAllocation, reason: z.string().nullable() }),
 

@@ -91,6 +91,9 @@ describe('server', () => {
 
     const events: Event[] = [];
     const deltas: Delta[] = [];
+    // Modules keep their own in-process listeners; only this subscription's must go away.
+    const listeners = () => (d.ctx.bus as unknown as { listeners: Set<unknown> }).listeners.size;
+    const baseline = listeners();
     const sub = client.subscribe({
       sessionId: a.id,
       onEvent: (e) => events.push(e),
@@ -110,9 +113,7 @@ describe('server', () => {
     expect(deltas.map((x) => x.text)).toEqual(['Hel']);
 
     sub.unsubscribe();
-    await until(
-      () => (d.ctx.bus as unknown as { listeners: Set<unknown> }).listeners.size === 0 || undefined,
-    );
+    await until(() => listeners() === baseline || undefined);
   });
 
   it('replays history with `since` before streaming live events', async () => {
