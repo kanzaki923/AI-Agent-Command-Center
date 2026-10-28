@@ -1,22 +1,34 @@
+import type { ParamsInput } from '@acc/protocol';
 import { useQuery } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { useStore } from 'zustand';
 import { qk } from '../../daemon/keys';
 import { useInfo, useSettings } from '../../daemon/queries';
 import { useRuntime } from '../../daemon/runtime';
+import { confirmShutdown } from '../../daemon/shutdown';
 import { cn } from '../../lib/cn';
 import {
   type NotifyPermission,
   notificationPermission,
   requestNotificationPermission,
 } from '../../lib/notify';
+import { isTauri } from '../../lib/platform';
 import { useIsDemo } from '../../model/useDemo';
-import { useConfirm } from '../../store/confirm';
 import { toastError } from '../../store/toast';
 import { Button } from '../ui/Button';
 import { type MotionPref, type ThemePref, useUi } from '../../store/ui';
 import { Dialog, FieldLabel, inputClass } from '../ui/Dialog';
 import { LiteLlmForm } from './LiteLlmForm';
+
+type SettingsPatch = ParamsInput<'settings.update'>;
+
+/** The reserve field's value in USD (0–100, cents), or null when it is not a valid amount. */
+export function parseReserveUsd(text: string): number | null {
+  if (!text.trim()) return null;
+  const v = Number(text);
+  if (!Number.isFinite(v) || v < 0 || v > 100) return null;
+  return Math.round(v * 100) / 100;
+}
 
 function Segmented<T extends string>({
   value,
@@ -147,12 +159,19 @@ export function SettingsDialog() {
   const demo = useIsDemo();
   const unimplemented = useStore(rt.unimplemented, (s) => s.methods);
 
-  const updateNumber = (key: 'maxConcurrentRuns' | 'maxDelegationDepth', value: number) => {
+  const update = (patch: SettingsPatch) => {
     rt.client
-      .call('settings.update', { [key]: value })
+      .call('settings.update', patch)
       .then((v) => rt.queryClient.setQueryData(qk.settings, v))
       .catch((err: unknown) => toastError(err, '設定を保存できませんでした'));
   };
+  const updateNumber = (key: 'maxConcurrentRuns' | 'maxDelegationDepth', value: number) =>
+    update({ [key]: value });
+  // In the desktop app a stopped daemon is started again by the shell at once.
+  const restart = isTauri();
+  // Older settings files lack these; the daemon's defaults apply (protocol Settings).
+  const reserve = settings?.llmCallReserveUsd ?? 0.25;
+  const autoResume = settings?.autoResumeOrchestrators ?? true;
 
   return (
     <Dialog open={open} onOpenChange={setOpen} title="設定" className="w-[600px]">
@@ -231,8 +250,54 @@ export function SettingsDialog() {
             />
           </div>
         </div>
+        <div className="mt-3">
+          <FieldLabel htmlFor="llm-reserve">LLM 呼び出しごとの予約額（USD）</FieldLabel>
+          <input
+            id="llm-reserve"
+            type="number"
+            min={0}
+            max={100}
+            step={0.05}
+            className={`${inputClass} w-32`}
+            defaultValue={reserve}
+            key={`reserve-${reserve}`}
+            onBlur={(e) => {
+              const v = parseReserveUsd(e.target.value);
+              if (v === null) {
+                e.target.value = String(reserve);
+                return;
+              }
+              if (v !== reserve) update({ llmCallReserveUsd: v });
+            }}
+          />
+          <p className="mt-1 text-meta text-fg-3">
+            チャットと Orchestrator が LLM を呼ぶ前に、この額を予算から確保し、終わったら実費で精算します。確保できない呼び出しは
+            Core Daemon が断るので、同じ予算を使う並列の Run が上限を超えません（1 回の呼び出しがこの額に収まる限り）。0
+            で予約しません。
+          </p>
+        </div>
       </Section>
       <Section title="Core Daemon">
+        <div className="mb-3 flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <div className="text-ui text-fg">再起動のあと Orchestrator を再開</div>
+            <div className="text-meta text-fg-3">
+              Core Daemon の停止・再起動で中断した Orchestrator を、権限がまだ有効なら自動で再開します。Task
+              の状態を読み直して計画を続けます。オフにすると、チャットに中断のお知らせだけを残します。
+            </div>
+          </div>
+          <Segmented<'on' | 'off'>
+            label="再起動のあと Orchestrator を再開"
+            value={autoResume ? 'on' : 'off'}
+            onChange={(v) => {
+              if ((v === 'on') !== autoResume) update({ autoResumeOrchestrators: v === 'on' });
+            }}
+            options={[
+              { value: 'on', label: 'オン' },
+              { value: 'off', label: 'オフ' },
+            ]}
+          />
+        </div>
         {info.data ? (
           <dl className="grid grid-cols-[96px_1fr] gap-x-3 gap-y-1 text-ui">
             <dt className="text-fg-3">バージョン</dt>
@@ -254,29 +319,15 @@ export function SettingsDialog() {
         ) : (
           <p className="text-ui text-fg-3">接続を待っています…</p>
         )}
-        {info.data?.methods.includes('system.shutdown') && (
+        {info.data && (
           <div className="mt-3 flex items-center justify-between gap-4 border-t border-line-subtle pt-3">
             <span className="text-meta text-fg-3">
-              Core Daemon は UI を閉じても動き続けます。止めると、動いているエージェントも停止します。
+              {restart
+                ? 'Core Daemon は UI を閉じても動き続けます。再起動すると、実行中の Run は「中断」になり、あとで再開できます。'
+                : 'Core Daemon は UI を閉じても動き続けます。止めると、実行中の Run は「中断」になり、あとで再開できます。'}
             </span>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() =>
-                useConfirm.getState().ask({
-                  title: 'Core Daemon を停止しますか？',
-                  body: '動いているエージェントと定期実行もすべて止まります。Run は「中断」として残り、あとで再開できます。',
-                  confirmLabel: '停止する',
-                  danger: true,
-                  onConfirm: () => {
-                    (rt.client.call as unknown as (m: string, p: unknown) => Promise<unknown>)('system.shutdown', {}).catch(
-                      (err: unknown) => toastError(err, 'Core Daemon を停止できませんでした'),
-                    );
-                  },
-                })
-              }
-            >
-              Core Daemon を停止
+            <Button size="sm" variant="secondary" onClick={() => void confirmShutdown(rt)} data-testid="shutdown-daemon">
+              {restart ? 'Core Daemon を再起動' : 'Core Daemon を停止'}
             </Button>
           </div>
         )}

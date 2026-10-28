@@ -1,9 +1,9 @@
 import type { Project, Task } from '@acc/protocol';
-import { ChevronDown, ChevronRight, CornerUpLeft, ListTodo, Network, Play, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, CornerUpLeft, ListTodo, Network, Play, RotateCcw, X } from 'lucide-react';
 import { memo, useMemo, useRef, useState } from 'react';
 import { confirmCancelTask, newChat } from '../../app/commands';
-import { reworkTask, spawnWorker } from '../../daemon/orchestration';
-import { useMethods, useProjects } from '../../daemon/queries';
+import { resumeTask, reworkTask, spawnWorker } from '../../daemon/orchestration';
+import { useProjects } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { useWindowKeydown } from '../../hooks/useWindowKeydown';
 import { cn } from '../../lib/cn';
@@ -14,6 +14,7 @@ import {
   type TaskGroup,
   buildBoardSections,
   canCancel,
+  canResume,
   canRework,
   canRun,
   statusReasonText,
@@ -79,18 +80,17 @@ function GoalPicker({ groups, goal }: { groups: TaskGroup[]; goal: string | null
 /** Inline "what should the worker fix" box under a task row (Ctrl+Enter sends, Esc closes). */
 export function FeedbackBox({ task, onClose }: { task: Task; onClose: () => void }) {
   const rt = useRuntime();
-  const methods = useMethods();
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const openSession = useUi((s) => s.openSession);
   const submit = async () => {
     if (!text.trim() || busy) return;
     setBusy(true);
-    const r = await reworkTask(rt, task, text, methods);
+    const r = await reworkTask(rt, task, text);
     setBusy(false);
     if (!r) return;
     onClose();
-    if (r.sessionId) openSession(r.sessionId, { from: 'command' });
+    openSession(r.sessionId, { from: 'command' });
   };
   return (
     <div className="mx-3 mt-1 mb-2 flex flex-col gap-2 rounded-md border border-line bg-surface p-2.5" data-testid="feedback-box">
@@ -155,6 +155,7 @@ const TaskRow = memo(function TaskRow({
   const worker = workerLabel(node);
   const reason = statusReasonText(t);
   const run = canRun(t) && !node.workerRun?.status.match(/^(running|queued|awaiting_approval)$/);
+  const resume = canResume(t);
   const rework = canRework(node);
   const choose = () => {
     select(t.id);
@@ -235,6 +236,22 @@ const TaskRow = memo(function TaskRow({
               }}
             >
               {t.status === 'failed' ? 'もう一度実行' : 'このTaskを実行'}
+            </Button>
+          )}
+          {resume && (
+            <Button
+              size="sm"
+              variant="primary"
+              icon={<RotateCcw size={11} strokeWidth={1.75} />}
+              shortcut={selected ? 'runTask' : undefined}
+              disabled={!connected}
+              hint="同じ worktree と Worker の会話から作業を続けます"
+              onClick={(e) => {
+                e.stopPropagation();
+                void resumeTask(rt, t).then((r) => r && openSession(r.sessionId, { from: 'command' }));
+              }}
+            >
+              再開
             </Button>
           )}
           {rework && (
@@ -389,6 +406,11 @@ export function TaskBoard() {
       if (e.target instanceof HTMLButtonElement) return;
       e.preventDefault();
       togglePanel('command');
+    } else if (matchShortcut(e, 'runTask') && canResume(selected.task)) {
+      // R on an interrupted task resumes it where it was (same worktree and worker session).
+      if (!connected) return;
+      e.preventDefault();
+      void resumeTask(rt, selected.task).then((r) => r && openSession(r.sessionId, { from: 'command' }));
     } else if (matchShortcut(e, 'runTask')) {
       const busy = selected.workerRun && ['running', 'queued', 'awaiting_approval'].includes(selected.workerRun.status);
       if (!canRun(selected.task) || busy || !connected) return;

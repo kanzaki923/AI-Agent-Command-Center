@@ -7,9 +7,9 @@ import type {
   Task,
 } from '@acc/protocol';
 import { type OrchestratorGrantInput, grantParams } from '../model/grant';
-import { type RepoInspection, normalizeInspection } from '../model/repo';
+import { type RepoInspection, failedInspection } from '../model/repo';
 import { toast, toastError } from '../store/toast';
-import { isNotImplemented } from './errors';
+import { isConnectionError, isNotImplemented } from './errors';
 import { qk } from './keys';
 import type { AppRuntime } from './runtime';
 import { patchIn, removeFrom, upsertIn } from './sync';
@@ -260,37 +260,23 @@ function projectError(err: unknown): string {
 }
 
 /**
- * Look at a folder before creating a project (`project.inspectRepo`, when the daemon offers
- * it): repository or not, its root, branch, uncommitted changes, a test command. Null when
- * the daemon cannot inspect (the form then validates on create, as before).
+ * Look at a folder before creating a project (`project.inspectRepo`, read-only): repository
+ * root or not, branches, uncommitted changes, a test command, a project already registered
+ * for it. Null when the check cannot run (connection down, a daemon without the method):
+ * the form then validates on create.
  */
 export async function inspectRepo(rt: AppRuntime, path: string): Promise<RepoInspection | null> {
-  const call = untyped(rt);
   try {
-    let raw: unknown;
-    try {
-      raw = await call('project.inspectRepo', { path });
-    } catch (err) {
-      if ((err as { code?: string }).code !== 'invalid_params') throw err;
-      raw = await call('project.inspectRepo', { repoPath: path });
-    }
-    return normalizeInspection(raw);
+    return await rt.client.call('project.inspectRepo', { path });
   } catch (err) {
     if (isNotImplemented(err)) {
       rt.markUnimplemented('project.inspectRepo');
       return null;
     }
-    const code = (err as { code?: string }).code;
-    if (code === 'connection_lost' || code === 'timeout' || code === 'closed') return null;
-    return {
-      isRepo: false,
-      root: null,
-      name: null,
-      branch: null,
-      dirty: false,
-      testCommand: null,
-      error: projectErrorText(err) ?? (err instanceof Error ? err.message : String(err)),
-    };
+    if (isConnectionError(err)) return null;
+    return failedInspection(
+      projectErrorText(err) ?? (err instanceof Error ? err.message : String(err)),
+    );
   }
 }
 
@@ -348,58 +334,48 @@ export async function spawnWorker(
   }
 }
 
-/** Methods a newer daemon may offer for "send back to the worker with feedback". */
-export const TASK_RETRY_METHODS = ['task.retry', 'task.rework'] as const;
-
 /**
- * "Worker に差し戻す": the worker continues in the task's worktree with the human's feedback.
- * A daemon with `task.retry` does it in one call. Otherwise the contract methods do the
- * same: a failed task gets a new worker with the feedback as instructions (spawnWorker
- * reuses the task's worktree), a task in review is first put back to `ready`.
+ * `task.retry`: a new run in the task's original worker session and worktree, so the
+ * branch, its commits and the runtime's conversation carry over. One call — the daemon moves
+ * the task to running in the same transaction that starts the run, so it never sits
+ * half-moved between review and running. Shown as running at once; restored with a toast
+ * when the daemon refuses.
  */
-export async function reworkTask(
+async function retryTask(
   rt: AppRuntime,
   task: Task,
-  feedback: string,
-  methods: ReadonlySet<string> | null,
-): Promise<{ sessionId: string | null } | null> {
+  params: { feedback?: string; integrationId?: string },
+  failure: string,
+): Promise<{ sessionId: string } | null> {
   const qc = rt.queryClient;
-  const instructions = `レビューで差し戻されました。次の点を直してください。\n\n${feedback.trim()}`;
   patchIn<Task>(qc, qk.tasks, task.id, (t) => ({ ...t, status: 'running', statusReason: null }));
-  const restore = () =>
+  try {
+    const res = await rt.client.call('task.retry', { taskId: task.id, ...params });
+    return { sessionId: res.sessionId };
+  } catch (err) {
     patchIn<Task>(qc, qk.tasks, task.id, (t) =>
       t.status === 'running' ? { ...t, status: task.status, statusReason: task.statusReason } : t,
     );
-  const retryMethod = pickMethod(methods, TASK_RETRY_METHODS);
-  try {
-    if (retryMethod) {
-      let res: unknown;
-      try {
-        res = await untyped(rt)(retryMethod, { taskId: task.id, feedback: feedback.trim() });
-      } catch (err) {
-        if ((err as { code?: string }).code !== 'invalid_params') throw err;
-        res = await untyped(rt)(retryMethod, { taskId: task.id, instructions });
-      }
-      const sessionId = (res as { sessionId?: unknown } | null)?.sessionId;
-      return { sessionId: typeof sessionId === 'string' ? sessionId : null };
-    }
-    if (task.status === 'review') {
-      await rt.client.call('task.update', { taskId: task.id, status: 'ready' });
-    }
-    try {
-      const r = await rt.client.call('task.spawnWorker', { taskId: task.id, instructions });
-      return { sessionId: r.sessionId };
-    } catch (err) {
-      // Put a reviewed task back where it was, so its result is not lost from view.
-      if (task.status === 'review')
-        await rt.client.call('task.update', { taskId: task.id, status: 'review' }).catch(() => {});
-      throw err;
-    }
-  } catch (err) {
-    restore();
-    toastError(err, 'Worker に差し戻せませんでした');
+    toastError(err, failure);
     return null;
   }
+}
+
+/** "Worker に差し戻す": the worker continues with the human's review feedback. */
+export function reworkTask(
+  rt: AppRuntime,
+  task: Task,
+  feedback: string,
+): Promise<{ sessionId: string } | null> {
+  return retryTask(rt, task, { feedback: feedback.trim() }, 'Worker に差し戻せませんでした');
+}
+
+/**
+ * "再開": a task whose worker was cut off by a daemon stop / restart (`ready` with
+ * statusReason `interrupted`) continues on the same worktree, without new instructions.
+ */
+export function resumeTask(rt: AppRuntime, task: Task): Promise<{ sessionId: string } | null> {
+  return retryTask(rt, task, {}, 'Task を再開できませんでした');
 }
 
 /** "Task を中止": the task, its subtasks and their running workers stop (worktrees stay). */
@@ -452,6 +428,43 @@ export async function rerunIntegration(rt: AppRuntime, integ: Integration): Prom
   } catch (err) {
     upsertIn(qc, qk.integrations, integ);
     toastError(err, '統合を再実行できませんでした');
+  }
+}
+
+/**
+ * "Integrator に解消を任せる" (`integration.resolveWithAgent`, conflict only): the daemon
+ * re-creates the conflicting merge on the integration branch and starts an integrator agent
+ * with both tasks' goals; when it finishes, the merge is committed and the integration
+ * resumes (remaining merges, tests) — or returns to conflict with the reason. The target
+ * branch is never touched: applying still needs the human's approval.
+ * Shown as running at once; the daemon's integration.updated events carry the fix step.
+ */
+export async function resolveWithAgent(
+  rt: AppRuntime,
+  integ: Integration,
+  instructions?: string,
+): Promise<{ integration: Integration; sessionId: string | null } | null> {
+  const qc = rt.queryClient;
+  const optimistic: Integration = { ...integ, status: 'running', error: null };
+  upsertIn(qc, qk.integrations, optimistic);
+  qc.setQueryData(['integration.get', integ.id], optimistic);
+  try {
+    const res = await rt.client.call('integration.resolveWithAgent', {
+      integrationId: integ.id,
+      ...(instructions?.trim() ? { instructions: instructions.trim() } : {}),
+    });
+    // An event may already have moved it further; never step back to the call's snapshot.
+    const cur = qc.getQueryData<Integration[]>(qk.integrations)?.find((i) => i.id === integ.id);
+    if (!cur || cur.updatedAt <= res.integration.updatedAt) {
+      upsertIn(qc, qk.integrations, res.integration);
+      qc.setQueryData(['integration.get', integ.id], res.integration);
+    }
+    return { integration: res.integration, sessionId: res.sessionId };
+  } catch (err) {
+    upsertIn(qc, qk.integrations, integ);
+    qc.setQueryData(['integration.get', integ.id], integ);
+    toastError(err, 'Integrator に任せられませんでした');
+    return null;
   }
 }
 

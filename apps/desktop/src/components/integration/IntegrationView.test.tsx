@@ -1,3 +1,4 @@
+import { AccClientError } from '@acc/client';
 import type { Integration, IntegrationStep } from '@acc/protocol';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -204,5 +205,172 @@ describe('<IntegrationView>', () => {
     await waitFor(() =>
       expect(screen.getByText(/コンフリクトが発生しました: src\/a\.ts/)).toBeInTheDocument(),
     );
+  });
+});
+
+/** Two merges; the second conflicted on README.md (as the daemon records it). */
+function conflicted(): Integration {
+  return integration({
+    id: 'int_00000000000000000000000001',
+    title: '統合: ドキュメントとテスト → main',
+    status: 'conflict',
+    targetRef: 'main',
+    branch: 'acc/integration-00000001',
+    workspaceId: 'wsp_int',
+    taskIds: ['tsk_1', 'tsk_2'],
+    error: { code: 'merge_conflict', message: '「acc/tests」のマージでコンフリクトが発生しました: README.md' },
+    steps: [
+      step({ index: 0, title: '「ドキュメント」をマージ', branch: 'acc/docs' }),
+      step({
+        index: 1,
+        status: 'failed',
+        title: '「テスト」をマージ',
+        branch: 'acc/tests',
+        detail: 'コンフリクトが発生しました',
+        conflictFiles: ['README.md'],
+      }),
+      // The daemon skips verification of an attempt that stopped on a conflict.
+      step({ index: 2, kind: 'verify', status: 'skipped', title: 'テストを実行（pnpm test）', detail: null }),
+      step({ index: 3, kind: 'apply', status: 'pending', title: '「main」へ反映（要承認）', detail: null }),
+    ],
+  });
+}
+
+const fix = (over: Partial<IntegrationStep>): IntegrationStep =>
+  step({
+    index: 2,
+    kind: 'fix',
+    status: 'running',
+    title: 'Integrator がコンフリクトを解消（README.md）',
+    branch: 'acc/tests',
+    conflictFiles: ['README.md'],
+    detail: 'Integrator（Run run_int）がコンフリクトを解消しています',
+    endedAt: null,
+    ...over,
+  });
+
+function resolving(base: Integration, over: Partial<IntegrationStep> = {}): Integration {
+  const [m0, m1, verify, apply] = base.steps;
+  return {
+    ...base,
+    status: 'running',
+    error: null,
+    resolverRunId: 'run_int',
+    steps: [m0!, m1!, fix(over), { ...verify!, index: 3 }, { ...apply!, index: 4 }],
+    updatedAt: iso(T0 + 1000),
+  };
+}
+
+describe('<IntegrationView> conflict → Integrator', () => {
+  beforeEach(() => {
+    useUi.setState({ reviewIntegrationId: 'int_00000000000000000000000001', focusSessionId: null });
+  });
+
+  it('explains what the Integrator will do, starts it with the guidance and shows its live progress', async () => {
+    const i = conflicted();
+    let called: Record<string, unknown> | null = null;
+    const { fake } = mount(i, {
+      'integration.resolveWithAgent': (p) => {
+        called = p;
+        return { integration: resolving(i, { detail: 'コンフリクトしたマージを作業ツリーに再現しています' }), sessionId: 'ses_int', runId: 'run_int' };
+      },
+      'run.get': () => ({ id: 'run_int', sessionId: 'ses_int', status: 'running' }),
+    });
+    const button = await screen.findByTestId('resolve-with-agent');
+    expect(button).toHaveTextContent('Integrator に解消を任せる');
+    // Not "no test command": the tests did not run because the merge stopped.
+    expect(screen.getByText('マージが終わっていないため、テストはまだ実行していません。')).toBeInTheDocument();
+    // Re-running would only conflict again: it steps back to a quiet action.
+    expect(screen.getByRole('button', { name: '再実行' })).toBeInTheDocument();
+    fireEvent.click(button);
+    const dialog = await screen.findByRole('dialog', { name: 'Integrator にコンフリクトの解消を任せますか？' });
+    expect(dialog).toHaveTextContent('「テスト」をマージするときに README.md がコンフリクトしました。');
+    expect(dialog).toHaveTextContent('main はまだ変更しません（反映にはあなたの承認が必要です）');
+    fireEvent.change(within(dialog).getByLabelText('Integrator への補足'), {
+      target: { value: '両方の節を残して' },
+    });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: /Integrator に任せる/ }));
+    });
+    expect(called).toEqual({ integrationId: i.id, instructions: '両方の節を残して' });
+    expect(await screen.findByTestId('resolving')).toHaveTextContent('Integrator がコンフリクトを解消しています');
+    expect(screen.queryByTestId('resolve-with-agent')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '却下' })).not.toBeInTheDocument();
+
+    // The daemon's integration.updated events carry the fix step's progress.
+    act(() =>
+      fake.emit(
+        event('integration.updated', {
+          integration: { ...resolving(i), updatedAt: iso(T0 + 2000) },
+          changes: ['resolverRunId', 'steps'],
+        }),
+      ),
+    );
+    expect(await screen.findByText('Integrator（Run run_int）がコンフリクトを解消しています')).toBeInTheDocument();
+    const fixRow = document.querySelector('[data-step="fix"]')!;
+    expect(fixRow).toHaveAttribute('data-status', 'running');
+    // Its session is one click away (the bar and the step).
+    fireEvent.click(await screen.findByRole('button', { name: /Integrator を開く/ }));
+    expect(useUi.getState().focusSessionId).toBe('ses_int');
+  });
+
+  it('shows the result: resumed to approval with the fix step done', async () => {
+    const i = resolving(conflicted());
+    const { fake } = mount(i, { 'run.get': () => ({ id: 'run_int', sessionId: 'ses_int', status: 'completed' }) });
+    expect(await screen.findByTestId('resolving')).toBeInTheDocument();
+    const done: Integration = {
+      ...i,
+      status: 'awaiting_approval',
+      headSha: 'ccccccc0',
+      baseSha: 'aaaaaaa0',
+      steps: i.steps.map((s) =>
+        s.kind === 'fix'
+          ? { ...s, status: 'succeeded', detail: 'Integrator がコンフリクトを解消し、マージをコミットしました（ccccccc）', endedAt: iso(T0 + 4000) }
+          : s.kind === 'apply'
+            ? s
+            : { ...s, status: 'succeeded' },
+      ),
+      updatedAt: iso(T0 + 5000),
+    };
+    act(() => fake.emit(event('integration.updated', { integration: done, changes: ['status', 'steps'] })));
+    expect(await screen.findByTestId('approve-integration')).toBeInTheDocument();
+    expect(screen.getByText('Integrator がコンフリクトを解消し、マージをコミットしました（ccccccc）')).toBeInTheDocument();
+    expect(screen.queryByTestId('resolving')).not.toBeInTheDocument();
+    // The merge keeps the record of where it conflicted, labelled as past.
+    expect(screen.getByRole('list', { name: 'コンフリクトしていたファイル' })).toHaveTextContent('README.md');
+  });
+
+  it('offers another try when the Integrator could not resolve it', async () => {
+    const base = conflicted();
+    const failed: Integration = {
+      ...resolving(base, {
+        status: 'failed',
+        detail: 'Integrator の解消を確認できませんでした: コンフリクトマーカーが残っています: README.md',
+      }),
+      status: 'conflict',
+      error: {
+        code: 'resolution_failed',
+        message: 'Integrator の解消を確認できませんでした: コンフリクトマーカーが残っています: README.md',
+      },
+    };
+    mount(failed);
+    expect(await screen.findByTestId('resolve-with-agent')).toHaveTextContent('もう一度 Integrator に任せる');
+    expect(screen.getAllByText(/コンフリクトマーカーが残っています/).length).toBeGreaterThan(0);
+  });
+
+  it('puts the conflict back when the daemon refuses', async () => {
+    const i = conflicted();
+    mount(i, {
+      'integration.resolveWithAgent': () => {
+        throw new AccClientError('forbidden', 'この操作の権限がありません');
+      },
+    });
+    fireEvent.click(await screen.findByTestId('resolve-with-agent'));
+    const dialog = await screen.findByRole('dialog');
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: /Integrator に任せる/ }));
+    });
+    expect(await screen.findByTestId('resolve-with-agent')).toBeInTheDocument();
+    expect(screen.queryByTestId('resolving')).not.toBeInTheDocument();
   });
 });

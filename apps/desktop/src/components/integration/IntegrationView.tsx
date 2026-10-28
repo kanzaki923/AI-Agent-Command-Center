@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import {
   AlertTriangle,
   ArrowLeft,
+  Bot,
   CheckCircle2,
   CircleX,
   GitBranch,
@@ -16,8 +17,9 @@ import {
   approveIntegration,
   rejectIntegration,
   rerunIntegration,
+  resolveWithAgent,
 } from '../../daemon/orchestration';
-import { useArtifact, useIntegrations, useProjects, useTasks } from '../../daemon/queries';
+import { useArtifact, useIntegrations, useProjects, useRun, useTasks } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { useWindowKeydown } from '../../hooks/useWindowKeydown';
 import { cn } from '../../lib/cn';
@@ -32,11 +34,16 @@ import {
   canApprove,
   canReject,
   canRerun,
+  canResolveWithAgent,
   integrationState,
   isIntegrationActive,
+  isResolving,
+  resolutionFailed,
+  resolvePlan,
   stepDurationMs,
   stepState,
 } from '../../model/integration';
+import { ActivityLine } from '../command/ActivityLine';
 import { useUi } from '../../store/ui';
 import { DiffStatText } from '../panel/DiffViewer';
 import { Button } from '../ui/Button';
@@ -94,10 +101,28 @@ function useIntegrationDiff(integ: Integration) {
   });
 }
 
-function StepRow({ step, n }: { step: IntegrationStep; n: number }) {
+/** The Integrator's session (from its run), for "Integrator を開く". */
+function useResolverSession(integ: Integration): string | null {
+  return useRun(integ.resolverRunId ?? null).data?.sessionId ?? null;
+}
+
+function StepRow({
+  step,
+  n,
+  resolverRunId,
+  resolverSessionId,
+}: {
+  step: IntegrationStep;
+  n: number;
+  /** Fix steps: the Integrator's run (live activity) and session (open it). */
+  resolverRunId?: string | null;
+  resolverSessionId?: string | null;
+}) {
+  const openSession = useUi((s) => s.openSession);
   const state = stepState(step);
   const dur = stepDurationMs(step);
   const running = step.status === 'running';
+  const isFix = step.kind === 'fix';
   return (
     <li className="relative flex gap-3 py-2" data-step={step.kind} data-status={step.status}>
       <span className="flex w-5 shrink-0 flex-col items-center pt-0.5">
@@ -136,11 +161,43 @@ function StepRow({ step, n }: { step: IntegrationStep; n: number }) {
             {step.detail}
           </p>
         )}
-        {step.conflictFiles.length > 0 && (
-          <ul className="mt-1.5 flex flex-col gap-0.5 rounded-sm border border-[color-mix(in_oklch,var(--st-failed)_30%,transparent)] bg-canvas px-2 py-1.5">
+        {isFix && running && resolverRunId && (
+          // What the Integrator is doing right now (its tool calls), like an agent card.
+          <ActivityLine
+            runId={resolverRunId}
+            fallback={null}
+            className="mt-0.5 text-meta text-fg-2"
+          />
+        )}
+        {isFix && resolverSessionId && (
+          <button
+            type="button"
+            className="mt-1 flex items-center gap-1 text-meta text-accent hover:underline"
+            onClick={() => openSession(resolverSessionId, { from: 'command' })}
+          >
+            <Bot size={12} strokeWidth={1.75} />
+            Integrator の作業を開く
+          </button>
+        )}
+        {step.conflictFiles.length > 0 && !isFix && (
+          // Kept on the merge after the Integrator resolved it: the record of where it
+          // conflicted, quiet once it no longer stands.
+          <ul
+            className={cn(
+              'mt-1.5 flex flex-col gap-0.5 rounded-sm border bg-canvas px-2 py-1.5',
+              step.status === 'failed'
+                ? 'border-[color-mix(in_oklch,var(--st-failed)_30%,transparent)]'
+                : 'border-line-subtle',
+            )}
+            aria-label={step.status === 'failed' ? 'コンフリクトしたファイル' : 'コンフリクトしていたファイル'}
+          >
             {step.conflictFiles.map((f) => (
               <li key={f} className="flex items-center gap-1.5 font-mono text-meta text-fg-2">
-                <AlertTriangle size={11} strokeWidth={1.75} className="shrink-0 text-st-failed" />
+                <AlertTriangle
+                  size={11}
+                  strokeWidth={1.75}
+                  className={cn('shrink-0', step.status === 'failed' ? 'text-st-failed' : 'text-fg-4')}
+                />
                 {f}
               </li>
             ))}
@@ -155,6 +212,10 @@ function TestResult({ integ }: { integ: Integration }) {
   const verify = integ.steps.find((s) => s.kind === 'verify');
   const art = useArtifact(verify?.artifactId).data;
   if (!verify) return null;
+  if (verify.status === 'skipped' && integ.steps.some((s) => s.kind === 'merge' && s.status === 'failed')) {
+    // Skipped because a merge stopped the attempt, not because there is no test command.
+    return <p className="text-meta text-fg-3">マージが終わっていないため、テストはまだ実行していません。</p>;
+  }
   if (verify.status === 'skipped') {
     return (
       <p className="text-meta text-fg-3">
@@ -334,23 +395,108 @@ function RejectDialog({
   );
 }
 
+/**
+ * "Integrator に解消を任せる": says what will happen (the target branch is not touched), takes
+ * optional guidance, and starts the integrator agent. Ctrl+Enter in the guidance confirms.
+ */
+function ResolveDialog({
+  integ,
+  open,
+  onClose,
+}: {
+  integ: Integration;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const rt = useRuntime();
+  const [instructions, setInstructions] = useState('');
+  const plan = resolvePlan(integ);
+  const submit = () => {
+    onClose();
+    void resolveWithAgent(rt, integ, instructions);
+  };
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()} title={plan.title} className="w-[520px]">
+      <form
+        className="flex flex-col gap-3"
+        data-testid="resolve-dialog"
+        onSubmit={(e) => {
+          e.preventDefault();
+          submit();
+        }}
+      >
+        <ul className="flex flex-col gap-1.5">
+          {plan.lines.map((l) => (
+            <li key={l} className="flex gap-2 text-ui text-fg-2">
+              <span className="mt-[9px] size-1 shrink-0 rounded-full bg-fg-4" />
+              {l}
+            </li>
+          ))}
+        </ul>
+        <textarea
+          rows={3}
+          value={instructions}
+          onChange={(e) => setInstructions(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+          aria-label="Integrator への補足"
+          placeholder="Integrator への補足（任意）· 例: 両方の節を残し、ドキュメントの節を先にしてください"
+          className="w-full resize-none rounded-sm border border-line bg-canvas px-2.5 py-2 text-ui text-fg placeholder:text-fg-4 focus:border-[var(--focus-ring)]"
+        />
+        <div className="flex items-center justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>
+            キャンセル
+          </Button>
+          <Button
+            type="submit"
+            variant="primary"
+            autoFocus
+            icon={<Bot size={13} strokeWidth={1.75} />}
+            shortcutKeys="Mod+Enter"
+          >
+            Integrator に任せる
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
 /** Bottom decision bar: what is being decided, and the two human-only actions. */
 function DecisionBar({
   integ,
   stats,
   onApply,
   onReject,
+  onResolve,
 }: {
   integ: Integration;
   stats: WorkspaceDiff['stats'] | null;
   onApply: () => void;
   onReject: () => void;
+  onResolve: () => void;
 }) {
   const rt = useRuntime();
   const connected = useConnectionState() === 'open';
+  const openSession = useUi((s) => s.openSession);
+  const resolverSession = useResolverSession(integ);
   const verify = integ.steps.find((s) => s.kind === 'verify');
   let body: ReactNode;
-  if (integ.status === 'applied') {
+  if (isResolving(integ)) {
+    body = (
+      <span className="flex min-w-0 items-center gap-2 text-ui text-fg-2" data-testid="resolving">
+        <Bot size={15} strokeWidth={1.75} className="shrink-0 text-st-running" />
+        <span className="truncate">
+          Integrator がコンフリクトを解消しています。終わると統合を再開してテストします
+        </span>
+      </span>
+    );
+  } else if (integ.status === 'applied') {
     body = (
       <span className="flex items-center gap-2 text-ui text-fg-2">
         <CheckCircle2 size={15} strokeWidth={1.75} className="text-st-completed" />
@@ -402,10 +548,21 @@ function DecisionBar({
   return (
     <div className="flex h-14 shrink-0 items-center gap-3 border-t border-line-subtle bg-canvas px-6">
       <div className="min-w-0 flex-1">{body}</div>
+      {isResolving(integ) && resolverSession && (
+        <Button
+          icon={<Bot size={12} strokeWidth={1.75} />}
+          onClick={() => openSession(resolverSession, { from: 'command' })}
+        >
+          Integrator を開く
+        </Button>
+      )}
       {canRerun(integ) && integ.status !== 'awaiting_approval' && (
         <Button
           icon={<RotateCcw size={12} strokeWidth={1.75} />}
           disabled={!connected}
+          // On a conflict this starts over from the target and conflicts again; the
+          // Integrator is the way forward, re-running is for a target that moved on.
+          variant={canResolveWithAgent(integ) ? 'ghost' : 'secondary'}
           onClick={() => void rerunIntegration(rt, integ)}
         >
           再実行
@@ -427,6 +584,19 @@ function DecisionBar({
           data-testid="approve-integration"
         >
           承認して反映
+        </Button>
+      )}
+      {canResolveWithAgent(integ) && (
+        <Button
+          variant="primary"
+          size="lg"
+          shortcutKeys="Mod+Enter"
+          icon={<Bot size={14} strokeWidth={1.75} />}
+          disabled={!connected}
+          onClick={onResolve}
+          data-testid="resolve-with-agent"
+        >
+          {resolutionFailed(integ) ? 'もう一度 Integrator に任せる' : 'Integrator に解消を任せる'}
         </Button>
       )}
     </div>
@@ -461,6 +631,8 @@ function IntegrationReview({ integ, onClose }: { integ: Integration; onClose: ()
   const scroller = useRef<HTMLDivElement | null>(null);
   const [applyOpen, setApplyOpen] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
+  const [resolveOpen, setResolveOpen] = useState(false);
+  const resolverSession = useResolverSession(integ);
   const stats = diff.data?.stats ?? null;
   const st = integrationState(integ.status);
 
@@ -477,6 +649,12 @@ function IntegrationReview({ integ, onClose }: { integ: Integration; onClose: ()
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && canApprove(integ)) {
       e.preventDefault();
       setApplyOpen(true);
+      return;
+    }
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && canResolveWithAgent(integ)) {
+      // The bar's one primary action, like 承認して反映 (the dialog still confirms).
+      e.preventDefault();
+      setResolveOpen(true);
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -544,7 +722,13 @@ function IntegrationReview({ integ, onClose }: { integ: Integration; onClose: ()
           <Section title="手順">
             <ol className="flex flex-col">
               {integ.steps.map((s, i) => (
-                <StepRow key={s.index} step={s} n={i + 1} />
+                <StepRow
+                  key={s.index}
+                  step={s}
+                  n={i + 1}
+                  resolverRunId={s.kind === 'fix' ? integ.resolverRunId : null}
+                  resolverSessionId={s.kind === 'fix' ? resolverSession : null}
+                />
               ))}
             </ol>
           </Section>
@@ -634,7 +818,9 @@ function IntegrationReview({ integ, onClose }: { integ: Integration; onClose: ()
         stats={stats}
         onApply={() => setApplyOpen(true)}
         onReject={() => setRejectOpen(true)}
+        onResolve={() => setResolveOpen(true)}
       />
+      <ResolveDialog integ={integ} open={resolveOpen} onClose={() => setResolveOpen(false)} />
       <ApplyDialog
         integ={integ}
         open={applyOpen}

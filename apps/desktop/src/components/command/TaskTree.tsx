@@ -1,7 +1,7 @@
 import type { Integration } from '@acc/protocol';
-import { ChevronRight, GitBranch, GitMerge, Play } from 'lucide-react';
+import { ChevronRight, GitBranch, GitMerge, Play, RotateCcw } from 'lucide-react';
 import { memo, useMemo } from 'react';
-import { spawnWorker, startIntegration } from '../../daemon/orchestration';
+import { resumeTask, spawnWorker, startIntegration } from '../../daemon/orchestration';
 import {
   useIntegrations,
   useMessages,
@@ -19,6 +19,7 @@ import {
   type TaskGroup,
   type TaskNode,
   buildTaskGroups,
+  canResume,
   canSpawn,
   goalFromMessages,
   integrableTasks,
@@ -163,25 +164,41 @@ const TaskRow = memo(function TaskRow({
           <span className="text-meta text-fg-4">—</span>
         )}
       </span>
-      {spawnable && canSpawn(t) && !node.worker && (
+      {(canResume(t) || (spawnable && canSpawn(t) && !node.worker)) && (
         // Hover action floats over the row's right edge (no reserved column).
         <span
           className="absolute inset-y-0 right-0 flex items-center rounded-r-sm pr-1 pl-8 opacity-0 [mask-image:linear-gradient(to_right,transparent,black_28px)] group-hover:opacity-100 group-focus-within:opacity-100"
           // The row's own surface (card + hover tint), so the fade blends into it.
           style={{ background: 'linear-gradient(var(--bg-hover), var(--bg-hover)), var(--bg-surface)' }}
         >
-          <Button
-            size="sm"
-            variant="secondary"
-            icon={<Play size={10} strokeWidth={2} fill="currentColor" />}
-            disabled={!connected}
-            onClick={(e) => {
-              e.stopPropagation();
-              void spawnWorker(rt, t);
-            }}
-          >
-            このTaskを実行
-          </Button>
+          {canResume(t) ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={<RotateCcw size={11} strokeWidth={1.75} />}
+              disabled={!connected}
+              hint="同じ worktree と Worker の会話から作業を続けます"
+              onClick={(e) => {
+                e.stopPropagation();
+                void resumeTask(rt, t);
+              }}
+            >
+              再開
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={<Play size={10} strokeWidth={2} fill="currentColor" />}
+              disabled={!connected}
+              onClick={(e) => {
+                e.stopPropagation();
+                void spawnWorker(rt, t);
+              }}
+            >
+              このTaskを実行
+            </Button>
+          )}
         </span>
       )}
     </div>

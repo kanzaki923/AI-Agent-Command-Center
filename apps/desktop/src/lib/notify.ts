@@ -1,7 +1,15 @@
+import { invoke } from '@tauri-apps/api/core';
+import { isTauri } from './platform';
+
 /**
- * OS notifications behind one small function. Inside Tauri the notification plugin is used
- * when the shell exposes it (`window.__TAURI__.notification`, set up by the desktop shell);
- * in the browser the Web Notification API. Neither present: nothing happens.
+ * OS notifications behind one small function. Inside Tauri the shell's notification plugin
+ * (tauri-plugin-notification, registered in src-tauri/src/lib.rs; the main window's
+ * capability allows exactly its is_permission_granted / request_permission / notify
+ * commands); in the browser the Web Notification API. Neither present: nothing happens.
+ *
+ * The plugin's commands are invoked directly rather than through its `window.Notification`
+ * shim: on Windows the shim starts as "denied" until asked, while the desktop plugin always
+ * reports granted — the commands are the plugin's actual answer.
  */
 
 export interface OsNotification {
@@ -16,15 +24,20 @@ export interface OsNotification {
 interface TauriNotificationApi {
   isPermissionGranted(): Promise<boolean>;
   requestPermission(): Promise<string>;
-  sendNotification(options: { title: string; body?: string }): void;
+  sendNotification(options: { title: string; body?: string }): Promise<unknown>;
 }
 
+/** The plugin's commands (`plugin:notification|…`), the same calls its JS package makes. */
+const tauriPlugin: TauriNotificationApi = {
+  // null = "prompt" (mobile); the desktop plugin answers true.
+  isPermissionGranted: async () =>
+    (await invoke<boolean | null>('plugin:notification|is_permission_granted')) === true,
+  requestPermission: () => invoke<string>('plugin:notification|request_permission'),
+  sendNotification: (options) => invoke('plugin:notification|notify', { options }),
+};
+
 function tauriApi(): TauriNotificationApi | null {
-  const g = (globalThis as { __TAURI__?: { notification?: Partial<TauriNotificationApi> } }).__TAURI__;
-  const n = g?.notification;
-  return n && typeof n.sendNotification === 'function' && typeof n.isPermissionGranted === 'function'
-    ? (n as TauriNotificationApi)
-    : null;
+  return isTauri() ? tauriPlugin : null;
 }
 
 function webApi(): typeof Notification | null {
@@ -73,7 +86,7 @@ export async function notify(n: OsNotification): Promise<boolean> {
     const t = tauriApi();
     if (t) {
       if (!(await t.isPermissionGranted())) return false;
-      t.sendNotification({ title: n.title, ...(n.body ? { body: n.body } : {}) });
+      await t.sendNotification({ title: n.title, ...(n.body ? { body: n.body } : {}) });
       return true;
     }
     const w = webApi();

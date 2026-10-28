@@ -1,8 +1,10 @@
+import { AccClientError } from '@acc/client';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
 import { buildBoardSections, buildTaskGroups } from '../../model/tasks';
 import { useConfirm } from '../../store/confirm';
+import { useToasts } from '../../store/toast';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
 import { run, session, task } from '../../test/fixtures';
@@ -73,8 +75,9 @@ describe('task board model', () => {
 
 describe('<TaskBoard> (Command Mode → Task)', () => {
   beforeEach(() => {
-    useUi.setState({ selectedId: null, collapsed: {}, projectId: null, commandView: 'agents', taskGoal: null });
+    useUi.setState({ selectedId: null, collapsed: {}, projectId: null, commandView: 'agents', taskGoal: null, focusSessionId: null });
     useConfirm.setState({ request: null });
+    useToasts.setState({ toasts: [] });
   });
 
   it('lists tasks without workers and starts one with R', async () => {
@@ -110,17 +113,13 @@ describe('<TaskBoard> (Command Mode → Task)', () => {
     await waitFor(() => expect(useUi.getState().focusSessionId).toBe(worker.id));
   });
 
-  it('sends a reviewed task back to its worker with feedback (contract fallback)', async () => {
+  it('sends a reviewed task back to its worker with feedback in one task.retry call (F)', async () => {
     const { review } = scenario();
-    const calls: { method: string; params: unknown }[] = [];
+    let retried: unknown = null;
     const { fake } = mount(
       base([review], {
-        'task.update': (p) => {
-          calls.push({ method: 'task.update', params: p });
-          return { ...review, status: p.status };
-        },
-        'task.spawnWorker': (p) => {
-          calls.push({ method: 'task.spawnWorker', params: p });
+        'task.retry': (p) => {
+          retried = p;
           return { sessionId: worker.id, runId: 'run_y', workspaceId: 'wsp_y', budgetId: null };
         },
       }),
@@ -130,33 +129,27 @@ describe('<TaskBoard> (Command Mode → Task)', () => {
     fireEvent.keyDown(window, { key: 'j' });
     fireEvent.keyDown(window, { key: 'f' });
     const box = await screen.findByLabelText('差し戻しの指示');
-    fireEvent.change(box, { target: { value: '境界値のテストが足りません' } });
+    fireEvent.change(box, { target: { value: '  境界値のテストが足りません ' } });
     await act(async () => {
       fireEvent.keyDown(box, { key: 'Enter', ctrlKey: true });
     });
-    await waitFor(() => expect(calls).toHaveLength(2));
-    expect(calls[0]).toEqual({ method: 'task.update', params: { taskId: review.id, status: 'ready' } });
-    expect(calls[1]!.method).toBe('task.spawnWorker');
-    expect((calls[1]!.params as { instructions: string }).instructions).toContain('境界値のテストが足りません');
-    expect(fake.calls.some((c) => c.method === 'task.retry')).toBe(false);
+    await waitFor(() => expect(retried).toEqual({ taskId: review.id, feedback: '境界値のテストが足りません' }));
+    // Atomic on the daemon: no review → ready → spawnWorker steps from the UI.
+    expect(fake.calls.some((c) => c.method === 'task.update' || c.method === 'task.spawnWorker')).toBe(false);
+    await waitFor(() => expect(useUi.getState().focusSessionId).toBe(worker.id));
   });
 
-  it('uses task.retry when the daemon offers it', async () => {
+  it('keeps the task in review and the feedback box open when the daemon refuses', async () => {
     const { review } = scenario();
-    let retried: unknown = null;
     mount(
       base([review], {
-        'system.info': () => ({ methods: ['task.retry', 'task.spawnWorker'], stats: { lastEventSeq: 0 } }),
-        'task.retry': (p) => {
-          retried = p;
-          return { sessionId: worker.id };
+        'task.retry': () => {
+          throw new AccClientError('conflict', 'このタスクのワークスペースは別の Run が使用中です');
         },
       }),
     );
     useUi.setState({ commandView: 'tasks' });
     await screen.findByTestId('task-board');
-    // Wait for system.info (the method probe) before acting.
-    await waitFor(() => expect(screen.getByRole('option', { name: /テストを追加する/ })).toBeInTheDocument());
     fireEvent.click(screen.getByRole('option', { name: /テストを追加する/ }));
     fireEvent.click(screen.getByRole('button', { name: /Worker に差し戻す/ }));
     const box = await screen.findByLabelText('差し戻しの指示');
@@ -164,7 +157,52 @@ describe('<TaskBoard> (Command Mode → Task)', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /^差し戻す/ }));
     });
-    await waitFor(() => expect(retried).toEqual({ taskId: review.id, feedback: 'ログを残して' }));
+    await waitFor(() =>
+      expect(useToasts.getState().toasts.map((t) => t.title)).toContain(
+        'Worker に差し戻せませんでした: このタスクのワークスペースは別の Run が使用中です',
+      ),
+    );
+    expect(screen.getByLabelText('差し戻しの指示')).toHaveValue('ログを残して');
+    expect(screen.getByRole('region', { name: 'レビュー待ち' })).toHaveTextContent('テストを追加する');
+  });
+
+  it('lists a task interrupted by a daemon restart on its own and resumes it with R (task.retry)', async () => {
+    const interrupted = task({
+      projectId,
+      title: 'API を直す',
+      status: 'ready',
+      statusReason: 'interrupted',
+      createdBy: by,
+      assigneeSessionId: worker.id,
+      workspaceId: 'wsp_00000000000000000000000001',
+    });
+    const { ready } = scenario();
+    let retried: unknown = null;
+    const { fake } = mount(
+      base([interrupted, ready], {
+        'task.retry': (p) => {
+          retried = p;
+          return { sessionId: worker.id, runId: 'run_z', workspaceId: 'wsp_z', budgetId: null };
+        },
+      }),
+    );
+    useUi.setState({ commandView: 'tasks' });
+    const board = await screen.findByTestId('task-board');
+    const section = within(board).getByRole('region', { name: '中断（再開できます）' });
+    expect(section).toHaveTextContent('API を直す');
+    expect(within(board).getByRole('region', { name: '着手可能' })).not.toHaveTextContent('API を直す');
+    const row = screen.getByRole('option', { name: /API を直す · 中断/ });
+    expect(row).toHaveTextContent('Core Daemon の停止・再起動で中断されました');
+    fireEvent.click(row);
+    expect(within(row).getByRole('button', { name: /再開/ })).toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: /このTaskを実行/ })).not.toBeInTheDocument();
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'r' });
+    });
+    // Resumed without new instructions, on the same worker session (never a fresh worker).
+    expect(retried).toEqual({ taskId: interrupted.id });
+    expect(fake.calls.some((c) => c.method === 'task.spawnWorker')).toBe(false);
+    await waitFor(() => expect(useUi.getState().focusSessionId).toBe(worker.id));
   });
 
   it('asks before cancelling a task (Ctrl+Shift+Backspace)', async () => {

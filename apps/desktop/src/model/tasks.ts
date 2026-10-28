@@ -235,6 +235,7 @@ export function taskDisplay(n: TaskNode): { state: DisplayState; label: string }
   if (n.task.status === 'running' && n.workerRun?.status === 'awaiting_approval') {
     return { state: 'awaiting_approval', label: '承認待ち' };
   }
+  if (isInterruptedTask(n.task)) return { state: 'interrupted', label: '中断' };
   return { state: taskState(n.task.status), label: TASK_STATUS_LABEL[n.task.status] };
 }
 
@@ -255,9 +256,13 @@ export function goalFromMessages(messages: readonly Message[], max = 80): string
  * Sections of the task board, in the Command order: what needs you (review, failed,
  * blocked) → what is moving → what can start → what waits → what is over.
  */
-export const BOARD_SECTIONS: readonly { status: TaskStatus; label: string; collapsed: boolean }[] = [
+export type BoardSectionKey = TaskStatus | 'interrupted';
+
+export const BOARD_SECTIONS: readonly { status: BoardSectionKey; label: string; collapsed: boolean }[] = [
   { status: 'review', label: 'レビュー待ち', collapsed: false },
   { status: 'failed', label: '失敗', collapsed: false },
+  // `ready` tasks whose worker a daemon stop / restart cut off: they wait for 再開, not a new worker.
+  { status: 'interrupted', label: '中断（再開できます）', collapsed: false },
   { status: 'blocked', label: '止まっている', collapsed: false },
   { status: 'running', label: '進行中', collapsed: false },
   { status: 'ready', label: '着手可能', collapsed: false },
@@ -271,7 +276,7 @@ export interface BoardTask extends TaskNode {
 }
 
 export interface BoardSection {
-  status: TaskStatus;
+  status: BoardSectionKey;
   label: string;
   collapsedByDefault: boolean;
   tasks: BoardTask[];
@@ -287,7 +292,7 @@ export function buildBoardSections(groups: TaskGroup[], goal: string | null): Bo
     label: s.label,
     collapsedByDefault: s.collapsed,
     tasks: all
-      .filter((t) => t.task.status === s.status)
+      .filter((t) => boardSectionOf(t.task) === s.status)
       .sort((a, b) =>
         s.status === 'done' || s.status === 'cancelled'
           ? b.task.updatedAt.localeCompare(a.task.updatedAt)
@@ -296,14 +301,37 @@ export function buildBoardSections(groups: TaskGroup[], goal: string | null): Bo
   })).filter((s) => s.tasks.length > 0);
 }
 
+/** The section a task is listed under on the board. */
+export function boardSectionOf(task: Task): BoardSectionKey {
+  return isInterruptedTask(task) ? 'interrupted' : task.status;
+}
+
+/**
+ * Its worker was cut off by a daemon stop / restart (the daemon puts the task back to
+ * `ready` with statusReason `interrupted`). The worktree, branch and worker session remain:
+ * 再開 (`task.retry`) continues there; a fresh worker would lose the conversation.
+ */
+export function isInterruptedTask(task: Task): boolean {
+  return task.status === 'ready' && task.statusReason === 'interrupted';
+}
+
 /** Stopped because a dependency failed or was cancelled (the daemon refuses a worker). */
 export function blockedByDependency(task: Task): boolean {
   return task.status === 'blocked' && !!task.statusReason?.startsWith('dependency_');
 }
 
-/** "このTaskを実行": what task.spawnWorker accepts (ready, failed, blocked for a human reason). */
+/**
+ * "このTaskを実行": what task.spawnWorker accepts (ready, failed, blocked for a human reason).
+ * An interrupted task is resumed instead (canResume).
+ */
 export function canRun(task: Task): boolean {
+  if (isInterruptedTask(task)) return false;
   return canSpawn(task) || (task.status === 'blocked' && !blockedByDependency(task));
+}
+
+/** "再開": continue an interrupted task on its worktree and worker session (task.retry). */
+export function canResume(task: Task): boolean {
+  return isInterruptedTask(task);
 }
 
 /** "Worker に差し戻す": the worker's result is there to be corrected. */
@@ -324,6 +352,8 @@ export function statusReasonText(task: Task): string | null {
   if (r === 'worker_failed') return 'Worker がエラーで止まりました';
   if (r === 'worker_cancelled') return 'Worker が停止されました';
   if (r === 'worker_interrupted') return 'Worker が中断されました';
+  if (r === 'interrupted')
+    return 'Core Daemon の停止・再起動で中断されました。同じ worktree から再開できます';
   if (r === 'no_changes') return 'Worker は変更を加えずに終わりました';
   return r;
 }

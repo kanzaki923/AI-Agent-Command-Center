@@ -1,7 +1,14 @@
 import { QueryClient } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { qk } from '../daemon/keys';
-import { notify } from '../lib/notify';
+import { notificationPermission, notify } from '../lib/notify';
+
+// The Tauri bridge: outside the desktop app unless a test says otherwise.
+const tauri = vi.hoisted(() => ({ inside: false, invoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({
+  isTauri: () => tauri.inside,
+  invoke: (...args: unknown[]) => tauri.invoke(...args) as Promise<unknown>,
+}));
 import { approval, event, integration, iso, message, run, session } from '../test/fixtures';
 import { type AttentionView, createAttentionNotifier, isVisible } from './attention';
 
@@ -121,17 +128,33 @@ describe('attention notifications', () => {
 
 describe('notify()', () => {
   afterEach(() => {
-    delete (globalThis as { __TAURI__?: unknown }).__TAURI__;
+    tauri.inside = false;
+    tauri.invoke.mockReset();
     vi.unstubAllGlobals();
   });
 
-  it('uses the Tauri notification plugin when the shell exposes it', async () => {
-    const sendNotification = vi.fn();
-    (globalThis as { __TAURI__?: unknown }).__TAURI__ = {
-      notification: { isPermissionGranted: async () => true, requestPermission: async () => 'granted', sendNotification },
-    };
-    expect(await notify({ title: 'T', body: 'B' })).toBe(true);
-    expect(sendNotification).toHaveBeenCalledWith({ title: 'T', body: 'B' });
+  it('calls the Tauri notification plugin commands inside the desktop app', async () => {
+    tauri.inside = true;
+    tauri.invoke.mockImplementation((cmd: string) =>
+      Promise.resolve(cmd === 'plugin:notification|is_permission_granted' ? true : null),
+    );
+    expect(await notify({ title: 'T', body: 'B', tag: 'x' })).toBe(true);
+    expect(tauri.invoke.mock.calls).toEqual([
+      ['plugin:notification|is_permission_granted'],
+      ['plugin:notification|notify', { options: { title: 'T', body: 'B' } }],
+    ]);
+    expect(await notificationPermission()).toBe('granted');
+  });
+
+  it('sends nothing when the plugin says no, and reports a missing plugin as failure', async () => {
+    tauri.inside = true;
+    tauri.invoke.mockResolvedValueOnce(null);
+    expect(await notify({ title: 'T' })).toBe(false);
+    expect(tauri.invoke).toHaveBeenCalledTimes(1);
+    // e.g. the shell without the plugin: the command is rejected.
+    tauri.invoke.mockRejectedValue(new Error('plugin notification not found'));
+    expect(await notify({ title: 'T' })).toBe(false);
+    expect(await notificationPermission()).toBe('unsupported');
   });
 
   it('falls back to the Web Notification API, and never prompts on its own', async () => {

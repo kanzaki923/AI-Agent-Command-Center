@@ -77,6 +77,58 @@ export function canRerun(i: Integration): boolean {
   return i.status === 'conflict' || i.status === 'failed' || i.status === 'awaiting_approval';
 }
 
+/** The merge that stopped the integration on a conflict (latest attempt), if any. */
+export function conflictStep(i: Integration): IntegrationStep | null {
+  return (
+    [...i.steps]
+      .reverse()
+      .find((s) => s.kind === 'merge' && s.status === 'failed' && s.conflictFiles.length > 0) ??
+    null
+  );
+}
+
+/** The Integrator's step (integration.resolveWithAgent), if one ran in this attempt. */
+export function fixStep(i: Integration): IntegrationStep | null {
+  return i.steps.find((s) => s.kind === 'fix') ?? null;
+}
+
+/** "Integrator に解消を任せる": only a conflict with a recorded conflicting merge. */
+export function canResolveWithAgent(i: Integration): boolean {
+  return i.status === 'conflict' && !!conflictStep(i);
+}
+
+/** The Integrator is working on the conflict right now. */
+export function isResolving(i: Integration): boolean {
+  return i.status === 'running' && fixStep(i)?.status === 'running';
+}
+
+/** The last Integrator attempt did not resolve it (the integration is back in conflict). */
+export function resolutionFailed(i: Integration): boolean {
+  return i.status === 'conflict' && fixStep(i)?.status === 'failed';
+}
+
+export interface ResolvePlan {
+  title: string;
+  lines: string[];
+}
+
+/** What "Integrator に任せる" will do, in the words of the confirmation (§9.3). */
+export function resolvePlan(i: Integration): ResolvePlan {
+  const step = conflictStep(i);
+  const files = step?.conflictFiles.join('、') ?? '';
+  const target = i.targetRef ?? '反映先ブランチ';
+  // The step title names the task (「…」をマージ); the branch is the fallback.
+  const merge = step?.title ? `${step.title}する` : step?.branch ? `「${step.branch}」をマージする` : 'マージする';
+  return {
+    title: 'Integrator にコンフリクトの解消を任せますか？',
+    lines: [
+      `${merge}ときに ${files} がコンフリクトしました。`,
+      `統合ブランチ ${i.branch ?? ''} でこのマージをやり直し、Integrator（エージェント）が両方の Task の目標を踏まえて解消します。`,
+      `解消できたらマージをコミットし、残りのマージとテストを続けます。${target} はまだ変更しません（反映にはあなたの承認が必要です）。`,
+    ],
+  };
+}
+
 export function stepDurationMs(step: IntegrationStep): number | null {
   if (!step.startedAt || !step.endedAt) return null;
   return Date.parse(step.endedAt) - Date.parse(step.startedAt);
@@ -130,8 +182,11 @@ export function applyPlan(
 export function integrationSummary(i: Integration): string {
   const done = i.steps.filter((s) => s.status === 'succeeded').length;
   const verify = i.steps.find((s) => s.kind === 'verify');
-  const conflict = i.steps.find((s) => s.conflictFiles.length > 0);
+  // Merge steps keep their conflictFiles after the Integrator resolved them (the record of
+  // where it conflicted): only a conflict that still stands is the summary.
+  const conflict = i.status === 'conflict' ? conflictStep(i) : null;
   if (conflict) return `コンフリクト ${conflict.conflictFiles.length} ファイル · ${conflict.title}`;
+  if (isResolving(i)) return 'Integrator がコンフリクトを解消中';
   const test =
     verify?.status === 'succeeded'
       ? 'テスト成功'

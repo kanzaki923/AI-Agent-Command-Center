@@ -14,13 +14,27 @@ import {
   grantParams,
   presetOf,
 } from './grant';
-import { applyPlan, canApprove, canReject, integrationSummary } from './integration';
 import {
+  applyPlan,
+  canApprove,
+  canReject,
+  canResolveWithAgent,
+  integrationSummary,
+  isResolving,
+  resolutionFailed,
+  resolvePlan,
+} from './integration';
+import {
+  boardSectionOf,
   buildTaskGroups,
+  canResume,
+  canRun,
   canSpawn,
   flattenTasks,
   goalFromMessages,
   integrableTasks,
+  statusReasonText,
+  taskDisplay,
   taskState,
   workerLabel,
 } from './tasks';
@@ -241,6 +255,21 @@ describe('task tree', () => {
     expect(canSpawn(task({ status: 'running' }))).toBe(false);
   });
 
+  it('tells a task interrupted by a daemon restart apart: resume, never a fresh worker', () => {
+    const t = task({ status: 'ready', statusReason: 'interrupted' });
+    expect(canResume(t)).toBe(true);
+    expect(canRun(t)).toBe(false);
+    expect(boardSectionOf(t)).toBe('interrupted');
+    expect(statusReasonText(t)).toContain('再開できます');
+    const node = { task: t, children: [], worker: null, workerRun: null, workspace: null, diff: null, waitsFor: [] };
+    expect(taskDisplay(node)).toEqual({ state: 'interrupted', label: '中断' });
+    // A plain ready task is started, not resumed.
+    const ready = task({ status: 'ready' });
+    expect(canResume(ready)).toBe(false);
+    expect(canRun(ready)).toBe(true);
+    expect(boardSectionOf(ready)).toBe('ready');
+  });
+
   it('takes the goal from the first thing the human asked', () => {
     const s = session({ kind: 'chat' });
     const msgs = [
@@ -293,11 +322,39 @@ describe('integration review', () => {
     expect(canReject({ ...base, status: 'running' })).toBe(false);
     expect(canReject({ ...base, status: 'conflict' })).toBe(true);
     expect(canReject({ ...base, status: 'applied' })).toBe(false);
-    const conflict = {
+    const conflict: Integration = {
       ...base,
+      status: 'conflict',
       steps: [step({ status: 'failed', conflictFiles: ['a.ts', 'b.ts'], title: '「A」をマージ' })],
     };
     expect(integrationSummary(conflict)).toBe('コンフリクト 2 ファイル · 「A」をマージ');
+    expect(canResolveWithAgent(conflict)).toBe(true);
+    expect(canResolveWithAgent({ ...conflict, status: 'failed' })).toBe(false);
+    // A conflict without the record of its merge cannot be handed over.
+    expect(canResolveWithAgent({ ...conflict, steps: [] })).toBe(false);
+  });
+
+  it('follows an Integrator resolution: running, resolved (no longer a conflict), failed', () => {
+    const merge = step({ status: 'failed', conflictFiles: ['README.md'], title: '「B」をマージ', branch: 'acc/b' });
+    const fixStepOf = (status: IntegrationStep['status']) =>
+      step({ index: 1, kind: 'fix', status, title: 'Integrator がコンフリクトを解消（README.md）', conflictFiles: ['README.md'] });
+    const resolving: Integration = { ...base, status: 'running', steps: [merge, fixStepOf('running')] };
+    expect(isResolving(resolving)).toBe(true);
+    expect(integrationSummary(resolving)).toBe('Integrator がコンフリクトを解消中');
+    const resolved: Integration = {
+      ...base,
+      status: 'awaiting_approval',
+      // The merge keeps conflictFiles as the record of where it conflicted.
+      steps: [{ ...merge, status: 'succeeded' }, fixStepOf('succeeded')],
+    };
+    expect(isResolving(resolved)).toBe(false);
+    expect(integrationSummary(resolved)).toBe('2/2 ステップ');
+    const failed: Integration = { ...base, status: 'conflict', steps: [merge, fixStepOf('failed')] };
+    expect(resolutionFailed(failed)).toBe(true);
+    expect(canResolveWithAgent(failed)).toBe(true);
+    const plan = resolvePlan({ ...failed, branch: 'acc/integration-1', targetRef: 'main' });
+    expect(plan.lines.join('\n')).toContain('「B」をマージするときに README.md がコンフリクトしました。');
+    expect(plan.lines.join('\n')).toContain('main はまだ変更しません');
   });
 });
 
