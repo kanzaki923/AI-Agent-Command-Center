@@ -155,6 +155,8 @@ export interface WorkspacesService {
     branch?: string;
     baseRef?: string;
     label?: string;
+    /** Task the workspace is created for (stored as Workspace.taskId). */
+    taskId?: string | null;
     actor: Actor;
   }): Promise<Workspace>;
   get(workspaceId: string): Workspace;
@@ -163,9 +165,13 @@ export interface WorkspacesService {
   isLocked(workspaceId: string): boolean;
   /** Commit everything in the worktree (no-op if clean). Returns the new commit sha or null. */
   commitAll(workspaceId: string, message: string, actor: Actor): Promise<string | null>;
-  /** Unified diff + stats of the workspace branch against its base. */
+  /**
+   * Unified diff + stats of the workspace (including uncommitted and untracked changes)
+   * against the merge-base with `baseRef` (default: the workspace's own baseRef).
+   */
   diff(
     workspaceId: string,
+    baseRef?: string,
   ): Promise<{
     patch: string;
     files: { path: string; status: string; additions: number; deletions: number }[];
