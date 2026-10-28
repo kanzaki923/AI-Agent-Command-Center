@@ -49,16 +49,28 @@ export async function newChat(rt: AppRuntime, opts: { kind?: 'chat' | 'agent' } 
 }
 
 /** Ctrl+J / Ctrl+Shift+J: move to the next item that needs a human (§7.2). */
-export function goToAttention(rt: AppRuntime, dir: 1 | -1 = 1): BoardItem | null {
+export function goToAttention(
+  rt: AppRuntime,
+  dir: 1 | -1 = 1,
+  only?: BoardItem['state'],
+): BoardItem | null {
   const ui = useUi.getState();
-  const items = currentBoard(rt);
+  const all = currentBoard(rt);
+  const items = only ? all.filter((i) => i.state === only) : all;
   const target = nextAttention(items, ui.selectedId, dir);
   if (!target) {
-    toast({ title: '要対応の項目はありません', tone: 'info', sticky: false, key: 'no-attention' });
+    toast({
+      title: only === 'awaiting_approval' ? '承認待ちはありません' : '要対応の項目はありません',
+      tone: 'info',
+      sticky: false,
+      key: 'no-attention',
+    });
     return null;
   }
   ui.select(target.id, true);
-  if (ui.mode !== 'command') ui.setMode('command');
+  // The attention cards live in the agent view of the Command board.
+  if (ui.commandView !== 'agents') ui.setCommandView('agents');
+  if (ui.mode !== 'command' || ui.reviewIntegrationId) ui.setMode('command');
   // Land on the approval card itself so Y / N work immediately.
   requestAnimationFrame(() => {
     const el = document.querySelector<HTMLElement>(`[data-board-item="${CSS.escape(target.id)}"]`);
