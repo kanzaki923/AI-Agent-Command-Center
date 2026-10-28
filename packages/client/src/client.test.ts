@@ -279,11 +279,17 @@ describe('client', () => {
     server.emitLive('sub_1'); // seq 2
     await until(() => got.length === 1);
 
+    // Hold the next socket closed until the offline events exist. Waiting for the transient
+    // 'reconnecting' state instead raced the 1ms reconnect timer: under load the client was
+    // already open (and caught up) again before the check ran, so events 3-4 were never
+    // replayed and the test timed out.
+    server.autoOpen = false;
     server.current.close();
-    await until(() => c.state === 'reconnecting');
+    await until(() => c.state === 'reconnecting' && server.sockets.length === 2);
     // Missed while offline.
     server.addEvent(); // 3
     server.addEvent(); // 4
+    server.current.open();
     await until(() => got.length === 3);
     // A live duplicate of an already delivered event is ignored; new ones flow.
     server.current.push({ type: 'event', subscriptionId: 'sub_2', event: server.log[3] });
