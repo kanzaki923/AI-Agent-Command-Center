@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- App mark: a hub (accent) with six agents around it. Source for `pnpm tauri icon`. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c1d22"/>
+      <stop offset="1" stop-color="#101114"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="208" fill="url(#bg)"/>
+  <rect x="64.5" y="64.5" width="895" height="895" rx="207.5" fill="none" stroke="#ffffff" stroke-opacity="0.14" stroke-width="3"/>
+  <g stroke="#6c72ff" stroke-opacity="0.35" stroke-width="10">
+    <line x1="512" y1="512" x2="781" y2="512"/>
+    <line x1="512" y1="512" x2="646" y2="745"/>
+    <line x1="512" y1="512" x2="378" y2="745"/>
+    <line x1="512" y1="512" x2="243" y2="512"/>
+    <line x1="512" y1="512" x2="378" y2="279"/>
+    <line x1="512" y1="512" x2="646" y2="279"/>
+  </g>
+  <circle cx="512" cy="512" r="88" fill="#6c72ff"/>
+  <circle cx="781" cy="512" r="52" fill="#edeef0"/>
+  <circle cx="646" cy="745" r="52" fill="#a1a4ab"/>
+  <circle cx="378" cy="745" r="52" fill="#a1a4ab"/>
+  <circle cx="243" cy="512" r="52" fill="#a1a4ab"/>
+  <circle cx="378" cy="279" r="52" fill="#a1a4ab"/>
+  <circle cx="646" cy="279" r="52" fill="#a1a4ab"/>
+</svg>

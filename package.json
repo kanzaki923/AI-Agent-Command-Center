@@ -9,6 +9,7 @@
   "scripts": {
     "dev:daemon": "pnpm --filter @acc/daemon dev",
     "start:daemon": "pnpm --filter @acc/daemon start",
+    "dev:desktop": "pnpm --filter @acc/desktop dev",
     "acc": "node packages/cli/bin/acc.js",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
