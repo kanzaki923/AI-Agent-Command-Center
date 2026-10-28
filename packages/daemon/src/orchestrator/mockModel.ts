@@ -1,8 +1,8 @@
-import type { Integration, TaskSnapshot } from '@acc/protocol';
+import type { Integration, Task, TaskSnapshot } from '@acc/protocol';
 import type { MockReply, MockResponder } from '../llm/mock';
 import { methodForToolName, toolNameForMethod } from '../llm/tools';
 import type { ChatMessage, ChatRequest } from '../llm/types';
-import { PROJECT_ID_LABEL } from './executor';
+import { ORCHESTRATOR_RESUME_NOTICE, PROJECT_ID_LABEL } from './executor';
 
 /** Offline scripted orchestrator (demo mode and the vertical-slice tests). */
 export const MOCK_ORCHESTRATOR_MODEL = 'mock/orchestrator';
@@ -55,7 +55,13 @@ export const mockOrchestrator: MockResponder = (req, info) => {
         ]
       : [];
 
-  const calls = pastCalls(req.messages);
+  // Everything since the goal (the last user message), and what happened since the latest
+  // turn boundary: the goal, or the daemon's resume notice after a restart.
+  const userAt = lastUserIndex(req.messages);
+  const calls = pastCalls(req.messages, userAt + 1);
+  const resumeAt = lastResumeIndex(req.messages);
+  const resumed = resumeAt > userAt;
+  const recent = resumed ? pastCalls(req.messages, resumeAt + 1) : calls;
   if (
     calls.length === 0 &&
     alreadyOrchestrated(req.messages) &&
@@ -65,13 +71,57 @@ export const mockOrchestrator: MockResponder = (req, info) => {
       text: '前回の目標はすでに Task に分解して Worker に任せました。進み具合は Command Mode と Timeline で確認できます。別の目標を任せるときは「新しい目標: …」と送ってください。',
     };
   }
-  const last = [...calls].reverse().find((c) => c.method !== 'orchestrator.recordDecision');
+  const last = [...recent].reverse().find((c) => c.method !== 'orchestrator.recordDecision');
   const goal = info.lastUserText.replace(/^新しい目標\s*[:：]\s*/, '').trim() || '依頼された作業';
 
-  if (!last) return planTasks(projectId, goal, decide);
+  if (!last) {
+    if (!resumed) return planTasks(projectId, goal, decide);
+    // After a restart: read the task states and continue the plan from there.
+    return {
+      text: 'デーモンの再起動で中断した計画の続きから再開します。まず Task の状態を確認します。',
+      toolCalls: [
+        ...decide(
+          '中断した計画を再開する',
+          'デーモンの再起動で前回の Run が中断されました。Task と worktree は残っているため、状態を確かめて続きから進めます。',
+          createdTaskIds(calls),
+        ),
+        call('task.list', { projectId }),
+      ],
+    };
+  }
 
-  const failed = calls.filter((c) => c.method === last.method && c.error);
+  const failed = recent.filter((c) => c.method === last.method && c.error);
   switch (last.method) {
+    case 'task.list': {
+      if (last.error) return report(`Task の状況を確認できませんでした: ${last.error.message}`);
+      const ids = createdTaskIds(calls);
+      const mine = ((last.output as { items?: Task[] } | null)?.items ?? []).filter((t) =>
+        ids.includes(t.id),
+      );
+      if (mine.length === 0) return report('再開できる Task が見つかりませんでした。');
+      const restart = mine.filter((t) => t.status === 'ready');
+      if (restart.length === 0) {
+        return {
+          text: 'Task の状態を確認しました。終わるまで見守ります。',
+          toolCalls: [waitForTasks(ids)],
+        };
+      }
+      return {
+        text: `中断された ${restart.length} 件の Task を、同じ worktree とブランチから再開します。`,
+        toolCalls: [
+          ...decide(
+            `${restart.length}件の Task を再開する`,
+            'Worker の作業がデーモンの再起動で中断されました。コミット済みの変更とブランチは残っているため、同じ Worker セッションで続きから進めます。',
+            restart.map((t) => t.id),
+          ),
+          ...restart.map((t) =>
+            t.assigneeSessionId
+              ? call('task.retry', { taskId: t.id })
+              : call('task.spawnWorker', { taskId: t.id }),
+          ),
+        ],
+      };
+    }
     case 'task.create': {
       if (failed.length > 0)
         return report(`Task を作成できませんでした: ${failed[0]!.error!.message}`);
@@ -88,10 +138,14 @@ export const mockOrchestrator: MockResponder = (req, info) => {
         ],
       };
     }
+    case 'task.retry':
     case 'task.spawnWorker': {
-      if (failed.length > 0) {
+      const startFailed = recent.filter(
+        (c) => (c.method === 'task.spawnWorker' || c.method === 'task.retry') && c.error,
+      );
+      if (startFailed.length > 0) {
         return report(
-          `Worker を起動できませんでした: ${failed.map((c) => c.error!.message).join(' / ')}`,
+          `Worker を起動できませんでした: ${startFailed.map((c) => c.error!.message).join(' / ')}`,
         );
       }
       return {
@@ -135,6 +189,8 @@ export const mockOrchestrator: MockResponder = (req, info) => {
         };
       }
       const ids = tasks.map((t) => t.id);
+      // Resumed after a restart with an integration already created: run it again.
+      const existing = createdIntegrationId(calls);
       return {
         text: 'すべての Task がレビュー待ちになりました。変更を統合ブランチにまとめて、テストで検証します。',
         toolCalls: [
@@ -143,8 +199,20 @@ export const mockOrchestrator: MockResponder = (req, info) => {
             'すべての Worker が完了し、差分が記録されました。統合ブランチでまとめてテストし、人間のレビューに回します。',
             ids,
           ),
-          call('integration.create', { projectId, taskIds: ids }),
+          existing
+            ? call('integration.run', { integrationId: existing })
+            : call('integration.create', { projectId, taskIds: ids }),
         ],
+      };
+    }
+    case 'integration.resolveWithAgent': {
+      if (last.error) {
+        return report(`Integrator を起動できませんでした: ${last.error.message}`);
+      }
+      const integ = (last.output as { integration: Integration }).integration;
+      return {
+        text: 'Integrator がコンフリクトを解消しています。終わると統合が再開されてテストが走るので、待ちます。',
+        toolCalls: [call('integration.wait', { integrationId: integ.id, timeoutMs: WAIT_MS })],
       };
     }
     case 'integration.create': {
@@ -172,13 +240,40 @@ export const mockOrchestrator: MockResponder = (req, info) => {
           toolCalls: [call('integration.wait', { integrationId: integ.id, timeoutMs: WAIT_MS })],
         };
       }
+      const triedResolve = calls.some(
+        (c) => c.method === 'integration.resolveWithAgent' && c.input.integrationId === integ.id,
+      );
+      if (
+        integ.status === 'conflict' &&
+        !triedResolve &&
+        tools.has('integration.resolveWithAgent')
+      ) {
+        const files = integ.steps.flatMap((s) => (s.kind === 'merge' ? s.conflictFiles : []));
+        return {
+          text: `マージでコンフリクトが発生しました（${files.join(', ')}）。Integrator に解消を任せます。`,
+          toolCalls: [
+            ...decide(
+              'Integrator にコンフリクトの解消を任せる',
+              `統合ブランチへのマージが ${files.join(', ')} でコンフリクトしました。両方の Task の目標を渡して解消させ、テストで確かめます。解消できなければ人間に相談します。`,
+              integ.taskIds,
+            ),
+            call('integration.resolveWithAgent', { integrationId: integ.id }),
+          ],
+        };
+      }
       if (integ.status !== 'awaiting_approval') {
+        const next =
+          integ.status === 'conflict'
+            ? '対応案: Integrator でも解消できませんでした。統合の手順ログでコンフリクトしたファイルを確認し、どちらの変更を残すか判断してください（各 worktree とブランチは残っています）。'
+            : integ.error?.code === 'tests_failed'
+              ? `対応案: テストの失敗を確認してください。原因の Task は task.retry（integrationId: ${integ.id}）で、失敗したテストの出力つきで元の Worker に差し戻せます。直したら統合をもう一度実行します。`
+              : '対応案: 統合の手順ログを確認し、原因になった Task を直してから、もう一度統合を実行してください。各 worktree とブランチは残っています。';
         return {
           text: [
             `統合候補 ${integ.id} は「${statusJa(integ.status)}」で止まりました。`,
             ...(integ.error ? [`理由: ${integ.error.message}`] : []),
             '',
-            '対応案: 統合の手順ログを確認し、原因になった Task を直してから、もう一度統合を実行してください。各 worktree とブランチは残っています。',
+            next,
           ].join('\n'),
           toolCalls: decide(
             '統合候補をレビューに回さない',
@@ -220,10 +315,22 @@ function planTasks(projectId: string, goal: string, decide: Decide): MockReply {
     ],
     summary: `${docPath} を書き、README.md からリンクしました。`,
   };
+  // "…README…" in the goal: the test task documents how to run the tests in README.md too,
+  // so both tasks append to the same place and their merge conflicts (an integrator fixes it).
+  const sharedReadme = /readme/i.test(goal);
   const testPlan = {
     steps: [
       { type: 'say', text: `${label}まわりの振る舞いをテストで確かめられるようにします。` },
       { type: 'write', path: testPath, content: testContent(label) },
+      ...(sharedReadme
+        ? [
+            {
+              type: 'append',
+              path: 'README.md',
+              content: `\n- テストの実行方法: \`node --test\`\n`,
+            },
+          ]
+        : []),
       {
         type: 'run',
         command: 'node',
@@ -249,11 +356,15 @@ function planTasks(projectId: string, goal: string, decide: Decide): MockReply {
     acceptanceCriteria: criteria,
   });
   return {
-    text: `「${goal}」を、並列で進められる2つの Task に分解します。ドキュメントとテストは別のファイルを扱うので、同時に進めても衝突しません。`,
+    text: sharedReadme
+      ? `「${goal}」を、並列で進められる2つの Task に分解します。どちらも README.md に追記するため、統合でコンフリクトしたら Integrator に解消を任せます。`
+      : `「${goal}」を、並列で進められる2つの Task に分解します。ドキュメントとテストは別のファイルを扱うので、同時に進めても衝突しません。`,
     toolCalls: [
       ...decide(
         '目標を2つの独立した Task に分解する',
-        `ドキュメント（${docPath}、README.md）とテスト（${testPath}）は触るファイルが重ならず、依存関係もないため並列にできます。`,
+        sharedReadme
+          ? `ドキュメント（${docPath}）とテスト（${testPath}）は依存関係がなく並列にできます。README.md は両方が追記するので、統合時のコンフリクトは Integrator が解消します。`
+          : `ドキュメント（${docPath}、README.md）とテスト（${testPath}）は触るファイルが重ならず、依存関係もないため並列にできます。`,
       ),
       call(
         'task.create',
@@ -271,8 +382,16 @@ function planTasks(projectId: string, goal: string, decide: Decide): MockReply {
         'task.create',
         task(
           `${label}まわりのテストを整備する`,
-          [`- ${testPath} にテストを追加する`, '- テストを実行して通ることを確かめる'],
-          [`${testPath} がある`, 'プロジェクトのテストコマンドが成功する'],
+          [
+            `- ${testPath} にテストを追加する`,
+            ...(sharedReadme ? ['- README.md にテストの実行方法を書く'] : []),
+            '- テストを実行して通ることを確かめる',
+          ],
+          [
+            `${testPath} がある`,
+            ...(sharedReadme ? ['README.md にテストの実行方法がある'] : []),
+            'プロジェクトのテストコマンドが成功する',
+          ],
           testPlan,
         ),
       ),
@@ -341,12 +460,17 @@ function finalSummary(integ: Integration, calls: PastCall[], decide: Decide): Mo
     return `- Task ${t.id}「${t.title}」（レビュー待ち${diff}）`;
   });
   const n = integ.taskIds.length;
+  const fixes = integ.steps.filter((s) => s.kind === 'fix' && s.status === 'succeeded');
   return {
     text: [
       `${n}件のTaskが完了し、統合候補ができました。テスト: ${testResult}。レビューして承認してください。`,
       '',
       ...taskLines,
       `- 統合候補 ${integ.id}: ${integ.branch ?? ''} → ${integ.targetRef ?? ''}`,
+      ...fixes.map(
+        (s) =>
+          `- コンフリクト（${s.conflictFiles.join(', ')}）は Integrator が解消しました。解消した内容も差分で確認してください`,
+      ),
       '',
       '承認すると、統合ブランチが反映先ブランチに早送りで反映されます（承認は人間だけが行えます）。',
     ].join('\n'),
@@ -386,15 +510,28 @@ function lastUserIndex(messages: ChatMessage[]): number {
   return -1;
 }
 
-/** Tool calls made since the last user message, with their results, in order. */
-function pastCalls(messages: ChatMessage[]): PastCall[] {
-  const start = lastUserIndex(messages) + 1;
-  const results = new Map<string, string>();
-  for (const m of messages.slice(start))
-    if (m.role === 'tool') results.set(m.toolCallId, m.content);
+/** Index of the daemon's latest "resume after restart" notice (a system message), or -1. */
+function lastResumeIndex(messages: ChatMessage[]): number {
+  for (let i = messages.length - 1; i > 0; i--) {
+    const m = messages[i]!;
+    if (m.role === 'system' && m.content.startsWith(ORCHESTRATOR_RESUME_NOTICE)) return i;
+  }
+  return -1;
+}
+
+/** Tool calls made from message `start` on, with their results, in order. */
+function pastCalls(messages: ChatMessage[], start: number): PastCall[] {
   const out: PastCall[] = [];
-  for (const m of messages.slice(start)) {
+  const slice = messages.slice(start);
+  for (const [i, m] of slice.entries()) {
     if (m.role !== 'assistant') continue;
+    // Results are the tool messages right after this assistant message. Matched within
+    // that window: tool call ids may repeat across runs (e.g. after a daemon restart).
+    const results = new Map<string, string>();
+    for (const r of slice.slice(i + 1)) {
+      if (r.role !== 'tool') break;
+      results.set(r.toolCallId, r.content);
+    }
     for (const tc of m.toolCalls ?? []) {
       const raw = results.get(tc.id);
       const output = parse(raw);
@@ -433,6 +570,12 @@ function createdTaskIds(calls: PastCall[]): string[] {
     .filter((c) => c.method === 'task.create' && !c.error)
     .map((c) => (c.output as { id?: unknown } | null)?.id)
     .filter((id): id is string => typeof id === 'string');
+}
+
+function createdIntegrationId(calls: PastCall[]): string | null {
+  const c = calls.filter((x) => x.method === 'integration.create' && !x.error).at(-1);
+  const id = (c?.output as { id?: unknown } | null | undefined)?.id;
+  return typeof id === 'string' ? id : null;
 }
 
 function parse(raw: string | undefined): unknown {

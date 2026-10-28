@@ -125,6 +125,8 @@ describe('settings', () => {
       defaultRuntime: null,
       maxConcurrentRuns: 10,
       maxDelegationDepth: 1,
+      autoResumeOrchestrators: true,
+      llmCallReserveUsd: 0.25,
     });
   });
 });

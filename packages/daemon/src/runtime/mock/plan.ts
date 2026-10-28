@@ -15,6 +15,7 @@ import { z } from 'zod';
  *     { "type": "ask", "title": "本番設定に触れてよいですか", "onReject": "stop" },
  *     { "type": "check", "path": "src/sum.ts", "contains": "export const sum" },
  *     { "type": "sleep", "ms": 500 },
+ *     { "type": "resolve", "strategy": "ours+theirs" },
  *     { "type": "fail", "message": "ビルドが通りませんでした" }
  *   ],
  *   "summary": "sum を追加しました",
@@ -62,6 +63,17 @@ export const MockStep = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('sleep'), ms: z.int().min(0).max(600_000) }),
   /** Read-only verification: the file exists (and contains `contains`). Fails the run otherwise. */
   z.strictObject({ type: z.literal('check'), path: RelPath, contains: z.string().optional() }),
+  /**
+   * Resolve merge conflicts deterministically: every conflict hunk becomes ours + theirs
+   * (concatenated), only ours, or only theirs. `paths` defaults to the unmerged files of the
+   * merge in progress. The mock also does this on its own when it finds unmerged files and
+   * the prompt has no plan (an integrator run).
+   */
+  z.strictObject({
+    type: z.literal('resolve'),
+    strategy: z.enum(['ours+theirs', 'ours', 'theirs']).default('ours+theirs'),
+    paths: z.array(RelPath).optional(),
+  }),
 ]);
 export type MockStep = z.infer<typeof MockStep>;
 
@@ -99,6 +111,48 @@ export function parseMockPlan(prompt: string): MockPlan | null {
     );
   }
   return r.data;
+}
+
+export type ResolveStrategy = Extract<MockStep, { type: 'resolve' }>['strategy'];
+
+/**
+ * Replace every conflict hunk (`<<<<<<<` ours [`|||||||` base] `=======` theirs `>>>>>>>`)
+ * by the chosen side(s). Line endings are kept. Returns the text and the number of hunks.
+ */
+export function resolveConflictMarkers(
+  text: string,
+  strategy: ResolveStrategy,
+): { text: string; hunks: number } {
+  const lines = text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  const out: string[] = [];
+  let state: 'none' | 'ours' | 'base' | 'theirs' = 'none';
+  let ours: string[] = [];
+  let theirs: string[] = [];
+  let hunks = 0;
+  const is = (line: string, marker: string) => {
+    const l = line.replace(/\r?\n$/, '');
+    return l === marker || l.startsWith(`${marker} `);
+  };
+  for (const line of lines) {
+    if (state === 'none' && is(line, '<<<<<<<')) {
+      state = 'ours';
+      ours = [];
+      theirs = [];
+    } else if (state === 'ours' && is(line, '|||||||')) {
+      state = 'base';
+    } else if ((state === 'ours' || state === 'base') && is(line, '=======')) {
+      state = 'theirs';
+    } else if (state === 'theirs' && is(line, '>>>>>>>')) {
+      hunks++;
+      if (strategy !== 'theirs') out.push(...ours);
+      if (strategy !== 'ours') out.push(...theirs);
+      state = 'none';
+    } else if (state === 'ours') ours.push(line);
+    else if (state === 'theirs') theirs.push(line);
+    else if (state === 'none') out.push(line);
+  }
+  if (state !== 'none') out.push(...ours, ...theirs); // unterminated hunk: keep its content
+  return { text: out.join(''), hunks };
 }
 
 /** The prompt without its acc-mock block (what a human would read). */

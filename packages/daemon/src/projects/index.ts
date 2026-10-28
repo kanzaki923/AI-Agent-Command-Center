@@ -4,6 +4,9 @@ import type { Project } from '@acc/protocol';
 import { defineMethod } from '../api/registry';
 import { invalidParams } from '../core/errors';
 import { defineModule } from '../module';
+import { inspectRepo } from './inspect';
+
+export { detectTestCommand, inspectRepo } from './inspect';
 
 function checkRepoPath(path: string | null | undefined): void {
   if (path == null) return;
@@ -11,13 +14,17 @@ function checkRepoPath(path: string | null | undefined): void {
   if (!existsSync(path)) throw invalidParams(`repoPath does not exist: ${path}`);
 }
 
-/** project.* — projects (a repository plus settings). */
+/** project.* — projects (a repository plus settings). project.inspectRepo validates a folder first. */
 export const projectsModule = defineModule({
   name: 'projects',
   register(ctx) {
     const { repos, bus, db } = ctx;
 
     ctx.methods.register(
+      defineMethod('project.inspectRepo', {
+        handler: (p) => inspectRepo(ctx, p.path),
+      }),
+
       defineMethod('project.create', {
         handler: (p, call) =>
           db.transaction(() => {

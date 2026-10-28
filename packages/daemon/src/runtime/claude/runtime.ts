@@ -10,6 +10,7 @@ import type { Logger } from '../../core/log';
 import { AsyncQueue, abortError } from '../async';
 import { buildChildEnv, envKeys, resolveModelRouting } from '../env';
 import { decideToolPermission } from '../policy';
+import { ACC_MCP_SERVER, type McpSdk, accMcpServer } from './mcp';
 import { ClaudeMessageNormalizer, type UsageTotals, ZERO_TOTALS } from './normalize';
 
 /** The part of the SDK's `Query` we use. */
@@ -26,6 +27,9 @@ export type QueryFn = (params: {
 /** What `import('@anthropic-ai/claude-agent-sdk')` must provide. Injected in tests. */
 export interface ClaudeSdkModule {
   query: QueryFn;
+  /** For the in-process "acc" MCP server (optional so older test doubles still load). */
+  tool?: McpSdk['tool'];
+  createSdkMcpServer?: McpSdk['createSdkMcpServer'];
 }
 
 /** Remembers the SDK's cumulative usage per SDK session so resumed runs report deltas. */
@@ -206,6 +210,20 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
         ? { pathToClaudeCodeExecutable: this.opts.pathToClaudeCodeExecutable }
         : {}),
     };
+    // Control API read access for the agent: an in-process MCP server "acc" with the tools
+    // the run's grant allows (calls go through the dispatcher as the run's agent actor).
+    const acc =
+      sdk.tool && sdk.createSdkMcpServer
+        ? accMcpServer(
+            { tool: sdk.tool, createSdkMcpServer: sdk.createSdkMcpServer },
+            input.tools,
+            signal,
+          )
+        : null;
+    if (acc) {
+      options.mcpServers = { [ACC_MCP_SERVER]: acc.server };
+      options.allowedTools = acc.allowedTools;
+    }
 
     const baseline =
       (input.resumeSessionId && this.baselines.get(input.resumeSessionId)) || ZERO_TOTALS;

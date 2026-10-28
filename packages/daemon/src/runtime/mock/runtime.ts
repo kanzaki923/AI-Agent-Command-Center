@@ -10,7 +10,15 @@ import { allowlistedEnv } from '../env';
 import { decideToolPermission, isInside } from '../policy';
 import { MOCK_RUNTIME_ID } from '../registry';
 import { describeToolActivity, truncate } from '../tools';
-import { type MockPlan, type MockStep, parseMockPlan, stripMockPlan } from './plan';
+import { conflictedFiles } from '../../workspace/git';
+import {
+  type MockPlan,
+  type MockStep,
+  type ResolveStrategy,
+  parseMockPlan,
+  resolveConflictMarkers,
+  stripMockPlan,
+} from './plan';
 
 export interface MockRuntimeOptions {
   /** Pause between steps (ms). Default 350. */
@@ -111,6 +119,8 @@ class MockRun {
         return 'next';
       case 'run':
         return yield* this.runCommand(step);
+      case 'resolve':
+        return yield* this.resolve(step.strategy, step.paths);
       case 'ask': {
         yield* this.say(`確認が必要です: ${step.title}`);
         const decision = await this.input.canUseTool({
@@ -204,6 +214,48 @@ class MockRun {
         ? `${rel}: 「${truncate(contains, 40)}」を確認しました`
         : `${rel}（${lines} 行）を確認しました`,
     );
+  }
+
+  /** Rewrite every conflicted file without markers (Read, then Write — both in the workspace). */
+  private async *resolve(
+    strategy: ResolveStrategy,
+    paths: string[] | undefined,
+  ): AsyncGenerator<AgentEvent, StepOutcome, undefined> {
+    const files = paths ?? (await conflictedFiles(this.input.cwd).catch(() => []));
+    if (files.length === 0) {
+      yield* this.say('解消が必要なコンフリクトは見つかりませんでした。');
+      return 'next';
+    }
+    const how =
+      strategy === 'ours+theirs'
+        ? '両方の変更を残す形'
+        : strategy === 'ours'
+          ? '統合ブランチ側を残す形'
+          : 'マージする側を残す形';
+    yield* this.say(`${files.length} ファイルのコンフリクトを、${how}で解消します。`);
+    for (const f of files) {
+      const rel = toPosix(f);
+      const readInput = { file_path: rel };
+      const call = yield* this.toolCall(`${rel} のコンフリクトを確認します。`, 'Read', readInput);
+      const decision = await this.permit('Read', readInput);
+      if (decision && decision.decision === 'rejected') {
+        yield this.result(call, 'Read', '承認されなかったため確認できませんでした', true);
+        return yield* this.rejected('stop', decision);
+      }
+      let text: string;
+      try {
+        text = await readFile(this.abs(f), 'utf8');
+      } catch {
+        yield this.result(call, 'Read', `${rel} が見つかりません`, true);
+        continue;
+      }
+      const resolved = resolveConflictMarkers(text, strategy);
+      yield this.result(call, 'Read', `${rel}: コンフリクト ${resolved.hunks} 箇所`);
+      if (resolved.hunks === 0) continue;
+      const outcome = yield* this.editFile('write', f, resolved.text);
+      if (outcome === 'stop') return 'stop';
+    }
+    return 'next';
   }
 
   private async *runCommand(
@@ -352,8 +404,18 @@ class MockRun {
 
 // ---- default plan ------------------------------------------------------------
 
-/** What the mock does without an acc-mock block: keep a notes file for the task. */
+/**
+ * What the mock does without an acc-mock block: resolve the merge conflicts when it finds a
+ * merge in progress (an integrator run), else keep a notes file for the task.
+ */
 export async function defaultPlan(prompt: string, cwd: string, runId: string): Promise<MockPlan> {
+  const unmerged = await conflictedFiles(cwd).catch(() => []);
+  if (unmerged.length > 0) {
+    return {
+      steps: [{ type: 'resolve', strategy: 'ours+theirs' }],
+      summary: `${unmerged.join('、')} のコンフリクトを、両方の変更を残す形で解消しました。`,
+    };
+  }
   const text = stripMockPlan(prompt);
   const title = taskTitle(text);
   const rel = `notes/${slugify(title)}.md`;

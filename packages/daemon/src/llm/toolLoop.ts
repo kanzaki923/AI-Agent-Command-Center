@@ -1,7 +1,7 @@
 import { type ContentPart, EMPTY_USAGE, type Usage } from '@acc/protocol';
 import type { ApprovalRequest, RunController } from '../contracts';
 import type { DaemonContext } from '../core/context';
-import { ApiError, budgetExceeded } from '../core/errors';
+import { ApiError } from '../core/errors';
 import type { LlmGateway } from './gateway';
 import { stringifyToolOutput } from './messages';
 import { type LoopTool, methodForToolName } from './tools';
@@ -24,6 +24,8 @@ export interface ToolLoopOptions {
   approvalFor?: (call: { tool: LoopTool; input: unknown }) => ApprovalRequest | null;
   /** Defaults to ctx.service('llm'). */
   gateway?: LlmGateway;
+  /** Budget reserved before each model call (default: settings.llmCallReserveUsd). */
+  reserveUsd?: number;
 }
 
 export interface ToolLoopResult {
@@ -64,16 +66,6 @@ function errorOutput(err: unknown): { error: { code: string; message: string } }
   return { error: { code, message: err instanceof Error ? err.message : String(err) } };
 }
 
-/** Fail fast before a model call when the run's budget is already used up. */
-function assertBudgetLeft(ctx: DaemonContext, ctl: RunController): void {
-  const budgetId = ctl.run.budgetId;
-  if (!budgetId || !ctx.hasService('budget')) return;
-  const b = ctx.service('budget').get(budgetId);
-  if (b.limitUsd - b.allocatedUsd - b.reservedUsd - b.spentUsd <= 0) {
-    throw budgetExceeded('予算の上限に達したため、LLM を呼び出せません', { budgetId });
-  }
-}
-
 /**
  * The agentic loop shared by chat runs and the orchestrator:
  * messages → model → tool calls → tools (Control API through the dispatcher, as the run's
@@ -104,7 +96,8 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
       return { messages, text, turns: turn, stopReason: 'max_turns', usage };
     }
     if (ctl.signal.aborted) throw abortError(ctl.signal);
-    assertBudgetLeft(ctx, ctl);
+    // Reserve before the call (throws budget_exceeded when it does not fit), settle after.
+    const hold = ctl.reserveBudget(opts.reserveUsd);
 
     const messageId = ctx.ids.next('message');
     let partial = '';
@@ -128,6 +121,8 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
         },
       );
     } catch (err) {
+      // No usage was reported for a failed call: free the reservation.
+      hold.cancel();
       // Keep what the user already saw streaming (e.g. cancelled mid-reply).
       if (partial) {
         ctl.appendMessage({
@@ -139,7 +134,7 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
       }
       throw err;
     }
-    ctl.reportUsage(result.usage);
+    hold.settle(result.usage);
     usage = addUsage(usage, result.usage);
     text = result.text;
 

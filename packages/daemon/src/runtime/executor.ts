@@ -7,8 +7,9 @@ import type {
   Task,
   ToolApprovalPayload,
 } from '@acc/protocol';
-import type { AgentEvent, RunController, RunExecutor } from '../contracts';
+import type { AgentEvent, AgentTool, RunController, RunExecutor } from '../contracts';
 import type { DaemonContext } from '../core/context';
+import { apiTools } from '../llm/tools';
 import { abortError } from './async';
 import { classifyToolRisk } from './risk';
 import { RuntimeSessionStore } from './state';
@@ -35,6 +36,9 @@ async function executeAgentRun(
   ctl: RunController,
 ): Promise<void> {
   const { run, signal } = ctl;
+  // Runtimes report cost only afterwards (no per-call reservation): at least refuse to
+  // start once the budget is used up. During the run, reportUsage stops it at the limit.
+  ctl.assertBudgetLeft();
   const session = ctx.repos.sessions.require(run.sessionId);
   const task = run.taskId ? ctx.repos.tasks.require(run.taskId) : null;
 
@@ -77,6 +81,7 @@ async function executeAgentRun(
     model,
     resumeSessionId,
     signal,
+    tools: agentTools(ctx, ctl),
     canUseTool: (req) =>
       ctl.requestApproval({
         kind: 'tool_use',
@@ -148,6 +153,19 @@ async function executeAgentRun(
   );
   if (sha) await recordDiffArtifact(ctx, ctl, workspaceId, title);
   ctl.setActivity(null);
+}
+
+/**
+ * Control API tools for the agent: what the run's grants allow (a worker spawned by an
+ * orchestrator gets the read-only preset; a human-started run has no grant and no tools).
+ * Calls go through the dispatcher as the run's actor, so grants are enforced there.
+ */
+function agentTools(ctx: DaemonContext, ctl: RunController): AgentTool[] {
+  return apiTools(ctx, ctl.actor).flatMap((t) =>
+    t.method
+      ? [{ method: t.method, description: t.description, execute: (i, o) => t.execute(i, o) }]
+      : [],
+  );
 }
 
 /** Text of the message that triggered the run, else the session's latest user message. */

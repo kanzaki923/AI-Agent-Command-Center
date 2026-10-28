@@ -229,10 +229,11 @@ describe('task.spawnWorker', () => {
       'limit_exceeded',
     );
 
-    // Budget: an equal share of what was free for the first, the requested $1 for the second.
+    // Budget: an equal share of what was free for the first (2 worker slots + 1 share the
+    // orchestrator keeps for its own calls), the requested $1 for the second.
     const budget = d.ctx.service('budget');
     expect(budget.get(w1.budgetId!)).toMatchObject({
-      limitUsd: 5,
+      limitUsd: 3.333333,
       parentId: orch.granted.budget!.id,
     });
     expect(budget.get(w2.budgetId!).limitUsd).toBe(1);
