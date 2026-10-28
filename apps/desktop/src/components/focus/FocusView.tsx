@@ -4,7 +4,8 @@ import { motion } from 'motion/react';
 import { useState } from 'react';
 import { newChat, retry, stop } from '../../app/commands';
 import { archiveSession, renameSession, setPinned } from '../../daemon/actions';
-import { useRun, useRuns, useSessions, useWorkspace } from '../../daemon/queries';
+import { useRun, useRuns, useSessionBudgets, useSessions, useWorkspace } from '../../daemon/queries';
+import { RoleBadge } from '../grant/Grant';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { useStickToBottom } from '../../hooks/useStickToBottom';
 import { sumUsage } from '../../lib/format';
@@ -73,6 +74,7 @@ function FocusHeader({ session, run, runs }: { session: Session; run: Run | null
   const rt = useRuntime();
   const connected = useConnectionState() === 'open';
   const workspace = useWorkspace(session.workspaceId).data;
+  const budget = useSessionBudgets(session.kind === 'chat' ? session.id : null).data?.find((b) => b.status === 'active');
   const usage = sumUsage(runs.map((r) => r.usage));
   const state = run ? runStatusToState(run.status) : 'idle';
   const live = !!run && !isTerminalRunStatus(run.status);
@@ -81,7 +83,7 @@ function FocusHeader({ session, run, runs }: { session: Session; run: Run | null
   return (
     <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line-subtle px-4">
       <StatusIcon state={latest && !live ? runStatusToState(latest.status) : state} size={14} />
-      <span className="shrink-0 text-ui text-fg-3">{roleOf(session, run ?? latest)}</span>
+      <RoleBadge session={session} fallback={roleOf(session, run ?? latest)} />
       <span className="text-fg-4">·</span>
       <TitleEditor session={session} />
       {session.pinned && <Pin size={12} strokeWidth={1.75} className="shrink-0 text-fg-3" />}
@@ -98,7 +100,16 @@ function FocusHeader({ session, run, runs }: { session: Session; run: Run | null
         </Tooltip>
       )}
       {live && run && <ElapsedTime start={run.startedAt ?? run.createdAt} />}
-      <Cost usd={usage.costUsd} source={usage.costSource} />
+      <span className="flex items-center gap-1">
+        <Cost usd={usage.costUsd} source={usage.costSource} />
+        {budget && (
+          <Tooltip content="このチャットの予算（Worker への配分を含む使用額 / 上限）">
+            <span className="tabular text-meta text-fg-4">
+              / ${budget.limitUsd.toFixed(2)}
+            </span>
+          </Tooltip>
+        )}
+      </span>
       {live && run ? (
         <Button
           size="sm"

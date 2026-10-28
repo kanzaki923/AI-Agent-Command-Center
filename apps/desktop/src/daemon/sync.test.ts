@@ -1,15 +1,27 @@
 // @vitest-environment node
-import type { Approval, Run, Session } from '@acc/protocol';
+import {
+  type Approval,
+  type Artifact,
+  type BudgetAllocation,
+  type CapabilityGrant,
+  EVENT_TYPES,
+  type Event,
+  type EventPayload,
+  type EventType,
+  type Integration,
+  type Run,
+  type Session,
+} from '@acc/protocol';
 import { QueryClient } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFakeClient } from '../test/fakeClient';
-import { T0, approval, event, iso, message, run, session } from '../test/fixtures';
+import { T0, approval, event, integration, iso, message, run, session, task } from '../test/fixtures';
 import { createActivityStore } from './activity';
 import { createDeltaStore } from './deltas';
 import { createEventLog } from './eventLog';
 import { createRecentStore } from './recent';
 import { qk } from './keys';
-import { type ChatMessage, type Streams, applyEvent, createInterruptNotifier, startSync } from './sync';
+import { type BudgetNode, type ChatMessage, type Streams, applyEvent, createInterruptNotifier, startSync } from './sync';
 
 function setup() {
   const qc = new QueryClient();
@@ -139,7 +151,160 @@ describe('applyEvent -> query cache', () => {
     applyEvent(qc, streams, event('settings.updated', { changes: ['litellm.baseUrl'] }));
     expect(qc.getQueryState(qk.settings)?.isInvalidated).toBe(true);
   });
+
+  it('keeps a session’s grants live: created (session or run subject) and revoked', () => {
+    const { qc, streams } = ctx;
+    const s = session({ kind: 'chat' });
+    const r = run(s);
+    qc.setQueryData<Run[]>(qk.runs, [r]);
+    qc.setQueryData<CapabilityGrant[]>(qk.grants(s.id), []);
+    const g = grantFixture({ subject: { kind: 'session', sessionId: s.id } });
+    applyEvent(qc, streams, event('grant.created', { grant: g }));
+    const delegated = grantFixture({ subject: { kind: 'run', runId: r.id }, createdAt: iso(T0 + 5) });
+    applyEvent(qc, streams, event('grant.created', { grant: delegated }));
+    expect(qc.getQueryData<CapabilityGrant[]>(qk.grants(s.id))!.map((x) => x.id)).toEqual([g.id, delegated.id]);
+
+    const revoke = event('grant.revoked', { grantId: g.id, reason: 'done' });
+    applyEvent(qc, streams, revoke);
+    expect(qc.getQueryData<CapabilityGrant[]>(qk.grants(s.id))![0]!.revokedAt).toBe(revoke.ts);
+  });
+
+  it('patches budgets: the node, its parent’s children and the session’s budgets', () => {
+    const { qc, streams } = ctx;
+    const root = budgetFixture({ subject: { kind: 'session', id: 'ses_1' } });
+    const child = budgetFixture({ parentId: root.id, subject: { kind: 'run', id: 'run_1' } });
+    qc.setQueryData<BudgetNode>(qk.budget(root.id), { budget: root, children: [] });
+    qc.setQueryData<BudgetAllocation[]>(qk.sessionBudgets('ses_1'), []);
+    applyEvent(qc, streams, event('budget.updated', { budget: { ...root, allocatedUsd: 1 }, reason: 'allocate' }));
+    applyEvent(qc, streams, event('budget.updated', { budget: child, reason: 'allocate' }));
+    const node = qc.getQueryData<BudgetNode>(qk.budget(root.id))!;
+    expect(node.budget.allocatedUsd).toBe(1);
+    expect(node.children.map((c) => c.id)).toEqual([child.id]);
+    expect(qc.getQueryData<BudgetAllocation[]>(qk.sessionBudgets('ses_1'))!.map((b) => b.allocatedUsd)).toEqual([1]);
+  });
+
+  it('adds new artifacts to the lists the UI keeps', () => {
+    const { qc, streams } = ctx;
+    const art = {
+      id: 'art_1',
+      kind: 'test_result',
+      projectId: 'prj_1',
+      sessionId: 'ses_1',
+      runId: null,
+      taskId: null,
+      workspaceId: null,
+      title: 't',
+      createdBy: { kind: 'system', component: 'x' },
+      createdAt: iso(T0),
+      data: { command: 'pnpm test', passed: true, exitCode: 0, durationMs: 1, summary: 'ok', output: null },
+    } as Artifact;
+    qc.setQueryData(qk.artifacts('ses_1', 'test_result'), []);
+    qc.setQueryData(qk.projectArtifacts('prj_1', 'test_result'), []);
+    applyEvent(qc, streams, event('artifact.created', { artifact: art }));
+    expect(qc.getQueryData<Artifact[]>(qk.artifacts('ses_1', 'test_result'))).toEqual([art]);
+    expect(qc.getQueryData<Artifact[]>(qk.projectArtifacts('prj_1', 'test_result'))).toEqual([art]);
+    expect(qc.getQueryData(qk.artifact('art_1'))).toBe(art);
+  });
+
+  it('shows denials and orchestrator decisions on the run’s activity line', () => {
+    const { qc, streams } = ctx;
+    applyEvent(qc, streams, event('policy.denied', { permission: 'settings.update', reason: 'no grant', projectIds: null }, { runId: 'run_d' }));
+    expect(streams.activity.get('run_d')?.text).toBe('権限外の操作を拒否しました（settings.update）');
+    applyEvent(qc, streams, event('orchestrator.decision', { decision: 'Task を 2 つに分割', rationale: '独立しているため' }, { runId: 'run_o' }));
+    expect(streams.activity.get('run_o')?.text).toBe('Task を 2 つに分割');
+  });
+
+  it('keeps integration detail caches in step with the list', () => {
+    const { qc, streams } = ctx;
+    const i = integration({ status: 'running' });
+    qc.setQueryData(qk.integrations, [i]);
+    applyEvent(qc, streams, event('integration.updated', { integration: { ...i, status: 'verifying' }, changes: ['status'] }));
+    expect(qc.getQueryData<Integration[]>(qk.integrations)![0]!.status).toBe('verifying');
+    expect(qc.getQueryData<Integration>(['integration.get', i.id])!.status).toBe('verifying');
+  });
+
+  it('handles every event type the protocol defines', () => {
+    // The switch is exhaustive at compile time; this guards the runtime path too.
+    const { qc, streams } = ctx;
+    expect(EVENT_TYPES.length).toBeGreaterThan(20);
+    for (const type of EVENT_TYPES) expect(() => applyEvent(qc, streams, sampleEvent(type))).not.toThrow();
+  });
 });
+
+function grantFixture(over: Partial<CapabilityGrant> = {}): CapabilityGrant {
+  return {
+    id: `grt_${Math.random().toString(36).slice(2)}`,
+    subject: { kind: 'session', sessionId: 'ses_x' },
+    parentGrantId: null,
+    permissions: ['task.*'],
+    scope: {},
+    limits: {},
+    depth: 0,
+    lifetime: 'session',
+    expiresAt: null,
+    revokedAt: null,
+    reason: null,
+    grantedBy: { kind: 'human', client: 'test' },
+    createdAt: iso(T0),
+    ...over,
+  };
+}
+
+function budgetFixture(over: Partial<BudgetAllocation> = {}): BudgetAllocation {
+  return {
+    id: `bud_${Math.random().toString(36).slice(2)}`,
+    parentId: null,
+    subject: { kind: 'global', id: null },
+    status: 'active',
+    limitUsd: 5,
+    allocatedUsd: 0,
+    reservedUsd: 0,
+    spentUsd: 0,
+    createdBy: { kind: 'human', client: 'test' },
+    createdAt: iso(T0),
+    updatedAt: iso(T0),
+    releasedAt: null,
+    ...over,
+  };
+}
+
+/** A structurally valid event of any type (payload details do not matter here). */
+function sampleEvent(type: EventType): Event {
+  const s = session();
+  const r = run(s);
+  const payloads: { [K in EventType]: EventPayload<K> } = {
+    'project.created': { project: { id: 'prj_1', name: 'p' } as never },
+    'project.updated': { project: { id: 'prj_1', name: 'p' } as never, changes: ['name'] },
+    'session.created': { session: s },
+    'session.updated': { session: s, changes: ['title'] },
+    'session.archived': { sessionId: s.id, archived: true },
+    'message.created': { message: message(s) },
+    'run.created': { run: r },
+    'run.status_changed': { runId: r.id, from: 'running', to: 'completed', reason: null },
+    'run.updated': { run: r, changes: ['usage'] },
+    'run.completed': { run: r },
+    'run.failed': { run: r, error: { code: 'x', message: 'x' } },
+    'tool.called': { runId: r.id, toolCallId: 't', name: 'Read', input: {} },
+    'tool.result': { runId: r.id, toolCallId: 't', name: 'Read', output: {}, isError: false, durationMs: 1 },
+    'approval.requested': { approval: approval(r) },
+    'approval.resolved': { approval: approval(r, { status: 'approved' }) },
+    'task.created': { task: task() },
+    'task.updated': { task: task(), changes: ['status'] },
+    'workspace.created': { workspace: { id: 'wsp_1' } as never },
+    'workspace.updated': { workspace: { id: 'wsp_1' } as never, changes: ['branch'] },
+    'workspace.removed': { workspaceId: 'wsp_1' },
+    'artifact.created': { artifact: { id: 'art_x', kind: 'note', projectId: null, sessionId: null, workspaceId: null, data: { text: '' } } as never },
+    'integration.created': { integration: integration() },
+    'integration.updated': { integration: integration(), changes: ['status'] },
+    'grant.created': { grant: grantFixture() },
+    'grant.revoked': { grantId: 'grt_x', reason: null },
+    'policy.denied': { permission: 'x', reason: 'y', projectIds: null },
+    'budget.updated': { budget: budgetFixture(), reason: null },
+    'orchestrator.decision': { decision: 'd', rationale: 'r' },
+    'settings.updated': { changes: [] },
+  };
+  return event(type, payloads[type] as never);
+}
 
 describe('interrupt notifier', () => {
   it('folds a burst of interrupted runs into one notification', () => {
@@ -161,7 +326,7 @@ describe('startSync', () => {
   it('subscribes once, applies pushed events/deltas and refetches after a reconnect', () => {
     const { qc, streams } = setup();
     const fake = createFakeClient();
-    const stop = startSync(fake.client, qc, streams);
+    const stop = startSync(fake.client, qc, streams, undefined, (flush) => flush());
     const s = session();
     qc.setQueryData<Session[]>(qk.sessions, []);
     fake.emit(event('session.created', { session: s }));
@@ -175,5 +340,32 @@ describe('startSync', () => {
     fake.setState('open');
     expect(spy).toHaveBeenCalledTimes(1);
     stop();
+  });
+
+  it('applies a burst of events once per frame, in order', () => {
+    const { qc, streams } = setup();
+    const fake = createFakeClient();
+    const frames: (() => void)[] = [];
+    const stop = startSync(fake.client, qc, streams, undefined, (flush) => frames.push(flush));
+    qc.setQueryData<Session[]>(qk.sessions, []);
+    qc.setQueryData<Run[]>(qk.runs, []);
+    const sessions = Array.from({ length: 10 }, (_, i) => session({ title: `S${i}`, lastActivityAt: iso(T0 + i) }));
+    for (const s of sessions) {
+      fake.emit(event('session.created', { session: s }));
+      fake.emit(event('run.created', { run: run(s, { status: 'queued' }) }));
+    }
+    // Nothing applied yet, and a single frame scheduled for all 20 events.
+    expect(qc.getQueryData<Session[]>(qk.sessions)).toHaveLength(0);
+    expect(frames).toHaveLength(1);
+    frames.shift()!();
+    expect(qc.getQueryData<Session[]>(qk.sessions)!.map((s) => s.title)).toEqual(
+      sessions.map((s) => s.title).reverse(),
+    );
+    expect(qc.getQueryData<Run[]>(qk.runs)).toHaveLength(10);
+    // Each run made its session active (events applied in order after their session).
+    expect(qc.getQueryData<Session[]>(qk.sessions)!.every((s) => s.activeRunId)).toBe(true);
+    fake.emit(event('settings.updated', { changes: [] }));
+    stop(); // pending events are applied on stop
+    expect(streams.events.events.at(-1)?.type).toBe('settings.updated');
   });
 });

@@ -50,7 +50,7 @@ export function MenuItem({
       disabled={disabled}
       onSelect={onSelect}
       className={cn(
-        'flex h-7 items-center gap-2 rounded-sm px-2 text-ui outline-none select-none data-[disabled]:text-fg-4',
+        'flex min-h-7 items-center gap-2 rounded-sm px-2 text-ui outline-none select-none data-[disabled]:text-fg-4',
         'data-[highlighted]:bg-selected',
         danger ? 'text-st-failed' : 'text-fg',
       )}

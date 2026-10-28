@@ -6,7 +6,9 @@ import {
   ChevronRight,
   Cpu,
   CornerDownLeft,
+  Diamond,
   Folder,
+  FolderGit2,
   History,
   Keyboard,
   LayoutGrid,
@@ -15,6 +17,7 @@ import {
   Network,
   PanelLeft,
   PanelRight,
+  Play,
   RotateCcw,
   Settings,
   Sparkles,
@@ -26,7 +29,7 @@ import {
   Wand2,
   Wrench,
 } from 'lucide-react';
-import { type ReactNode, useRef } from 'react';
+import { type ReactNode, useRef, useState } from 'react';
 import {
   approve,
   askAi,
@@ -38,7 +41,8 @@ import {
   switchMode,
 } from '../../app/commands';
 import { qk } from '../../daemon/keys';
-import { useModels, useProjects, useSessions } from '../../daemon/queries';
+import { startDemo } from '../../app/demo';
+import { useMethods, useModels, useProjects, useSessions } from '../../daemon/queries';
 import { type AppRuntime, useRuntime } from '../../daemon/runtime';
 import { patchIn } from '../../daemon/sync';
 import { cn } from '../../lib/cn';
@@ -104,12 +108,27 @@ function setSessionModel(rt: AppRuntime, session: Session, model: string) {
 }
 
 /**
- * Command palette (Ctrl+K, §7.1). Always mounted so it opens within 50ms; only its
- * visibility toggles. Fuzzy matching runs over Japanese labels, English names and romaji.
+ * Command palette (Ctrl+K, §7.1). Fuzzy matching runs over Japanese labels, English names
+ * and romaji. Its contents exist only while it is open (and through the close fade):
+ * hidden but mounted, it re-rendered its whole list on every daemon event, which was about
+ * half of the render work when ten runs started at once (e2e/perf.js). Mounting ~50 rows
+ * on open stays well inside the 50ms budget.
  */
 export function CommandPalette() {
-  const rt = useRuntime();
   const open = useUi((s) => s.paletteOpen);
+  const [shownFor, setShownFor] = useState(open);
+  const [closing, setClosing] = useState(false);
+  // Derived during render: a close keeps the contents mounted until the fade ends.
+  if (open !== shownFor) {
+    setShownFor(open);
+    setClosing(!open);
+  }
+  if (!open && !closing) return null;
+  return <PaletteContents open={open} onClosed={() => setClosing(false)} />;
+}
+
+function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => void }) {
+  const rt = useRuntime();
   const query = useUi((s) => s.paletteQuery);
   const pages = useUi((s) => s.palettePages);
   const selectedId = useUi((s) => s.selectedId);
@@ -124,6 +143,7 @@ export function CommandPalette() {
   const sessions = useSessions().data ?? [];
   const projects = useProjects().data ?? [];
   const models = useModels().data?.models ?? [];
+  const methods = useMethods();
   const { items: board } = useBoard();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const page = pages[pages.length - 1] ?? null;
@@ -206,12 +226,39 @@ export function CommandPalette() {
       icon: I(Network),
       keywords: ['orchestrator orchestrate irai bunntan'],
       run: () => {
+        // A new chat that is offered the orchestrator grant right away (concept §3.1).
         void newChat(rt).then((s) => {
-          if (s) useUi.getState().setDraft(s.id, 'Orchestrator として、次の目標を Task に分けて Worker に任せてください：\n');
+          if (s) useUi.getState().setGrantDialog(s.id);
         });
       },
     },
   ];
+
+  create.push({
+    id: 'project.add',
+    label: 'プロジェクトを追加…',
+    icon: I(FolderGit2),
+    keywords: ['project add purojekuto tsuika repository git'],
+    run: () => ui.setProjectDialog({ kind: 'new' }),
+  });
+  if (focused?.kind === 'chat') {
+    create.push({
+      id: 'grant.orchestrator',
+      label: 'このチャットに Orchestrator 権限を与える…',
+      hint: untitled(focused),
+      icon: I(Diamond),
+      keywords: ['orchestrator grant kengen ataeru capability permission /orchestrate'],
+      run: () => ui.setGrantDialog(focused.id),
+    });
+  }
+  create.push({
+    id: 'demo.start',
+    label: 'デモを始める',
+    hint: '設計チャット + Orchestrator 権限',
+    icon: I(Play),
+    keywords: ['demo demo-mode hajimeru try'],
+    run: () => void startDemo(rt, methods),
+  });
 
   const view: PaletteItem[] = [
     { id: 'view.sidebar', label: 'サイドバーを切替', icon: I(PanelLeft), keywords: ['sidebar saidobaa toggle'], shortcut: 'toggleSidebar', run: () => ui.toggleSidebar() },
@@ -322,7 +369,8 @@ export function CommandPalette() {
       inert={!open}
     >
       <div
-        className="absolute inset-0 bg-overlay transition-opacity duration-[100ms]"
+        className="absolute inset-0 bg-overlay transition-opacity duration-[100ms] data-[state=open]:animate-[acc-fade-in_140ms_var(--ease-out)]"
+        data-state={open ? 'open' : 'closed'}
         style={{ opacity: open ? 1 : 0 }}
         onClick={close}
       />
@@ -332,7 +380,15 @@ export function CommandPalette() {
         aria-label="コマンドパレット"
         data-state={open ? 'open' : 'closed'}
         data-palette
-        className="acc-modal absolute top-[18vh] left-1/2 w-[640px] max-w-[calc(100vw-32px)] -translate-x-1/2 overflow-hidden rounded-lg border border-line-strong bg-raised shadow-modal"
+        // Mounted open: the entrance is a keyframe; the exit is the data-state transition,
+        // and its end unmounts the contents (instantly if motion is reduced).
+        onTransitionEnd={(e) => {
+          if (!open && e.target === e.currentTarget) onClosed();
+        }}
+        ref={(el) => {
+          if (el && !open && getComputedStyle(el).transitionDuration.split(',').every((d) => parseFloat(d) === 0)) onClosed();
+        }}
+        className="acc-modal absolute top-[18vh] left-1/2 w-[640px] max-w-[calc(100vw-32px)] -translate-x-1/2 overflow-hidden rounded-lg border border-line-strong bg-raised shadow-modal data-[state=open]:animate-[acc-dialog-in_140ms_var(--ease-out)]"
       >
         <Command
           loop

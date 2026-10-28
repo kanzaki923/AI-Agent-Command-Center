@@ -4,7 +4,7 @@ import { AlertTriangle, ArrowDown, Bot, Square } from 'lucide-react';
 import { memo, useMemo } from 'react';
 import { retry } from '../../app/commands';
 import { sendMessage } from '../../daemon/actions';
-import { useMessages, usePendingApprovals, useResolvedApprovals, useRuns, useStreaming } from '../../daemon/queries';
+import { useGrants, useMessages, usePendingApprovals, useResolvedApprovals, useRuns, useStreaming } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import type { ChatMessage } from '../../daemon/sync';
 import type { StickToBottom } from '../../hooks/useStickToBottom';
@@ -12,7 +12,8 @@ import { cn } from '../../lib/cn';
 import { headLines } from '../../lib/tools';
 import { describeApproval } from '../../model/approval';
 import { type ChatBlock, buildChatBlocks } from '../../model/chat';
-import { ResolvedLine, useApprovalControls } from '../approval/ApprovalControls';
+import { ResolvedLine, RiskNote, useApprovalControls } from '../approval/ApprovalControls';
+import { GrantLine, OrchestratorIntro, useSessionGrants } from '../grant/Grant';
 import { Button } from '../ui/Button';
 import { Skeleton, TimeStamp } from '../ui/Meta';
 import { Markdown } from './Markdown';
@@ -85,9 +86,7 @@ function InlineApproval({ approval }: { approval: Approval }) {
           {view.targetKind === 'command' ? `$ ${view.target}` : view.target}
         </pre>
       )}
-      {pending && view.scope && (
-        <div className={cn('text-meta', view.risk === 'high' ? 'text-st-failed' : 'text-fg-3')}>{view.scope}</div>
-      )}
+      {pending && <RiskNote view={view} />}
       {pending ? controls : <ResolvedLine approval={approval} />}
     </div>
   );
@@ -143,6 +142,8 @@ const Block = memo(function Block({ block }: { block: ChatBlock }) {
       );
     case 'run-error':
       return <RunError run={block.run} />;
+    case 'grant':
+      return <GrantLine grant={block.grant} change={block.change} />;
     case 'run-stopped':
       return (
         <div className="flex items-center gap-1.5 text-meta text-fg-3">
@@ -163,6 +164,7 @@ const Block = memo(function Block({ block }: { block: ChatBlock }) {
 function gapBefore(prev: ChatBlock | undefined, cur: ChatBlock): number {
   if (!prev) return 24;
   if (prev.kind === 'tools' && cur.kind === 'tools') return 6;
+  if (cur.kind === 'grant' || prev.kind === 'grant') return 18;
   if (cur.kind === 'user' || prev.kind === 'user') return 24;
   return 14;
 }
@@ -173,6 +175,8 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
   const resolved = useResolvedApprovals();
   const runs = useRuns().data ?? NONE;
   const streaming = useStreaming(session.id);
+  const grants = useGrants(session.id).data ?? NONE;
+  const activeOrchestrator = useSessionGrants(session.kind === 'chat' ? session.id : null).orchestrator;
 
   const blocks = useMemo(() => {
     const approvals = [...pending, ...resolved].filter((a) => a.sessionId === session.id);
@@ -182,8 +186,9 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
       approvals: unique,
       streaming,
       runs: runs.filter((r) => r.sessionId === session.id),
+      grants: grants.filter((g) => g.subject.kind === 'session'),
     });
-  }, [messages.data, pending, resolved, streaming, runs, session.id]);
+  }, [messages.data, pending, resolved, streaming, runs, session.id, grants]);
 
   // The React Compiler is not used in this app; TanStack Virtual is fine without memoization.
   // eslint-disable-next-line react-hooks/incompatible-library
@@ -206,6 +211,9 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
   }
 
   const items = virt.getVirtualItems();
+  // Nothing said yet: an orchestrator chat introduces its role instead of a blank page.
+  const conversationStarted = blocks.some((b) => b.kind !== 'grant');
+  const orchestrator = session.kind === 'chat' ? activeOrchestrator : null;
   return (
     <div className="relative min-h-0 flex-1">
       <div
@@ -214,7 +222,9 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
         className="h-full overflow-y-auto outline-none"
         data-region="main"
       >
-        {blocks.length === 0 ? (
+        {!conversationStarted && orchestrator ? (
+          <OrchestratorIntro session={session} grant={orchestrator} />
+        ) : blocks.length === 0 ? (
           <div className="mx-auto flex h-full max-w-[760px] flex-col items-center justify-center px-6 text-center">
             <div className="text-title text-fg-2">{session.kind === 'agent' ? '作業内容を伝えてください' : '何でも聞いてください'}</div>
             <div className="mt-1 text-ui text-fg-3">

@@ -98,6 +98,12 @@ export function buildBoard(input: BoardInput): BoardItem[] {
     if (!cur || a.createdAt < cur.createdAt) pendingBySession.set(a.sessionId, a);
   }
 
+  const integrating = new Set<string>();
+  for (const i of input.integrations) {
+    if (i.status === 'rejected' || i.status === 'cancelled') continue;
+    for (const t of i.taskIds) integrating.add(t);
+  }
+
   const items: BoardItem[] = [];
   for (const s of input.sessions) {
     if (s.archivedAt || !inProject(s.projectId)) continue;
@@ -112,7 +118,8 @@ export function buildBoard(input: BoardInput): BoardItem[] {
       since = approval.createdAt;
     } else if (run && (state === 'failed' || state === 'interrupted')) {
       since = run.endedAt ?? run.updatedAt;
-    } else if (state === 'completed' && task?.status === 'review') {
+    } else if (state === 'completed' && task?.status === 'review' && !integrating.has(task.id)) {
+      // A task already in an integration candidate is reviewed there (one card, not two).
       state = 'review';
       since = task.updatedAt;
     } else if (state === 'completed' || state === 'cancelled') {
@@ -192,6 +199,38 @@ export function compareItems(a: BoardItem, b: BoardItem): number {
 
 export function sortBoard(items: BoardItem[]): BoardItem[] {
   return [...items].sort(compareItems);
+}
+
+function sameItem(a: BoardItem, b: BoardItem): boolean {
+  return (
+    a.state === b.state &&
+    a.zone === b.zone &&
+    a.since === b.since &&
+    a.title === b.title &&
+    a.role === b.role &&
+    a.model === b.model &&
+    a.costUsd === b.costUsd &&
+    a.costSource === b.costSource &&
+    a.session === b.session &&
+    a.run === b.run &&
+    a.task === b.task &&
+    a.approval === b.approval &&
+    a.integration === b.integration &&
+    a.runs.length === b.runs.length &&
+    a.runs.every((r, i) => r === b.runs[i])
+  );
+}
+
+/**
+ * Structural sharing across board rebuilds: an item whose inputs did not change keeps its
+ * previous object, so memoized rows skip re-rendering. With ten agents streaming, one
+ * run's usage update re-renders one row, not ten (ui-design §10).
+ */
+export function stabilizeItems(prev: ReadonlyMap<string, BoardItem>, next: BoardItem[]): BoardItem[] {
+  return next.map((it) => {
+    const old = prev.get(it.id);
+    return old && sameItem(old, it) ? old : it;
+  });
 }
 
 export function groupByZone(items: BoardItem[]): Record<Zone, BoardItem[]> {

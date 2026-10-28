@@ -1,5 +1,5 @@
 import { ChevronRight, LayoutGrid, MoreHorizontal, Pin, Plus, Settings, SquareActivity, Target } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { type ReactNode, memo } from 'react';
 import { newChat, switchMode } from '../../app/commands';
 import { archiveSession, setPinned } from '../../daemon/actions';
 import { useRuntime } from '../../daemon/runtime';
@@ -66,7 +66,7 @@ function SectionHeader({
   );
 }
 
-function SessionRow({ item, active }: { item: BoardItem; active: boolean }) {
+const SessionRow = memo(function SessionRow({ item, active }: { item: BoardItem; active: boolean }) {
   const rt = useRuntime();
   const openSession = useUi((s) => s.openSession);
   const viewedAt = useUi((s) => (item.session ? s.viewedAt[item.session.id] : undefined));
@@ -124,7 +124,7 @@ function SessionRow({ item, active }: { item: BoardItem; active: boolean }) {
       </Menu>
     </div>
   );
-}
+});
 
 export function Sidebar() {
   const rt = useRuntime();

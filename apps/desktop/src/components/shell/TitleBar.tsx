@@ -1,4 +1,5 @@
-import { ChevronDown, ChevronRight, Folder, PanelLeft, Search } from 'lucide-react';
+import { ChevronDown, ChevronRight, Folder, PanelLeft, Plus, Search, Settings2 } from 'lucide-react';
+import { ProjectFacts } from '../project/ProjectDialog';
 import { useMemo } from 'react';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { useProjects, useRuns, useSessions } from '../../daemon/queries';
@@ -46,6 +47,7 @@ export function TitleBar() {
   const focusSessionId = useUi((s) => s.focusSessionId);
   const projectId = useUi((s) => s.projectId);
   const setProject = useUi((s) => s.setProject);
+  const setProjectDialog = useUi((s) => s.setProjectDialog);
   const toggleSidebar = useUi((s) => s.toggleSidebar);
   const openPalette = useUi((s) => s.openPalette);
   const projects = useProjects().data ?? [];
@@ -81,7 +83,7 @@ export function TitleBar() {
               <ChevronDown size={14} strokeWidth={1.5} className="shrink-0 text-fg-3" />
             </button>
           </MenuTrigger>
-          <MenuContent>
+          <MenuContent className="min-w-72">
             <MenuLabel>プロジェクト</MenuLabel>
             <MenuItem checked={!projectId} onSelect={() => setProject(null)}>
               すべてのプロジェクト
@@ -94,9 +96,24 @@ export function TitleBar() {
                 checked={p.id === projectId}
                 onSelect={() => setProject(p.id)}
               >
-                {p.name}
+                <span className="flex flex-col py-0.5">
+                  <span className="truncate">{p.name}</span>
+                  <ProjectFacts project={p} />
+                </span>
               </MenuItem>
             ))}
+            <MenuSeparator />
+            <MenuItem icon={<Plus size={14} strokeWidth={1.5} />} onSelect={() => setProjectDialog({ kind: 'new' })}>
+              プロジェクトを追加…
+            </MenuItem>
+            {project && (
+              <MenuItem
+                icon={<Settings2 size={14} strokeWidth={1.5} />}
+                onSelect={() => setProjectDialog({ kind: 'edit', projectId: project.id })}
+              >
+                「{project.name}」の設定…
+              </MenuItem>
+            )}
           </MenuContent>
         </Menu>
         {demo && (

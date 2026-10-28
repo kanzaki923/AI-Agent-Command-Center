@@ -116,6 +116,11 @@ export function GlobalShortcuts() {
     } else if (e.key === 'Escape') {
       if (e.defaultPrevented) return;
       const active = document.activeElement as HTMLElement | null;
+      if (ui.reviewIntegrationId && !overlayOpen() && !isTypingTarget(active)) {
+        // The review screen is entered from the board: Esc returns there (ladder step 7).
+        ui.closeIntegration();
+        return;
+      }
       const action = resolveEscape({
         overlayOpen: overlayOpen(),
         inlineEditing: !!active?.hasAttribute('data-inline-edit'),

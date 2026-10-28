@@ -4,6 +4,9 @@ import { useStore } from 'zustand';
 import { GlobalShortcuts } from './app/GlobalShortcuts';
 import { CommandView } from './components/command/CommandView';
 import { FocusView } from './components/focus/FocusView';
+import { GrantDialog } from './components/grant/Grant';
+import { IntegrationView } from './components/integration/IntegrationView';
+import { ProjectDialog } from './components/project/ProjectDialog';
 import { Onboarding } from './components/onboarding/Onboarding';
 import { CommandPalette } from './components/palette/CommandPalette';
 import { DetailPanel } from './components/panel/DetailPanel';
@@ -23,6 +26,14 @@ import { useUi } from './store/ui';
 
 function ModeView() {
   const mode = useUi((s) => s.mode);
+  const reviewing = useUi((s) => s.reviewIntegrationId);
+  if (reviewing) {
+    return (
+      <div className="min-h-0 flex-1">
+        <IntegrationView integrationId={reviewing} />
+      </div>
+    );
+  }
   // Mode switch: a 120ms cross-fade only, no slide (§3.2). Keyed remount = fresh fade-in.
   return (
     <motion.div
@@ -71,6 +82,8 @@ export function App() {
         <SettingsDialog />
         <ShortcutsDialog />
         <ConfirmDialog />
+        <GrantDialog />
+        <ProjectDialog />
         <Onboarding />
         <Toaster />
       </TooltipProvider>

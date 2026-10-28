@@ -1,10 +1,25 @@
-import type { Event, Run, Session, TaskStatus } from '@acc/protocol';
-import { CheckCircle2, CircleX, X } from 'lucide-react';
+import type { CapabilityGrant, Event, Project, Run, Session } from '@acc/protocol';
+import { CheckCircle2, CircleX, GitMerge, X } from 'lucide-react';
 import { motion } from 'motion/react';
 import { Tabs } from 'radix-ui';
 import { type ReactNode, useMemo } from 'react';
-import { useArtifacts, useDiff, useEventHistory, useEventLogVersion, useGrants, useRuns, useSessions, useWorkspace } from '../../daemon/queries';
-import { makeOrchestrator, runTask } from '../../daemon/actions';
+import {
+  useArtifacts,
+  useDiff,
+  useEventHistory,
+  useEventLogVersion,
+  useProjects,
+  useRuns,
+  useSessions,
+  useWorkspace,
+} from '../../daemon/queries';
+import { describeGrant } from '../../model/grant';
+import { INTEGRATION_STATUS_LABEL, stepState } from '../../model/integration';
+import { flattenTasks, taskDisplay } from '../../model/tasks';
+import { useTaskGroups } from '../command/TaskTree';
+import { OrchestratorMark, useSessionGrants } from '../grant/Grant';
+import { Button } from '../ui/Button';
+import { Tooltip } from '../ui/Tooltip';
 import { useRuntime } from '../../daemon/runtime';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { cn } from '../../lib/cn';
@@ -16,18 +31,16 @@ import { parsePatch } from '../../model/diff';
 import { describeEvent } from '../../model/timeline';
 import { useBoard } from '../../model/useBoard';
 import { PANEL_TABS, type PanelTab, useUi } from '../../store/ui';
-import { Button, IconButton } from '../ui/Button';
+import { IconButton } from '../ui/Button';
 import { Kbd } from '../ui/Kbd';
 import { Cost, ElapsedTime, TimeStamp } from '../ui/Meta';
 import { ResizeHandle } from '../ui/ResizeHandle';
 import { StatusIcon, StatusLabel } from '../ui/StatusIcon';
 import { useTimelineSelection } from '../timeline/TimelineView';
 import { DiffBrowser, DiffStatText } from './DiffViewer';
+import { TaskDetail } from './TaskDetail';
 
 const NONE: never[] = [];
-
-/** Task statuses a human can (re)start a worker for ("このTaskを実行"). */
-const RUNNABLE_TASK: readonly TaskStatus[] = ['ready', 'failed'];
 
 const TAB_LABEL: Record<PanelTab, string> = { overview: '概要', changes: '変更', tests: 'テスト', logs: 'ログ' };
 
@@ -58,6 +71,25 @@ function JsonBlock({ value }: { value: unknown }) {
 }
 
 
+/** What a grant lets the session do, in words (raw patterns in the tooltip). */
+function GrantSummaryField({ grant, projects }: { grant: CapabilityGrant; projects: Project[] }) {
+  const v = describeGrant(grant, projects);
+  return (
+    <div className="flex flex-col gap-0.5">
+      <Tooltip content={<span className="font-mono">{grant.permissions.join(', ')}</span>}>
+        <span className="flex items-center gap-1.5">
+          {v.orchestrates && <OrchestratorMark size={11} />}
+          {v.title}
+          {v.workers && <span className="text-meta text-fg-3">· {v.workers}</span>}
+        </span>
+      </Tooltip>
+      <span className="text-meta text-fg-3">
+        {v.lifetime} · {v.projects ? v.projects.join('、') : 'すべてのプロジェクト'}
+      </span>
+    </div>
+  );
+}
+
 function RunHistory({ runs }: { runs: Run[] }) {
   if (runs.length === 0) return <span className="text-fg-3">まだ実行していません</span>;
   return (
@@ -82,14 +114,16 @@ function SessionOverview({ session, runs }: { session: Session; runs: Run[] }) {
   const item = items.find((i) => i.id === session.id);
   const workspace = useWorkspace(session.workspaceId).data;
   const diff = useDiff(session.workspaceId).data;
-  const grants = useGrants(session.id).data ?? NONE;
   const parent = session.parentSessionId ? sessions.find((s) => s.id === session.parentSessionId) : null;
   const usage = sumUsage(runs.map((r) => r.usage));
   const openSession = useUi((s) => s.openSession);
-  const rt = useRuntime();
-  const activeGrant = grants.find((g) => !g.revokedAt);
+  const projects = useProjects().data ?? NONE;
+  const { active, orchestrator } = useSessionGrants(session.id);
+  const activeGrant = orchestrator ?? active[0] ?? null;
   const run = item?.run ?? runs[0] ?? null;
   const range = item ? elapsedRange(item) : { start: null, end: null };
+  // The tasks this chat created as an orchestrator (its plan, visible from the chat).
+  const plan = useTaskGroups().find((g) => g.id === session.id) ?? null;
   return (
     <div className="flex flex-col px-4 py-3">
       <Field label="状態">
@@ -106,20 +140,7 @@ function SessionOverview({ session, runs }: { session: Session; runs: Run[] }) {
       {item?.task && (
         <Field label="Task">
           <div>{item.task.title}</div>
-          <div className="flex items-center gap-2 text-meta text-fg-3">
-            {TASK_STATUS_LABEL[item.task.status]}
-            {RUNNABLE_TASK.includes(item.task.status) && (
-              <Button
-                size="sm"
-                onClick={() => {
-                  const taskId = item.task!.id;
-                  void runTask(rt, taskId).then((sessionId) => sessionId && openSession(sessionId));
-                }}
-              >
-                このTaskを実行
-              </Button>
-            )}
-          </div>
+          <div className="text-meta text-fg-3">{TASK_STATUS_LABEL[item.task.status]}</div>
         </Field>
       )}
       {parent && (
@@ -129,22 +150,39 @@ function SessionOverview({ session, runs }: { session: Session; runs: Run[] }) {
           </button>
         </Field>
       )}
+      {plan && (
+        <Field label="Task">
+          <div className="mb-1 text-meta text-fg-3 tabular">
+            {plan.counts.done}/{plan.counts.total} 完了
+            {plan.counts.review > 0 && ` · レビュー待ち ${plan.counts.review}`}
+            {plan.counts.running > 0 && ` · 進行中 ${plan.counts.running}`}
+          </div>
+          <ul className="flex flex-col">
+            {flattenTasks([plan])
+              .slice(0, 8)
+              .map((n) => (
+                <li key={n.task.id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const ui = useUi.getState();
+                      ui.setMode('command');
+                      ui.select(n.task.id);
+                      ui.setPanelOpen('command', true);
+                    }}
+                    className="flex h-6 w-full items-center gap-1.5 rounded-xs text-left text-ui text-fg-2 hover:text-fg"
+                  >
+                    <StatusIcon state={taskDisplay(n).state} size={12} />
+                    <span className="truncate">{n.task.title}</span>
+                  </button>
+                </li>
+              ))}
+          </ul>
+        </Field>
+      )}
       <Field label="権限">
         {activeGrant ? (
-          <div>
-            <div>{activeGrant.permissions.join(', ')}</div>
-            <div className="text-meta text-fg-3">
-              {activeGrant.lifetime === 'run' ? 'このRunのみ' : 'セッション内'}
-              {activeGrant.expiresAt && <> · {formatClockSeconds(activeGrant.expiresAt)} まで</>}
-            </div>
-          </div>
-        ) : session.kind === 'chat' && session.projectId ? (
-          <span className="flex items-center gap-2">
-            <span className="text-fg-3">なし</span>
-            <Button size="sm" hint="Task を分けて Worker を率いる権限を、次の 1 回だけ与えます" onClick={() => void makeOrchestrator(rt, session)}>
-              Orchestrator にする
-            </Button>
-          </span>
+          <GrantSummaryField grant={activeGrant} projects={projects} />
         ) : (
           <span className="text-fg-3">{session.kind === 'agent' ? 'worktree 内 · 既定の権限' : 'なし'}</span>
         )}
@@ -313,17 +351,25 @@ function ItemDetail({ item }: { item: BoardItem }) {
         <SessionOverview session={item.session} runs={runs} />
       ) : item.integration ? (
         <div className="flex flex-col px-4 py-3">
-          <Field label="状態">{item.integration.status}</Field>
+          <Button
+            variant="primary"
+            icon={<GitMerge size={13} strokeWidth={1.75} />}
+            className="mb-2 self-start"
+            onClick={() => useUi.getState().openIntegration(item.integration!.id)}
+          >
+            レビューを開始
+          </Button>
+          <Field label="状態">{INTEGRATION_STATUS_LABEL[item.integration.status]}</Field>
           <Field label="ブランチ">
-            <span className="font-mono text-meta">{item.integration.branch ?? '—'}</span>
+            <span className="font-mono text-meta">
+              {item.integration.branch ?? '—'} → {item.integration.targetRef ?? '—'}
+            </span>
           </Field>
           <div className="mt-2 mb-1 text-micro text-fg-3">手順</div>
           {item.integration.steps.map((s) => (
             <div key={s.index} className="flex h-6 items-center gap-2 text-meta">
-              <span className={s.status === 'failed' ? 'text-st-failed' : s.status === 'succeeded' ? 'text-st-completed' : 'text-fg-3'}>
-                {s.status === 'succeeded' ? '✓' : s.status === 'failed' ? '×' : '·'}
-              </span>
-              <span className="text-fg-2">{s.title}</span>
+              <StatusIcon state={stepState(s)} size={12} />
+              <span className="truncate text-fg-2">{s.title}</span>
             </div>
           ))}
         </div>
@@ -335,6 +381,7 @@ function ItemDetail({ item }: { item: BoardItem }) {
 function CommandPanel() {
   const selectedId = useUi((s) => s.selectedId);
   const { items } = useBoard();
+  if (selectedId?.startsWith('tsk_')) return <TaskDetail taskId={selectedId} />;
   const item = items.find((i) => i.id === selectedId);
   if (!item) return <Empty title="項目を選んでください" body="j / k で移動、Space で詳細を開閉します。" />;
   return <ItemDetail item={item} />;
@@ -386,7 +433,7 @@ function TimelinePanel() {
  */
 export function DetailPanel() {
   const mode = useUi((s) => s.mode);
-  const open = useUi((s) => s.panelOpen[s.mode]);
+  const open = useUi((s) => s.panelOpen[s.mode] && !s.reviewIntegrationId);
   const width = useUi((s) => s.panelWidth);
   const setWidth = useUi((s) => s.setPanelWidth);
   const setPanelOpen = useUi((s) => s.setPanelOpen);

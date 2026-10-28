@@ -1,9 +1,10 @@
 import { CheckCircle2, ChevronRight, Diamond, MessageSquare, Network, Play, Sparkles, Wrench } from 'lucide-react';
 import { LayoutGroup, motion } from 'motion/react';
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useCallback, useState } from 'react';
 import { approve, newChat, retry, switchMode } from '../../app/commands';
 import { archiveSession, createSession, sendMessage } from '../../daemon/actions';
-import { useTasks } from '../../daemon/queries';
+import { startDemo } from '../../app/demo';
+import { useMethods, useTasks } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { useDeferredReorder } from '../../hooks/useDeferredReorder';
 import { useNow } from '../../hooks/useNow';
@@ -21,9 +22,7 @@ import { Kbd } from '../ui/Kbd';
 import { useUi } from '../../store/ui';
 import { Cost, Skeleton } from '../ui/Meta';
 import { AgentRow, AttentionCard } from './BoardRows';
-
-const DEMO_PROMPT =
-  'README を改善したい。構成の見直しとセットアップ手順の追記を、2 人の Worker に分担して並列に進め、最後に統合して私の承認を待ってください。';
+import { TaskTree, useTaskGroups } from './TaskTree';
 
 const SECTION_ORDER: Zone[] = ['attention', 'running', 'queued', 'done', 'idle'];
 const DEFAULT_COLLAPSED: Record<Zone, boolean> = {
@@ -63,11 +62,13 @@ function ViewHeader({ items }: { items: BoardItem[] }) {
 /** Only while an orchestration is in progress (§5.1). */
 function GoalBar({ items }: { items: BoardItem[] }) {
   const tasks = useTasks().data ?? [];
+  const groups = useTaskGroups();
   const openSession = useUi((s) => s.openSession);
   const orch = items.find(
     (i) => i.run?.kind === 'orchestrator' && (i.state === 'running' || i.state === 'awaiting_approval'),
   );
-  if (!orch?.session) return null;
+  // Once the orchestrator has a plan, its task tree is the goal bar (expanded).
+  if (!orch?.session || groups.some((g) => g.id === orch.session!.id)) return null;
   const mine = tasks.filter(
     (t) => t.createdBy.kind === 'agent' && t.createdBy.sessionId === orch.session!.id,
   );
@@ -110,6 +111,7 @@ function EmptyBoard() {
   const [text, setText] = useState('');
   const connected = useConnectionState() === 'open';
   const demo = useIsDemo();
+  const methods = useMethods();
   const start = async (kind: 'chat' | 'agent', prompt?: string) => {
     const s = await createSession(rt, { projectId, kind });
     if (!s) return;
@@ -139,16 +141,16 @@ function EmptyBoard() {
         <button
           type="button"
           autoFocus
-          onClick={() => void start('chat', DEMO_PROMPT)}
+          onClick={() => void startDemo(rt, methods)}
           className="group mt-6 flex w-full items-center gap-3 rounded-md border border-line bg-surface px-4 py-3 text-left hover:border-line-strong"
         >
           <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent text-accent-fg">
             <Play size={15} strokeWidth={1.75} />
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block text-ui font-medium text-fg">デモ：2 人のエージェントで README を改善する</span>
+            <span className="block text-ui font-medium text-fg">デモ：Orchestrator に 2 人の Worker を指揮させる</span>
             <span className="block text-meta text-fg-3">
-              Orchestrator が Task を分け、Worker 2 人が並列に作業し、統合して承認を待つまでを体験できます。
+              設計チャットに権限を与えた状態で始まります。Task の分担、並列作業、統合、あなたの承認までを体験できます。
             </span>
           </span>
           <Kbd keys="Enter" />
@@ -237,6 +239,7 @@ export function CommandView() {
   const selectedId = useUi((s) => s.selectedId);
   const select = useUi((s) => s.select);
   const openSession = useUi((s) => s.openSession);
+  const openIntegration = useUi((s) => s.openIntegration);
   const collapsed = useUi((s) => s.collapsed);
   const toggleCollapsed = useUi((s) => s.toggleCollapsed);
   const togglePanel = useUi((s) => s.togglePanel);
@@ -255,17 +258,25 @@ export function CommandView() {
   const visible = groups.flatMap((g) => (isCollapsed(g.zone) ? [] : g.items));
   const selected = items.find((i) => i.id === selectedId) ?? null;
 
-  const open = (item: BoardItem) => {
-    if (item.session) openSession(item.session.id, { from: 'command' });
-    else {
+  // Stable handlers (store actions never change): memoized rows skip re-rendering.
+  const open = useCallback(
+    (item: BoardItem) => {
+      if (item.session) openSession(item.session.id, { from: 'command' });
+      else if (item.integration) openIntegration(item.integration.id);
+      else {
+        select(item.id);
+        setPanelOpen('command', true);
+      }
+    },
+    [openSession, openIntegration, select, setPanelOpen],
+  );
+  const choose = useCallback(
+    (item: BoardItem) => {
       select(item.id);
       setPanelOpen('command', true);
-    }
-  };
-  const choose = (item: BoardItem) => {
-    select(item.id);
-    setPanelOpen('command', true);
-  };
+    },
+    [select, setPanelOpen],
+  );
 
   const move = (to: number) => {
     const target = visible[Math.max(0, Math.min(visible.length - 1, to))];
@@ -345,6 +356,7 @@ export function CommandView() {
         ) : (
           <>
             <GoalBar items={items} />
+            <TaskTree />
             <LayoutGroup>
               <div role="listbox" aria-label="エージェント" className="flex flex-col gap-4 px-3" {...deferred.bind}>
                 {groups.map(({ zone, items: list }) => {
@@ -373,8 +385,8 @@ export function CommandView() {
                                   key={it.id}
                                   item={it}
                                   selected={it.id === selectedId}
-                                  onSelect={() => choose(it)}
-                                  onOpen={() => open(it)}
+                                  onSelect={choose}
+                                  onOpen={open}
                                 />
                               ))}
                             </div>
@@ -400,8 +412,8 @@ export function CommandView() {
                               key={it.id}
                               item={it}
                               selected={it.id === selectedId}
-                              onSelect={() => choose(it)}
-                              onOpen={() => open(it)}
+                              onSelect={choose}
+                              onOpen={open}
                             />
                           ))}
                         </div>

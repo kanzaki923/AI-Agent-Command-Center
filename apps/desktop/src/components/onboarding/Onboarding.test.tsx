@@ -8,7 +8,7 @@ import { Onboarding } from './Onboarding';
 
 describe('<Onboarding> demo mode', () => {
   beforeEach(() => {
-    useUi.setState({ onboardingDone: false, drafts: {}, focusSessionId: null, projectId: null });
+    useUi.setState({ onboardingDone: false, drafts: {}, suggestions: {}, focusSessionId: null, projectId: null });
   });
 
   it('"デモモードで試す" prepares the demo in the daemon and opens its orchestrator chat', async () => {
@@ -47,6 +47,7 @@ describe('<Onboarding> demo mode', () => {
     expect(ui.onboardingDone).toBe(true);
     expect(ui.projectId).toBe(projectId);
     expect(ui.focusSessionId).toBe(demoSession.id);
-    expect(ui.drafts[demoSession.id]).toBe('認証まわりのドキュメントとテストを並列で整備して');
+    expect(ui.drafts[demoSession.id]).toBeUndefined();
+    expect(ui.suggestions[demoSession.id]).toBe('認証まわりのドキュメントとテストを並列で整備して');
   });
 });

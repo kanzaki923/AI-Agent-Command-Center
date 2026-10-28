@@ -47,6 +47,14 @@ export interface UiState {
   forward: View[];
   /** Last time the Command list selection moved by keyboard (reorder hold, §3.2). */
   keyboardSelectAt: number;
+  /** Integration under review: replaces the main area until closed (Esc). */
+  reviewIntegrationId: string | null;
+  /** Project dialog: add a repository, or edit one project's settings. */
+  projectDialog: { kind: 'new' } | { kind: 'edit'; projectId: string } | null;
+  /** Session whose orchestrator-grant dialog is open. */
+  grantDialogSessionId: string | null;
+  /** Suggested first message per session (demo: a one-click chip above the composer). */
+  suggestions: Record<string, string>;
 }
 
 interface UiActions {
@@ -80,6 +88,11 @@ interface UiActions {
   rememberCommand: (id: string) => void;
   goBack: () => void;
   goForward: () => void;
+  openIntegration: (integrationId: string) => void;
+  closeIntegration: () => void;
+  setProjectDialog: (d: UiState['projectDialog']) => void;
+  setGrantDialog: (sessionId: string | null) => void;
+  setSuggestion: (sessionId: string, text: string | null) => void;
 }
 
 export type UiStore = UiState & UiActions;
@@ -113,6 +126,10 @@ const initial: UiState = {
   back: [],
   forward: [],
   keyboardSelectAt: 0,
+  reviewIntegrationId: null,
+  projectDialog: null,
+  grantDialogSessionId: null,
+  suggestions: {},
 };
 
 const view = (s: UiState): View => ({ mode: s.mode, sessionId: s.focusSessionId });
@@ -152,9 +169,12 @@ export const createUiStore = () =>
         setMode: (mode) =>
           set((s) =>
             s.mode === mode
-              ? s
+              ? s.reviewIntegrationId
+                ? { reviewIntegrationId: null }
+                : s
               : {
                   mode,
+                  reviewIntegrationId: null,
                   back: pushBack(s),
                   forward: [],
                   focusOrigin: mode === 'focus' ? s.focusOrigin : mode === 'timeline' ? 'timeline' : 'command',
@@ -164,6 +184,7 @@ export const createUiStore = () =>
           set((s) => ({
             viewedAt: touchViewed(s, s.focusSessionId, sessionId),
             mode: 'focus',
+            reviewIntegrationId: null,
             focusSessionId: sessionId,
             focusOrigin: opts?.from ?? (s.mode === 'timeline' ? 'timeline' : s.mode === 'command' ? 'command' : s.focusOrigin),
             selectedId: s.mode === 'command' ? s.selectedId : sessionId,
@@ -249,6 +270,23 @@ export const createUiStore = () =>
             back: [...s.back, view(s)],
           });
         },
+        openIntegration: (reviewIntegrationId) =>
+          set((s) => ({
+            reviewIntegrationId,
+            // The review lives in the Command board's place; selection follows it back.
+            mode: s.mode === 'focus' ? 'command' : s.mode,
+            selectedId: reviewIntegrationId,
+          })),
+        closeIntegration: () => set({ reviewIntegrationId: null }),
+        setProjectDialog: (projectDialog) => set({ projectDialog }),
+        setGrantDialog: (grantDialogSessionId) => set({ grantDialogSessionId }),
+        setSuggestion: (sessionId, text) =>
+          set((s) => {
+            const suggestions = { ...s.suggestions };
+            if (text) suggestions[sessionId] = text;
+            else delete suggestions[sessionId];
+            return { suggestions };
+          }),
       }),
       {
         name: 'acc.ui',
@@ -268,6 +306,7 @@ export const createUiStore = () =>
           collapsed: s.collapsed,
           onboardingDone: s.onboardingDone,
           recentCommands: s.recentCommands,
+          suggestions: s.suggestions,
         }),
       },
     ),

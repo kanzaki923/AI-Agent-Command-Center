@@ -22,6 +22,42 @@ describe('delta store (rAF batching, §6.1)', () => {
     expect(store.store.getState().byMessage.m!.text).toBe('0123456789');
   });
 
+  it('synthetic load: 10 parallel streams cost one store update per frame', () => {
+    const frames: (() => void)[] = [];
+    const store = createDeltaStore((cb) => {
+      frames.push(cb);
+    });
+    const updates = vi.fn();
+    store.store.subscribe(updates);
+    const FRAMES = 60;
+    const STREAMS = 10;
+    let index = 0;
+    for (let f = 0; f < FRAMES; f++) {
+      // ~3 deltas per stream per frame (a fast model), all streams at once.
+      for (let k = 0; k < 3; k++) {
+        for (let s = 0; s < STREAMS; s++) {
+          store.push({ runId: `r${s}`, sessionId: `s${s}`, messageId: `m${s}`, kind: 'text', text: 'あ', index: f * 3 + k });
+        }
+        index++;
+      }
+      // Stream 9 pauses for the last frame: its entry must keep its identity.
+      const before = store.store.getState().byMessage.m9;
+      expect(frames).toHaveLength(1);
+      frames.shift()!();
+      if (f > 0) expect(store.store.getState().byMessage.m9).not.toBe(before);
+    }
+    expect(index).toBe(FRAMES * 3);
+    expect(updates).toHaveBeenCalledTimes(FRAMES);
+    const state = store.store.getState().byMessage;
+    expect(Object.keys(state)).toHaveLength(STREAMS);
+    expect(state.m0!.text).toHaveLength(FRAMES * 3);
+
+    store.push({ runId: 'r0', sessionId: 's0', messageId: 'm0', kind: 'text', text: 'x', index: 999 });
+    const m9 = store.store.getState().byMessage.m9;
+    frames.shift()!();
+    expect(store.store.getState().byMessage.m9).toBe(m9);
+  });
+
   it('drops duplicate or replayed indexes and separates reasoning', () => {
     const store = createDeltaStore((cb) => cb());
     store.push({ runId: 'r', sessionId: 's', messageId: 'm', kind: 'text', text: 'a', index: 0 });

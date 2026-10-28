@@ -1,9 +1,9 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
-import { approval, event, run, session } from '../../test/fixtures';
+import { approval, event, run, session, task } from '../../test/fixtures';
 import { TooltipProvider } from '../ui/Tooltip';
 import { CommandView } from './CommandView';
 
@@ -90,6 +90,58 @@ describe('<CommandView>', () => {
       fake.emit(event('approval.requested', { approval: approval(r) }));
     });
     expect(await screen.findByText('コマンドの実行を承認しますか？')).toBeInTheDocument();
+  });
+
+  it('requires Ctrl+Y for a high-risk approval (payload.risk) and shows why', async () => {
+    const s = session({ title: 'リリース' });
+    const r = run(s, { status: 'awaiting_approval' });
+    s.activeRunId = r.id;
+    const a = approval(r, { payload: { toolName: 'Bash', input: { command: 'pnpm run deploy' }, risk: 'high' } });
+    let responded = 0;
+    mount({
+      'session.list': () => ({ items: [s], nextCursor: null }),
+      'run.list': () => ({ items: [r], nextCursor: null }),
+      'approval.list': (p) => ({ items: (p.status as string[]).includes('pending') ? [a] : [], nextCursor: null }),
+      'approval.respond': () => {
+        responded++;
+        return { ...a, status: 'approved' };
+      },
+    });
+    const card = await screen.findByRole('option', { name: /リリース · 承認待ち/ });
+    expect(screen.getByRole('button', { name: /承認（要注意）/ })).toBeInTheDocument();
+    expect(screen.getByText('取り消せない操作や外部への送信を含む可能性があります')).toBeInTheDocument();
+    card.focus();
+    await act(async () => {
+      fireEvent.keyDown(card, { key: 'y' });
+    });
+    expect(responded).toBe(0);
+    await act(async () => {
+      fireEvent.keyDown(card, { key: 'y', ctrlKey: true });
+    });
+    expect(responded).toBe(1);
+  });
+
+  it('shows the orchestrator’s task tree and opens a task’s detail', async () => {
+    const orch = session({ kind: 'chat', title: '設計チャット' });
+    const r0 = run(orch, { kind: 'chat', status: 'completed' });
+    const by = { kind: 'agent' as const, sessionId: orch.id, runId: r0.id };
+    const t1 = task({ title: 'ドキュメント', status: 'ready', createdBy: by });
+    const t2 = task({ title: 'テスト', status: 'running', createdBy: by, projectId: t1.projectId });
+    mount({
+      'session.list': () => ({ items: [orch], nextCursor: null }),
+      'run.list': () => ({ items: [r0], nextCursor: null }),
+      'task.list': () => ({ items: [t1, t2], nextCursor: null }),
+      'session.messages': () => ({ items: [], hasMore: false }),
+    });
+    const tree = await screen.findByTestId('task-tree');
+    expect(tree).toHaveTextContent('目標: 設計チャット');
+    expect(tree).toHaveTextContent('Task 0/2');
+    const rows = screen.getAllByRole('treeitem');
+    expect(rows.map((r) => r.textContent)).toEqual([expect.stringContaining('テスト'), expect.stringContaining('ドキュメント')]);
+    fireEvent.click(rows[1]!);
+    expect(useUi.getState().selectedId).toBe(t1.id);
+    // ready + no worker: the row offers to run it.
+    expect(within(rows[1]!).getByRole('button', { name: /このTaskを実行/ })).toBeInTheDocument();
   });
 
   it('moves the selection with j / k without focusing', async () => {
