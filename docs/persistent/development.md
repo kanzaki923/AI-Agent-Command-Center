@@ -12,6 +12,7 @@ pnpm dev:daemon          # Core Daemon を tsx watch で起動（127.0.0.1:47821
 pnpm acc status          # CLI（daemon.json を読んで接続）
 pnpm acc sessions
 pnpm acc events -f       # イベントを追従表示
+pnpm dev:desktop         # UI をブラウザで起動（127.0.0.1:5173。ACC_HOME の daemon.json に接続）
 
 pnpm lint                # ESLint（型情報つき）
 pnpm typecheck           # 全パッケージ tsc --noEmit
@@ -30,6 +31,16 @@ pnpm format              # Prettier
 | `ACC_LITELLM_BASE_URL` / `ACC_LITELLM_API_KEY` | なし | `config.json` の LiteLLM 設定を上書き（保存はしない） |
 
 開発中に本番のデータと混ぜたくないときは `ACC_HOME` を別ディレクトリにする。
+
+Desktop UI（`apps/desktop`）：
+
+```sh
+pnpm --filter @acc/desktop playground   # 本物のデーモン + 未実装メソッドの代役 + 動くデモ場面（UI 確認用、ACC_PORT 既定 47899）
+pnpm --filter @acc/desktop tauri:dev    # Tauri アプリ（デーモンが無ければ起動）
+pnpm --filter @acc/desktop screenshots  # Playwright で主要画面を撮る（出力は OS の一時ディレクトリ）
+```
+
+UI とデーモンは同じ `ACC_HOME` を見る（Vite の開発ミドルウェアが `daemon.json` を `/__acc/connection` で渡す）。
 
 ## 2. パッケージ構成
 

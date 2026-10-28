@@ -38,12 +38,12 @@ function ChoiceCard({
       onMouseEnter={onFocus}
       aria-pressed={active}
       className={cn(
-        'h-40 flex-1 rounded-lg border p-5 text-left transition-colors duration-[120ms]',
+        'flex h-40 flex-1 flex-col justify-start rounded-lg border p-5 text-left transition-colors duration-[120ms]',
         active ? 'border-[var(--focus-ring)] bg-selected' : 'border-line bg-surface hover:border-line-strong',
       )}
     >
       {/* Inner box: <button> centres its content vertically; keep it top-aligned. */}
-      <span className="flex h-full w-full flex-col items-start gap-2">
+      <span className="flex w-full flex-1 flex-col items-start justify-start gap-2">
         <span
           className={cn(
             'flex size-8 items-center justify-center rounded-md transition-colors duration-[120ms]',
@@ -152,6 +152,8 @@ export function Onboarding() {
         }
       }}
       tabIndex={-1}
+      // Programmatic focus target for ← → / Enter; never show a ring on the whole screen.
+      style={{ outline: 'none', boxShadow: 'none' }}
       ref={(el) => {
         if (el && step === 'choose' && !el.contains(document.activeElement)) el.focus();
       }}

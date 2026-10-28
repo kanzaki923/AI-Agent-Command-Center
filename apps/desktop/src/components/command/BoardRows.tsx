@@ -1,11 +1,11 @@
 import { ArrowRight, MoreHorizontal } from 'lucide-react';
 import { motion } from 'motion/react';
 import type { ReactNode } from 'react';
+import { useStore } from 'zustand';
 import { retry, stop } from '../../app/commands';
 import { archiveSession } from '../../daemon/actions';
 import { useResolvedApprovals } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
-import { useNow } from '../../hooks/useNow';
 import { cn } from '../../lib/cn';
 import { STATE_LABEL } from '../../lib/status';
 import { shortModel } from '../../lib/models';
@@ -122,16 +122,16 @@ interface RowProps {
   onOpen: () => void;
 }
 
-/** Recently-ended effects play only for runs that ended in the last few seconds. */
-function useJustEnded(item: BoardItem, windowMs: number): boolean {
-  const now = useNow();
-  const end = item.run?.endedAt;
-  return !!end && now - Date.parse(end) < windowMs;
+/** One-shot marks from the event stream: the run completed / failed a moment ago. */
+function useJustEnded(item: BoardItem, kind: 'completed' | 'failed'): boolean {
+  const rt = useRuntime();
+  const runId = item.run?.id;
+  return useStore(rt.streams.recent.store, (s) => !!runId && !!s[kind][runId]);
 }
 
 /** 52px two-line agent row (§5.1). */
 export function AgentRow({ item, selected, onSelect, onOpen }: RowProps) {
-  const justCompleted = useJustEnded(item, 1500) && item.state === 'completed';
+  const justCompleted = useJustEnded(item, 'completed') && item.state === 'completed';
   return (
     <motion.div
       layoutId={item.id}
@@ -190,7 +190,7 @@ export function AttentionCard({ item, selected, onSelect, onOpen }: RowProps) {
   const rt = useRuntime();
   const connected = useConnectionState() === 'open';
   const resolved = useResolvedApprovals();
-  const justFailed = useJustEnded(item, 3000) && item.state === 'failed';
+  const justFailed = useJustEnded(item, 'failed') && item.state === 'failed';
   const view = item.approval ? describeApproval(item.approval) : null;
   const { controls, onKeyDown } = useApprovalControls(item.approval, view);
   const recentDecision =

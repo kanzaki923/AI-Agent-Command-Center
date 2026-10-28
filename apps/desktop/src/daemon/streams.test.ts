@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { event, session } from '../test/fixtures';
 import { ACTIVITY_MIN_INTERVAL_MS, createActivityStore } from './activity';

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import type { Approval, Run, Session } from '@acc/protocol';
 import { QueryClient } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -6,6 +7,7 @@ import { T0, approval, event, iso, message, run, session } from '../test/fixture
 import { createActivityStore } from './activity';
 import { createDeltaStore } from './deltas';
 import { createEventLog } from './eventLog';
+import { createRecentStore } from './recent';
 import { qk } from './keys';
 import { type ChatMessage, type Streams, applyEvent, createInterruptNotifier, startSync } from './sync';
 
@@ -16,6 +18,7 @@ function setup() {
     deltas: createDeltaStore(flushNow),
     activity: createActivityStore(),
     events: createEventLog(),
+    recent: createRecentStore(),
   };
   return { qc, streams };
 }

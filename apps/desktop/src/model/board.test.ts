@@ -1,3 +1,4 @@
+// @vitest-environment node
 import type { Integration } from '@acc/protocol';
 import { describe, expect, it } from 'vitest';
 import { T0, approval, id, iso, run, session, task } from '../test/fixtures';
@@ -64,12 +65,11 @@ describe('buildBoard', () => {
     expect(items[0]!.zone).toBe('attention');
   });
 
-  it('keeps a just-completed run in the running group for 1200ms (§3.2)', () => {
+  it('keeps a just-completed run in its group while it lingers (§3.2)', () => {
     const s = session({ title: 'just done' });
     const r = run(s, { status: 'completed', endedAt: iso(T0) });
     const base = { sessions: [s], runs: [r], approvals: [], tasks: [], integrations: [] };
-    expect(buildBoard({ ...base, now: T0 + 500 })[0]!.zone).toBe('running');
-    expect(buildBoard({ ...base, now: T0 + 1500 })[0]!.zone).toBe('done');
+    expect(buildBoard({ ...base, lingering: { [r.id]: true } })[0]!.zone).toBe('running');
     expect(buildBoard(base)[0]!.zone).toBe('done');
   });
 

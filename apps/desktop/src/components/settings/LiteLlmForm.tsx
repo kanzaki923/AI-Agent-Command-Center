@@ -96,6 +96,7 @@ export function LiteLlmForm({ onDone, compact = false }: { onDone?: () => void; 
         <FieldLabel htmlFor="litellm-url">Proxy の URL</FieldLabel>
         <input
           id="litellm-url"
+          autoFocus={!compact}
           className={inputClass}
           value={url}
           onChange={(e) => {

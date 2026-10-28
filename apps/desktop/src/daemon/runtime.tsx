@@ -8,6 +8,7 @@ import { createActivityStore } from './activity';
 import { createDeltaStore } from './deltas';
 import { isNotImplemented } from './errors';
 import { createEventLog } from './eventLog';
+import { createRecentStore } from './recent';
 import { type Streams, startSync } from './sync';
 
 /** Everything the UI needs to talk to the Core Daemon. Created once at startup. */
@@ -63,6 +64,7 @@ export function createRuntime(
     deltas: createDeltaStore(),
     activity: createActivityStore(),
     events: createEventLog(),
+    recent: createRecentStore(),
   };
   const unimplemented = createUnimplementedStore();
   const stopSync = startSync(client, queryClient, streams, (count) =>

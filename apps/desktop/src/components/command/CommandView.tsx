@@ -1,4 +1,4 @@
-import { CheckCircle2, ChevronRight, Diamond, MessageSquare, Network, Sparkles, Wrench } from 'lucide-react';
+import { CheckCircle2, ChevronRight, Diamond, MessageSquare, Network, Play, Sparkles, Wrench } from 'lucide-react';
 import { LayoutGroup, motion } from 'motion/react';
 import { type ReactNode, useState } from 'react';
 import { approve, newChat, retry, switchMode } from '../../app/commands';
@@ -7,6 +7,7 @@ import { useTasks } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { useDeferredReorder } from '../../hooks/useDeferredReorder';
 import { useNow } from '../../hooks/useNow';
+import { dayBucket } from '../../lib/format';
 import { useWindowKeydown } from '../../hooks/useWindowKeydown';
 import { cn } from '../../lib/cn';
 import { sumUsage } from '../../lib/format';
@@ -14,9 +15,14 @@ import { isTypingTarget, matchShortcut } from '../../lib/shortcuts';
 import { describeApproval } from '../../model/approval';
 import { type BoardItem, ZONE_LABEL, type Zone, attentionCounts } from '../../model/board';
 import { useBoard } from '../../model/useBoard';
+import { useIsDemo } from '../../model/useDemo';
+import { Kbd } from '../ui/Kbd';
 import { useUi } from '../../store/ui';
 import { Cost, Skeleton } from '../ui/Meta';
 import { AgentRow, AttentionCard } from './BoardRows';
+
+const DEMO_PROMPT =
+  'README を改善したい。構成の見直しとセットアップ手順の追記を、2 人の Worker に分担して並列に進め、最後に統合して私の承認を待ってください。';
 
 const SECTION_ORDER: Zone[] = ['attention', 'running', 'queued', 'done', 'idle'];
 const DEFAULT_COLLAPSED: Record<Zone, boolean> = {
@@ -32,7 +38,7 @@ function ViewHeader({ items }: { items: BoardItem[] }) {
   const running = items.filter((i) => i.state === 'running' || (i.zone === 'attention' && i.state === 'awaiting_approval')).length;
   const total = sumUsage(items.flatMap((i) => i.runs.map((r) => r.usage)));
   return (
-    <div className="sticky top-0 z-20 flex h-11 shrink-0 items-center gap-3 bg-canvas px-6">
+    <div className="sticky top-0 z-20 mx-auto flex h-11 w-full max-w-[1200px] shrink-0 items-center gap-3 bg-canvas px-6">
       <h1 className="text-title text-fg">司令室</h1>
       <span className="flex-1" />
       <span className="flex items-center gap-1.5 text-meta text-fg-3 tabular">
@@ -102,6 +108,7 @@ function EmptyBoard() {
   const openSession = useUi((s) => s.openSession);
   const [text, setText] = useState('');
   const connected = useConnectionState() === 'open';
+  const demo = useIsDemo();
   const start = async (kind: 'chat' | 'agent', prompt?: string) => {
     const s = await createSession(rt, { projectId, kind });
     if (!s) return;
@@ -127,6 +134,25 @@ function EmptyBoard() {
       <Sparkles size={20} strokeWidth={1.5} className="text-fg-3" />
       <h2 className="mt-3 text-heading text-fg">何を進めますか？</h2>
       <p className="mt-1 text-ui text-fg-3">指示を書くと、チャットが始まります。あとからエージェントに任せることもできます。</p>
+      {demo && (
+        <button
+          type="button"
+          autoFocus
+          onClick={() => void start('chat', DEMO_PROMPT)}
+          className="group mt-6 flex w-full items-center gap-3 rounded-md border border-line bg-surface px-4 py-3 text-left hover:border-line-strong"
+        >
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent text-accent-fg">
+            <Play size={15} strokeWidth={1.75} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-ui font-medium text-fg">デモ：2 人のエージェントで README を改善する</span>
+            <span className="block text-meta text-fg-3">
+              Orchestrator が Task を分け、Worker 2 人が並列に作業し、統合して承認を待つまでを体験できます。
+            </span>
+          </span>
+          <Kbd keys="Enter" />
+        </button>
+      )}
       <form
         className="mt-6 w-full"
         onSubmit={(e) => {
@@ -162,6 +188,13 @@ function EmptyBoard() {
   );
 }
 
+/** `· 今日 N` on the done group (ticks with the shared clock only here). */
+function DoneToday({ items }: { items: BoardItem[] }) {
+  const now = useNow();
+  const n = items.filter((i) => i.run?.endedAt && dayBucket(i.run.endedAt, now) === 'today').length;
+  return n > 0 ? <span className="text-fg-4">· 今日 {n}</span> : null;
+}
+
 function SectionTitle({
   zone,
   count,
@@ -175,7 +208,7 @@ function SectionTitle({
   collapsed: boolean;
   onToggle: () => void;
   pending: number;
-  extra?: string;
+  extra?: ReactNode;
 }) {
   return (
     <button
@@ -186,7 +219,7 @@ function SectionTitle({
     >
       <span className={zone === 'attention' && count > 0 ? 'text-fg' : undefined}>{ZONE_LABEL[zone]}</span>
       <span className="tabular">{count}</span>
-      {extra && <span className="text-fg-4">· {extra}</span>}
+      {extra}
       {pending > 0 && <span className="text-accent">· 更新 {pending}件</span>}
       <ChevronRight
         size={12}
@@ -199,8 +232,7 @@ function SectionTitle({
 
 export function CommandView() {
   const rt = useRuntime();
-  const now = useNow();
-  const { items, loading } = useBoard({ now });
+  const { items, loading } = useBoard();
   const selectedId = useUi((s) => s.selectedId);
   const select = useUi((s) => s.select);
   const openSession = useUi((s) => s.openSession);
@@ -294,16 +326,13 @@ export function CommandView() {
 
   const attention = groups[0]!.items;
   const runningCount = groups[1]!.items.length + groups[2]!.items.length;
-  const doneToday = groups[3]!.items.filter((i) => {
-    const d = new Date(now);
-    d.setHours(0, 0, 0, 0);
-    return (i.run?.endedAt ?? '') >= d.toISOString();
-  }).length;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <ViewHeader items={items} />
-      <div className="min-h-0 flex-1 overflow-y-auto pb-10" data-region="main">
+      <div className="min-h-0 flex-1 overflow-y-auto pb-10" data-region="main" tabIndex={-1}>
+        {/* Cap the line length: status, title and the right-hand columns stay in one glance. */}
+        <div className="mx-auto w-full max-w-[1200px]">
         {loading ? (
           <div className="flex flex-col gap-2 px-6 pt-4">
             {[0, 1, 2, 3].map((i) => (
@@ -361,7 +390,7 @@ export function CommandView() {
                         collapsed={isCollapsed(zone)}
                         onToggle={() => toggleCollapsed(`cmd.${zone}`, DEFAULT_COLLAPSED[zone])}
                         pending={0}
-                        extra={zone === 'done' && doneToday > 0 ? `今日 ${doneToday}` : undefined}
+                        extra={zone === 'done' ? <DoneToday items={list} /> : undefined}
                       />
                       {!isCollapsed(zone) && (
                         <div className="flex flex-col px-3">
@@ -391,6 +420,7 @@ export function CommandView() {
             )}
           </>
         )}
+        </div>
       </div>
     </div>
   );

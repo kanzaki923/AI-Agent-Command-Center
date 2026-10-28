@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { describeTool, displayPath } from '../lib/tools';
 import { filtersFromSearch, filtersToSearch } from '../store/timeline';

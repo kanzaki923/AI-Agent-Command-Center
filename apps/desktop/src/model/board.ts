@@ -46,12 +46,9 @@ export interface BoardInput {
   tasks: Task[];
   integrations: Integration[];
   projectId?: string | null;
-  /** When given, a just-completed run lingers in its group for 1200ms (§3.2). */
-  now?: number;
+  /** Runs that completed a moment ago: they linger in their group before moving (§3.2). */
+  lingering?: Readonly<Record<string, true>>;
 }
-
-/** run.completed: highlight once, then move to the done group after this delay. */
-export const COMPLETED_LINGER_MS = 1200;
 
 export function untitled(session: Session): string {
   if (session.title.trim()) return session.title;
@@ -123,14 +120,7 @@ export function buildBoard(input: BoardInput): BoardItem[] {
     }
     const usage = sumUsage(runs.map((r) => r.usage));
     let zone = zoneOf(state);
-    if (
-      state === 'completed' &&
-      input.now !== undefined &&
-      run?.endedAt &&
-      input.now - Date.parse(run.endedAt) < COMPLETED_LINGER_MS
-    ) {
-      zone = 'running';
-    }
+    if (state === 'completed' && run && input.lingering?.[run.id]) zone = 'running';
     items.push({
       id: s.id,
       kind: 'session',

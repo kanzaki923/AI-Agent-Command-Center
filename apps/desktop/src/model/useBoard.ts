@@ -1,4 +1,6 @@
 import { useMemo } from 'react';
+import { useStore } from 'zustand';
+import { useRuntime } from '../daemon/runtime';
 import {
   useIntegrations,
   usePendingApprovals,
@@ -18,7 +20,9 @@ export interface BoardData {
 }
 
 /** All Command-board inputs, filtered by the project switcher. */
-export function useBoard(opts: { now?: number } = {}): BoardData {
+export function useBoard(): BoardData {
+  const rt = useRuntime();
+  const lingering = useStore(rt.streams.recent.store, (s) => s.completed);
   const projectId = useUi((s) => s.projectId);
   const sessions = useSessions();
   const runs = useRuns();
@@ -30,10 +34,9 @@ export function useBoard(opts: { now?: number } = {}): BoardData {
   const a = approvals.data ?? NONE;
   const t = tasks.data ?? NONE;
   const i = integrations.data ?? NONE;
-  const { now } = opts;
   const items = useMemo(
-    () => buildBoard({ sessions: s, runs: r, approvals: a, tasks: t, integrations: i, projectId, now }),
-    [s, r, a, t, i, projectId, now],
+    () => buildBoard({ sessions: s, runs: r, approvals: a, tasks: t, integrations: i, projectId, lingering }),
+    [s, r, a, t, i, projectId, lingering],
   );
   return { items, loading: sessions.isPending };
 }

@@ -16,6 +16,7 @@ import { describeTool } from '../lib/tools';
 import type { ActivityStore } from './activity';
 import type { DeltaStore } from './deltas';
 import type { EventLog } from './eventLog';
+import type { RecentStore } from './recent';
 import { qk } from './keys';
 
 /** A message as the UI holds it: persisted, or optimistic (sent from this window). */
@@ -28,6 +29,7 @@ export interface Streams {
   deltas: DeltaStore;
   activity: ActivityStore;
   events: EventLog;
+  recent: RecentStore;
 }
 
 type Entity = { id: string };
@@ -154,6 +156,8 @@ export function applyEvent(qc: QueryClient, streams: Streams, event: Event): voi
       patchIn<Run>(qc, qk.runs, runId, patch);
       qc.setQueryData<Run>(qk.run(runId), (r) => (r ? patch(r) : r));
       if (to === 'awaiting_approval') streams.activity.set(runId, '承認を待っています');
+      if (to === 'completed') streams.recent.completed(runId);
+      if (to === 'failed') streams.recent.failed(runId);
       if (isTerminalRunStatus(to)) {
         streams.deltas.finishRun(runId);
         streams.activity.set(runId, null);
@@ -164,6 +168,8 @@ export function applyEvent(qc: QueryClient, streams: Streams, event: Event): voi
     }
     case 'run.completed':
     case 'run.failed':
+      if (event.type === 'run.completed') streams.recent.completed(event.payload.run.id);
+      else streams.recent.failed(event.payload.run.id);
       streams.deltas.finishRun(event.payload.run.id);
       streams.activity.set(event.payload.run.id, null);
       setRun(qc, event.payload.run);
