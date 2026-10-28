@@ -20,6 +20,14 @@ export const qk = {
   workspace: (workspaceId: string) => ['workspace.get', workspaceId] as const,
   diff: (workspaceId: string) => ['workspace.diff', workspaceId] as const,
   artifacts: (sessionId: string, kind: string) => ['artifact.list', sessionId, kind] as const,
+  /** Latest artifacts of one kind for a project (diff stats per task, test results). */
+  projectArtifacts: (projectId: string, kind: string) =>
+    ['artifact.list', 'project', projectId, kind] as const,
+  artifact: (artifactId: string) => ['artifact.get', artifactId] as const,
+  /** Grants of a session, including revoked ones (the chat shows when they ended). */
   grants: (sessionId: string) => ['grant.list', sessionId] as const,
+  /** Budget nodes whose subject is a session (found via budget.updated events). */
+  sessionBudgets: (sessionId: string) => ['budget.session', sessionId] as const,
+  budget: (budgetId: string) => ['budget.get', budgetId] as const,
   eventHistory: ['events.history'] as const,
 };

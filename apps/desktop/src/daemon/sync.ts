@@ -1,6 +1,9 @@
 import type { AccClient, Subscription } from '@acc/client';
 import {
   type Approval,
+  type Artifact,
+  type BudgetAllocation,
+  type CapabilityGrant,
   type Event,
   type Integration,
   type Message,
@@ -74,6 +77,22 @@ export function removeFrom<T extends Entity>(qc: QueryClient, key: QueryKey, id:
 const byActivityDesc = (a: Session, b: Session) => b.lastActivityAt.localeCompare(a.lastActivityAt);
 const byCreatedDesc = (a: { createdAt: string }, b: { createdAt: string }) =>
   b.createdAt.localeCompare(a.createdAt);
+const byCreatedAsc = (a: { createdAt: string }, b: { createdAt: string }) =>
+  a.createdAt.localeCompare(b.createdAt);
+
+/** `budget.get` result as cached under qk.budget(id). */
+export interface BudgetNode {
+  budget: BudgetAllocation;
+  children: BudgetAllocation[];
+}
+
+/** The session a grant shows up on: its subject session, or the session of its subject run. */
+export function grantSessionId(qc: QueryClient, g: CapabilityGrant): string | null {
+  if (g.subject.kind === 'session') return g.subject.sessionId;
+  const { runId } = g.subject;
+  const run = qc.getQueryData<Run>(qk.run(runId)) ?? qc.getQueryData<Run[]>(qk.runs)?.find((r) => r.id === runId);
+  return run?.sessionId ?? null;
+}
 
 function bumpSession(qc: QueryClient, sessionId: string, ts: string): void {
   qc.setQueryData<Session[]>(qk.sessions, (cur) => {
@@ -227,7 +246,11 @@ export function applyEvent(qc: QueryClient, streams: Streams, event: Event): voi
 
     case 'artifact.created': {
       const art = event.payload.artifact;
-      void qc.invalidateQueries({ queryKey: ['artifact.list'] });
+      // Patch the lists the UI keeps (per session and per project); others refetch lazily.
+      if (art.sessionId) upsertIn<Artifact>(qc, qk.artifacts(art.sessionId, art.kind), art, byCreatedDesc);
+      if (art.projectId) upsertIn<Artifact>(qc, qk.projectArtifacts(art.projectId, art.kind), art, byCreatedDesc);
+      upsertIn<Artifact>(qc, qk.projectArtifacts('', art.kind), art, byCreatedDesc);
+      qc.setQueryData(qk.artifact(art.id), art);
       if (art.workspaceId) void qc.invalidateQueries({ queryKey: qk.diff(art.workspaceId) });
       return;
     }
@@ -235,18 +258,50 @@ export function applyEvent(qc: QueryClient, streams: Streams, event: Event): voi
     case 'integration.created':
     case 'integration.updated':
       upsertIn<Integration>(qc, qk.integrations, event.payload.integration, byCreatedDesc);
+      qc.setQueryData(['integration.get', event.payload.integration.id], event.payload.integration);
       return;
 
-    case 'grant.created':
-    case 'grant.revoked':
-      void qc.invalidateQueries({ queryKey: ['grant.list'] });
+    case 'grant.created': {
+      const g = event.payload.grant;
+      const sessionId = grantSessionId(qc, g);
+      if (sessionId) upsertIn<CapabilityGrant>(qc, qk.grants(sessionId), g, byCreatedAsc);
       return;
+    }
+    case 'grant.revoked': {
+      // The payload only names the grant: patch it wherever it is cached.
+      const { grantId } = event.payload;
+      for (const [key, list] of qc.getQueriesData<CapabilityGrant[]>({ queryKey: ['grant.list'] })) {
+        if (!list?.some((g) => g.id === grantId)) continue;
+        patchIn<CapabilityGrant>(qc, key, grantId, (g) => (g.revokedAt ? g : { ...g, revokedAt: event.ts }));
+      }
+      return;
+    }
     case 'policy.denied':
+      // An agent tried something its grant does not allow: say so on its activity line
+      // (the Timeline keeps the full audit record).
+      if (event.runId) streams.activity.set(event.runId, `権限外の操作を拒否しました（${event.payload.permission}）`);
       return;
 
-    case 'budget.updated':
-      void qc.invalidateQueries({ queryKey: ['budget.get'] });
+    case 'budget.updated': {
+      const b = event.payload.budget;
+      qc.setQueryData<BudgetNode>(qk.budget(b.id), (cur) => (cur ? { ...cur, budget: b } : cur));
+      if (b.parentId) {
+        qc.setQueryData<BudgetNode>(qk.budget(b.parentId), (cur) =>
+          cur
+            ? {
+                ...cur,
+                children: cur.children.some((c) => c.id === b.id)
+                  ? cur.children.map((c) => (c.id === b.id ? b : c))
+                  : [...cur.children, b],
+              }
+            : cur,
+        );
+      }
+      if (b.subject.kind === 'session' && b.subject.id) {
+        upsertIn<BudgetAllocation>(qc, qk.sessionBudgets(b.subject.id), b, byCreatedDesc);
+      }
       return;
+    }
 
     case 'settings.updated':
       void qc.invalidateQueries({ queryKey: qk.settings });
@@ -254,6 +309,8 @@ export function applyEvent(qc: QueryClient, streams: Streams, event: Event): voi
       return;
 
     case 'orchestrator.decision':
+      // The orchestrator's latest judgement doubles as its "what is it doing" line.
+      if (event.runId) streams.activity.set(event.runId, event.payload.decision);
       return;
     default: {
       // A new event type must be handled (or deliberately ignored) above.

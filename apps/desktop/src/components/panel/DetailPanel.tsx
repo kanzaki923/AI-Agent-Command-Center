@@ -1,9 +1,23 @@
-import type { Event, Run, Session } from '@acc/protocol';
-import { CheckCircle2, CircleX, X } from 'lucide-react';
+import type { CapabilityGrant, Event, Project, Run, Session } from '@acc/protocol';
+import { CheckCircle2, CircleX, GitMerge, X } from 'lucide-react';
 import { motion } from 'motion/react';
 import { Tabs } from 'radix-ui';
 import { type ReactNode, useMemo } from 'react';
-import { useArtifacts, useDiff, useEventHistory, useEventLogVersion, useGrants, useRuns, useSessions, useWorkspace } from '../../daemon/queries';
+import {
+  useArtifacts,
+  useDiff,
+  useEventHistory,
+  useEventLogVersion,
+  useProjects,
+  useRuns,
+  useSessions,
+  useWorkspace,
+} from '../../daemon/queries';
+import { describeGrant } from '../../model/grant';
+import { INTEGRATION_STATUS_LABEL, stepState } from '../../model/integration';
+import { OrchestratorMark, useSessionGrants } from '../grant/Grant';
+import { Button } from '../ui/Button';
+import { Tooltip } from '../ui/Tooltip';
 import { useRuntime } from '../../daemon/runtime';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { cn } from '../../lib/cn';
@@ -22,6 +36,7 @@ import { ResizeHandle } from '../ui/ResizeHandle';
 import { StatusIcon, StatusLabel } from '../ui/StatusIcon';
 import { useTimelineSelection } from '../timeline/TimelineView';
 import { DiffBrowser, DiffStatText } from './DiffViewer';
+import { TaskDetail } from './TaskDetail';
 
 const NONE: never[] = [];
 
@@ -54,6 +69,25 @@ function JsonBlock({ value }: { value: unknown }) {
 }
 
 
+/** What a grant lets the session do, in words (raw patterns in the tooltip). */
+function GrantSummaryField({ grant, projects }: { grant: CapabilityGrant; projects: Project[] }) {
+  const v = describeGrant(grant, projects);
+  return (
+    <div className="flex flex-col gap-0.5">
+      <Tooltip content={<span className="font-mono">{grant.permissions.join(', ')}</span>}>
+        <span className="flex items-center gap-1.5">
+          {v.orchestrates && <OrchestratorMark size={11} />}
+          {v.title}
+          {v.workers && <span className="text-meta text-fg-3">· {v.workers}</span>}
+        </span>
+      </Tooltip>
+      <span className="text-meta text-fg-3">
+        {v.lifetime} · {v.projects ? v.projects.join('、') : 'すべてのプロジェクト'}
+      </span>
+    </div>
+  );
+}
+
 function RunHistory({ runs }: { runs: Run[] }) {
   if (runs.length === 0) return <span className="text-fg-3">まだ実行していません</span>;
   return (
@@ -78,11 +112,12 @@ function SessionOverview({ session, runs }: { session: Session; runs: Run[] }) {
   const item = items.find((i) => i.id === session.id);
   const workspace = useWorkspace(session.workspaceId).data;
   const diff = useDiff(session.workspaceId).data;
-  const grants = useGrants(session.id).data ?? NONE;
   const parent = session.parentSessionId ? sessions.find((s) => s.id === session.parentSessionId) : null;
   const usage = sumUsage(runs.map((r) => r.usage));
   const openSession = useUi((s) => s.openSession);
-  const activeGrant = grants.find((g) => !g.revokedAt);
+  const projects = useProjects().data ?? NONE;
+  const { active, orchestrator } = useSessionGrants(session.id);
+  const activeGrant = orchestrator ?? active[0] ?? null;
   const run = item?.run ?? runs[0] ?? null;
   const range = item ? elapsedRange(item) : { start: null, end: null };
   return (
@@ -113,13 +148,7 @@ function SessionOverview({ session, runs }: { session: Session; runs: Run[] }) {
       )}
       <Field label="権限">
         {activeGrant ? (
-          <div>
-            <div>{activeGrant.permissions.join(', ')}</div>
-            <div className="text-meta text-fg-3">
-              {activeGrant.lifetime === 'run' ? 'このRunのみ' : 'セッション内'}
-              {activeGrant.expiresAt && <> · {formatClockSeconds(activeGrant.expiresAt)} まで</>}
-            </div>
-          </div>
+          <GrantSummaryField grant={activeGrant} projects={projects} />
         ) : (
           <span className="text-fg-3">{session.kind === 'agent' ? 'worktree 内 · 既定の権限' : 'なし'}</span>
         )}
@@ -288,17 +317,25 @@ function ItemDetail({ item }: { item: BoardItem }) {
         <SessionOverview session={item.session} runs={runs} />
       ) : item.integration ? (
         <div className="flex flex-col px-4 py-3">
-          <Field label="状態">{item.integration.status}</Field>
+          <Button
+            variant="primary"
+            icon={<GitMerge size={13} strokeWidth={1.75} />}
+            className="mb-2 self-start"
+            onClick={() => useUi.getState().openIntegration(item.integration!.id)}
+          >
+            レビューを開始
+          </Button>
+          <Field label="状態">{INTEGRATION_STATUS_LABEL[item.integration.status]}</Field>
           <Field label="ブランチ">
-            <span className="font-mono text-meta">{item.integration.branch ?? '—'}</span>
+            <span className="font-mono text-meta">
+              {item.integration.branch ?? '—'} → {item.integration.targetRef ?? '—'}
+            </span>
           </Field>
           <div className="mt-2 mb-1 text-micro text-fg-3">手順</div>
           {item.integration.steps.map((s) => (
             <div key={s.index} className="flex h-6 items-center gap-2 text-meta">
-              <span className={s.status === 'failed' ? 'text-st-failed' : s.status === 'succeeded' ? 'text-st-completed' : 'text-fg-3'}>
-                {s.status === 'succeeded' ? '✓' : s.status === 'failed' ? '×' : '·'}
-              </span>
-              <span className="text-fg-2">{s.title}</span>
+              <StatusIcon state={stepState(s)} size={12} />
+              <span className="truncate text-fg-2">{s.title}</span>
             </div>
           ))}
         </div>
@@ -310,6 +347,7 @@ function ItemDetail({ item }: { item: BoardItem }) {
 function CommandPanel() {
   const selectedId = useUi((s) => s.selectedId);
   const { items } = useBoard();
+  if (selectedId?.startsWith('tsk_')) return <TaskDetail taskId={selectedId} />;
   const item = items.find((i) => i.id === selectedId);
   if (!item) return <Empty title="項目を選んでください" body="j / k で移動、Space で詳細を開閉します。" />;
   return <ItemDetail item={item} />;
@@ -361,7 +399,7 @@ function TimelinePanel() {
  */
 export function DetailPanel() {
   const mode = useUi((s) => s.mode);
-  const open = useUi((s) => s.panelOpen[s.mode]);
+  const open = useUi((s) => s.panelOpen[s.mode] && !s.reviewIntegrationId);
   const width = useUi((s) => s.panelWidth);
   const setWidth = useUi((s) => s.setPanelWidth);
   const setPanelOpen = useUi((s) => s.setPanelOpen);

@@ -6,7 +6,9 @@ import {
   ChevronRight,
   Cpu,
   CornerDownLeft,
+  Diamond,
   Folder,
+  FolderGit2,
   History,
   Keyboard,
   LayoutGrid,
@@ -15,6 +17,7 @@ import {
   Network,
   PanelLeft,
   PanelRight,
+  Play,
   RotateCcw,
   Settings,
   Sparkles,
@@ -38,7 +41,8 @@ import {
   switchMode,
 } from '../../app/commands';
 import { qk } from '../../daemon/keys';
-import { useModels, useProjects, useSessions } from '../../daemon/queries';
+import { startDemo } from '../../app/demo';
+import { useMethods, useModels, useProjects, useSessions } from '../../daemon/queries';
 import { type AppRuntime, useRuntime } from '../../daemon/runtime';
 import { patchIn } from '../../daemon/sync';
 import { cn } from '../../lib/cn';
@@ -124,6 +128,7 @@ export function CommandPalette() {
   const sessions = useSessions().data ?? [];
   const projects = useProjects().data ?? [];
   const models = useModels().data?.models ?? [];
+  const methods = useMethods();
   const { items: board } = useBoard();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const page = pages[pages.length - 1] ?? null;
@@ -206,12 +211,39 @@ export function CommandPalette() {
       icon: I(Network),
       keywords: ['orchestrator orchestrate irai bunntan'],
       run: () => {
+        // A new chat that is offered the orchestrator grant right away (concept §3.1).
         void newChat(rt).then((s) => {
-          if (s) useUi.getState().setDraft(s.id, 'Orchestrator として、次の目標を Task に分けて Worker に任せてください：\n');
+          if (s) useUi.getState().setGrantDialog(s.id);
         });
       },
     },
   ];
+
+  create.push({
+    id: 'project.add',
+    label: 'プロジェクトを追加…',
+    icon: I(FolderGit2),
+    keywords: ['project add purojekuto tsuika repository git'],
+    run: () => ui.setProjectDialog({ kind: 'new' }),
+  });
+  if (focused?.kind === 'chat') {
+    create.push({
+      id: 'grant.orchestrator',
+      label: 'このチャットに Orchestrator 権限を与える…',
+      hint: untitled(focused),
+      icon: I(Diamond),
+      keywords: ['orchestrator grant kengen ataeru capability permission /orchestrate'],
+      run: () => ui.setGrantDialog(focused.id),
+    });
+  }
+  create.push({
+    id: 'demo.start',
+    label: 'デモを始める',
+    hint: '設計チャット + Orchestrator 権限',
+    icon: I(Play),
+    keywords: ['demo demo-mode hajimeru try'],
+    run: () => void startDemo(rt, methods),
+  });
 
   const view: PaletteItem[] = [
     { id: 'view.sidebar', label: 'サイドバーを切替', icon: I(PanelLeft), keywords: ['sidebar saidobaa toggle'], shortcut: 'toggleSidebar', run: () => ui.toggleSidebar() },

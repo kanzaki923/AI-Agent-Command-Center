@@ -387,7 +387,40 @@
   pointer-events: none;
 }
 
+/*
+ * Orchestrator grant given: one accent ring expands from the chip and fades (900ms, once).
+ * The meaning: "this chat just gained the right to lead" — said once, then quiet.
+ */
+@keyframes acc-grant-glow {
+  from {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--accent) 55%, transparent);
+  }
+  to {
+    box-shadow: 0 0 0 8px color-mix(in oklch, var(--accent) 0%, transparent);
+  }
+}
+.acc-grant-glow {
+  animation: acc-grant-glow var(--dur-sweep) var(--ease-out) 1;
+}
+
+/* Integration step in progress: a thin indeterminate bar under the running step. */
+@keyframes acc-progress {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+.acc-progress {
+  animation: acc-progress 1400ms var(--ease-in-out) infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  :root:not([data-reduce-motion='off']) .acc-grant-glow,
+  :root:not([data-reduce-motion='off']) .acc-progress {
+    animation: none;
+  }
   :root:not([data-reduce-motion='off']) .acc-pulse {
     animation: none;
     transform: scale(1.6);
@@ -418,6 +451,10 @@
 }
 :root[data-reduce-motion='on'] .acc-modal {
   transform: none !important;
+}
+:root[data-reduce-motion='on'] .acc-grant-glow,
+:root[data-reduce-motion='on'] .acc-progress {
+  animation: none;
 }
 
 /* ---------------------------------------------------------------- markdown / code */

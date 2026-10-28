@@ -2,6 +2,7 @@ import type {
   Approval,
   Artifact,
   ArtifactKind,
+  BudgetAllocation,
   CapabilityGrant,
   Integration,
   ModelInfo,
@@ -15,6 +16,7 @@ import type {
   WorkspaceDiff,
 } from '@acc/protocol';
 import { useQuery } from '@tanstack/react-query';
+import { useMemo } from 'react';
 import { useStore } from 'zustand';
 import type { ActivityEntry } from './activity';
 import { type StreamingMessage, streamingForSession } from './deltas';
@@ -209,13 +211,94 @@ export function useArtifacts(sessionId: string | null | undefined, kind: Artifac
   });
 }
 
+/**
+ * Grants of a session (subject = the session, or its latest run), revoked ones included so
+ * the chat can show when a capability ended. Live changes arrive through sync.ts.
+ */
 export function useGrants(sessionId: string | null | undefined) {
   const rt = useRuntime();
   return useQuery<CapabilityGrant[]>({
     queryKey: qk.grants(sessionId ?? ''),
-    queryFn: () => rt.callOr('grant.list', { sessionId: sessionId! }, { items: [] }).then((r) => r.items),
+    queryFn: async () => {
+      const runs = rt.queryClient.getQueryData<Run[]>(qk.runs) ?? [];
+      const latest = runs.find((r) => r.sessionId === sessionId);
+      const r = await rt.callOr(
+        'grant.list',
+        { sessionId: sessionId!, includeRevoked: true, ...(latest ? { runId: latest.id } : {}) },
+        { items: [] },
+      );
+      return [...r.items].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    },
     enabled: !!sessionId,
   });
+}
+
+/**
+ * Budgets whose subject is this session. There is no list-by-subject method, but
+ * budget.updated events carry the subject's session as an envelope ref, so the event log
+ * finds them; later changes are patched in by sync.ts.
+ */
+export function useSessionBudgets(sessionId: string | null | undefined) {
+  const rt = useRuntime();
+  return useQuery<BudgetAllocation[]>({
+    queryKey: qk.sessionBudgets(sessionId ?? ''),
+    queryFn: async () => {
+      const latest = new Map<string, BudgetAllocation>();
+      let since = 0;
+      for (let page = 0; page < 20; page++) {
+        const r = await rt.client.call('events.list', {
+          sessionId: sessionId!,
+          types: ['budget.updated'],
+          since,
+          limit: 1000,
+        });
+        for (const e of r.events) {
+          if (e.type !== 'budget.updated') continue;
+          const b = e.payload.budget;
+          if (b.subject.kind === 'session' && b.subject.id === sessionId) latest.set(b.id, b);
+        }
+        since = r.lastSeq;
+        if (!r.hasMore || r.events.length === 0) break;
+      }
+      return [...latest.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    },
+    enabled: !!sessionId,
+  });
+}
+
+/**
+ * Latest artifacts of one kind for a project, or across all projects when `projectId` is
+ * null (diff stats per task, test results).
+ */
+export function useProjectArtifacts(projectId: string | null | undefined, kind: ArtifactKind) {
+  const rt = useRuntime();
+  return useQuery<Artifact[]>({
+    queryKey: qk.projectArtifacts(projectId ?? '', kind),
+    queryFn: () =>
+      rt
+        .callOr(
+          'artifact.list',
+          // Artifacts carry their full data (diff patches): keep the page small.
+          { ...(projectId ? { projectId } : {}), kind, limit: 60 },
+          { items: [], nextCursor: null },
+        )
+        .then((r) => r.items),
+  });
+}
+
+export function useArtifact(artifactId: string | null | undefined) {
+  const rt = useRuntime();
+  return useQuery<Artifact | null>({
+    queryKey: qk.artifact(artifactId ?? ''),
+    queryFn: () => rt.client.call('artifact.get', { artifactId: artifactId! }),
+    enabled: !!artifactId,
+  });
+}
+
+/** Methods this daemon implements (system.info). Used to probe optional / newer methods. */
+export function useMethods(): ReadonlySet<string> | null {
+  const info = useInfo().data;
+  return useMemo(() => (info ? new Set(info.methods) : null), [info]);
 }
 
 export function useMessages(sessionId: string | null | undefined) {

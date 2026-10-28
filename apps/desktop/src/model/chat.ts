@@ -1,4 +1,4 @@
-import type { Approval, Run } from '@acc/protocol';
+import type { Approval, CapabilityGrant, Run } from '@acc/protocol';
 import type { StreamingMessage } from '../daemon/deltas';
 import type { ChatMessage } from '../daemon/sync';
 import { TOOL_CATEGORY_LABEL, type ToolCategory, type ToolDescription, describeTool } from '../lib/tools';
@@ -23,7 +23,8 @@ export type ChatBlock =
   | { kind: 'approval'; id: string; approval: Approval }
   | { kind: 'streaming'; id: string; stream: StreamingMessage }
   | { kind: 'run-error'; id: string; run: Run }
-  | { kind: 'run-stopped'; id: string; run: Run };
+  | { kind: 'run-stopped'; id: string; run: Run }
+  | { kind: 'grant'; id: string; grant: CapabilityGrant; change: 'given' | 'ended' };
 
 interface Timed {
   at: string;
@@ -41,6 +42,8 @@ export function buildChatBlocks(input: {
   approvals: Approval[];
   streaming: StreamingMessage[];
   runs: Run[];
+  /** Grants held by this session (revoked ones included). */
+  grants?: CapabilityGrant[];
 }): ChatBlock[] {
   const results = new Map<string, { output: unknown; isError: boolean; at: string }>();
   for (const m of input.messages) {
@@ -113,6 +116,13 @@ export function buildChatBlocks(input: {
 
   for (const a of input.approvals) {
     timed.push({ at: a.createdAt, order: order++, block: { kind: 'approval', id: `apr:${a.id}`, approval: a } });
+  }
+  // Capability changes are part of the conversation's story: "from here on it may lead".
+  for (const g of input.grants ?? []) {
+    timed.push({ at: g.createdAt, order: order++, block: { kind: 'grant', id: `grant:${g.id}`, grant: g, change: 'given' } });
+    if (g.revokedAt) {
+      timed.push({ at: g.revokedAt, order: order++, block: { kind: 'grant', id: `grant-end:${g.id}`, grant: g, change: 'ended' } });
+    }
   }
   for (const r of input.runs) {
     if (r.status === 'failed' && r.endedAt) {

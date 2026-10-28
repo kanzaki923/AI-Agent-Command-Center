@@ -14,7 +14,9 @@ function FileIcon({ f }: { f: DiffFile }) {
 export function DiffStatText({ additions, deletions }: { additions: number; deletions: number }) {
   return (
     <span className="font-mono text-meta tabular">
-      <span className="text-st-completed">+{additions}</span> <span className="text-st-failed">{`−${deletions}`}</span>
+      {/* Zero sides stay quiet: colour is for change. */}
+      <span className={additions > 0 ? 'text-st-completed' : 'text-fg-4'}>+{additions}</span>{' '}
+      <span className={deletions > 0 ? 'text-st-failed' : 'text-fg-4'}>{`−${deletions}`}</span>
     </span>
   );
 }

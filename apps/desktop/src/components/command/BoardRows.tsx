@@ -1,6 +1,6 @@
 import { ArrowRight, MoreHorizontal } from 'lucide-react';
 import { motion } from 'motion/react';
-import type { ReactNode } from 'react';
+import { type ReactNode, memo } from 'react';
 import { useStore } from 'zustand';
 import { retry, stop } from '../../app/commands';
 import { archiveSession } from '../../daemon/actions';
@@ -118,8 +118,8 @@ function MetaColumns({ item }: { item: BoardItem }) {
 interface RowProps {
   item: BoardItem;
   selected: boolean;
-  onSelect: () => void;
-  onOpen: () => void;
+  onSelect: (item: BoardItem) => void;
+  onOpen: (item: BoardItem) => void;
 }
 
 /** One-shot marks from the event stream: the run completed / failed a moment ago. */
@@ -130,7 +130,7 @@ function useJustEnded(item: BoardItem, kind: 'completed' | 'failed'): boolean {
 }
 
 /** 52px two-line agent row (§5.1). */
-export function AgentRow({ item, selected, onSelect, onOpen }: RowProps) {
+export const AgentRow = memo(function AgentRow({ item, selected, onSelect, onOpen }: RowProps) {
   const justCompleted = useJustEnded(item, 'completed') && item.state === 'completed';
   return (
     <motion.div
@@ -141,8 +141,8 @@ export function AgentRow({ item, selected, onSelect, onOpen }: RowProps) {
       tabIndex={-1}
       role="option"
       aria-selected={selected}
-      onClick={onSelect}
-      onDoubleClick={onOpen}
+      onClick={() => onSelect(item)}
+      onDoubleClick={() => onOpen(item)}
       className={cn(
         'group relative flex h-[52px] cursor-default items-center gap-3 overflow-hidden rounded-sm pr-2 pl-3 outline-none',
         selected ? 'bg-selected' : 'hover:bg-hover',
@@ -170,7 +170,7 @@ export function AgentRow({ item, selected, onSelect, onOpen }: RowProps) {
       <RowMenu item={item} />
     </motion.div>
   );
-}
+});
 
 function Evidence({ children, tone = 'default' }: { children: ReactNode; tone?: 'default' | 'error' }) {
   return (
@@ -186,7 +186,7 @@ function Evidence({ children, tone = 'default' }: { children: ReactNode; tone?: 
 }
 
 /** Attention card (min 88px, §5.1): state bar, what is asked, evidence, inline actions. */
-export function AttentionCard({ item, selected, onSelect, onOpen }: RowProps) {
+export const AttentionCard = memo(function AttentionCard({ item, selected, onSelect, onOpen }: RowProps) {
   const rt = useRuntime();
   const connected = useConnectionState() === 'open';
   const resolved = useResolvedApprovals();
@@ -224,7 +224,7 @@ export function AttentionCard({ item, selected, onSelect, onOpen }: RowProps) {
           <Button shortcut="retry" onClick={() => void retry(rt, run)} disabled={!connected}>
             再試行
           </Button>
-          <Button variant="ghost" onClick={onOpen}>
+          <Button variant="ghost" onClick={() => onOpen(item)}>
             ログを見る
           </Button>
         </>
@@ -245,7 +245,7 @@ export function AttentionCard({ item, selected, onSelect, onOpen }: RowProps) {
         ? `${i.taskIds.length} 件の Task を統合しました · ${i.steps.filter((s) => s.status === 'succeeded').length}/${i.steps.length} ステップ成功`
         : (item.task?.resultSummary ?? '作業が終わりました。レビューしてください');
       actions = (
-        <Button variant="primary" onClick={onOpen}>
+        <Button variant="primary" onClick={() => onOpen(item)}>
           レビューを開始
         </Button>
       );
@@ -262,8 +262,8 @@ export function AttentionCard({ item, selected, onSelect, onOpen }: RowProps) {
       role="option"
       aria-selected={selected}
       aria-label={`${item.role} · ${item.title} · ${STATE_LABEL[item.state]}`}
-      onClick={onSelect}
-      onDoubleClick={onOpen}
+      onClick={() => onSelect(item)}
+      onDoubleClick={() => onOpen(item)}
       onKeyDown={onKeyDown}
       className={cn(
         'group relative flex min-h-[88px] flex-col gap-2 overflow-hidden rounded-md border py-3 pr-3 pl-4 outline-none',
@@ -304,7 +304,7 @@ export function AttentionCard({ item, selected, onSelect, onOpen }: RowProps) {
             <Tooltip content="フォーカスで開く（Enter）">
               <button
                 type="button"
-                onClick={onOpen}
+                onClick={() => onOpen(item)}
                 className="ml-1 inline-flex h-7 items-center gap-1 rounded-sm px-1.5 text-ui text-fg-3 hover:text-fg"
               >
                 詳細
@@ -316,4 +316,4 @@ export function AttentionCard({ item, selected, onSelect, onOpen }: RowProps) {
       </div>
     </motion.div>
   );
-}
+});

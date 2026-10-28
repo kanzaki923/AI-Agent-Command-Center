@@ -1,20 +1,52 @@
 import type { Run, Session } from '@acc/protocol';
-import { ArrowUp, FileText, KeyRound, Square, X } from 'lucide-react';
+import { ArrowUp, CornerDownLeft, FileText, Square, X } from 'lucide-react';
+import { motion } from 'motion/react';
 import { type KeyboardEvent, useRef, useState } from 'react';
 import { newChat, stop } from '../../app/commands';
 import { sendMessage } from '../../daemon/actions';
 import { qk } from '../../daemon/keys';
-import { useGrants, useSettings } from '../../daemon/queries';
+import { useSettings } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { patchIn } from '../../daemon/sync';
 import { cn } from '../../lib/cn';
-import { formatClock } from '../../lib/format';
 import { toastError } from '../../store/toast';
 import { useUi } from '../../store/ui';
+import { GrantChip, OrchestratorMark } from '../grant/Grant';
 import { Kbd } from '../ui/Kbd';
-import { Popover, PopoverContent, PopoverTrigger } from '../ui/Menu';
 import { Tooltip } from '../ui/Tooltip';
 import { ModelPicker } from './ModelPicker';
+
+/**
+ * Suggested first message (demo): one click sends it. Shown above an empty conversation's
+ * composer, never auto-sent.
+ */
+function SuggestionChip({ text, onSend, onDismiss }: { text: string; onSend: () => void; onDismiss: () => void }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+      className="mb-2 flex items-center gap-2"
+    >
+      <button
+        type="button"
+        onClick={onSend}
+        data-testid="suggestion-chip"
+        className="group flex min-w-0 items-center gap-2 rounded-full border border-line bg-surface py-1 pr-2 pl-3 text-ui text-fg-2 hover:border-[var(--focus-ring)] hover:text-fg"
+      >
+        <OrchestratorMark size={11} />
+        <span className="min-w-0 truncate">{text}</span>
+        <span className="flex items-center gap-1 text-meta text-fg-4 group-hover:text-fg-3">
+          <CornerDownLeft size={12} strokeWidth={1.75} />
+          送信
+        </span>
+      </button>
+      <button type="button" onClick={onDismiss} aria-label="提案を閉じる" className="flex size-6 items-center justify-center rounded-full text-fg-4 hover:text-fg-2">
+        <X size={12} strokeWidth={1.75} />
+      </button>
+    </motion.div>
+  );
+}
 
 /** Pasting more than this many lines becomes an attachment chip (§6). */
 export const PASTE_ATTACH_LINES = 40;
@@ -47,72 +79,6 @@ interface Attachment {
   lines: number;
 }
 
-function PermissionChip({ session }: { session: Session }) {
-  const rt = useRuntime();
-  const grants = useGrants(session.id).data ?? [];
-  const active = grants.find((g) => !g.revokedAt && (!g.expiresAt || g.expiresAt > new Date().toISOString()));
-  const label = active
-    ? active.expiresAt
-      ? `期限付き（${formatClock(active.expiresAt)} まで）`
-      : active.lifetime === 'run'
-        ? 'このRunのみ'
-        : 'あり'
-    : 'なし';
-  const grant = async () => {
-    try {
-      await rt.client.call('grant.create', {
-        subject: { kind: 'session', sessionId: session.id },
-        permissions: ['*'],
-        lifetime: 'session',
-        expiresAt: new Date(Date.now() + 24 * 3600_000).toISOString(),
-        reason: 'Granted from the composer',
-      });
-      void rt.queryClient.invalidateQueries({ queryKey: qk.grants(session.id) });
-    } catch (err) {
-      toastError(err, '権限を付与できませんでした');
-    }
-  };
-  const revoke = async () => {
-    if (!active) return;
-    try {
-      await rt.client.call('grant.revoke', { grantId: active.id });
-      void rt.queryClient.invalidateQueries({ queryKey: qk.grants(session.id) });
-    } catch (err) {
-      toastError(err, '権限を取り消せませんでした');
-    }
-  };
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className="flex h-6 items-center gap-1.5 rounded-xs px-1.5 text-meta text-fg-3 hover:bg-hover hover:text-fg-2"
-        >
-          <KeyRound size={12} strokeWidth={1.75} />
-          Orchestrator 権限: <span className={active ? 'text-fg-2' : undefined}>{label}</span>
-        </button>
-      </PopoverTrigger>
-      <PopoverContent side="top" className="w-80 p-3">
-        <div className="text-ui font-medium text-fg">Orchestrator 権限</div>
-        <p className="mt-1 text-meta text-fg-3">
-          付与すると、このチャットが Task の作成や Worker の起動を行えるようになります。範囲と予算は Core Daemon が強制します。
-        </p>
-        <div className="mt-3 flex justify-end gap-2">
-          {active ? (
-            <button type="button" onClick={() => void revoke()} className="h-7 rounded-sm border border-line px-2.5 text-ui text-fg hover:bg-hover">
-              権限を取り消す
-            </button>
-          ) : (
-            <button type="button" onClick={() => void grant()} className="h-7 rounded-sm bg-accent px-2.5 text-ui font-medium text-accent-fg hover:bg-accent-hover">
-              24 時間付与する
-            </button>
-          )}
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
 export function Composer({
   session,
   activeRun,
@@ -127,6 +93,9 @@ export function Composer({
   const draft = useUi((s) => s.drafts[session.id] ?? '');
   const setDraft = useUi((s) => s.setDraft);
   const setModelPickerOpen = useUi((s) => s.setModelPickerOpen);
+  const setGrantDialog = useUi((s) => s.setGrantDialog);
+  const suggestion = useUi((s) => s.suggestions[session.id] ?? null);
+  const setSuggestion = useUi((s) => s.setSuggestion);
   const settings = useSettings().data;
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const composing = useRef(false);
@@ -154,11 +123,24 @@ export function Composer({
       setModelPickerOpen(true);
       return;
     }
+    if (text === '/orchestrate' && session.kind === 'chat') {
+      setDraft(session.id, '');
+      setGrantDialog(session.id);
+      return;
+    }
     // Optimistic: clear in the same frame the message appears (§6).
     setDraft(session.id, '');
     setAttachments([]);
+    setSuggestion(session.id, null);
     onSent();
     void sendMessage(rt, session.id, body);
+  };
+
+  const sendSuggestion = () => {
+    if (!suggestion || !connected) return;
+    setSuggestion(session.id, null);
+    onSent();
+    void sendMessage(rt, session.id, suggestion);
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -194,6 +176,9 @@ export function Composer({
 
   return (
     <div className="mx-auto w-full max-w-[760px] px-6 pb-4">
+      {suggestion && !generating && !draft && (
+        <SuggestionChip text={suggestion} onSend={sendSuggestion} onDismiss={() => setSuggestion(session.id, null)} />
+      )}
       <div
         className={cn(
           'rounded-md border bg-surface transition-colors duration-[120ms]',
@@ -251,7 +236,7 @@ export function Composer({
         />
         <div className="flex h-8 items-center gap-1 px-2 pb-1">
           <ModelPicker value={session.model} fallback={settings?.defaultModel ?? null} onChange={setModel} />
-          {session.kind === 'chat' && <PermissionChip session={session} />}
+          {session.kind === 'chat' && <GrantChip session={session} />}
           <span className="flex-1" />
           <span className="mr-1 flex items-center gap-1 text-micro text-fg-4">
             <Kbd keys="Enter" /> 送信

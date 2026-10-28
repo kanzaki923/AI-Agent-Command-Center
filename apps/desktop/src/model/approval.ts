@@ -39,7 +39,9 @@ export function describeApproval(a: Approval): ApprovalView {
   const p = payloadOf(a);
   const input = (p.input && typeof p.input === 'object' ? p.input : {}) as Record<string, unknown>;
   const toolName = typeof p.toolName === 'string' ? p.toolName : null;
-  const explicitHigh = p.risk === 'high' || p.outsideWorkspace === true;
+  // The daemon's own assessment (payload.risk) wins upward; the client heuristics below can
+  // only add caution, never remove it.
+  const explicitHigh = p.risk === 'high' || p.risk === 'critical' || p.outsideWorkspace === true;
 
   if (a.kind === 'integration') {
     return {
@@ -94,7 +96,7 @@ export function describeApproval(a: Approval): ApprovalView {
     question: a.title.endsWith('？') || a.title.endsWith('?') ? a.title : `${a.title}を承認しますか？`,
     target: a.detail,
     targetKind: a.detail ? 'text' : null,
-    scope: null,
+    scope: explicitHigh ? 'Core Daemon が危険度「高」と判定した操作です' : null,
     risk: explicitHigh ? 'high' : 'normal',
   };
 }

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useStore } from 'zustand';
 import { useRuntime } from '../daemon/runtime';
 import {
@@ -9,7 +9,7 @@ import {
   useTasks,
 } from '../daemon/queries';
 import { useUi } from '../store/ui';
-import { type BoardItem, buildBoard } from './board';
+import { type BoardItem, buildBoard, stabilizeItems } from './board';
 
 const NONE: never[] = [];
 
@@ -29,14 +29,21 @@ export function useBoard(): BoardData {
   const approvals = usePendingApprovals();
   const tasks = useTasks();
   const integrations = useIntegrations();
+  // Previous items by id (structural sharing). A cache, not state: writing it never renders.
+  const [previous] = useState(() => new Map<string, BoardItem>());
   const s = sessions.data ?? NONE;
   const r = runs.data ?? NONE;
   const a = approvals.data ?? NONE;
   const t = tasks.data ?? NONE;
   const i = integrations.data ?? NONE;
-  const items = useMemo(
-    () => buildBoard({ sessions: s, runs: r, approvals: a, tasks: t, integrations: i, projectId, lingering }),
-    [s, r, a, t, i, projectId, lingering],
-  );
+  const items = useMemo(() => {
+    const built = stabilizeItems(
+      previous,
+      buildBoard({ sessions: s, runs: r, approvals: a, tasks: t, integrations: i, projectId, lingering }),
+    );
+    previous.clear();
+    for (const it of built) previous.set(it.id, it);
+    return built;
+  }, [previous, s, r, a, t, i, projectId, lingering]);
   return { items, loading: sessions.isPending };
 }
