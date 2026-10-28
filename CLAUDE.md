@@ -9,7 +9,7 @@
 
 ## 技術スタック
 
-- Desktop は Tauri 2（Electron は使わない）、Frontend は React + TypeScript、Core Daemon は TypeScript、DB は SQLite
+- Desktop は Tauri 2、Frontend は React + TypeScript、Core Daemon は TypeScript、DB は SQLite
 - LLM への接続は LiteLLM Proxy 経由
 - コーディングエージェントは Claude Agent SDK から始める。将来 Copilot SDK など他のランタイムにも対応できるよう、実行基盤は抽象化しておく
 - UI と実行基盤は分離する。UI は Core Daemon に接続するクライアント
