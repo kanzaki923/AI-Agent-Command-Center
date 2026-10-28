@@ -14,7 +14,7 @@ import {
   type Workspace,
   isTerminalRunStatus,
 } from '@acc/protocol';
-import type { QueryClient, QueryKey } from '@tanstack/react-query';
+import { type QueryClient, type QueryKey, notifyManager } from '@tanstack/react-query';
 import { describeTool } from '../lib/tools';
 import type { ActivityStore } from './activity';
 import type { DeltaStore } from './deltas';
@@ -349,13 +349,33 @@ export function startSync(
   qc: QueryClient,
   streams: Streams,
   onInterrupted: (count: number) => void = () => {},
+  schedule: (flush: () => void) => void = scheduleFrame,
 ): () => void {
   const interrupted = createInterruptNotifier(onInterrupted);
+  // Events are applied once per frame, in order, inside one query-cache batch: a burst
+  // (ten runs starting, a reconnect replay) re-renders the UI once, not once per event
+  // (ui-design §10). Optimistic actions do not wait for this; they patch the cache directly.
+  const queue: Event[] = [];
+  let scheduled = false;
+  const flush = () => {
+    scheduled = false;
+    if (queue.length === 0) return;
+    const batch = queue.splice(0);
+    notifyManager.batch(() => {
+      for (const e of batch) {
+        applyEvent(qc, streams, e);
+        interrupted(e);
+      }
+    });
+  };
   let sub: Subscription | null = client.subscribe({
     deltas: true,
     onEvent: (e) => {
-      applyEvent(qc, streams, e);
-      interrupted(e);
+      queue.push(e);
+      if (!scheduled) {
+        scheduled = true;
+        schedule(flush);
+      }
     },
     onDelta: (d) => {
       streams.deltas.push(d);
@@ -375,5 +395,21 @@ export function startSync(
     off();
     sub?.unsubscribe();
     sub = null;
+    flush();
   };
+}
+
+/**
+ * Next animation frame, with a timer fallback: a hidden window gets no frames, but its
+ * caches (and the attention count in the title / notifications) must still move.
+ */
+export function scheduleFrame(cb: () => void): void {
+  let done = false;
+  const run = () => {
+    if (done) return;
+    done = true;
+    cb();
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+  setTimeout(run, 50);
 }

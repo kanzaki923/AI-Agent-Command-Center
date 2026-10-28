@@ -326,7 +326,7 @@ describe('startSync', () => {
   it('subscribes once, applies pushed events/deltas and refetches after a reconnect', () => {
     const { qc, streams } = setup();
     const fake = createFakeClient();
-    const stop = startSync(fake.client, qc, streams);
+    const stop = startSync(fake.client, qc, streams, undefined, (flush) => flush());
     const s = session();
     qc.setQueryData<Session[]>(qk.sessions, []);
     fake.emit(event('session.created', { session: s }));
@@ -340,5 +340,32 @@ describe('startSync', () => {
     fake.setState('open');
     expect(spy).toHaveBeenCalledTimes(1);
     stop();
+  });
+
+  it('applies a burst of events once per frame, in order', () => {
+    const { qc, streams } = setup();
+    const fake = createFakeClient();
+    const frames: (() => void)[] = [];
+    const stop = startSync(fake.client, qc, streams, undefined, (flush) => frames.push(flush));
+    qc.setQueryData<Session[]>(qk.sessions, []);
+    qc.setQueryData<Run[]>(qk.runs, []);
+    const sessions = Array.from({ length: 10 }, (_, i) => session({ title: `S${i}`, lastActivityAt: iso(T0 + i) }));
+    for (const s of sessions) {
+      fake.emit(event('session.created', { session: s }));
+      fake.emit(event('run.created', { run: run(s, { status: 'queued' }) }));
+    }
+    // Nothing applied yet, and a single frame scheduled for all 20 events.
+    expect(qc.getQueryData<Session[]>(qk.sessions)).toHaveLength(0);
+    expect(frames).toHaveLength(1);
+    frames.shift()!();
+    expect(qc.getQueryData<Session[]>(qk.sessions)!.map((s) => s.title)).toEqual(
+      sessions.map((s) => s.title).reverse(),
+    );
+    expect(qc.getQueryData<Run[]>(qk.runs)).toHaveLength(10);
+    // Each run made its session active (events applied in order after their session).
+    expect(qc.getQueryData<Session[]>(qk.sessions)!.every((s) => s.activeRunId)).toBe(true);
+    fake.emit(event('settings.updated', { changes: [] }));
+    stop(); // pending events are applied on stop
+    expect(streams.events.events.at(-1)?.type).toBe('settings.updated');
   });
 });

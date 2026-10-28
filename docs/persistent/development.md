@@ -38,7 +38,8 @@ Desktop UI（`apps/desktop`）：
 pnpm --filter @acc/desktop scene        # 本物のデーモン + 本物の API で作る確認用の場面（一時 git リポジトリ、Worker、承認待ち、統合候補。ACC_PORT 既定 47899。--empty / --load 10）
 pnpm --filter @acc/desktop tauri:dev    # Tauri アプリ（デーモンが無ければ起動）
 pnpm --filter @acc/desktop screenshots  # Playwright で主要画面を撮る（scene に対して。出力は OS の一時ディレクトリ）
-pnpm --filter @acc/desktop e2e:slice    # 本物のデーモン + Vite を一時 ACC_HOME で起動し、オンボーディング → デモ → 送信 →（実装済みなら）統合の承認まで通す
+pnpm --filter @acc/desktop e2e:slice    # 本物のデーモン + Vite を一時 ACC_HOME で起動し、オンボーディング → デモ → 送信 → 承認 → 統合の反映まで通す（--daemon-root で別チェックアウトのデーモンも使える）
+pnpm --filter @acc/desktop e2e:perf     # 本番ビルドで 10 本同時ストリーミングのフレーム間隔と長いタスクを測る（--profile で内訳、--dev で開発サーバ）
 ```
 
 UI とデーモンは同じ `ACC_HOME` を見る（Vite の開発ミドルウェアが `daemon.json` を `/__acc/connection` で渡す）。scene は代役を使わず、すべて Control API を通して作るので、実際の挙動を隠さない。

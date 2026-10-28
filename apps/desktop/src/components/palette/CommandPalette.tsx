@@ -29,7 +29,7 @@ import {
   Wand2,
   Wrench,
 } from 'lucide-react';
-import { type ReactNode, useRef } from 'react';
+import { type ReactNode, useRef, useState } from 'react';
 import {
   approve,
   askAi,
@@ -108,12 +108,27 @@ function setSessionModel(rt: AppRuntime, session: Session, model: string) {
 }
 
 /**
- * Command palette (Ctrl+K, §7.1). Always mounted so it opens within 50ms; only its
- * visibility toggles. Fuzzy matching runs over Japanese labels, English names and romaji.
+ * Command palette (Ctrl+K, §7.1). Fuzzy matching runs over Japanese labels, English names
+ * and romaji. Its contents exist only while it is open (and through the close fade):
+ * hidden but mounted, it re-rendered its whole list on every daemon event, which was about
+ * half of the render work when ten runs started at once (e2e/perf.js). Mounting ~50 rows
+ * on open stays well inside the 50ms budget.
  */
 export function CommandPalette() {
-  const rt = useRuntime();
   const open = useUi((s) => s.paletteOpen);
+  const [shownFor, setShownFor] = useState(open);
+  const [closing, setClosing] = useState(false);
+  // Derived during render: a close keeps the contents mounted until the fade ends.
+  if (open !== shownFor) {
+    setShownFor(open);
+    setClosing(!open);
+  }
+  if (!open && !closing) return null;
+  return <PaletteContents open={open} onClosed={() => setClosing(false)} />;
+}
+
+function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => void }) {
+  const rt = useRuntime();
   const query = useUi((s) => s.paletteQuery);
   const pages = useUi((s) => s.palettePages);
   const selectedId = useUi((s) => s.selectedId);
@@ -354,7 +369,8 @@ export function CommandPalette() {
       inert={!open}
     >
       <div
-        className="absolute inset-0 bg-overlay transition-opacity duration-[100ms]"
+        className="absolute inset-0 bg-overlay transition-opacity duration-[100ms] data-[state=open]:animate-[acc-fade-in_140ms_var(--ease-out)]"
+        data-state={open ? 'open' : 'closed'}
         style={{ opacity: open ? 1 : 0 }}
         onClick={close}
       />
@@ -364,7 +380,15 @@ export function CommandPalette() {
         aria-label="コマンドパレット"
         data-state={open ? 'open' : 'closed'}
         data-palette
-        className="acc-modal absolute top-[18vh] left-1/2 w-[640px] max-w-[calc(100vw-32px)] -translate-x-1/2 overflow-hidden rounded-lg border border-line-strong bg-raised shadow-modal"
+        // Mounted open: the entrance is a keyframe; the exit is the data-state transition,
+        // and its end unmounts the contents (instantly if motion is reduced).
+        onTransitionEnd={(e) => {
+          if (!open && e.target === e.currentTarget) onClosed();
+        }}
+        ref={(el) => {
+          if (el && !open && getComputedStyle(el).transitionDuration.split(',').every((d) => parseFloat(d) === 0)) onClosed();
+        }}
+        className="acc-modal absolute top-[18vh] left-1/2 w-[640px] max-w-[calc(100vw-32px)] -translate-x-1/2 overflow-hidden rounded-lg border border-line-strong bg-raised shadow-modal data-[state=open]:animate-[acc-dialog-in_140ms_var(--ease-out)]"
       >
         <Command
           loop

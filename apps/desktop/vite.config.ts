@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import type { ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import tailwindcss from '@tailwindcss/vite';
@@ -13,36 +14,41 @@ interface DaemonJson {
 
 /**
  * Browser mode (`pnpm dev` without Tauri): hand daemon.json to the page, like the Tauri
- * `get_connection` command does. Only the dev server has this endpoint; production builds
- * never expose the token over HTTP.
+ * `get_connection` command does. Only the local dev / preview servers (127.0.0.1) have this
+ * endpoint — `vite preview` serves a production build for feel measurements (e2e/perf.js
+ * --prod); the Tauri bundle is loaded from disk and never exposes the token over HTTP.
  */
 function accConnection(): Plugin {
+  const handler = (_req: unknown, res: ServerResponse) => {
+    const home = process.env.ACC_HOME || join(homedir(), '.acc');
+    readFile(join(home, 'daemon.json'), 'utf8')
+      .then((raw) => {
+        const info = JSON.parse(raw) as DaemonJson;
+        res.setHeader('content-type', 'application/json');
+        res.setHeader('cache-control', 'no-store');
+        res.end(
+          JSON.stringify({
+            url: `http://127.0.0.1:${info.port}`,
+            wsUrl: `ws://127.0.0.1:${info.port}/ws`,
+            token: info.token,
+            pid: info.pid,
+            spawned: false,
+          }),
+        );
+      })
+      .catch(() => {
+        res.statusCode = 503;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ error: 'daemon_not_running' }));
+      });
+  };
   return {
     name: 'acc-connection',
+    configurePreviewServer(server) {
+      server.middlewares.use('/__acc/connection', handler);
+    },
     configureServer(server) {
-      server.middlewares.use('/__acc/connection', (_req, res) => {
-        const home = process.env.ACC_HOME || join(homedir(), '.acc');
-        readFile(join(home, 'daemon.json'), 'utf8')
-          .then((raw) => {
-            const info = JSON.parse(raw) as DaemonJson;
-            res.setHeader('content-type', 'application/json');
-            res.setHeader('cache-control', 'no-store');
-            res.end(
-              JSON.stringify({
-                url: `http://127.0.0.1:${info.port}`,
-                wsUrl: `ws://127.0.0.1:${info.port}/ws`,
-                token: info.token,
-                pid: info.pid,
-                spawned: false,
-              }),
-            );
-          })
-          .catch(() => {
-            res.statusCode = 503;
-            res.setHeader('content-type', 'application/json');
-            res.end(JSON.stringify({ error: 'daemon_not_running' }));
-          });
-      });
+      server.middlewares.use('/__acc/connection', handler);
     },
   };
 }

@@ -4,41 +4,26 @@
 //                                        [--daemon-root <checkout with the daemon to run>]
 //
 // What it does (no paid LLM calls: mock models and the mock agent runtime only):
-//   1. Creates a temporary ACC_HOME and a temporary git repository.
-//   2. Starts the daemon (`packages/daemon/src/main.ts` via tsx) and the Vite dev server on
-//      free ports, both pointed at that ACC_HOME.
-//   3. In Chromium (Playwright, 1440x900): onboarding → 「デモモードで試す」 → lands in the
+//   1. Starts the daemon (`packages/daemon/src/main.ts` via tsx) and the Vite dev server on
+//      free ports with a fresh temporary ACC_HOME (e2e/harness.js).
+//   2. In Chromium (Playwright, 1440x900): onboarding → 「デモモードで試す」 → lands in the
 //      demo design chat holding the orchestrator grant (chip + chat line) with the suggested
 //      first message → sends it with one click → the reply streams in.
-//   4. Approvals: a mock worker asks for approval; Ctrl+J lands on it, Y approves, the run
+//   3. Approvals: a mock worker asks for approval; Ctrl+J lands on it, Y approves, the run
 //      finishes.
-//   5. Integration: if the daemon can spawn workers (task.spawnWorker — the orchestrator
+//   4. Integration: if the daemon can spawn workers (task.spawnWorker — the orchestrator
 //      track), it waits for the orchestrator's task tree and its integration candidate,
 //      approving tool requests on the way; otherwise it builds a candidate from the worker's
 //      task itself. Either way it opens the review, checks the confirmation wording, applies
 //      it and verifies the target branch moved (git, not just the UI).
 //
 // Screenshots of every step go to the OS temp dir (never the repo). Exit code 0 = pass.
-import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { createServer } from 'node:net';
+import { mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
 import { chromium } from 'playwright';
+import { flag, git, log, makeRepo, opt, repoRoot, startStack, waitFor } from './harness.js';
 
-const require = createRequire(import.meta.url);
-const here = dirname(fileURLToPath(import.meta.url));
-const desktopDir = resolve(here, '..');
-const repoRoot = resolve(desktopDir, '../..');
-
-const argv = process.argv.slice(2);
-const flag = (name) => argv.includes(`--${name}`);
-const opt = (name, def) => {
-  const i = argv.indexOf(`--${name}`);
-  return i !== -1 && argv[i + 1] ? argv[i + 1] : def;
-};
 const headed = flag('headed');
 const keep = flag('keep');
 const out = opt('out', join(tmpdir(), 'acc-e2e-slice'));
@@ -47,117 +32,6 @@ const sliceTimeout = Number(opt('timeout-ms', '240000'));
 // this UI. Default: this repository.
 const daemonRoot = resolve(opt('daemon-root', repoRoot));
 mkdirSync(out, { recursive: true });
-
-const children = [];
-const t0 = Date.now();
-const log = (...a) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1).padStart(5)}s]`, ...a);
-
-function freePort() {
-  return new Promise((res, rej) => {
-    const s = createServer();
-    s.once('error', rej);
-    s.listen(0, '127.0.0.1', () => {
-      const { port } = s.address();
-      s.close(() => res(port));
-    });
-  });
-}
-
-async function waitFor(fn, what, ms = 30_000, every = 200) {
-  const end = Date.now() + ms;
-  let last;
-  for (;;) {
-    try {
-      const v = await fn();
-      if (v) return v;
-    } catch (err) {
-      last = err;
-    }
-    if (Date.now() > end)
-      throw new Error(`timed out waiting for ${what}${last ? ` (${last.message})` : ''}`);
-    await new Promise((r) => setTimeout(r, every));
-  }
-}
-
-function start(name, args, env, cwd = desktopDir) {
-  const merged = { ...process.env, ...env };
-  // Never reach a real LLM endpoint from the e2e run (mock models only).
-  delete merged.ACC_LITELLM_BASE_URL;
-  delete merged.ACC_LITELLM_API_KEY;
-  const child = spawn(process.execPath, args, {
-    cwd,
-    env: merged,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  const tail = [];
-  const keepTail = (b) => {
-    tail.push(...b.toString().split(/\r?\n/).filter(Boolean));
-    tail.splice(0, Math.max(0, tail.length - 40));
-  };
-  child.stdout.on('data', keepTail);
-  child.stderr.on('data', keepTail);
-  child.on(
-    'exit',
-    (code) => code && code !== 0 && log(`${name} exited with ${code}\n  ${tail.join('\n  ')}`),
-  );
-  children.push(child);
-  return { child, tail };
-}
-
-function git(cwd, ...args) {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
-  if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
-  return r.stdout.trim();
-}
-
-function makeRepo() {
-  const dir = mkdtempSync(join(tmpdir(), 'acc-e2e-repo-'));
-  git(dir, 'init', '-q', '-b', 'main');
-  for (const [k, v] of Object.entries({
-    'core.autocrlf': 'false',
-    'commit.gpgsign': 'false',
-    'user.name': 'E2E',
-    'user.email': 'e2e@example.com',
-  })) {
-    git(dir, 'config', k, v);
-  }
-  mkdirSync(join(dir, 'scripts'), { recursive: true });
-  writeFileSync(join(dir, 'README.md'), '# demo repo\n');
-  writeFileSync(join(dir, 'scripts', 'test.js'), "console.log('Tests  3 passed (3)');\n");
-  git(dir, 'add', '-A');
-  git(dir, 'commit', '-q', '-m', 'initial');
-  return dir;
-}
-
-/** Minimal JSON-RPC over the daemon's WebSocket (Node 22 has a global WebSocket). */
-async function connect(port, token) {
-  const ws = new WebSocket(
-    `ws://127.0.0.1:${port}/ws?token=${encodeURIComponent(token)}&client=e2e`,
-  );
-  await new Promise((res, rej) => {
-    ws.addEventListener('open', res, { once: true });
-    ws.addEventListener('error', rej, { once: true });
-  });
-  let id = 0;
-  const pending = new Map();
-  ws.addEventListener('message', (m) => {
-    const msg = JSON.parse(String(m.data));
-    const p = msg.id != null ? pending.get(msg.id) : null;
-    if (!p) return;
-    pending.delete(msg.id);
-    if (msg.error) p.rej(Object.assign(new Error(msg.error.message), { code: msg.error.code }));
-    else p.res(msg.result);
-  });
-  return {
-    call: (method, params = {}) =>
-      new Promise((res, rej) => {
-        const i = ++id;
-        pending.set(i, { res, rej });
-        ws.send(JSON.stringify({ id: i, method, params }));
-      }),
-    close: () => ws.close(),
-  };
-}
 
 const MOCK_ASK = [
   '本番の設定ファイルを確認します。',
@@ -180,46 +54,14 @@ const MOCK_ASK = [
 ].join('\n');
 
 let browser;
-let rpc;
-let home;
+let stack;
 let repo;
 let failed = false;
 
 try {
-  home = mkdtempSync(join(tmpdir(), 'acc-e2e-home-'));
   repo = makeRepo();
-  const daemonPort = await freePort();
-  const uiPort = await freePort();
-  log(`ACC_HOME ${home}`);
-
-  // ------------------------------------------------------------------ daemon + Vite
-  const tsxCli = require.resolve('tsx/cli');
-  const daemon = start('daemon', [tsxCli, join(daemonRoot, 'packages/daemon/src/main.ts')], {
-    ACC_HOME: home,
-    ACC_PORT: String(daemonPort),
-    ACC_LOG_LEVEL: 'warn',
-  });
-  const info = await waitFor(
-    () => {
-      const f = join(home, 'daemon.json');
-      return existsSync(f) && JSON.parse(readFileSync(f, 'utf8'));
-    },
-    'daemon.json',
-    60_000,
-  );
-  log(`daemon pid ${info.pid} on :${info.port}`);
-  void daemon;
-
-  const viteBin = join(dirname(require.resolve('vite/package.json')), 'bin', 'vite.js');
-  start('vite', [viteBin, '--port', String(uiPort), '--strictPort', '--host', '127.0.0.1'], {
-    ACC_HOME: home,
-  });
-  const url = `http://127.0.0.1:${uiPort}/`;
-  await waitFor(async () => (await fetch(url)).ok, 'Vite dev server', 60_000);
-  await waitFor(async () => (await fetch(`${url}__acc/connection`)).ok, 'connection endpoint');
-  log(`ui ${url}`);
-
-  rpc = await connect(info.port, info.token);
+  stack = await startStack({ daemonRoot });
+  const { rpc, url } = stack;
   const sysInfo = await rpc.call('system.info');
   const methods = new Set(sysInfo.methods);
   const orchestratorAvailable = methods.has('task.spawnWorker');
@@ -441,11 +283,19 @@ try {
     throw new Error(`confirmation does not say what happens: ${wording}`);
   await shot('integration-confirm');
   await page.getByRole('button', { name: '反映する' }).click();
+  // The UI says so at once (optimistic); the daemon's fast-forward lands a moment later.
   await page
     .getByText(/に反映しました/)
     .first()
     .waitFor({ timeout: 30_000 });
-  const integ = await rpc.call('integration.get', { integrationId });
+  const integ = await waitFor(
+    async () => {
+      const i = await rpc.call('integration.get', { integrationId });
+      return i.status !== 'awaiting_approval' ? i : null;
+    },
+    'the daemon to apply the integration',
+    30_000,
+  );
   const after = git(targetRepo, 'rev-parse', targetRef);
   if (integ.status !== 'applied' || before === after || after !== integ.headSha) {
     throw new Error(
@@ -468,22 +318,14 @@ try {
   failed = true;
   console.error(err);
 } finally {
-  rpc?.close();
   await browser?.close().catch(() => {});
-  for (const c of children) c.kill();
-  await new Promise((r) => setTimeout(r, 500));
-  if (!keep) {
-    for (const dir of [home, repo]) {
-      if (!dir) continue;
-      try {
-        spawnSync('git', ['worktree', 'prune'], { cwd: repo });
-        rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-      } catch {
-        log(`could not remove ${dir} (a process may still hold it)`);
-      }
+  if (repo) {
+    try {
+      git(repo, 'worktree', 'prune');
+    } catch {
+      /* the repo may already be gone */
     }
-  } else {
-    log(`kept ACC_HOME ${home} and repo ${repo}`);
   }
+  await stack?.stop({ keep, extraDirs: repo ? [repo] : [] });
   process.exit(failed ? 1 : 0);
 }
