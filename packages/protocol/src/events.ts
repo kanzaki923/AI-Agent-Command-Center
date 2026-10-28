@@ -52,6 +52,8 @@ export const eventPayloads = {
     to: RunStatus,
     reason: z.string().nullable(),
   }),
+  /** Non-status changes of a run (activity line, usage). Status changes use run.status_changed. */
+  'run.updated': z.object({ run: Run, changes: z.array(z.string()) }),
   'run.completed': z.object({ run: Run }),
   'run.failed': z.object({ run: Run, error: ErrorInfo }),
 

@@ -74,7 +74,10 @@ describe('dispatcher', () => {
         ctx.methods.register(defineMethod('run.get', { handler: () => ({ nope: true }) as never }));
       },
     });
-    d = await createTestDaemon({ modules: [...modules, broken] });
+    // `broken` replaces the runs module's run.get.
+    d = await createTestDaemon({
+      modules: [...modules.filter((m) => m.name !== 'runs'), broken],
+    });
     const runId = d.ctx.ids.next('run');
     await expectCode(d.call(HUMAN, 'run.get', { runId }), 'internal');
   });

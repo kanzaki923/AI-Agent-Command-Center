@@ -124,6 +124,9 @@ packages/cli        @acc/cli       `acc` コマンド
 - 時刻は `createManualClock()` を `createDaemon({ clock })` に渡して制御する。
 - 再起動を伴うテストは `startTestDaemon({ home })` で同じ `ACC_HOME` を使い回す（例：`server.test.ts` のリカバリ）。
 - 本物の有料 LLM API はテストで呼ばない。llm / runtime の mock を使う。
+  - `d.ctx.service('llm').mock.chunkDelayMs = 0` で mock の送信間隔をなくす。台本は `mock.define('mock/x', scripted([{ text, toolCalls }, (req, info) => ({ text })]))`（`scripted` は `src/llm` から）。
+  - LiteLLM 経路は `node:http` のローカル偽サーバに `settings.update({ litellm: { baseUrl } })` を向けて試す（例：`llm/llm.test.ts`）。
+- Run の Executor は `ctx.service('runs').registerExecutor(kind, fn)` で差し替えられる（後勝ち）。
 
 ## 7. 約束ごと
 
