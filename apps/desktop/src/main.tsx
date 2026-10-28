@@ -9,6 +9,7 @@ import { createClient } from '@acc/client';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
+import { installAttention } from './app/attention';
 import { getConnection } from './daemon/connection';
 import { RuntimeProvider, createRuntime, createStatusStore } from './daemon/runtime';
 import { installThemeSync } from './lib/theme';
@@ -35,6 +36,7 @@ const client = createClient({
   reconnect: { initialDelayMs: 300, maxDelayMs: 3000 },
 });
 const runtime = createRuntime(client, undefined, status);
+installAttention(runtime);
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

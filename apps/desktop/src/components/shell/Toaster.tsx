@@ -48,7 +48,7 @@ export function Toaster() {
           </span>
           <div className="min-w-0 flex-1">
             <div className="text-ui text-fg">{t.title}</div>
-            {t.detail && t.tone !== 'error' && <div className="mt-0.5 text-meta text-fg-3">{t.detail}</div>}
+            {t.detail && (t.tone !== 'error' || t.showDetail) && <div className="mt-0.5 text-meta text-fg-3">{t.detail}</div>}
             {t.action && (
               <button
                 type="button"

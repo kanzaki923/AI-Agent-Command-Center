@@ -1,0 +1,156 @@
+import { QueryClient } from '@tanstack/react-query';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { qk } from '../daemon/keys';
+import { notify } from '../lib/notify';
+import { approval, event, integration, iso, message, run, session } from '../test/fixtures';
+import { type AttentionView, createAttentionNotifier, isVisible } from './attention';
+
+const NOW = Date.parse('2026-10-29T05:10:00.000Z');
+const at = (ms = 0) => ({ ts: iso(NOW + ms) });
+
+function setup(view: Partial<AttentionView> = {}, focused = false) {
+  const qc = new QueryClient();
+  const s = session({ title: '認証のテスト' });
+  qc.setQueryData(qk.sessions, [s]);
+  const os = vi.fn();
+  const toast = vi.fn();
+  const timers: { fn: () => void; ms: number }[] = [];
+  const v: AttentionView = {
+    mode: 'timeline',
+    focusSessionId: null,
+    reviewIntegrationId: null,
+    notifyOs: true,
+    notifyInApp: true,
+    ...view,
+  };
+  let isFocused = focused;
+  const n = createAttentionNotifier({
+    qc,
+    view: () => v,
+    focused: () => isFocused,
+    os,
+    toast,
+    open: vi.fn(),
+    now: () => NOW,
+    setTimer: (fn, ms) => {
+      timers.push({ fn, ms });
+      return timers.length;
+    },
+    clearTimer: () => {},
+  });
+  const flush = () => {
+    const due = timers.splice(0);
+    for (const t of due) t.fn();
+  };
+  return { n, s, os, toast, flush, v, focus: (f: boolean) => (isFocused = f) };
+}
+
+describe('attention notifications', () => {
+  it('sends an OS notification for an approval while the window is in the background', () => {
+    const { n, s, os, toast } = setup();
+    const r = run(s, { status: 'awaiting_approval' });
+    n.handle(event('approval.requested', { approval: approval(r, { title: 'node scripts/test.js を実行' }) }, at()));
+    expect(os).toHaveBeenCalledWith(
+      expect.objectContaining({ title: '承認を求めています', body: '認証のテスト — node scripts/test.js を実行' }),
+    );
+    expect(toast).not.toHaveBeenCalled();
+  });
+
+  it('coalesces a burst into one summary (never spams)', () => {
+    const { n, s, os, flush } = setup();
+    const r = run(s, { status: 'awaiting_approval' });
+    for (let i = 0; i < 4; i++) n.handle(event('approval.requested', { approval: approval(r) }, at(i)));
+    expect(os).toHaveBeenCalledTimes(1);
+    flush();
+    expect(os).toHaveBeenCalledTimes(2);
+    expect(os.mock.calls[1]![0]).toMatchObject({ title: '承認待ちが 3 件あります' });
+    // A quiet window after the summary: nothing more.
+    flush();
+    expect(os).toHaveBeenCalledTimes(2);
+  });
+
+  it('respects the settings toggles', () => {
+    const { n, s, os } = setup({ notifyOs: false });
+    n.handle(event('run.failed', { run: run(s, { status: 'failed' }), error: { code: 'x', message: 'boom' } }, at()));
+    expect(os).not.toHaveBeenCalled();
+  });
+
+  it('in front: a toast only for what happens outside the current view', () => {
+    const { n, s, toast, v } = setup({ mode: 'focus' }, true);
+    v.focusSessionId = s.id;
+    const failed = () => event('run.failed', { run: run(s, { status: 'failed' }), error: { code: 'x', message: 'テストが 3 件失敗\n詳細' } }, at());
+    n.handle(failed());
+    expect(toast).not.toHaveBeenCalled(); // looking at it
+    v.focusSessionId = null;
+    n.handle(failed());
+    expect(toast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Run が失敗しました', detail: '認証のテスト — テストが 3 件失敗', tone: 'error' }),
+    );
+  });
+
+  it('announces an integration ready for approval and an orchestrator report', () => {
+    const { n, s, os } = setup();
+    const i = integration({ status: 'awaiting_approval', title: '統合: 2 Task → main' });
+    n.handle(event('integration.updated', { integration: i, changes: ['steps'] }, at()));
+    expect(os).not.toHaveBeenCalled(); // only the status change counts
+    n.handle(event('integration.updated', { integration: i, changes: ['status'] }, at()));
+    expect(os).toHaveBeenLastCalledWith(expect.objectContaining({ title: '統合候補をレビューできます', body: '統合: 2 Task → main' }));
+
+    const r = run(s, { kind: 'orchestrator', status: 'completed' });
+    n.handle(event('message.created', { message: message(s, { role: 'assistant', runId: r.id, content: [{ type: 'text', text: '2件のTaskが完了しました。\nレビューしてください' }] }) }, at()));
+    n.handle(event('run.completed', { run: r }, at()));
+    expect(os).toHaveBeenLastCalledWith(
+      expect.objectContaining({ title: 'Orchestrator が報告しました', body: '認証のテスト — 2件のTaskが完了しました。 レビューしてください' }),
+    );
+  });
+
+  it('ignores replayed (old) events', () => {
+    const { n, s, os } = setup();
+    n.handle(event('approval.requested', { approval: approval(run(s)) }, { ts: iso(NOW - 10 * 60_000) }));
+    expect(os).not.toHaveBeenCalled();
+  });
+
+  it('knows what is on screen', () => {
+    const item = { kind: 'approval' as const, sessionId: 'ses_1', integrationId: null, title: 't', body: null };
+    const v: AttentionView = { mode: 'command', focusSessionId: null, reviewIntegrationId: null, notifyOs: true, notifyInApp: true };
+    expect(isVisible(item, v)).toBe(true);
+    expect(isVisible({ ...item, kind: 'report' }, v)).toBe(false);
+    expect(isVisible(item, { ...v, mode: 'timeline' })).toBe(false);
+  });
+});
+
+describe('notify()', () => {
+  afterEach(() => {
+    delete (globalThis as { __TAURI__?: unknown }).__TAURI__;
+    vi.unstubAllGlobals();
+  });
+
+  it('uses the Tauri notification plugin when the shell exposes it', async () => {
+    const sendNotification = vi.fn();
+    (globalThis as { __TAURI__?: unknown }).__TAURI__ = {
+      notification: { isPermissionGranted: async () => true, requestPermission: async () => 'granted', sendNotification },
+    };
+    expect(await notify({ title: 'T', body: 'B' })).toBe(true);
+    expect(sendNotification).toHaveBeenCalledWith({ title: 'T', body: 'B' });
+  });
+
+  it('falls back to the Web Notification API, and never prompts on its own', async () => {
+    const created: unknown[] = [];
+    const requestPermission = vi.fn();
+    class FakeNotification {
+      static permission = 'default';
+      static requestPermission = requestPermission;
+      onclick: (() => void) | null = null;
+      constructor(title: string, opts: unknown) {
+        created.push({ title, opts });
+      }
+      close() {}
+    }
+    vi.stubGlobal('Notification', FakeNotification);
+    expect(await notify({ title: 'T' })).toBe(false);
+    expect(requestPermission).not.toHaveBeenCalled();
+    FakeNotification.permission = 'granted';
+    expect(await notify({ title: 'T', body: 'B', tag: 'acc-approval' })).toBe(true);
+    expect(created).toEqual([{ title: 'T', opts: { body: 'B', tag: 'acc-approval' } }]);
+  });
+});

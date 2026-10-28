@@ -357,6 +357,8 @@ export function startSync(
   streams: Streams,
   onInterrupted: (count: number) => void = () => {},
   schedule: (flush: () => void) => void = scheduleFrame,
+  /** Sees every live event after it was applied (attention notifications). */
+  observe: (e: Event) => void = () => {},
 ): () => void {
   const interrupted = createInterruptNotifier(onInterrupted);
   // Events are applied once per frame, in order, inside one query-cache batch: a burst
@@ -374,6 +376,13 @@ export function startSync(
         interrupted(e);
       }
     });
+    for (const e of batch) {
+      try {
+        observe(e);
+      } catch (err) {
+        console.warn('[acc] event observer failed', err);
+      }
+    }
   };
   let sub: Subscription | null = client.subscribe({
     deltas: true,

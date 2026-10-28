@@ -14,6 +14,8 @@ export interface Toast {
   /** Errors and decisions stay until dismissed (§8.5). */
   sticky: boolean;
   action?: ToastAction;
+  /** Show `detail` even for an error (attention toasts carry a readable line, not a stack). */
+  showDetail?: boolean;
   /** Merge key: a second toast with the same key replaces the first. */
   key?: string;
 }
