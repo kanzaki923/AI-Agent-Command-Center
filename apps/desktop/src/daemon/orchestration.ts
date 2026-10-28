@@ -7,6 +7,7 @@ import type {
   Task,
 } from '@acc/protocol';
 import { type OrchestratorGrantInput, grantParams } from '../model/grant';
+import { type RepoInspection, normalizeInspection } from '../model/repo';
 import { toast, toastError } from '../store/toast';
 import { isNotImplemented } from './errors';
 import { qk } from './keys';
@@ -240,17 +241,57 @@ export async function createProject(
   return { ok: true, project, detectedBranch };
 }
 
-function projectError(err: unknown): string {
+/** The daemon's repository errors in one Japanese sentence (null when unrecognised). */
+export function projectErrorText(err: unknown): string | null {
   const msg = err instanceof Error ? err.message : String(err);
-  if (/must be an absolute path/.test(msg))
+  if (/must be an absolute path|absolute/i.test(msg))
     return '絶対パスで指定してください（例: C:\\work\\my-repo）';
-  if (/does not exist|見つかりません/.test(msg))
+  if (/does not exist|no such file|ENOENT|見つかりません/i.test(msg))
     return 'フォルダが見つかりません。パスを確認してください';
-  if (/git リポジトリではありません/.test(msg))
+  if (/not a git repository|git リポジトリではありません/i.test(msg))
     return 'git リポジトリではありません。リポジトリのルートフォルダを選んでください';
   if (/detached HEAD/.test(msg))
     return 'detached HEAD のため既定ブランチを決められません。既定ブランチを入力してください';
-  return toastError(err, 'プロジェクトを追加できませんでした').title;
+  return null;
+}
+
+function projectError(err: unknown): string {
+  return projectErrorText(err) ?? toastError(err, 'プロジェクトを追加できませんでした').title;
+}
+
+/**
+ * Look at a folder before creating a project (`project.inspectRepo`, when the daemon offers
+ * it): repository or not, its root, branch, uncommitted changes, a test command. Null when
+ * the daemon cannot inspect (the form then validates on create, as before).
+ */
+export async function inspectRepo(rt: AppRuntime, path: string): Promise<RepoInspection | null> {
+  const call = untyped(rt);
+  try {
+    let raw: unknown;
+    try {
+      raw = await call('project.inspectRepo', { path });
+    } catch (err) {
+      if ((err as { code?: string }).code !== 'invalid_params') throw err;
+      raw = await call('project.inspectRepo', { repoPath: path });
+    }
+    return normalizeInspection(raw);
+  } catch (err) {
+    if (isNotImplemented(err)) {
+      rt.markUnimplemented('project.inspectRepo');
+      return null;
+    }
+    const code = (err as { code?: string }).code;
+    if (code === 'connection_lost' || code === 'timeout' || code === 'closed') return null;
+    return {
+      isRepo: false,
+      root: null,
+      name: null,
+      branch: null,
+      dirty: false,
+      testCommand: null,
+      error: projectErrorText(err) ?? (err instanceof Error ? err.message : String(err)),
+    };
+  }
 }
 
 export async function updateProject(
@@ -304,6 +345,75 @@ export async function spawnWorker(
       toastError(err, 'Worker を起動できませんでした');
     }
     return null;
+  }
+}
+
+/** Methods a newer daemon may offer for "send back to the worker with feedback". */
+export const TASK_RETRY_METHODS = ['task.retry', 'task.rework'] as const;
+
+/**
+ * "Worker に差し戻す": the worker continues in the task's worktree with the human's feedback.
+ * A daemon with `task.retry` does it in one call. Otherwise the contract methods do the
+ * same: a failed task gets a new worker with the feedback as instructions (spawnWorker
+ * reuses the task's worktree), a task in review is first put back to `ready`.
+ */
+export async function reworkTask(
+  rt: AppRuntime,
+  task: Task,
+  feedback: string,
+  methods: ReadonlySet<string> | null,
+): Promise<{ sessionId: string | null } | null> {
+  const qc = rt.queryClient;
+  const instructions = `レビューで差し戻されました。次の点を直してください。\n\n${feedback.trim()}`;
+  patchIn<Task>(qc, qk.tasks, task.id, (t) => ({ ...t, status: 'running', statusReason: null }));
+  const restore = () =>
+    patchIn<Task>(qc, qk.tasks, task.id, (t) =>
+      t.status === 'running' ? { ...t, status: task.status, statusReason: task.statusReason } : t,
+    );
+  const retryMethod = pickMethod(methods, TASK_RETRY_METHODS);
+  try {
+    if (retryMethod) {
+      let res: unknown;
+      try {
+        res = await untyped(rt)(retryMethod, { taskId: task.id, feedback: feedback.trim() });
+      } catch (err) {
+        if ((err as { code?: string }).code !== 'invalid_params') throw err;
+        res = await untyped(rt)(retryMethod, { taskId: task.id, instructions });
+      }
+      const sessionId = (res as { sessionId?: unknown } | null)?.sessionId;
+      return { sessionId: typeof sessionId === 'string' ? sessionId : null };
+    }
+    if (task.status === 'review') {
+      await rt.client.call('task.update', { taskId: task.id, status: 'ready' });
+    }
+    try {
+      const r = await rt.client.call('task.spawnWorker', { taskId: task.id, instructions });
+      return { sessionId: r.sessionId };
+    } catch (err) {
+      // Put a reviewed task back where it was, so its result is not lost from view.
+      if (task.status === 'review')
+        await rt.client.call('task.update', { taskId: task.id, status: 'review' }).catch(() => {});
+      throw err;
+    }
+  } catch (err) {
+    restore();
+    toastError(err, 'Worker に差し戻せませんでした');
+    return null;
+  }
+}
+
+/** "Task を中止": the task, its subtasks and their running workers stop (worktrees stay). */
+export async function cancelTask(rt: AppRuntime, task: Task): Promise<boolean> {
+  const qc = rt.queryClient;
+  patchIn<Task>(qc, qk.tasks, task.id, (t) => ({ ...t, status: 'cancelled' }));
+  try {
+    const next = await rt.client.call('task.cancel', { taskId: task.id, reason: 'デスクトップから中止' });
+    upsertIn(qc, qk.tasks, next);
+    return true;
+  } catch (err) {
+    upsertIn(qc, qk.tasks, task);
+    toastError(err, 'Task を中止できませんでした');
+    return false;
   }
 }
 

@@ -57,7 +57,12 @@ export interface ApprovalKeys {
  * Approve / reject buttons + the reject-reason input. Returns the key handler for the
  * card that hosts it (Y / N / Ctrl+Y on the focused card, §7.2). Esc never decides.
  */
-export function useApprovalControls(approval: Approval | null, view: ApprovalView | null) {
+export function useApprovalControls(
+  approval: Approval | null,
+  view: ApprovalView | null,
+  /** `E`: show the details (the card opens the detail panel). */
+  onExpand?: () => void,
+) {
   const rt = useRuntime();
   const connected = useConnectionState() === 'open';
   const [rejecting, setRejecting] = useState(false);
@@ -83,6 +88,9 @@ export function useApprovalControls(approval: Approval | null, view: ApprovalVie
     } else if (matchShortcut(e, 'reject')) {
       e.preventDefault();
       setRejecting(true);
+    } else if (onExpand && matchShortcut(e, 'expand')) {
+      e.preventDefault();
+      onExpand();
     }
   };
 

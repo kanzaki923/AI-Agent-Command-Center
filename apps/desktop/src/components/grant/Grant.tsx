@@ -374,23 +374,26 @@ export function GrantLine({
   const at = change === 'given' ? grant.createdAt : (grant.revokedAt ?? grant.createdAt);
   return (
     <div className="flex items-center gap-3 py-1" data-testid={`grant-line-${change}`}>
-      <span className="h-px flex-1 bg-line-subtle" />
-      <span className="flex items-center gap-1.5 text-meta text-fg-3">
-        <OrchestratorMark size={10} hollow={change === 'ended'} />
+      <span className="h-px min-w-6 flex-1 bg-line-subtle" />
+      {/* One flowing sentence: in a narrow column it wraps as text, not as columns. */}
+      <span className="max-w-[560px] text-center text-meta [word-break:keep-all] text-fg-3">
+        <span className="mr-1.5 inline-block align-[-1px]">
+          <OrchestratorMark size={10} hollow={change === 'ended'} />
+        </span>
         {change === 'given' ? (
           <>
             <span className="text-fg-2">
               {by}が「{v.title}」の権限を付与しました
             </span>
-            {v.workers && <span>· {v.workers}</span>}
-            <span>· {v.lifetime}</span>
+            {v.workers && <span className="whitespace-nowrap"> · {v.workers}</span>}
+            <span className="whitespace-nowrap"> · {v.lifetime}</span>
           </>
         ) : (
           <span>{v.title} の権限が終了しました</span>
         )}
-        <span className="tabular text-fg-4">· {formatClock(at)}</span>
+        <span className="whitespace-nowrap text-fg-4 tabular"> · {formatClock(at)}</span>
       </span>
-      <span className="h-px flex-1 bg-line-subtle" />
+      <span className="h-px min-w-6 flex-1 bg-line-subtle" />
     </div>
   );
 }

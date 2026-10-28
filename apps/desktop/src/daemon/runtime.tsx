@@ -1,5 +1,5 @@
 import type { AccClient, ConnectionState } from '@acc/client';
-import type { MethodName, ParamsInput, Result } from '@acc/protocol';
+import type { Event, MethodName, ParamsInput, Result } from '@acc/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { type ReactNode, createContext, use, useSyncExternalStore } from 'react';
 import { createStore } from 'zustand/vanilla';
@@ -21,6 +21,8 @@ export interface AppRuntime {
   markUnimplemented(method: string): void;
   /** Connection lifecycle facts the client does not keep (first open, last failure). */
   status: ReturnType<typeof createStatusStore>;
+  /** Listen to every live event after it reached the caches. */
+  onEvent(fn: (e: Event) => void): () => void;
   /** Typed call that maps not_implemented to `fallback`. */
   callOr<M extends MethodName>(
     method: M,
@@ -67,14 +69,23 @@ export function createRuntime(
     recent: createRecentStore(),
   };
   const unimplemented = createUnimplementedStore();
-  const stopSync = startSync(client, queryClient, streams, (count) =>
-    toast({
-      key: 'interrupted',
-      title: `中断した Run が ${count} 件あります`,
-      detail: 'Core Daemon の再起動などで止まりました。再開または再試行できます',
-      tone: 'info',
-      sticky: false,
-    }),
+  const observers = new Set<(e: Event) => void>();
+  const stopSync = startSync(
+    client,
+    queryClient,
+    streams,
+    (count) =>
+      toast({
+        key: 'interrupted',
+        title: `中断した Run が ${count} 件あります`,
+        detail: 'Core Daemon の再起動などで止まりました。再開または再試行できます',
+        tone: 'info',
+        sticky: false,
+      }),
+    undefined,
+    (e) => {
+      for (const fn of observers) fn(e);
+    },
   );
   const markOpen = () => {
     if (client.state === 'open') status.setState({ everConnected: true, lastError: null });
@@ -97,6 +108,10 @@ export function createRuntime(
     unimplemented,
     markUnimplemented,
     status,
+    onEvent(fn) {
+      observers.add(fn);
+      return () => observers.delete(fn);
+    },
     async callOr<M extends MethodName>(method: M, params: ParamsInput<M>, fallback: Result<M>) {
       try {
         return (await call(method, params)) as Result<M>;

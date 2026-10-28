@@ -1,6 +1,7 @@
 import type { Approval, Integration, Run, Session, Task } from '@acc/protocol';
 import { cancelRun, createSession, respondApproval, retryRun, sendMessage } from '../daemon/actions';
 import { qk } from '../daemon/keys';
+import { cancelTask } from '../daemon/orchestration';
 import type { AppRuntime } from '../daemon/runtime';
 import { type BoardItem, buildBoard, nextAttention, roleOf, untitled } from '../model/board';
 import { useConfirm } from '../store/confirm';
@@ -48,16 +49,28 @@ export async function newChat(rt: AppRuntime, opts: { kind?: 'chat' | 'agent' } 
 }
 
 /** Ctrl+J / Ctrl+Shift+J: move to the next item that needs a human (§7.2). */
-export function goToAttention(rt: AppRuntime, dir: 1 | -1 = 1): BoardItem | null {
+export function goToAttention(
+  rt: AppRuntime,
+  dir: 1 | -1 = 1,
+  only?: BoardItem['state'],
+): BoardItem | null {
   const ui = useUi.getState();
-  const items = currentBoard(rt);
+  const all = currentBoard(rt);
+  const items = only ? all.filter((i) => i.state === only) : all;
   const target = nextAttention(items, ui.selectedId, dir);
   if (!target) {
-    toast({ title: '要対応の項目はありません', tone: 'info', sticky: false, key: 'no-attention' });
+    toast({
+      title: only === 'awaiting_approval' ? '承認待ちはありません' : '要対応の項目はありません',
+      tone: 'info',
+      sticky: false,
+      key: 'no-attention',
+    });
     return null;
   }
   ui.select(target.id, true);
-  if (ui.mode !== 'command') ui.setMode('command');
+  // The attention cards live in the agent view of the Command board.
+  if (ui.commandView !== 'agents') ui.setCommandView('agents');
+  if (ui.mode !== 'command' || ui.reviewIntegrationId) ui.setMode('command');
   // Land on the approval card itself so Y / N work immediately.
   requestAnimationFrame(() => {
     const el = document.querySelector<HTMLElement>(`[data-board-item="${CSS.escape(target.id)}"]`);
@@ -97,6 +110,20 @@ export async function stop(rt: AppRuntime, run: Run): Promise<void> {
     body: '作業内容は worktree に残ります。あとで再開できます。',
     confirmLabel: '停止する',
     onConfirm: () => void cancelRun(rt, run),
+  });
+}
+
+/** "Task を中止" asks first: running workers stop with it (§9.3 wording). */
+export function confirmCancelTask(rt: AppRuntime, task: Task): void {
+  useConfirm.getState().ask({
+    title: `Task「${task.title}」を中止しますか？`,
+    body:
+      task.status === 'running'
+        ? '動いている Worker も停止します。worktree とブランチはそのまま残ります。'
+        : 'この Task に依存する Task は進めなくなります。worktree とブランチはそのまま残ります。',
+    confirmLabel: '中止する',
+    danger: true,
+    onConfirm: () => void cancelTask(rt, task),
   });
 }
 

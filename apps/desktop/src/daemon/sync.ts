@@ -15,7 +15,7 @@ import {
   isTerminalRunStatus,
 } from '@acc/protocol';
 import { type QueryClient, type QueryKey, notifyManager } from '@tanstack/react-query';
-import { describeTool } from '../lib/tools';
+import { type ToolLookup, describeTool } from '../lib/tools';
 import type { ActivityStore } from './activity';
 import type { DeltaStore } from './deltas';
 import type { EventLog } from './eventLog';
@@ -92,6 +92,13 @@ export function grantSessionId(qc: QueryClient, g: CapabilityGrant): string | nu
   const { runId } = g.subject;
   const run = qc.getQueryData<Run>(qk.run(runId)) ?? qc.getQueryData<Run[]>(qk.runs)?.find((r) => r.id === runId);
   return run?.sessionId ?? null;
+}
+
+/** Task titles from the cache, so tool calls name their task (`Worker を起動: 「…」`). */
+export function taskLookup(qc: QueryClient): ToolLookup {
+  return {
+    taskTitle: (id) => qc.getQueryData<Task[]>(qk.tasks)?.find((t) => t.id === id)?.title,
+  };
 }
 
 function bumpSession(qc: QueryClient, sessionId: string, ts: string): void {
@@ -206,7 +213,7 @@ export function applyEvent(qc: QueryClient, streams: Streams, event: Event): voi
     case 'tool.called':
       streams.activity.set(
         event.payload.runId,
-        describeTool(event.payload.name, event.payload.input).activity,
+        describeTool(event.payload.name, event.payload.input, taskLookup(qc)).activity,
       );
       return;
     case 'tool.result':
@@ -350,6 +357,8 @@ export function startSync(
   streams: Streams,
   onInterrupted: (count: number) => void = () => {},
   schedule: (flush: () => void) => void = scheduleFrame,
+  /** Sees every live event after it was applied (attention notifications). */
+  observe: (e: Event) => void = () => {},
 ): () => void {
   const interrupted = createInterruptNotifier(onInterrupted);
   // Events are applied once per frame, in order, inside one query-cache batch: a burst
@@ -367,6 +376,13 @@ export function startSync(
         interrupted(e);
       }
     });
+    for (const e of batch) {
+      try {
+        observe(e);
+      } catch (err) {
+        console.warn('[acc] event observer failed', err);
+      }
+    }
   };
   let sub: Subscription | null = client.subscribe({
     deltas: true,

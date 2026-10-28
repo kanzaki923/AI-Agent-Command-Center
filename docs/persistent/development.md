@@ -72,8 +72,9 @@ Desktop UI（`apps/desktop`）：
 ```sh
 pnpm --filter @acc/desktop scene        # 本物のデーモン + 本物の API で作る確認用の場面（一時 git リポジトリ、Worker、承認待ち、統合候補。ACC_PORT 既定 47899。--empty / --load 10）
 pnpm --filter @acc/desktop tauri:dev    # Tauri アプリだけ（デーモンが無ければ tsx で detach 起動。普段は pnpm dev:desktop）
-pnpm --filter @acc/desktop screenshots  # Playwright で主要画面を撮る（scene に対して。出力は OS の一時ディレクトリ）
+pnpm --filter @acc/desktop screenshots  # Playwright で主要画面を撮る（scene に対して。出力は OS の一時ディレクトリ。--theme light、--size 1100x720、--prefix、--only a,b）
 pnpm --filter @acc/desktop e2e:slice    # 本物のデーモン + Vite を一時 ACC_HOME で起動し、オンボーディング → デモ → 送信 → 承認 → 統合の反映まで通す（--daemon-root で別チェックアウトのデーモンも使える）
+pnpm --filter @acc/desktop e2e:board    # 本物のデーモンで Task ボード（T → j → R で Worker を起動）とパレットのメッセージ検索（session.search → 該当メッセージへ移動）を通す
 pnpm --filter @acc/desktop e2e:perf     # 本番ビルドで 10 本同時ストリーミングのフレーム間隔と長いタスクを測る（--profile で内訳、--dev で開発サーバ）
 ```
 

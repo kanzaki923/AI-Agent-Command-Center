@@ -1,8 +1,9 @@
 import type { Project } from '@acc/protocol';
-import { FolderGit2, GitBranch, TestTube2 } from 'lucide-react';
-import { type ReactNode, useState } from 'react';
-import { createProject, updateProject } from '../../daemon/orchestration';
-import { useProjects } from '../../daemon/queries';
+import { Check, FolderGit2, GitBranch, TestTube2, TriangleAlert } from 'lucide-react';
+import { type ReactNode, useRef, useState } from 'react';
+import { createProject, inspectRepo, updateProject } from '../../daemon/orchestration';
+import { useMethods, useProjects } from '../../daemon/queries';
+import { type RepoInspection, dirtyText } from '../../model/repo';
 import { useRuntime } from '../../daemon/runtime';
 import { toast } from '../../store/toast';
 import { useUi } from '../../store/ui';
@@ -32,20 +33,49 @@ export function NewProjectForm({
   compact?: boolean;
 }) {
   const rt = useRuntime();
+  const methods = useMethods();
+  const canInspect = !!methods?.has('project.inspectRepo');
   const [path, setPath] = useState('');
   const [name, setName] = useState('');
-  const [testCommand, setTestCommand] = useState('');
+  // The test command and whether the person typed it (a detected one never overwrites theirs).
+  const [test, setTest] = useState({ value: '', touched: false });
+  const testCommand = test.value;
   const [branch, setBranch] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const derived = name.trim() || folderName(path);
+  const [check, setCheck] = useState<{ path: string; result: RepoInspection | null; pending: boolean } | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inspection = check && check.path === path.trim() && !check.pending ? check.result : null;
+  const checking = !!check?.pending && check.path === path.trim();
+  const derived = name.trim() || inspection?.name || folderName(inspection?.root ?? path);
+
+  /** Validate the folder while typing (debounced), before anything is created. */
+  const inspect = (value: string, delay: number) => {
+    if (timer.current) clearTimeout(timer.current);
+    const p = value.trim();
+    if (!canInspect || !p) {
+      setCheck(null);
+      return;
+    }
+    setCheck({ path: p, result: null, pending: true });
+    timer.current = setTimeout(() => {
+      void inspectRepo(rt, p).then((result) => {
+        setCheck((cur) => (cur?.path === p ? { path: p, result, pending: false } : cur));
+        // Prefill what the repository tells (never over what the user typed).
+        const detected = result?.testCommand;
+        if (detected) setTest((cur) => (cur.touched || cur.value ? cur : { value: detected, touched: false }));
+      });
+    }, delay);
+  };
+
+  const blocked = !!inspection && !inspection.isRepo;
 
   const submit = async () => {
-    if (!path.trim() || busy) return;
+    if (!path.trim() || busy || blocked) return;
     setBusy(true);
     setError(null);
     const r = await createProject(rt, {
-      repoPath: path.trim(),
+      repoPath: inspection?.root ?? path.trim(),
       name: derived || 'プロジェクト',
       ...(branch.trim() ? { defaultBranch: branch.trim() } : {}),
       ...(testCommand.trim() ? { testCommand: testCommand.trim() } : {}),
@@ -83,15 +113,55 @@ export function NewProjectForm({
           onChange={(e) => {
             setPath(e.target.value);
             setError(null);
+            inspect(e.target.value, 350);
+          }}
+          onBlur={() => {
+            if (path.trim() && check?.path !== path.trim()) inspect(path, 0);
           }}
           placeholder="C:\work\my-repo"
           spellCheck={false}
-          aria-invalid={!!error}
+          aria-invalid={!!error || blocked}
+          aria-describedby="proj-path-status"
         />
-        {error ? (
-          <p className="mt-1 text-meta text-st-failed">{error}</p>
-        ) : (
-          <Hint>リポジトリのルート（.git があるフォルダ）を絶対パスで指定します。</Hint>
+        <div id="proj-path-status" aria-live="polite">
+          {error ? (
+            <p className="mt-1 text-meta text-st-failed">{error}</p>
+          ) : checking ? (
+            <p className="mt-1 text-meta text-fg-3">フォルダを確認しています…</p>
+          ) : inspection && !inspection.isRepo ? (
+            <p className="mt-1 text-meta text-st-failed">{inspection.error}</p>
+          ) : inspection ? (
+            <p className="mt-1 flex flex-wrap items-center gap-x-2 text-meta text-fg-3">
+              <span className="flex items-center gap-1 text-st-completed">
+                <Check size={12} strokeWidth={2} />
+                git リポジトリ
+              </span>
+              {inspection.branch && (
+                <span className="flex items-center gap-1 font-mono">
+                  <GitBranch size={11} strokeWidth={1.75} />
+                  {inspection.branch}
+                </span>
+              )}
+              {inspection.root && inspection.root.replace(/[\\/]+$/, '') !== path.trim().replace(/[\\/]+$/, '') && (
+                <span className="min-w-0 truncate">ルート {inspection.root} を使います</span>
+              )}
+            </p>
+          ) : (
+            <Hint>リポジトリのルート（.git があるフォルダ）を絶対パスで指定します。</Hint>
+          )}
+        </div>
+        {inspection?.isRepo && dirtyText(inspection.dirty) && (
+          <div
+            className="mt-2 flex gap-2 rounded-sm px-2.5 py-2 text-meta text-fg-2"
+            style={{ background: 'color-mix(in oklch, var(--st-awaiting_approval) 10%, transparent)' }}
+            data-testid="dirty-warning"
+          >
+            <TriangleAlert size={13} strokeWidth={1.75} className="mt-px shrink-0 text-st-awaiting_approval" />
+            <span>
+              {dirtyText(inspection.dirty)}。Worker の worktree は最後のコミットから作られるため、未コミットの変更は Worker
+              に見えません。必要ならコミットしてから始めてください。
+            </span>
+          </div>
         )}
       </div>
       <div className={compact ? 'grid grid-cols-1 gap-3' : 'grid grid-cols-2 gap-3'}>
@@ -102,7 +172,7 @@ export function NewProjectForm({
             className={inputClass}
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder={folderName(path) || 'my-repo'}
+            placeholder={inspection?.name || folderName(inspection?.root ?? path) || 'my-repo'}
           />
         </div>
         <div>
@@ -112,7 +182,7 @@ export function NewProjectForm({
             className={inputClass}
             value={branch}
             onChange={(e) => setBranch(e.target.value)}
-            placeholder="自動で検出"
+            placeholder={inspection?.branch ? `${inspection.branch}（検出）` : '自動で検出'}
             spellCheck={false}
           />
         </div>
@@ -123,17 +193,26 @@ export function NewProjectForm({
           id="proj-test"
           className={`${inputClass} font-mono`}
           value={testCommand}
-          onChange={(e) => setTestCommand(e.target.value)}
+          onChange={(e) => setTest({ value: e.target.value, touched: true })}
           placeholder="pnpm test"
           spellCheck={false}
         />
-        <Hint>統合のあとにこのコマンドで検証します。空なら検証を省略します。</Hint>
+        <Hint>
+          {inspection?.testCommand && !test.touched && testCommand === inspection.testCommand
+            ? 'リポジトリから検出しました。統合のあとにこのコマンドで検証します。'
+            : '統合のあとにこのコマンドで検証します。空なら検証を省略します。'}
+        </Hint>
       </div>
       <div className="mt-1 flex justify-end gap-2">
         <Button variant="ghost" onClick={() => onDone(null)}>
           {compact ? 'あとで' : 'キャンセル'}
         </Button>
-        <Button type="submit" variant="primary" disabled={!path.trim() || busy}>
+        <Button
+          type="submit"
+          variant="primary"
+          disabled={!path.trim() || busy || blocked}
+          hint={blocked ? 'git リポジトリのフォルダを指定してください' : undefined}
+        >
           {busy ? '確認しています…' : 'プロジェクトを追加'}
         </Button>
       </div>

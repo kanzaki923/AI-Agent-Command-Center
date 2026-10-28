@@ -25,6 +25,7 @@ export const SHORTCUTS = {
   settings: { keys: 'Mod+,', label: '設定', scope: 'global' },
   regionNext: { keys: 'F6', label: '次の領域へ', scope: 'global' },
   regionPrev: { keys: 'Shift+F6', label: '前の領域へ', scope: 'global' },
+  undo: { keys: 'Mod+Z', label: '直前の操作を元に戻す', scope: 'global' },
 
   down: { keys: 'J', label: '下へ', scope: 'list' },
   up: { keys: 'K', label: '上へ', scope: 'list' },
@@ -37,6 +38,12 @@ export const SHORTCUTS = {
   prevTab: { keys: '[', label: '前のタブ', scope: 'list' },
   nextTab: { keys: ']', label: '次のタブ', scope: 'list' },
   help: { keys: '?', label: 'ショートカット一覧', scope: 'list' },
+  toggleTaskBoard: { keys: 'T', label: 'エージェント / Task を切替', scope: 'list' },
+
+  runTask: { keys: 'R', label: 'このTaskを実行', scope: 'tasks' },
+  reworkTask: { keys: 'F', label: 'Worker に差し戻す', scope: 'tasks' },
+  cancelTask: { keys: 'Mod+Shift+Backspace', label: 'Task を中止', scope: 'tasks' },
+  submitFeedback: { keys: 'Mod+Enter', label: '差し戻しを送る', scope: 'tasks' },
 
   approve: { keys: 'Y', label: '承認', scope: 'approval' },
   approveDanger: { keys: 'Mod+Y', label: '承認（要注意）', scope: 'approval' },
@@ -53,6 +60,7 @@ export type ShortcutId = keyof typeof SHORTCUTS;
 export const SCOPE_LABEL = {
   global: 'グローバル（入力中でも有効）',
   list: '一覧（入力中以外）',
+  tasks: 'Task ボード',
   approval: '承認カード',
   composer: 'コンポーザー',
 } as const;

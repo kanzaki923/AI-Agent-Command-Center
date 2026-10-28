@@ -55,7 +55,26 @@ export interface UiState {
   grantDialogSessionId: string | null;
   /** Suggested first message per session (demo: a one-click chip above the composer). */
   suggestions: Record<string, string>;
+  /** Command Mode lists agents (sessions) or tasks (the task board). */
+  commandView: CommandView;
+  /** Task board scope: one goal (orchestrator session id / `human`) or every goal. */
+  taskGoal: string | null;
+  /**
+   * A message to scroll to and flash once (palette search hit, Timeline "会話を開く").
+   * `nonce` makes a repeated jump to the same message run again.
+   */
+  jumpTo: { sessionId: string; messageId: string; nonce: number } | null;
+  /** OS notifications while the window is in the background (§8.5). */
+  notifyOs: boolean;
+  /** In-app toasts for things that happen outside the current view. */
+  notifyInApp: boolean;
+  /** Messages replaced by "edit and resend" (shown folded, this window only). */
+  superseded: Record<string, true>;
+  /** The unanswered message being edited in the composer (↑ in an empty composer). */
+  editing: { sessionId: string; messageId: string } | null;
 }
+
+export type CommandView = 'agents' | 'tasks';
 
 interface UiActions {
   setMode: (mode: Mode) => void;
@@ -93,6 +112,17 @@ interface UiActions {
   setProjectDialog: (d: UiState['projectDialog']) => void;
   setGrantDialog: (sessionId: string | null) => void;
   setSuggestion: (sessionId: string, text: string | null) => void;
+  setCommandView: (v: CommandView) => void;
+  setTaskGoal: (goal: string | null) => void;
+  /** Command Mode → task board with this task selected and its detail open. */
+  openTask: (taskId: string) => void;
+  /** Focus the session and scroll to one message. */
+  openMessage: (sessionId: string, messageId: string, opts?: { from?: 'command' | 'timeline' }) => void;
+  clearJump: () => void;
+  setNotify: (patch: { os?: boolean; inApp?: boolean }) => void;
+  markSuperseded: (messageId: string) => void;
+  /** Start editing (text goes into the session's draft) or stop (`null`). */
+  setEditing: (e: { sessionId: string; messageId: string; text: string } | null) => void;
 }
 
 export type UiStore = UiState & UiActions;
@@ -130,7 +160,16 @@ const initial: UiState = {
   projectDialog: null,
   grantDialogSessionId: null,
   suggestions: {},
+  commandView: 'agents',
+  taskGoal: null,
+  jumpTo: null,
+  notifyOs: true,
+  notifyInApp: true,
+  superseded: {},
+  editing: null,
 };
+
+let jumpNonce = 0;
 
 const view = (s: UiState): View => ({ mode: s.mode, sessionId: s.focusSessionId });
 
@@ -280,6 +319,40 @@ export const createUiStore = () =>
         closeIntegration: () => set({ reviewIntegrationId: null }),
         setProjectDialog: (projectDialog) => set({ projectDialog }),
         setGrantDialog: (grantDialogSessionId) => set({ grantDialogSessionId }),
+        setCommandView: (commandView) => set({ commandView }),
+        setTaskGoal: (taskGoal) => set({ taskGoal }),
+        openTask: (taskId) =>
+          set((s) => ({
+            mode: 'command',
+            reviewIntegrationId: null,
+            commandView: 'tasks',
+            selectedId: taskId,
+            panelOpen: { ...s.panelOpen, command: true },
+            back: s.mode === 'command' ? s.back : pushBack(s),
+            forward: s.mode === 'command' ? s.forward : [],
+          })),
+        openMessage: (sessionId, messageId, opts) => {
+          get().openSession(sessionId, opts);
+          set({ jumpTo: { sessionId, messageId, nonce: ++jumpNonce } });
+        },
+        clearJump: () => set((s) => (s.jumpTo ? { jumpTo: null } : s)),
+        setNotify: (patch) =>
+          set((s) => ({ notifyOs: patch.os ?? s.notifyOs, notifyInApp: patch.inApp ?? s.notifyInApp })),
+        markSuperseded: (messageId) => set((s) => ({ superseded: { ...s.superseded, [messageId]: true } })),
+        setEditing: (e) =>
+          set((s) => {
+            if (!e) {
+              const cur = s.editing;
+              if (!cur) return s;
+              const drafts = { ...s.drafts };
+              delete drafts[cur.sessionId];
+              return { editing: null, drafts };
+            }
+            return {
+              editing: { sessionId: e.sessionId, messageId: e.messageId },
+              drafts: { ...s.drafts, [e.sessionId]: e.text },
+            };
+          }),
         setSuggestion: (sessionId, text) =>
           set((s) => {
             const suggestions = { ...s.suggestions };
@@ -307,6 +380,10 @@ export const createUiStore = () =>
           onboardingDone: s.onboardingDone,
           recentCommands: s.recentCommands,
           suggestions: s.suggestions,
+          commandView: s.commandView,
+          taskGoal: s.taskGoal,
+          notifyOs: s.notifyOs,
+          notifyInApp: s.notifyInApp,
         }),
       },
     ),

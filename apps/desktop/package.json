@@ -11,6 +11,7 @@
     "typecheck": "tsc -p tsconfig.json",
     "scene": "tsx scripts/scene.ts",
     "e2e:slice": "node e2e/slice.js",
+    "e2e:board": "node e2e/board.js",
     "e2e:perf": "node e2e/perf.js",
     "screenshots": "node e2e/screenshots.js",
     "tauri": "tauri",

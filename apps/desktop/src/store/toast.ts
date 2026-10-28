@@ -4,6 +4,8 @@ import { type UserFacingError, describeError } from '../daemon/errors';
 export interface ToastAction {
   label: string;
   run: () => void;
+  /** An undo (`元に戻す`): Ctrl+Z runs the newest one while its toast is shown (§7.2). */
+  undo?: boolean;
 }
 
 export interface Toast {
@@ -14,6 +16,8 @@ export interface Toast {
   /** Errors and decisions stay until dismissed (§8.5). */
   sticky: boolean;
   action?: ToastAction;
+  /** Show `detail` even for an error (attention toasts carry a readable line, not a stack). */
+  showDetail?: boolean;
   /** Merge key: a second toast with the same key replaces the first. */
   key?: string;
 }
@@ -67,6 +71,16 @@ export const useToasts = create<ToastState>((set, get) => {
 
 export function toast(t: Omit<Toast, 'id'> & { durationMs?: number }): number {
   return useToasts.getState().push(t);
+}
+
+/** Ctrl+Z: run the newest visible undo action. False when there is nothing to undo. */
+export function undoLatest(): boolean {
+  const s = useToasts.getState();
+  const t = [...s.toasts].reverse().find((x) => x.action?.undo);
+  if (!t?.action) return false;
+  t.action.run();
+  s.dismiss(t.id);
+  return true;
 }
 
 /** Show an API/client error as a toast with the §8.4 wording. */

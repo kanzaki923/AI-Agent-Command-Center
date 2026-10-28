@@ -51,6 +51,9 @@
 
   --sidebar-w: 248px;
   --panel-w: 360px;
+
+  /* Code blocks sit slightly below the canvas so they read as "source", in both themes. */
+  --bg-code: #0b0c0e;
 }
 
 :root[data-theme='light'] {
@@ -84,6 +87,8 @@
   --shadow-1: 0 1px 2px rgb(0 0 0 / 0.04);
   --shadow-2: 0 8px 24px rgb(0 0 0 / 0.1), 0 0 0 1px rgb(0 0 0 / 0.06);
   --shadow-3: 0 24px 64px rgb(0 0 0 / 0.16);
+
+  --bg-code: #f4f4f6;
 }
 
 @theme inline {
@@ -266,27 +271,34 @@
     opacity: 0;
   }
 }
+/*
+ * Streaming caret, rendered at the very end of the text (inside the last block, code
+ * included). It is remounted on every update, and the blink only starts after 500ms:
+ * solid while text flows, blinking once it pauses — no flicker mid-stream.
+ */
 .acc-caret {
   display: inline-block;
   width: 2px;
   height: 1em;
   margin-left: 2px;
   vertical-align: -0.15em;
+  border-radius: 1px;
   background: var(--text-tertiary);
-  animation: acc-caret 1s steps(1) infinite;
+  animation: acc-caret 1s steps(1) 500ms infinite;
 }
 
-/* Streaming caret at the end of the last rendered block (no layout jump). */
-.md-streaming > :is(p, h1, h2, h3, h4, blockquote):last-child::after,
-.md-streaming > :is(ul, ol):last-child > li:last-child::after {
-  content: '';
-  display: inline-block;
-  width: 2px;
-  height: 1em;
-  margin-left: 2px;
-  vertical-align: -0.15em;
-  background: var(--text-tertiary);
-  animation: acc-caret 1s steps(1) infinite;
+/* A message reached by a jump (search hit, Timeline): one soft flash, then quiet. */
+@keyframes acc-flash {
+  from {
+    background-color: color-mix(in oklch, var(--accent) 14%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+.acc-flash {
+  border-radius: var(--radius-md);
+  animation: acc-flash 1600ms var(--ease-out) 1;
 }
 
 /* run.completed sweep: a 10% band runs left -> right once. */
@@ -436,6 +448,20 @@
   :root:not([data-reduce-motion='off']) .acc-modal {
     transform: none !important;
   }
+  /* Dialogs, menus, popovers: no scale / slide, a short fade only (§3.3). */
+  :root:not([data-reduce-motion='off']) [class*='acc-dialog-in'],
+  :root:not([data-reduce-motion='off']) [class*='acc-pop-in'] {
+    animation-name: acc-fade-in !important;
+    animation-duration: 100ms !important;
+  }
+  :root:not([data-reduce-motion='off']) .acc-flash {
+    animation-duration: 1200ms;
+  }
+}
+:root[data-reduce-motion='on'] [class*='acc-dialog-in'],
+:root[data-reduce-motion='on'] [class*='acc-pop-in'] {
+  animation-name: acc-fade-in !important;
+  animation-duration: 100ms !important;
 }
 :root[data-reduce-motion='on'] .acc-pulse {
   animation: none;
@@ -542,6 +568,10 @@
 .md th {
   font-weight: 600;
   background: var(--bg-hover);
+}
+
+.acc-code {
+  background: var(--bg-code);
 }
 
 /* highlight.js theme mapped onto tokens (calm, low saturation). */

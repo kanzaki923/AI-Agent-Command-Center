@@ -22,7 +22,9 @@ import { Kbd } from '../ui/Kbd';
 import { useUi } from '../../store/ui';
 import { Cost, Skeleton } from '../ui/Meta';
 import { AgentRow, AttentionCard } from './BoardRows';
+import { TaskBoard } from './TaskBoard';
 import { TaskTree, useTaskGroups } from './TaskTree';
+import { Tooltip } from '../ui/Tooltip';
 
 const SECTION_ORDER: Zone[] = ['attention', 'running', 'queued', 'done', 'idle'];
 const DEFAULT_COLLAPSED: Record<Zone, boolean> = {
@@ -33,6 +35,45 @@ const DEFAULT_COLLAPSED: Record<Zone, boolean> = {
   idle: true,
 };
 
+/** [エージェント | Task]: the same room seen by who is working, or by what is to be done. */
+function ViewSwitch() {
+  const view = useUi((s) => s.commandView);
+  const setView = useUi((s) => s.setCommandView);
+  const taskCount = (useTasks().data ?? []).filter((t) => !['done', 'cancelled'].includes(t.status)).length;
+  const options = [
+    { value: 'agents' as const, label: 'エージェント' },
+    { value: 'tasks' as const, label: 'Task', count: taskCount },
+  ];
+  return (
+    <Tooltip
+      content={
+        <span className="inline-flex items-center gap-2">
+          エージェント / Task を切替 <Kbd id="toggleTaskBoard" />
+        </span>
+      }
+    >
+      <div role="tablist" aria-label="表示" className="inline-flex rounded-sm border border-line-subtle p-0.5">
+        {options.map((o) => (
+          <button
+            key={o.value}
+            type="button"
+            role="tab"
+            aria-selected={view === o.value}
+            onClick={() => setView(o.value)}
+            className={cn(
+              'flex h-6 items-center gap-1.5 rounded-xs px-2.5 text-ui',
+              view === o.value ? 'bg-selected text-fg' : 'text-fg-3 hover:text-fg-2',
+            )}
+          >
+            {o.label}
+            {o.count ? <span className="text-meta text-fg-3 tabular">{o.count}</span> : null}
+          </button>
+        ))}
+      </div>
+    </Tooltip>
+  );
+}
+
 function ViewHeader({ items }: { items: BoardItem[] }) {
   const counts = attentionCounts(items);
   const running = items.filter((i) => i.state === 'running' || (i.zone === 'attention' && i.state === 'awaiting_approval')).length;
@@ -40,6 +81,7 @@ function ViewHeader({ items }: { items: BoardItem[] }) {
   return (
     <div className="sticky top-0 z-20 mx-auto flex h-11 w-full max-w-[1200px] shrink-0 items-center gap-3 bg-canvas px-6">
       <h1 className="text-title text-fg">司令室</h1>
+      <ViewSwitch />
       <span className="flex-1" />
       <span className="flex items-center gap-1.5 text-meta text-fg-3 tabular">
         <span>
@@ -244,6 +286,8 @@ export function CommandView() {
   const toggleCollapsed = useUi((s) => s.toggleCollapsed);
   const togglePanel = useUi((s) => s.togglePanel);
   const setPanelOpen = useUi((s) => s.setPanelOpen);
+  const commandView = useUi((s) => s.commandView);
+  const setCommandView = useUi((s) => s.setCommandView);
   const deferred = useDeferredReorder(
     items,
     (i) => i.id,
@@ -291,6 +335,13 @@ export function CommandView() {
   useWindowKeydown((e) => {
     if (e.defaultPrevented || isTypingTarget(e.target)) return;
     if (overlayOpen()) return;
+    if (matchShortcut(e, 'toggleTaskBoard')) {
+      e.preventDefault();
+      setCommandView(commandView === 'tasks' ? 'agents' : 'tasks');
+      return;
+    }
+    // The task board has its own list keys (TaskBoard).
+    if (commandView === 'tasks') return;
     const idx = selected ? visible.findIndex((i) => i.id === selected.id) : -1;
     if (matchShortcut(e, 'down') || (e.key === 'ArrowDown' && !e.ctrlKey && !e.altKey && !e.metaKey)) {
       e.preventDefault();
@@ -351,6 +402,8 @@ export function CommandView() {
               <Skeleton key={i} className="h-[52px] w-full" />
             ))}
           </div>
+        ) : commandView === 'tasks' ? (
+          <TaskBoard />
         ) : items.length === 0 ? (
           <EmptyBoard />
         ) : (

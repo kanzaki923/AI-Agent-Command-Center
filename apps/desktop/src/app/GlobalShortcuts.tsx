@@ -5,6 +5,7 @@ import { useWindowKeydown } from '../hooks/useWindowKeydown';
 import { resolveEscape } from '../lib/escape';
 import { overlayOpen } from '../lib/overlay';
 import { isTypingTarget, matchShortcut } from '../lib/shortcuts';
+import { undoLatest } from '../store/toast';
 import { useUi } from '../store/ui';
 import { focusComposerSoon, goToAttention, newChat, stop, switchMode } from './commands';
 
@@ -91,6 +92,8 @@ export function GlobalShortcuts() {
       e.preventDefault();
       ui.openPalette('#');
     } else if (matchShortcut(e, 'stopRun')) {
+      // On the task board the same chord cancels the selected task (TaskBoard handles it).
+      if (ui.mode === 'command' && ui.selectedId?.startsWith('tsk_')) return;
       e.preventDefault();
       const sessions = rt.queryClient.getQueryData<Session[]>(qk.sessions) ?? [];
       const runs = rt.queryClient.getQueryData<Run[]>(qk.runs) ?? [];
@@ -107,6 +110,14 @@ export function GlobalShortcuts() {
     } else if (matchShortcut(e, 'settings')) {
       e.preventDefault();
       ui.setSettingsOpen(true);
+    } else if (matchShortcut(e, 'undo')) {
+      // In a text field Ctrl+Z is the field's own undo (§7.2).
+      if (typing || overlayOpen()) return;
+      if (undoLatest()) e.preventDefault();
+    } else if (matchShortcut(e, 'filter') && ui.mode !== 'timeline') {
+      // Views without their own filter field search the conversations instead.
+      e.preventDefault();
+      ui.openPalette('#');
     } else if (matchShortcut(e, 'regionNext')) {
       e.preventDefault();
       focusRegion(1);
