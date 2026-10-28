@@ -19,7 +19,7 @@ fn launch_spec(app: &AppHandle) -> Result<daemon::LaunchSpec, String> {
 
     if let Some(entry) = std::env::var_os("ACC_DAEMON_ENTRY").filter(|v| !v.is_empty()) {
         let entry = PathBuf::from(entry);
-        let mut args = Vec::new();
+        let mut args = node_flags();
         if entry.extension().is_some_and(|e| e == "ts") {
             args.push("--import".into());
             args.push("tsx".into());
@@ -34,7 +34,7 @@ fn launch_spec(app: &AppHandle) -> Result<daemon::LaunchSpec, String> {
         return Ok(daemon::LaunchSpec {
             program: node_from_path(),
             // cwd = packages/daemon so `--import tsx` resolves from its node_modules
-            args: vec!["--import".into(), "tsx".into(), "src/main.ts".into()],
+            args: [node_flags(), vec!["--import".into(), "tsx".into(), "src/main.ts".into()]].concat(),
             cwd: Some(pkg),
         });
     }
@@ -45,16 +45,27 @@ fn launch_spec(app: &AppHandle) -> Result<daemon::LaunchSpec, String> {
         .ok_or("no exe dir")?
         .to_path_buf();
     let node = exe_dir.join(if cfg!(windows) { "acc-node.exe" } else { "acc-node" });
-    let entry = app
-        .path()
-        .resource_dir()
-        .map_err(|e| e.to_string())?
+    // resource_dir() is `\\?\C:\...` on Windows; Node 22.23 cannot start a main script given as
+    // a verbatim path (EISDIR on lstat 'C:'), so hand it a plain one.
+    let entry = dunce::simplified(&app.path().resource_dir().map_err(|e| e.to_string())?)
         .join("daemon")
         .join("main.mjs");
-    if !entry.exists() {
-        return Err(format!("daemon bundle not found: {}", entry.display()));
+    if !entry.exists() || !node.exists() {
+        return Err(format!(
+            "Core Daemon のファイルが見つかりません（{} / {}）。アプリを再インストールしてください",
+            node.display(),
+            entry.display()
+        ));
     }
-    Ok(daemon::LaunchSpec { program: node, args: vec![entry.into_os_string()], cwd: None })
+    let mut args = node_flags();
+    args.push(entry.into_os_string());
+    Ok(daemon::LaunchSpec { program: node, args, cwd: None })
+}
+
+/// node:sqlite still prints an ExperimentalWarning on load (it would land in the launch log),
+/// and the bundle ships a source map so stack traces in that log point at the TS sources.
+fn node_flags() -> Vec<std::ffi::OsString> {
+    vec!["--disable-warning=ExperimentalWarning".into(), "--enable-source-maps".into()]
 }
 
 fn ensure_blocking(app: &AppHandle) -> Result<daemon::Connection, String> {

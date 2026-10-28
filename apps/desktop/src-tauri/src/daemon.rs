@@ -131,8 +131,12 @@ pub fn ensure(
         return Ok(c);
     }
     let spec = spec()?;
-    fs::create_dir_all(home.join("logs")).map_err(|e| format!("cannot create {}: {e}", home.display()))?;
+    fs::create_dir_all(home.join("logs"))
+        .map_err(|e| format!("データフォルダを作成できません（{}）: {e}", home.display()))?;
     let log_path = home.join("logs").join("daemon-launch.log");
+    // The detached daemon writes all of its output here for as long as it lives.
+    rotate_log(&log_path, MAX_LAUNCH_LOG_BYTES);
+    let log_start = fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
     let mut child = spawn_detached(&spec, home, &log_path)?;
 
     let deadline = Instant::now() + timeout;
@@ -149,8 +153,9 @@ pub fn ensure(
                 Ok(Some(st)) if st.success() => child_exited_ok = true,
                 Ok(Some(st)) => {
                     return Err(format!(
-                        "Core Daemon exited during startup ({st}).\n{}",
-                        tail(&log_path, 2000)
+                        "Core Daemon が起動直後に終了しました（{st}）。ログ: {}\n{}",
+                        log_path.display(),
+                        tail(&log_path, log_start, 1500)
                     ))
                 }
                 _ => {}
@@ -158,8 +163,10 @@ pub fn ensure(
         }
         if Instant::now() >= deadline {
             return Err(format!(
-                "Core Daemon did not become healthy within {timeout:?}.\n{}",
-                tail(&log_path, 2000)
+                "Core Daemon が {} 秒以内に応答しませんでした。ログ: {}\n{}",
+                timeout.as_secs(),
+                log_path.display(),
+                tail(&log_path, log_start, 1500)
             ));
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -206,7 +213,7 @@ fn spawn_detached(spec: &LaunchSpec, home: &Path, log_path: &Path) -> Result<Chi
                 cmd.stdout(open_log().map_err(|e| e.to_string())?)
                     .stderr(open_log().map_err(|e| e.to_string())?);
             }
-            Err(e) => return Err(format!("failed to start {}: {e}", spec.program.display())),
+            Err(e) => return Err(start_error(spec, &e)),
         }
     }
     #[cfg(unix)]
@@ -214,7 +221,24 @@ fn spawn_detached(spec: &LaunchSpec, home: &Path, log_path: &Path) -> Result<Chi
         use std::os::unix::process::CommandExt;
         cmd.process_group(0); // detach from the terminal's process group (no SIGINT/SIGHUP fan-out)
     }
-    cmd.spawn().map_err(|e| format!("failed to start {}: {e}", spec.program.display()))
+    cmd.spawn().map_err(|e| start_error(spec, &e))
+}
+
+fn start_error(spec: &LaunchSpec, e: &std::io::Error) -> String {
+    format!("Core Daemon を起動できません（{}）: {e}", spec.program.display())
+}
+
+/// The launch log is kept to at most this size plus one previous file (`<log>.1`).
+pub const MAX_LAUNCH_LOG_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Move `<log>` to `<log>.1` once it exceeds `max` bytes (checked on every spawn).
+pub fn rotate_log(path: &Path, max: u64) {
+    if fs::metadata(path).map(|m| m.len() > max).unwrap_or(false) {
+        let mut old = path.as_os_str().to_owned();
+        old.push(".1");
+        // Best effort: a failure only means the log keeps growing a while longer.
+        let _ = fs::rename(path, PathBuf::from(old));
+    }
 }
 
 #[cfg(windows)]
@@ -238,11 +262,20 @@ fn clear_std_handle_inheritance() {
     }
 }
 
-fn tail(path: &Path, max: usize) -> String {
-    let s = fs::read_to_string(path).unwrap_or_default();
-    let start = s.len().saturating_sub(max);
-    let start = (start..s.len()).find(|i| s.is_char_boundary(*i)).unwrap_or(s.len());
-    s[start..].to_string()
+/// What the log got since byte `from` (this spawn's output), at most `max` bytes, starting
+/// on a line boundary so the error shown in the UI begins with a whole line.
+fn tail(path: &Path, from: u64, max: usize) -> String {
+    let raw = fs::read(path).unwrap_or_default();
+    let raw = raw.get(from as usize..).unwrap_or(&raw[..]);
+    let s = String::from_utf8_lossy(raw);
+    if s.len() <= max {
+        return s.trim_end().to_string();
+    }
+    let cut = s.len() - max;
+    let start = s[cut..].find('\n').map(|i| cut + i + 1).unwrap_or_else(|| {
+        (cut..s.len()).find(|i| s.is_char_boundary(*i)).unwrap_or(s.len())
+    });
+    s[start..].trim_end().to_string()
 }
 
 #[cfg(test)]
@@ -311,5 +344,33 @@ mod tests {
         };
         let err = ensure(&home, spec, Duration::from_secs(5)).unwrap_err();
         assert!(err.contains("boom-from-daemon"), "{err}");
+        assert!(err.contains("起動直後に終了しました"), "{err}");
+    }
+
+    #[test]
+    fn tail_shows_only_this_spawn_from_a_line_start() {
+        let home = tmp_home("tail");
+        let log = home.join("daemon-launch.log");
+        fs::write(&log, "old crash\n").unwrap();
+        let from = fs::metadata(&log).unwrap().len();
+        fs::write(&log, "old crash\nline one\nline two\nline three\n").unwrap();
+        assert_eq!(tail(&log, from, 1000), "line one\nline two\nline three");
+        // cut in the middle of "line two": starts at the next whole line
+        assert_eq!(tail(&log, from, 15), "line three");
+        assert_eq!(tail(&home.join("missing.log"), 0, 100), "");
+    }
+
+    #[test]
+    fn rotate_log_keeps_one_previous_file() {
+        let home = tmp_home("rotate");
+        let log = home.join("daemon-launch.log");
+        rotate_log(&log, 10); // missing file: nothing happens
+        fs::write(&log, "short").unwrap();
+        rotate_log(&log, 10);
+        assert!(log.exists());
+        fs::write(&log, "a much longer line").unwrap();
+        rotate_log(&log, 10);
+        assert!(!log.exists());
+        assert_eq!(fs::read_to_string(home.join("daemon-launch.log.1")).unwrap(), "a much longer line");
     }
 }

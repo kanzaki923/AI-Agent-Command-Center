@@ -252,6 +252,23 @@ export const api = defineApi({
     result: SystemInfo,
     description: 'Daemon version, data directory, implemented methods and basic counters.',
   },
+  'system.shutdown': {
+    params: params({
+      force: z
+        .boolean()
+        .default(false)
+        .describe('Stop even when runs are active (they become interrupted)'),
+    }),
+    result: z.object({
+      ok: z.literal(true),
+      pid: z.int(),
+      activeRuns: z.int().nonnegative().describe('Runs that will be interrupted'),
+    }),
+    description:
+      'Stop the daemon process after replying. Humans only. Refused with conflict while runs are active unless force is true.',
+    tool: false,
+    mutates: true,
+  },
   'system.setupDemo': {
     params: params({
       name: z

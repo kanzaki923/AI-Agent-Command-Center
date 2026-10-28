@@ -62,6 +62,11 @@ export interface Daemon {
   /** Shorthand for ctx.call. */
   call: DaemonContext['call'];
   close(): Promise<void>;
+  /**
+   * Settles once the daemon has fully stopped, whoever stopped it (`close()`, or
+   * `system.shutdown` via `ctx.requestShutdown()`). The process entry point exits on it.
+   */
+  closed: Promise<void>;
 }
 
 export interface RunningDaemon extends Daemon {
@@ -86,6 +91,8 @@ class Context implements DaemonContext {
   readonly shutdown = new AbortController();
   private readonly services = new Map<string, unknown>();
   readonly closers: (() => void | Promise<void>)[] = [];
+  /** What requestShutdown() runs: createDaemon's close, replaced by startDaemon's. */
+  shutdownHandler: (() => Promise<void>) | null = null;
 
   constructor(
     readonly paths: DaemonPaths,
@@ -144,7 +151,18 @@ class Context implements DaemonContext {
   onClose(fn: () => void | Promise<void>): void {
     this.closers.push(fn);
   }
+
+  requestShutdown(): void {
+    const handler = this.shutdownHandler;
+    if (!handler) return;
+    // Give the in-flight reply time to leave the socket before the server closes.
+    setTimeout(() => {
+      handler().catch((err: unknown) => this.log.error('shutdown failed', { err }));
+    }, SHUTDOWN_REPLY_GRACE_MS);
+  }
 }
+
+const SHUTDOWN_REPLY_GRACE_MS = 50;
 
 /** Build a daemon without network: DB + migrations + recovery + modules. */
 export async function createDaemon(opts: CreateDaemonOptions = {}): Promise<Daemon> {
@@ -190,10 +208,11 @@ export async function createDaemon(opts: CreateDaemonOptions = {}): Promise<Daem
     }
     for (const h of hooks) await h.start?.();
 
-    let closed = false;
-    const close = async () => {
-      if (closed) return;
-      closed = true;
+    let markClosed!: () => void;
+    const closedPromise = new Promise<void>((resolve) => (markClosed = resolve));
+    let closing: Promise<void> | null = null;
+    const close = () => (closing ??= doClose().finally(markClosed));
+    const doClose = async () => {
       ctx.shutdown.abort();
       for (const h of [...hooks].reverse()) {
         try {
@@ -211,8 +230,16 @@ export async function createDaemon(opts: CreateDaemonOptions = {}): Promise<Daem
       }
       db.close();
     };
+    ctx.shutdownHandler = close;
 
-    return { ctx, dispatcher, recovery, call: ctx.call.bind(ctx), close };
+    return {
+      ctx,
+      dispatcher,
+      recovery,
+      call: ctx.call.bind(ctx),
+      close,
+      closed: closedPromise,
+    };
   } catch (err) {
     db.close();
     throw err;
@@ -253,6 +280,7 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Runnin
       if (writeInfo) removeDaemonInfoIfOurs(ctx.paths.daemonInfo, token);
       await daemon.close();
     })());
+  (ctx as Context).shutdownHandler = close;
 
   return {
     ...daemon,

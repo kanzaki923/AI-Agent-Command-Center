@@ -20,11 +20,12 @@ export type Command =
       since?: number;
       limit: number;
       filter: EventsFilterArgs;
-    };
+    }
+  | { kind: 'daemon-stop'; force: boolean };
 
 export type ParseResult = { ok: true; command: Command } | { ok: false; error: string };
 
-const COMMANDS = ['status', 'sessions', 'events', 'help'] as const;
+const COMMANDS = ['status', 'sessions', 'events', 'daemon', 'help'] as const;
 
 function int(name: string, v: string | undefined, min: number, max: number): number | string {
   if (v === undefined) return `--${name} に値がありません`;
@@ -131,6 +132,25 @@ export function parseArgs(argv: readonly string[]): ParseResult {
           },
         };
       }
+      case 'daemon': {
+        const [sub, ...subArgs] = rest;
+        if (sub === undefined || sub === '--help' || sub === '-h') {
+          return { ok: true, command: { kind: 'help', topic: 'daemon' } };
+        }
+        if (sub !== 'stop') {
+          return { ok: false, error: `不明なサブコマンドです: daemon ${sub}（acc help daemon）` };
+        }
+        const { values } = nodeParseArgs({
+          args: subArgs,
+          options: {
+            force: { type: 'boolean', short: 'f', default: false },
+            help: { type: 'boolean', short: 'h' },
+          },
+          strict: true,
+        });
+        if (values.help) return { ok: true, command: { kind: 'help', topic: 'daemon' } };
+        return { ok: true, command: { kind: 'daemon-stop', force: values.force } };
+      }
       default:
         return { ok: true, command: { kind: 'help' } };
     }
@@ -164,6 +184,7 @@ export const HELP: Record<string, string> = {
   acc events [-f] [-n <件数>] [--since <seq>] [-t <type>]...
              [--project|--session|--run|--task <id>] [--json]
                                       イベントを表示（-f で追従）
+  acc daemon stop [--force]           Core Daemon を停止
   acc help [コマンド]                 ヘルプ
 
 接続先は $ACC_HOME/daemon.json（既定 ~/.acc）から読み取ります。`,
@@ -175,4 +196,8 @@ export const HELP: Record<string, string> = {
            [--project <id>] [--session <id>] [--run <id>] [--task <id>] [--json]
   -f  新しいイベントを追従表示（Ctrl+C で終了）
   -t  "run.*" のようなパターンも可。カンマ区切りまたは複数回指定`,
+  daemon: `acc daemon stop [-f, --force]
+  Core Daemon を停止し、プロセスが終了するまで待ちます（デスクトップアプリを閉じても
+  デーモンは動き続けるので、止めたいときに使います）。
+  -f  実行中の Run があっても停止する（その Run は中断になります）`,
 };

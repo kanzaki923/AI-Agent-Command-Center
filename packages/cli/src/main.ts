@@ -17,6 +17,8 @@ export interface Io {
   env: NodeJS.ProcessEnv;
   /** Resolves when the user interrupts (Ctrl+C) — ends `events --follow`. */
   interrupted: Promise<void>;
+  /** Whether a process is still running (`daemon stop` waits for the exit). */
+  isProcessAlive?: (pid: number) => boolean;
 }
 
 export function processIo(): Io {
@@ -48,8 +50,12 @@ export async function run(argv: readonly string[], io: Io = processIo()): Promis
   const home = resolveAccHome(io.env);
   const info = readDaemonInfo(home);
   if (!info) {
+    if (cmd.kind === 'daemon-stop') {
+      io.out('Core Daemon は起動していません。');
+      return 0;
+    }
     io.err(`Core Daemon が起動していません（${daemonInfoPath(home)} が見つかりません）。`);
-    io.err('`pnpm dev:daemon` で起動してください。');
+    io.err('デスクトップアプリを開くか、`pnpm dev:daemon` で起動してください。');
     return 1;
   }
 
@@ -103,6 +109,51 @@ async function execute(
     }
     case 'events':
       return events(cmd, client, io);
+    case 'daemon-stop':
+      return stopDaemon(cmd, client, io);
+  }
+}
+
+const STOP_TIMEOUT_MS = 15_000;
+
+async function stopDaemon(
+  cmd: Extract<Command, { kind: 'daemon-stop' }>,
+  client: AccClient,
+  io: Io,
+): Promise<number> {
+  let res;
+  try {
+    res = await client.call('system.shutdown', { force: cmd.force });
+  } catch (err) {
+    if (err instanceof AccClientError && err.code === 'conflict') {
+      io.err(err.message);
+      io.err('実行中の Run を中断して停止するには `acc daemon stop --force` を実行してください。');
+      return 1;
+    }
+    throw err;
+  }
+  client.close();
+  const alive = io.isProcessAlive ?? isProcessAlive;
+  const deadline = Date.now() + STOP_TIMEOUT_MS;
+  while (alive(res.pid)) {
+    if (Date.now() >= deadline) {
+      io.err(`停止を要求しましたが、Core Daemon（pid ${res.pid}）がまだ終了していません。`);
+      return 1;
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  const interrupted =
+    res.activeRuns > 0 ? `。実行中だった Run ${res.activeRuns} 件は中断しました` : '';
+  io.out(`Core Daemon を停止しました（pid ${res.pid}）${interrupted}。`);
+  return 0;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
 

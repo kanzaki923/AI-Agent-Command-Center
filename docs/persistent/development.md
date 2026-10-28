@@ -12,7 +12,10 @@ pnpm dev:daemon          # Core Daemon を tsx watch で起動（127.0.0.1:47821
 pnpm acc status          # CLI（daemon.json を読んで接続）
 pnpm acc sessions
 pnpm acc events -f       # イベントを追従表示
-pnpm dev:desktop         # UI をブラウザで起動（127.0.0.1:5173。ACC_HOME の daemon.json に接続）
+pnpm acc daemon stop     # Core Daemon を止める（実行中の Run があれば --force が必要）
+pnpm dev:desktop         # デスクトップアプリを開発モードで起動（下記 §1.1）
+pnpm dev:web             # UI をブラウザで起動（127.0.0.1:5173。ACC_HOME の daemon.json に接続）
+pnpm build:desktop       # 配布用ビルド（下記 §1.2）
 
 pnpm lint                # ESLint（型情報つき。.claude/ 配下のエージェント用 worktree などは対象外）
 pnpm typecheck           # 全パッケージ tsc --noEmit
@@ -29,14 +32,46 @@ pnpm format              # Prettier
 | `ACC_PORT` | `47821` | 待ち受けポート（`config.json` の `port` より優先） |
 | `ACC_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` / `silent` |
 | `ACC_LITELLM_BASE_URL` / `ACC_LITELLM_API_KEY` | なし | `config.json` の LiteLLM 設定を上書き（保存はしない） |
+| `ACC_CLAUDE_CODE_PATH` | なし | Claude Code の実行ファイル（`claude.exe`）。未指定なら自動で探す（§1.2） |
+| `ACC_BUILD_CACHE` | OS のキャッシュ（Windows は `%LOCALAPPDATA%\acc-build-cache`） | 配布ビルド用 Node のダウンロード置き場 |
 
 開発中に本番のデータと混ぜたくないときは `ACC_HOME` を別ディレクトリにする。
+
+**データの場所**：すべて `ACC_HOME`（既定 `~/.acc`）。`acc.sqlite`、`config.json`、`daemon.json`（起動中だけ）、`worktrees/`、`demo/`、`logs/daemon-launch.log`（アプリが起動したデーモンの出力。5MB を超えたら `.1` に回す）。アプリ自身の状態（ウィンドウ位置・大きさ）は Tauri の app data（Windows は `%APPDATA%\com.acc.desktop`）、WebView のデータは `%LOCALAPPDATA%\com.acc.desktop`。
+
+**デーモンの止め方**：アプリを閉じてもデーモンは動き続ける（定期実行・長時間のエージェントを止めないため）。止めるときはアプリを閉じてから `pnpm acc daemon stop`（実行中の Run があると断られる。`--force` でそれらを中断して停止）。アプリを開いたまま止めると、アプリが新しいデーモンをすぐ起動し直す。中身は `system.shutdown`（人間だけ。LLM ツールには出さない）。
+
+### 1.1 デスクトップアプリの開発
+
+`pnpm dev:desktop`（`scripts/dev-desktop.js`）が 1 つのターミナルで次を行う：
+
+1. 同じ `ACC_HOME` でデーモンが動いていなければ `pnpm dev:daemon`（tsx watch）を起動し、`/health` が返るまで待つ。動いていればそれに接続する（ソースの変更は反映されないので、反映したいときは `pnpm acc daemon stop` してから実行し直す）。
+2. `tauri dev`（Vite + Rust のシェル）。シェルは `daemon.json` から 1. のデーモンを見つけるので、自分では起動しない。
+
+ウィンドウを閉じるか Ctrl+C で、このスクリプトが起動したもの（Vite・アプリ・watch のデーモン）をすべて止める（デーモンは `acc daemon stop --force` で行儀よく止める）。初回は Rust の依存ビルドに数分かかる。
+
+### 1.2 配布ビルド（パッケージング）
+
+```sh
+pnpm build:desktop                                  # release + NSIS インストーラ
+pnpm --filter @acc/desktop tauri build --debug      # 確認用（target/debug/acc-desktop.exe もそのまま起動できる）
+pnpm --filter @acc/desktop tauri build --no-bundle  # exe だけ（インストーラを作らない）
+```
+
+`tauri build` の `beforeBuildCommand` が Vite のビルドと `node scripts/prepare-sidecar.js --release` を実行し、次を揃える（どちらも `.gitignore` 済み。コミットしない）：
+
+- `src-tauri/binaries/acc-node-<target-triple>.exe`：Node ランタイム。バージョンと SHA-256 を `prepare-sidecar.js` の `NODE_RUNTIME` に固定し、nodejs.org から 1 度だけ取得してビルドキャッシュに置く。以降はキャッシュを検証して使うのでオフラインでもビルドできる。ハッシュが合わないものは使わない。上げるときは Node 22 LTS の `SHASUMS256.txt` から値を写す。
+- `src-tauri/resources/daemon/main.mjs`（+ `.map`）：`packages/daemon/scripts/bundle.js`（esbuild）でデーモンを 1 ファイルにしたもの。依存（ws・zod・Claude Agent SDK の JS）はすべて含む。`pnpm --filter @acc/daemon bundle` で単体でも作れる（`packages/daemon/dist/`）。
+
+インストール後のアプリは、`get_connection` が `daemon.json` と `/health`（`service: "acc-daemon"` と `pid`）で既存のデーモンを確かめ、いなければ同梱の `acc-node.exe main.mjs` をコンソールなしの detach で起動する。`pnpm dev:daemon` や CLI で起動したデーモンがいればそれを使う。二重起動したアプリは既存のウィンドウを前に出して終わる。
+
+**Claude Code（Agent SDK のランタイム）**：SDK の JS はバンドルに入るが、SDK 同梱の CLI（約 300MB の `claude.exe`）は入れない。デーモンは Run のたびに `ACC_CLAUDE_CODE_PATH` → バンドルの隣の `claude/claude.exe` → SDK のプラットフォーム別パッケージ（リポジトリ内の開発時）→ `PATH` の `claude.exe` → `~/.local/bin/claude.exe` の順に探して SDK に渡し、見つからなければ Worker の Run が日本語の理由つきで失敗する（`runtime/claude/locate.ts`）。版を揃えた CLI を同梱したいときは `node scripts/prepare-sidecar.js --release --with-claude-code` の後に `tauri build`（インストーラが 300MB 近く増える）。
 
 Desktop UI（`apps/desktop`）：
 
 ```sh
 pnpm --filter @acc/desktop scene        # 本物のデーモン + 本物の API で作る確認用の場面（一時 git リポジトリ、Worker、承認待ち、統合候補。ACC_PORT 既定 47899。--empty / --load 10）
-pnpm --filter @acc/desktop tauri:dev    # Tauri アプリ（デーモンが無ければ起動）
+pnpm --filter @acc/desktop tauri:dev    # Tauri アプリだけ（デーモンが無ければ tsx で detach 起動。普段は pnpm dev:desktop）
 pnpm --filter @acc/desktop screenshots  # Playwright で主要画面を撮る（scene に対して。出力は OS の一時ディレクトリ）
 pnpm --filter @acc/desktop e2e:slice    # 本物のデーモン + Vite を一時 ACC_HOME で起動し、オンボーディング → デモ → 送信 → 承認 → 統合の反映まで通す（--daemon-root で別チェックアウトのデーモンも使える）
 pnpm --filter @acc/desktop e2e:perf     # 本番ビルドで 10 本同時ストリーミングのフレーム間隔と長いタスクを測る（--profile で内訳、--dev で開発サーバ）

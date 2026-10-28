@@ -11,6 +11,7 @@ import { AsyncQueue, abortError } from '../async';
 import { buildChildEnv, envKeys, resolveModelRouting } from '../env';
 import { decideToolPermission } from '../policy';
 import { ACC_MCP_SERVER, type McpSdk, accMcpServer } from './mcp';
+import type { ClaudeCodeLocation } from './locate';
 import { ClaudeMessageNormalizer, type UsageTotals, ZERO_TOTALS } from './normalize';
 
 /** The part of the SDK's `Query` we use. */
@@ -58,6 +59,12 @@ export interface ClaudeRuntimeOptions {
   /** e.g. "acc/0.1.0". */
   clientApp?: string;
   pathToClaudeCodeExecutable?: string;
+  /**
+   * Finds the Claude Code CLI when `pathToClaudeCodeExecutable` is not given (`locate.ts`).
+   * Called per run, so installing Claude Code takes effect without a restart. Without it the
+   * SDK resolves its bundled binary itself (fails inside the single-file daemon bundle).
+   */
+  locateExecutable?: () => ClaudeCodeLocation;
   baselines?: UsageBaselineStore;
   log?: Logger;
   /** How long to wait for the CLI to stop after interrupt() before close(). Default 5s. */
@@ -105,9 +112,19 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
     return this.sdk;
   }
 
+  /** Explicit path, else the locator's answer; `null` lets the SDK resolve it itself. */
+  private executable(): ClaudeCodeLocation | null {
+    if (this.opts.pathToClaudeCodeExecutable) {
+      return { ok: true, path: this.opts.pathToClaudeCodeExecutable, source: 'env' };
+    }
+    return this.opts.locateExecutable?.() ?? null;
+  }
+
   async available(): Promise<{ ok: true } | { ok: false; reason: string }> {
     try {
       await this.load();
+      const exe = this.executable();
+      if (exe && !exe.ok) return { ok: false, reason: exe.reason };
       return { ok: true };
     } catch (err) {
       this.opts.log?.warn('claude agent sdk unavailable', { error: (err as Error).message });
@@ -129,6 +146,8 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
     } catch (err) {
       throw new Error('Claude Agent SDK を読み込めませんでした', { cause: err });
     }
+    const exe = this.executable();
+    if (exe && !exe.ok) throw new Error(exe.reason);
 
     const routing = resolveModelRouting(this.opts.settings(), input.model);
     const env = buildChildEnv(this.opts.parentEnv ?? process.env, routing, {
@@ -206,9 +225,7 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
       },
       ...(routing.model ? { model: routing.model } : {}),
       ...(input.resumeSessionId ? { resume: input.resumeSessionId } : {}),
-      ...(this.opts.pathToClaudeCodeExecutable
-        ? { pathToClaudeCodeExecutable: this.opts.pathToClaudeCodeExecutable }
-        : {}),
+      ...(exe?.ok ? { pathToClaudeCodeExecutable: exe.path } : {}),
     };
     // Control API read access for the agent: an in-process MCP server "acc" with the tools
     // the run's grant allows (calls go through the dispatcher as the run's agent actor).

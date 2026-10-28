@@ -9,7 +9,9 @@
   "scripts": {
     "dev:daemon": "pnpm --filter @acc/daemon dev",
     "start:daemon": "pnpm --filter @acc/daemon start",
-    "dev:desktop": "pnpm --filter @acc/desktop dev",
+    "dev:desktop": "node scripts/dev-desktop.js",
+    "dev:web": "pnpm --filter @acc/desktop dev",
+    "build:desktop": "pnpm --filter @acc/desktop tauri build",
     "acc": "node packages/cli/bin/acc.js",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { HUMAN, startTestDaemon } from '@acc/daemon/testing';
 import type { Event } from '@acc/protocol';
 import { describe, expect, it } from 'vitest';
@@ -49,6 +51,22 @@ describe('parseArgs', () => {
         limit: 50,
         filter: { sessionId: 'ses_1', types: ['run.*', 'task.created', 'session.*'] },
       },
+    });
+  });
+
+  it('parses daemon stop', () => {
+    expect(parseArgs(['daemon', 'stop'])).toEqual({
+      ok: true,
+      command: { kind: 'daemon-stop', force: false },
+    });
+    expect(parseArgs(['daemon', 'stop', '--force'])).toEqual({
+      ok: true,
+      command: { kind: 'daemon-stop', force: true },
+    });
+    expect(parseArgs(['daemon'])).toEqual({ ok: true, command: { kind: 'help', topic: 'daemon' } });
+    expect(parseArgs(['daemon', 'restart'])).toEqual({
+      ok: false,
+      error: expect.stringContaining('不明なサブコマンド'),
     });
   });
 
@@ -141,5 +159,40 @@ describe('acc against a real daemon', () => {
     const c = captureIo({ ACC_HOME: 'Z:/definitely/not/here' });
     expect(await run(['status'], c.io)).toBe(1);
     expect(c.err[0]).toContain('起動していません');
+  });
+
+  it('daemon stop: waits for the process to exit, and refuses active runs without --force', async () => {
+    const d = await startTestDaemon();
+    try {
+      const env = { ACC_HOME: d.home };
+      d.ctx.service('llm').mock.chunkDelayMs = 50;
+      const session = await d.call(HUMAN, 'session.create', { title: 'busy', model: 'mock/echo' });
+      await d.call(HUMAN, 'session.send', {
+        sessionId: session.id,
+        content: 'keep the echo model streaming for a little while please',
+      });
+
+      const refused = captureIo(env);
+      expect(await run(['daemon', 'stop'], refused.io)).toBe(1);
+      expect(refused.err.join(' ')).toContain('--force');
+
+      // The daemon runs in this test process, so fake the "process exited" check.
+      let polls = 0;
+      const stopped = captureIo(env);
+      stopped.io.isProcessAlive = () => ++polls < 3;
+      expect(await run(['daemon', 'stop', '--force'], stopped.io)).toBe(0);
+      expect(polls).toBe(3);
+      expect(stopped.out[0]).toMatch(
+        /停止しました（pid \d+）。実行中だった Run 1 件は中断しました/,
+      );
+      await d.closed;
+      expect(existsSync(join(d.home, 'daemon.json'))).toBe(false);
+
+      const again = captureIo(env);
+      expect(await run(['daemon', 'stop'], again.io)).toBe(0);
+      expect(again.out[0]).toContain('起動していません');
+    } finally {
+      await d.cleanup();
+    }
   });
 });
