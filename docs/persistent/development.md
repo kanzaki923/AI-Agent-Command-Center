@@ -144,9 +144,9 @@ packages/cli        @acc/cli       `acc` コマンド
   ```
 
 - 任意の状態の Task が要るテストは `insertTestTask(d.ctx, { projectId, ...上書き })`（`@acc/daemon/testing`）を使う。Task のリテラルを手で書かない（スキーマにフィールドが増えるたびに壊れる）。desktop は `src/test/fixtures.ts` の同種のファクトリを使う。
-- モジュールをまたぐ流れ（agent Run → コミット → Artifact → 統合、Task キャンセル → Run 停止）は `src/e2e.test.ts` が本物の全モジュールで確かめる。concept §12.1 の Vertical Slice 全体（WS + `@acc/client`、`mock/orchestrator`、並列 Worker、承認、統合、人間の承認、イベントの順序、失敗時の報告）は `src/e2e/vertical-slice.test.ts` が受け入れテスト。サービスを偽物に差し替えた単体テストでは継ぎ目の食い違いが見えないため、契約を変えたらここも通す。
+- モジュールをまたぐ流れ（agent Run → コミット → Artifact → 統合、Task キャンセル → Run 停止）は `src/e2e.test.ts` が本物の全モジュールで確かめる。concept §12.1 の Vertical Slice 全体（WS + `@acc/client`、`mock/orchestrator`、並列 Worker、承認、統合、人間の承認、イベントの順序、失敗時の報告、同じファイルを触る 2 Task のコンフリクトを Integrator が解消する変種）は `src/e2e/vertical-slice.test.ts` が受け入れテスト。サービスを偽物に差し替えた単体テストでは継ぎ目の食い違いが見えないため、契約を変えたらここも通す。
 - 時刻は `createManualClock()` を `createDaemon({ clock })` に渡して制御する。
-- 再起動を伴うテストは `startTestDaemon({ home })` で同じ `ACC_HOME` を使い回す（例：`server.test.ts` のリカバリ）。
+- 再起動を伴うテストは `startTestDaemon({ home })` で同じ `ACC_HOME` を使い回す（例：`server.test.ts` のリカバリ、`orchestrator/resume.test.ts` の Orchestrator 再開）。
 - 本物の有料 LLM API はテストで呼ばない。llm / runtime の mock を使う。
   - `d.ctx.service('llm').mock.chunkDelayMs = 0` で mock の送信間隔をなくす。台本は `mock.define('mock/x', scripted([{ text, toolCalls }, (req, info) => ({ text })]))`（`scripted` は `src/llm` から）。
   - LiteLLM 経路は `node:http` のローカル偽サーバに `settings.update({ litellm: { baseUrl } })` を向けて試す（例：`llm/llm.test.ts`、Orchestrator は `orchestrator/orchestrator.test.ts`）。Claude Agent SDK は `runtimes.get('claude-agent-sdk')` の `available` / `run` を spy して、選ばれることだけを確かめる。

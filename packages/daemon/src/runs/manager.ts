@@ -16,6 +16,9 @@ import {
 import type {
   ApprovalDecision,
   ApprovalRequest,
+  BudgetHold,
+  BudgetReservation,
+  BudgetService,
   RunController,
   RunExecutor,
   RunsService,
@@ -23,7 +26,7 @@ import type {
   WorkspaceLock,
 } from '../contracts';
 import type { DaemonContext } from '../core/context';
-import { ApiError, conflict, forbidden } from '../core/errors';
+import { ApiError, budgetExceeded, conflict, forbidden } from '../core/errors';
 
 /** Unallocated, unreserved, unspent amount of a budget, in integer micro-dollars. */
 function remainingMicroUsd(b: BudgetAllocation): number {
@@ -63,6 +66,8 @@ interface ActiveRun {
   settled: boolean;
   done: Promise<void>;
   forceTimer: ReturnType<typeof setTimeout> | null;
+  /** Budget reservations of in-flight LLM calls (cancelled if the run ends first). */
+  readonly reservations: Set<BudgetReservation>;
 }
 
 export interface RunManagerOptions {
@@ -397,6 +402,7 @@ export class RunManager implements RunsService {
       settled: false,
       done: Promise.resolve(),
       forceTimer: null,
+      reservations: new Set(),
     };
     this.active.set(run.id, a);
     try {
@@ -452,6 +458,9 @@ export class RunManager implements RunsService {
           a.run = this.terminate(cur, 'cancelled', 'cancelled', SYSTEM);
         } else if (ok) {
           a.run = this.terminate(cur, 'completed', null, SYSTEM);
+        } else if (error instanceof ApiError && error.code === 'budget_exceeded') {
+          // Refused before an LLM call (nothing left / reservation did not fit).
+          a.run = this.terminate(cur, 'failed', 'budget_exhausted', SYSTEM, toErrorInfo(error));
         } else {
           a.run = this.terminate(cur, 'failed', 'error', SYSTEM, toErrorInfo(error));
         }
@@ -474,6 +483,15 @@ export class RunManager implements RunsService {
       } catch (err) {
         this.ctx.log.error('failed to release workspace lock', { runId: a.runId, err });
       }
+      // An executor that stopped mid-call (or never settled) must not keep money reserved.
+      for (const r of a.reservations) {
+        try {
+          this.ctx.service('budget').cancelReservation(r);
+        } catch (err) {
+          this.ctx.log.error('failed to cancel budget reservation', { runId: a.runId, err });
+        }
+      }
+      a.reservations.clear();
     }
     this.active.delete(a.runId);
     this.pump();
@@ -706,36 +724,20 @@ export class RunManager implements RunsService {
 
       reportUsage: (delta) => {
         if (!live()) return;
-        const first = !a.usageReported;
-        a.usageReported = true;
-        const run = ctx.db.transaction(() => {
-          const next = ctx.repos.runs.update(a.runId, (r) => ({
-            ...r,
-            usage: mergeUsage(r.usage, delta, first),
-            updatedAt: ctx.clock.iso(),
-          }));
-          ctx.bus.emit({ type: 'run.updated', actor, payload: { run: next, changes: ['usage'] } });
-          return next;
-        });
-        a.run = run;
+        const run = this.recordUsage(a, delta, actor);
         const cost = delta.costUsd ?? 0;
         if (cost > 0 && run.budgetId && ctx.hasService('budget')) {
-          const budget = ctx.service('budget');
-          let exhausted = false;
-          try {
-            // recordSpend keeps the fact of spending even past the limit (it does not throw
-            // for that), so exhaustion is judged from what is left afterwards.
-            budget.recordSpend(run.budgetId, cost);
-            exhausted = remainingMicroUsd(budget.get(run.budgetId)) <= 0;
-          } catch (err) {
-            if (err instanceof ApiError && err.code === 'budget_exceeded') exhausted = true;
-            else ctx.log.error('failed to record run spend', { runId: a.runId, err });
-          }
-          if (exhausted && !isTerminalRunStatus(a.run.status) && !a.abortKind) {
-            a.abortKind = 'budget';
-            this.rejectApprovalWaiters(a.runId, abortErr('Budget exhausted'));
-            a.abort.abort(abortErr('Budget exhausted'));
-          }
+          this.spend(a, run.budgetId, (budget, id) => budget.recordSpend(id, cost));
+        }
+      },
+
+      reserveBudget: (estimateUsd) => this.reserveBudget(a, actor, estimateUsd),
+
+      assertBudgetLeft: () => {
+        const budgetId = a.run.budgetId;
+        if (!budgetId || !ctx.hasService('budget')) return;
+        if (remainingMicroUsd(ctx.service('budget').get(budgetId)) <= 0) {
+          throw budgetExceeded('予算の上限に達したため、これ以上実行できません', { budgetId });
         }
       },
 
@@ -743,6 +745,120 @@ export class RunManager implements RunsService {
         if (!live() || ended()) return;
         const run = this.updateActivity(a.runId, text, actor);
         if (run) a.run = run;
+      },
+    };
+  }
+
+  // ------------------------------------------------------------------ usage & budget
+
+  /** Add usage to the run (run.updated `["usage"]`). */
+  private recordUsage(a: ActiveRun, delta: Partial<Usage>, actor: Actor): Run {
+    const { ctx } = this;
+    const first = !a.usageReported;
+    a.usageReported = true;
+    const run = ctx.db.transaction(() => {
+      const next = ctx.repos.runs.update(a.runId, (r) => ({
+        ...r,
+        usage: mergeUsage(r.usage, delta, first),
+        updatedAt: ctx.clock.iso(),
+      }));
+      ctx.bus.emit({ type: 'run.updated', actor, payload: { run: next, changes: ['usage'] } });
+      return next;
+    });
+    a.run = run;
+    return run;
+  }
+
+  /**
+   * Book spend on the run's budget and stop the run once nothing is left. Spending keeps the
+   * fact even past the limit (it does not throw for that), so exhaustion is judged from what
+   * is left afterwards.
+   */
+  private spend(
+    a: ActiveRun,
+    budgetId: string,
+    book: (budget: BudgetService, budgetId: string) => void,
+  ): void {
+    const budget = this.ctx.service('budget');
+    let exhausted = false;
+    try {
+      book(budget, budgetId);
+      exhausted = remainingMicroUsd(budget.get(budgetId)) <= 0;
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'budget_exceeded') exhausted = true;
+      else this.ctx.log.error('failed to record run spend', { runId: a.runId, err });
+    }
+    if (exhausted) this.stopForBudget(a);
+  }
+
+  private stopForBudget(a: ActiveRun): void {
+    if (isTerminalRunStatus(a.run.status) || a.abortKind || a.settled) return;
+    a.abortKind = 'budget';
+    this.rejectApprovalWaiters(a.runId, abortErr('Budget exhausted'));
+    a.abort.abort(abortErr('Budget exhausted'));
+  }
+
+  private reserveBudget(a: ActiveRun, actor: Actor, estimateUsd?: number): BudgetHold {
+    const { ctx } = this;
+    const report = (usage: Partial<Usage>) => {
+      if (this.detached) return null;
+      return this.recordUsage(a, usage, actor);
+    };
+    const budgetId = a.run.budgetId;
+    if (!budgetId || !ctx.hasService('budget')) {
+      return { amountUsd: 0, settle: (u) => void report(u), cancel: () => {} };
+    }
+    const budget = ctx.service('budget');
+    const left = remainingMicroUsd(budget.get(budgetId));
+    if (left <= 0) {
+      throw budgetExceeded('予算の上限に達したため、LLM を呼び出せません', { budgetId });
+    }
+    const amount = Math.max(0, estimateUsd ?? ctx.settings.get().llmCallReserveUsd);
+    if (Math.round(amount * 1_000_000) <= 0) {
+      // Reservations switched off: book the cost afterwards like reportUsage.
+      return {
+        amountUsd: 0,
+        settle: (u) => {
+          const cost = u.costUsd ?? 0;
+          if (report(u) && cost > 0) this.spend(a, budgetId, (b, id) => b.recordSpend(id, cost));
+        },
+        cancel: () => {},
+      };
+    }
+    let reservation: BudgetReservation;
+    try {
+      reservation = budget.reserve(budgetId, amount);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'budget_exceeded') {
+        throw budgetExceeded(
+          `予算の残り（$${(left / 1_000_000).toFixed(4)}）が、LLM の 1 回の呼び出しに確保する額（$${amount}）に足りないため呼び出せません`,
+          { budgetId, freeUsd: left / 1_000_000, reserveUsd: amount },
+        );
+      }
+      throw err;
+    }
+    a.reservations.add(reservation);
+    let done = false;
+    const take = (): boolean => {
+      if (done) return false;
+      done = true;
+      // Already cancelled when the run ended before its executor settled.
+      return a.reservations.delete(reservation) && !this.detached;
+    };
+    return {
+      amountUsd: reservation.amountUsd,
+      settle: (u) => {
+        if (!take()) return;
+        report(u);
+        this.spend(a, budgetId, (b) => b.settle(reservation, Math.max(0, u.costUsd ?? 0)));
+      },
+      cancel: () => {
+        if (!take()) return;
+        try {
+          budget.cancelReservation(reservation);
+        } catch (err) {
+          ctx.log.error('failed to cancel budget reservation', { runId: a.runId, err });
+        }
       },
     };
   }

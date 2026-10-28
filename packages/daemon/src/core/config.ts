@@ -51,6 +51,8 @@ export type SettingsPatch = {
   defaultRuntime?: string | null | undefined;
   maxConcurrentRuns?: number | undefined;
   maxDelegationDepth?: number | undefined;
+  autoResumeOrchestrators?: boolean | undefined;
+  llmCallReserveUsd?: number | undefined;
 };
 
 /**
@@ -129,6 +131,17 @@ export class SettingsStore {
     set('maxDelegationDepth', next.maxDelegationDepth, patch.maxDelegationDepth, () => {
       next.maxDelegationDepth = patch.maxDelegationDepth!;
     });
+    set(
+      'autoResumeOrchestrators',
+      next.autoResumeOrchestrators,
+      patch.autoResumeOrchestrators,
+      () => {
+        next.autoResumeOrchestrators = patch.autoResumeOrchestrators!;
+      },
+    );
+    set('llmCallReserveUsd', next.llmCallReserveUsd, patch.llmCallReserveUsd, () => {
+      next.llmCallReserveUsd = patch.llmCallReserveUsd!;
+    });
     if (changes.length === 0) return changes;
     const valid = ConfigFile.parse(next);
     writeJsonAtomic(this.path, valid);
@@ -155,6 +168,8 @@ export function toSettingsView(s: Settings): SettingsView {
     defaultRuntime: s.defaultRuntime,
     maxConcurrentRuns: s.maxConcurrentRuns,
     maxDelegationDepth: s.maxDelegationDepth,
+    autoResumeOrchestrators: s.autoResumeOrchestrators,
+    llmCallReserveUsd: s.llmCallReserveUsd,
   };
 }
 

@@ -180,6 +180,23 @@ export const SETTLED_INTEGRATION_STATUSES = [
   'cancelled',
 ] as const satisfies IntegrationStatus[];
 
+/** Result of `project.inspectRepo`: whether a folder can become a project, and suggestions. */
+export const RepoInspection = z.object({
+  ok: z.boolean().describe('True when the path is the root of a git repository'),
+  /** User-facing (Japanese) reason when not ok. */
+  reason: z.string().nullable(),
+  /** Root of the repository containing the path (also set when the path is a subfolder). */
+  repoRoot: z.string().nullable(),
+  defaultBranch: z.string().nullable(),
+  currentBranch: z.string().nullable(),
+  isDirty: z.boolean().nullable(),
+  suggestedName: z.string().nullable(),
+  suggestedTestCommand: z.string().nullable(),
+  /** Project already registered for this repository, if any. */
+  existingProjectId: ProjectId.nullable(),
+});
+export type RepoInspection = z.infer<typeof RepoInspection>;
+
 export const SystemHealth = z.object({
   ok: z.literal(true),
   /** Identifies the process as this daemon (launchers check it together with `pid`). */
@@ -273,6 +290,8 @@ export const api = defineApi({
       defaultRuntime: z.string().min(1).nullable().optional(),
       maxConcurrentRuns: z.int().min(1).max(64).optional(),
       maxDelegationDepth: z.int().min(0).max(4).optional(),
+      autoResumeOrchestrators: z.boolean().optional(),
+      llmCallReserveUsd: z.number().min(0).max(100).optional(),
     }),
     result: SettingsView,
     description: 'Update daemon settings (persisted to config.json).',
@@ -307,6 +326,15 @@ export const api = defineApi({
     result: Project,
     description: 'Create a project (a repository plus settings).',
     mutates: true,
+  },
+  'project.inspectRepo': {
+    params: params({
+      path: z.string().min(1).max(4000).describe('Absolute path of a local folder'),
+    }),
+    result: RepoInspection,
+    description:
+      'Check whether a local folder is the root of a git repository and suggest project settings (name, default branch, test command). Read-only: creates nothing.',
+    tool: false,
   },
   'project.list': {
     params: params({ includeArchived: z.boolean().default(false) }),
@@ -538,6 +566,30 @@ export const api = defineApi({
       'Start a worker (a coding agent) for a ready task: creates a git worktree, a worker session and an agent run, and marks the task running. Returns immediately; the task moves to "review" when the worker finishes (its changes are committed and recorded as a diff) or to "failed". Supervise with task.wait.',
     mutates: true,
   },
+  'task.retry': {
+    params: params({
+      taskId: TaskId,
+      feedback: z
+        .string()
+        .max(50_000)
+        .optional()
+        .describe('What to fix, shown to the worker as review feedback'),
+      integrationId: IntegrationId.optional().describe(
+        'A failed integration of this task: its error, test command and the tail of the test output are added to the feedback',
+      ),
+      model: z.string().min(1).optional(),
+      runtime: z.string().min(1).optional(),
+    }),
+    result: z.object({
+      sessionId: SessionId,
+      runId: RunId,
+      workspaceId: WorkspaceId,
+      budgetId: BudgetId.nullable().default(null),
+    }),
+    description:
+      'Send a task back to its original worker: a new run in the same worker session and worktree (the branch is kept and the runtime resumes its conversation) whose prompt adds the feedback. Use it when the task broke the integration tests, after a review, or to resume a task interrupted by a daemon restart (statusReason "interrupted"). Works for tasks in review, failed, ready or blocked by a human; the task becomes running again.',
+    mutates: true,
+  },
   'task.wait': {
     params: params({
       taskIds: z.array(TaskId).min(1).max(100),
@@ -717,6 +769,28 @@ export const api = defineApi({
     description:
       'Block until an integration settles (awaiting_approval, conflict, failed, applied, rejected or cancelled) or the timeout elapses. Call after integration.run instead of polling integration.get.',
     longPoll: true,
+  },
+  'integration.resolveWithAgent': {
+    params: params({
+      integrationId: IntegrationId,
+      instructions: z
+        .string()
+        .max(20_000)
+        .optional()
+        .describe('Extra guidance for the integrator agent'),
+      model: z.string().min(1).optional(),
+      runtime: z.string().min(1).optional(),
+    }),
+    result: z.object({
+      integration: Integration,
+      sessionId: SessionId.nullable().describe(
+        'Integrator session; null when the merge no longer conflicted and the integration resumed directly',
+      ),
+      runId: RunId.nullable(),
+    }),
+    description:
+      'For an integration in "conflict": re-create the conflicting merge in the integration worktree and start an integrator agent that resolves it with both sides\' task goals as context. When the agent finishes, its resolution is committed as the merge commit and the integration resumes (remaining merges, then the test command). Returns immediately with the integration "running"; follow it with integration.wait. If the conflict is not resolved, the integration returns to "conflict".',
+    mutates: true,
   },
   'integration.approve': {
     params: params({ integrationId: IntegrationId, note: z.string().max(5000).optional() }),

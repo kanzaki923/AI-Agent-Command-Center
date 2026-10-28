@@ -12,6 +12,13 @@ export const ORCHESTRATOR_MAX_TURNS = 80;
 export const PROJECT_ID_LABEL = 'projectId:';
 
 /**
+ * First words of the system message the daemon posts to an orchestrator session after a
+ * restart cut off its run (orchestrator/resume.ts). The mock orchestrator resumes on it.
+ */
+export const ORCHESTRATOR_RESUME_NOTICE =
+  'デーモンの再起動により Orchestrator の実行が中断されました';
+
+/**
  * System prompt of an orchestrator run: the role (plan, delegate, supervise, integrate —
  * never edit code), the project it works on and the limits the daemon enforces. Kept
  * short: the tool descriptions come from the Control API contract.
@@ -46,9 +53,12 @@ export function buildOrchestratorPrompt(input: {
     '2. Start one worker per ready task with task.spawnWorker. Each works in its own git worktree; its changes are committed and recorded as a diff when it finishes, and the task moves to review (or failed).',
     '3. Supervise with task.wait (mode "all", a long timeoutMs) instead of polling. Workers may be waiting for a human to approve a command — keep waiting; the snapshot shows pendingApprovals.',
     '4. When every task is in review, create one integration for them (integration.create with taskIds), start it (integration.run) and wait for it (integration.wait).',
-    '5. If a task failed, or the integration ended in conflict or failed, do not integrate blindly: explain what failed and propose the next step.',
-    '6. Record each key decision (decomposition, starting workers, integrating, stopping) with orchestrator.recordDecision: one line and a short rationale.',
-    '7. Finish with a short report for the human: what was done, task ids, the integration id and its test result, and exactly what they need to review or approve.',
+    '5. If the integration ends in "conflict", call integration.resolveWithAgent once (an integrator agent resolves it on the integration branch, then the integration resumes and is verified) and wait again. If it is still in conflict, stop and ask the human.',
+    '6. If the integration tests fail, find the task that caused it and send it back to its worker with task.retry (pass integrationId so the worker sees the failing output), wait for it, then run the integration again. Ask the human when it is unclear or keeps failing.',
+    '7. If a task failed, do not integrate blindly: explain what failed and propose the next step (task.retry can resume a task on its worktree).',
+    '8. Record each key decision (decomposition, starting workers, integrating, resolving, stopping) with orchestrator.recordDecision: one line and a short rationale.',
+    '9. Finish with a short report for the human: what was done, task ids, the integration id and its test result, and exactly what they need to review or approve.',
+    `10. A system message starting with "${ORCHESTRATOR_RESUME_NOTICE}" means the daemon restarted while you were working: read the current state with task.list (and integration.list), resume interrupted tasks (status ready, statusReason "interrupted") with task.retry, and continue the plan from there instead of starting over.`,
     '',
     'Always write to the user in Japanese.',
   );

@@ -141,6 +141,8 @@ function fakeController(run: Run, decisions: ApprovalDecision[] = []) {
       return decisions.shift() ?? { decision: 'approved' };
     },
     reportUsage: (u) => calls.usage.push(u),
+    reserveBudget: () => ({ amountUsd: 0, settle: (u) => calls.usage.push(u), cancel: () => {} }),
+    assertBudgetLeft: () => {},
     setActivity: (t) => calls.activity.push(t),
   };
   return { ctl, calls, abort: (reason?: unknown) => ac.abort(reason) };

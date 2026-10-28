@@ -430,6 +430,8 @@ export const Integration = z.object({
   /** Integration branch head after the latest successful merge + verification. */
   headSha: z.string().nullable().default(null),
   approvalId: ApprovalId.nullable(),
+  /** Integrator agent run of the latest conflict resolution (integration.resolveWithAgent). */
+  resolverRunId: RunId.nullable().optional(),
   /** Who approved or rejected it, when, and why. */
   decidedBy: Actor.nullable().default(null),
   decidedAt: Timestamp.nullable().default(null),
@@ -589,6 +591,17 @@ export const Settings = z.object({
   maxConcurrentRuns: z.int().min(1).max(64).default(10),
   /** Max capability delegation depth (1 = orchestrator -> worker only). */
   maxDelegationDepth: z.int().min(0).max(4).default(1),
+  /**
+   * After a daemon restart, start a new run for orchestrators that were interrupted mid-plan
+   * (when their grant is still valid). They continue from the persisted task states.
+   */
+  autoResumeOrchestrators: z.boolean().default(true),
+  /**
+   * USD reserved from a run's budget before each LLM call of chat / orchestrator runs and
+   * settled with the actual cost afterwards. A call that cannot reserve this much is refused,
+   * so concurrent runs sharing a budget cannot overshoot it (as long as a call costs less).
+   */
+  llmCallReserveUsd: z.number().min(0).max(100).default(0.25),
 });
 export type Settings = z.infer<typeof Settings>;
 
@@ -604,6 +617,8 @@ export const SettingsView = z.object({
   defaultRuntime: z.string().nullable(),
   maxConcurrentRuns: z.int(),
   maxDelegationDepth: z.int(),
+  autoResumeOrchestrators: z.boolean().optional(),
+  llmCallReserveUsd: z.number().optional(),
 });
 export type SettingsView = z.infer<typeof SettingsView>;
 

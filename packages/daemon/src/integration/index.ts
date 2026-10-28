@@ -1,3 +1,4 @@
+import { isTerminalRunStatus } from '@acc/protocol';
 import { defineMethod } from '../api/registry';
 import type { DaemonContext } from '../core/context';
 import { defineModule } from '../module';
@@ -99,6 +100,14 @@ export function createIntegrationModule(opts: Partial<IntegrationOptions> = {}) 
           handler: (p, call) => integrations.reject(p.integrationId, call.actor, p.note),
         }),
       );
+
+      // An integrator run ending resumes (or gives back) its integration.
+      const off = ctx.bus.subscribe({ types: ['run.status_changed'] }, (e) => {
+        if (e.type !== 'run.status_changed' || !isTerminalRunStatus(e.payload.to)) return;
+        const run = ctx.repos.runs.get(e.payload.runId);
+        if (run) integrations.onRunEnded(run);
+      });
+      ctx.onClose(off);
 
       return {
         start() {

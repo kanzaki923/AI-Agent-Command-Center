@@ -4,6 +4,7 @@ import { setupDemo } from './demo';
 import { createOrchestratorExecutor } from './executor';
 import { grantOrchestration, orchestrationGrants } from './grant';
 import { MOCK_ORCHESTRATOR_MODEL, mockOrchestrator } from './mockModel';
+import { resumeInterruptedOrchestrators } from './resume';
 import { waitForIntegration, waitForTasks } from './wait';
 import { WorkerService, runEndedBy } from './workers';
 
@@ -21,6 +22,7 @@ export {
   ORCHESTRATION_SYSTEM,
   WORKER_DEFAULT_PERMISSIONS,
   WORKER_REASONS,
+  INTERRUPTED,
   WorkerService,
 } from './workers';
 
@@ -61,6 +63,19 @@ export const orchestratorModule = defineModule({
       defineMethod('task.spawnWorker', {
         scope: (p) => taskScope([p.taskId]),
         handler: (p, call) => workers.spawn(p, call.actor),
+      }),
+
+      defineMethod('task.retry', {
+        scope: (p) => taskScope([p.taskId]),
+        handler: (p, call) => workers.retry(p, call.actor),
+      }),
+
+      defineMethod('integration.resolveWithAgent', {
+        scope: (p) => {
+          const i = ctx.repos.integrations.get(p.integrationId);
+          return { projectIds: i ? [i.projectId] : [] };
+        },
+        handler: (p, call) => workers.resolveIntegration(p, call.actor),
       }),
 
       defineMethod('task.wait', {
@@ -137,6 +152,7 @@ export const orchestratorModule = defineModule({
     });
     ctx.onClose(unsubscribe);
 
+    let resumeTimer: NodeJS.Immediate | null = null;
     return {
       start() {
         ctx.service('llm').mock.define(MOCK_ORCHESTRATOR_MODEL, mockOrchestrator, {
@@ -147,6 +163,17 @@ export const orchestratorModule = defineModule({
         }
         const fixed = workers.reconcile();
         if (fixed > 0) ctx.log.info('tasks of finished workers reconciled', { tasks: fixed });
+        // After every module has started (integrations recover their interrupted attempts
+        // in their own start hook): notify / resume orchestrators cut off by the last stop.
+        resumeTimer = setImmediate(() => {
+          resumeTimer = null;
+          if (!ctx.hasService('runs')) return;
+          const r = resumeInterruptedOrchestrators(ctx, workers);
+          if (r.notified.length > 0) ctx.log.info('interrupted orchestrators handled', { ...r });
+        });
+      },
+      stop() {
+        if (resumeTimer) clearImmediate(resumeTimer);
       },
     };
   },

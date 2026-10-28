@@ -1,12 +1,16 @@
 import { existsSync } from 'node:fs';
-import type {
-  Actor,
-  ErrorInfo,
-  Integration,
-  IntegrationStatus,
-  IntegrationStep,
-  Project,
-  Workspace,
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import {
+  type Actor,
+  type ErrorInfo,
+  type Integration,
+  type IntegrationStatus,
+  type IntegrationStep,
+  type Project,
+  type Run,
+  type Workspace,
+  isTerminalRunStatus,
 } from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
 import { conflict, forbidden, invalidParams } from '../core/errors';
@@ -63,6 +67,8 @@ const short = (sha: string | null | undefined) => (sha ? sha.slice(0, 8) : '');
 export class IntegrationService {
   private readonly projectQueue = new KeyedMutex();
   private readonly jobs = new Map<string, Promise<Integration>>();
+  /** Resolutions in progress: where the integration branch was before the re-created merge. */
+  private readonly resolutions = new Map<string, { preSha: string | null; branch: string }>();
   private readonly shutdown = new AbortController();
   private readonly opts: IntegrationOptions;
 
@@ -241,21 +247,31 @@ export class IntegrationService {
         status: 'running',
         error: null,
         headSha: null,
-        // The test command may have changed since the last attempt.
-        steps: i.steps
+        // A fresh attempt re-merges everything from the target tip, so earlier fixes are
+        // dropped. The test command may have changed since the last attempt.
+        steps: renumber(i.steps.filter((s) => s.kind !== 'fix'))
           .map(resetStep)
           .map((s) => (s.kind === 'verify' ? { ...s, title: verifyTitle(project) } : s)),
       }),
     );
-    const job = this.projectQueue
-      .run(cur.projectId, () => this.execute(integrationId, actor))
-      .catch((err: unknown) => this.failUnexpected(integrationId, actor, err))
-      .finally(() => this.jobs.delete(integrationId));
-    this.jobs.set(integrationId, job);
+    this.startJob(integrationId, cur.projectId, actor, 'fresh');
     return started;
   }
 
-  private async execute(id: string, actor: Actor): Promise<Integration> {
+  private startJob(id: string, projectId: string, actor: Actor, mode: 'fresh' | 'resume'): void {
+    const job = this.projectQueue
+      .run(projectId, () => this.execute(id, actor, mode))
+      .catch((err: unknown) => this.failUnexpected(id, actor, err))
+      .finally(() => this.jobs.delete(id));
+    this.jobs.set(id, job);
+  }
+
+  /**
+   * One attempt. `fresh` starts from the current tip of the target branch and merges every
+   * source; `resume` continues on the integration branch as it is (after an integrator
+   * committed a conflict resolution): sources it already contains count as merged.
+   */
+  private async execute(id: string, actor: Actor, mode: 'fresh' | 'resume'): Promise<Integration> {
     const integ = this.get(id);
     const project = this.ctx.repos.projects.require(integ.projectId);
     const repo = this.workspaces.requireRepo(project);
@@ -275,22 +291,48 @@ export class IntegrationService {
     }
     const release = this.workspaces.hold(wsId, `integration:${id}`);
     try {
-      // Every attempt starts from the current tip of the target branch.
-      const baseSha = await resolveCommit(repo, `refs/heads/${integ.targetRef}`);
-      if (!baseSha) {
-        return this.finish(id, actor, 'failed', {
-          code: 'target_missing',
-          message: `反映先ブランチ「${integ.targetRef}」が見つかりません`,
-        });
+      let baseSha: string;
+      if (mode === 'resume') {
+        const head = await resolveCommit(wsPath, 'HEAD');
+        if (
+          !integ.baseSha ||
+          !head ||
+          !(await gitTest(wsPath, ['merge-base', '--is-ancestor', integ.baseSha, head]))
+        ) {
+          return this.finish(id, actor, 'failed', {
+            code: 'invalid_state',
+            message:
+              '統合ブランチが想定外の状態のため再開できません。もう一度統合を実行してください',
+          });
+        }
+        baseSha = integ.baseSha;
+      } else {
+        // A fresh attempt starts from the current tip of the target branch.
+        const tip = await resolveCommit(repo, `refs/heads/${integ.targetRef}`);
+        if (!tip) {
+          return this.finish(id, actor, 'failed', {
+            code: 'target_missing',
+            message: `反映先ブランチ「${integ.targetRef}」が見つかりません`,
+          });
+        }
+        baseSha = tip;
+        await git(wsPath, ['merge', '--abort'], { okCodes: [0, 128] });
+        await git(wsPath, ['reset', '--hard', '--quiet', baseSha]);
+        await git(wsPath, ['clean', '-fdq']);
+        this.update(id, actor, ['baseSha'], (i) => ({ ...i, baseSha }));
       }
-      await git(wsPath, ['merge', '--abort'], { okCodes: [0, 128] });
-      await git(wsPath, ['reset', '--hard', '--quiet', baseSha]);
-      await git(wsPath, ['clean', '-fdq']);
-      this.update(id, actor, ['baseSha'], (i) => ({ ...i, baseSha }));
 
       const env = this.workspaces.identityEnv(project.id);
-      for (const step of integ.steps) {
-        if (step.kind !== 'merge') continue;
+      for (const step of this.get(id).steps) {
+        if (step.kind !== 'merge' || step.status === 'succeeded') continue;
+        if (mode === 'resume' && (await this.alreadyMerged(wsPath, repo, step.branch))) {
+          this.setStep(id, actor, step.index, {
+            status: 'succeeded',
+            detail: '統合ブランチに取り込み済みです（Integrator がコンフリクトを解消しました）',
+            endedAt: this.ctx.clock.iso(),
+          });
+          continue;
+        }
         const outcome = await this.mergeStep(id, actor, step, wsPath, repo, integ.branch, env);
         if (outcome) return outcome;
       }
@@ -615,6 +657,267 @@ export class IntegrationService {
   }
 
   // -------------------------------------------------------------------------
+  // conflict resolution by an integrator agent (concept §6.1 step 5)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Re-create the merge that conflicted in the integration worktree, leaving the conflict
+   * markers for an agent to resolve. The integration becomes `running` with a `fix` step
+   * after the conflicting merge, so integration.wait keeps waiting and no other attempt can
+   * start meanwhile. `merged: true` means the merge no longer conflicts (a source changed):
+   * the caller resumes with `resumeAfterCleanMerge` instead of starting an agent.
+   */
+  async prepareResolution(
+    integrationId: string,
+    actor: Actor,
+  ): Promise<{ integration: Integration; step: IntegrationStep; merged: boolean }> {
+    const cur = this.get(integrationId);
+    if (this.jobs.has(integrationId) || this.resolutions.has(integrationId)) {
+      throw conflict('この統合はすでに実行中です', { integrationId });
+    }
+    if (cur.status !== 'conflict') {
+      throw conflict(
+        `コンフリクトしている統合だけを Integrator に任せられます（現在: ${cur.status}）`,
+        { integrationId, status: cur.status },
+      );
+    }
+    const step = [...cur.steps]
+      .reverse()
+      .find((s) => s.kind === 'merge' && s.status === 'failed' && s.conflictFiles.length > 0);
+    if (!step?.branch || !cur.workspaceId || !cur.branch) {
+      throw conflict('コンフリクトしたマージの記録が見つかりません', { integrationId });
+    }
+    const wsPath = this.workspaces.get(cur.workspaceId).path;
+    if (!existsSync(wsPath)) {
+      throw conflict(`統合用ワークスペースが見つかりません: ${wsPath}`, { integrationId });
+    }
+    const branch = step.branch;
+    const integrationBranch = cur.branch;
+    const env = this.workspaces.identityEnv(cur.projectId);
+
+    // Claim it before any await: status running + a fix step after the conflicting merge.
+    this.resolutions.set(integrationId, { preSha: null, branch });
+    const now = this.ctx.clock.iso();
+    this.update(integrationId, actor, ['status', 'steps', 'error'], (i) => ({
+      ...i,
+      status: 'running',
+      error: null,
+      steps: insertAfter(
+        i.steps.filter((s) => s.kind !== 'fix'),
+        step.index,
+        {
+          index: 0,
+          kind: 'fix',
+          status: 'running',
+          title: `Integrator がコンフリクトを解消（${step.conflictFiles.join(', ')}）`,
+          taskId: step.taskId,
+          artifactId: null,
+          detail: 'コンフリクトしたマージを作業ツリーに再現しています',
+          startedAt: now,
+          endedAt: null,
+          workspaceId: step.workspaceId,
+          branch,
+          conflictFiles: step.conflictFiles,
+        },
+      ),
+    }));
+
+    try {
+      return await this.projectQueue.run(cur.projectId, async () => {
+        await git(wsPath, ['merge', '--abort'], { okCodes: [0, 128] });
+        await git(wsPath, ['reset', '--hard', '--quiet', 'HEAD']);
+        await git(wsPath, ['clean', '-fdq']);
+        const preSha = await gitOut(wsPath, ['rev-parse', 'HEAD']);
+        this.resolutions.set(integrationId, { preSha, branch });
+        const r = await git(
+          wsPath,
+          [
+            'merge',
+            '--no-ff',
+            '--no-edit',
+            '-m',
+            `Merge ${branch} into ${integrationBranch}`,
+            branch,
+          ],
+          { okCodes: [0, 1, 128], env },
+        );
+        const files = r.code === 0 ? [] : await conflictedFiles(wsPath).catch(() => []);
+        if (r.code !== 0 && files.length === 0) {
+          const reason = (r.stderr.trim() || r.stdout.trim()).split(/\r?\n/).slice(-3).join('\n');
+          throw new Error(reason || 'コンフリクトしたマージを再現できませんでした');
+        }
+        const integration = this.patchFix(integrationId, actor, {
+          detail:
+            r.code === 0
+              ? 'マージはコンフリクトせずに完了しました'
+              : `コンフリクト（${files.length} ファイル）の解消を Integrator に任せます`,
+          conflictFiles: files.length > 0 ? files : step.conflictFiles,
+        });
+        return { integration, step, merged: r.code === 0 };
+      });
+    } catch (err) {
+      await this.abandonResolution(integrationId, actor, errorMessage(err));
+      throw err;
+    }
+  }
+
+  /** Record the integrator run of a prepared resolution (in the transaction that starts it). */
+  attachResolver(integrationId: string, actor: Actor, runId: string): Integration {
+    return this.update(integrationId, actor, ['resolverRunId', 'steps'], (i) => ({
+      ...i,
+      resolverRunId: runId,
+      steps: i.steps.map((s) =>
+        s.kind === 'fix' && s.status === 'running'
+          ? { ...s, detail: `Integrator（Run ${runId}）がコンフリクトを解消しています` }
+          : s,
+      ),
+    }));
+  }
+
+  /**
+   * Give up a resolution: abort the re-created merge (the integration branch returns to
+   * where it was) and put the integration back to `conflict` with the reason.
+   */
+  async abandonResolution(
+    integrationId: string,
+    actor: Actor,
+    message: string,
+  ): Promise<Integration> {
+    const res = this.resolutions.get(integrationId);
+    this.resolutions.delete(integrationId);
+    const integ = this.get(integrationId);
+    const ws = integ.workspaceId ? this.ctx.repos.workspaces.get(integ.workspaceId) : undefined;
+    if (ws && existsSync(ws.path)) {
+      await this.projectQueue
+        .run(integ.projectId, async () => {
+          await git(ws.path, ['merge', '--abort'], { okCodes: [0, 128] });
+          await git(ws.path, ['reset', '--hard', '--quiet', res?.preSha ?? 'HEAD']);
+          await git(ws.path, ['clean', '-fdq']);
+        })
+        .catch((err: unknown) =>
+          this.ctx.log.warn('failed to reset the integration worktree', { integrationId, err }),
+        );
+    }
+    const now = this.ctx.clock.iso();
+    return this.update(integrationId, actor, ['status', 'steps', 'error'], (i) => ({
+      ...i,
+      status: 'conflict',
+      error: { code: 'resolution_failed', message },
+      steps: i.steps.map((s) =>
+        s.kind === 'fix' && s.status === 'running'
+          ? { ...s, status: 'failed' as const, detail: message, endedAt: now }
+          : s,
+      ),
+    }));
+  }
+
+  /** Resume at once when the re-created merge did not conflict (no agent needed). */
+  resumeAfterCleanMerge(integrationId: string, actor: Actor): Integration {
+    return this.completeResolution(integrationId, actor, 'マージはコンフリクトせずに完了しました');
+  }
+
+  /**
+   * An integrator run ended. Completed with the merge committed and no conflict markers
+   * left → resume the integration (remaining merges, then verification). Anything else →
+   * back to `conflict` with the reason (the integration branch is reset to before the merge).
+   */
+  onRunEnded(run: Run): void {
+    if (run.kind !== 'agent' || !isTerminalRunStatus(run.status)) return;
+    const integ = this.ctx.repos.integrations
+      .find({ where: { status: ['running'] } })
+      .find((i) => i.resolverRunId === run.id);
+    if (!integ || !this.resolutions.has(integ.id)) return;
+    const actor: Actor = { kind: 'system', component: 'integration' };
+    void this.finishResolution(integ, run, actor).catch(async (err: unknown) => {
+      this.ctx.log.error('failed to finish an integrator resolution', { id: integ.id, err });
+      await this.abandonResolution(integ.id, actor, errorMessage(err)).catch(() => {});
+    });
+  }
+
+  private async finishResolution(integ: Integration, run: Run, actor: Actor): Promise<void> {
+    const res = this.resolutions.get(integ.id);
+    if (!res) return;
+    if (run.status !== 'completed') {
+      const why = run.error?.message ?? run.statusReason ?? run.status;
+      await this.abandonResolution(
+        integ.id,
+        actor,
+        `Integrator の Run が ${run.status} で終わったため、コンフリクトは解消されていません（${why}）`,
+      );
+      return;
+    }
+    const wsPath = this.workspaces.get(integ.workspaceId!).path;
+    const fixFiles = this.get(integ.id).steps.find((s) => s.kind === 'fix')?.conflictFiles ?? [];
+    const problem = await this.projectQueue.run(integ.projectId, async () => {
+      if (await resolveCommit(wsPath, 'MERGE_HEAD')) return 'マージがコミットされていません';
+      const unmerged = await conflictedFiles(wsPath).catch(() => []);
+      if (unmerged.length > 0) return `未解決のファイルがあります: ${unmerged.join(', ')}`;
+      if (!(await this.alreadyMerged(wsPath, wsPath, res.branch))) {
+        return `「${res.branch}」が統合ブランチに取り込まれていません`;
+      }
+      const marked = await filesWithMarkers(wsPath, fixFiles);
+      if (marked.length > 0) return `コンフリクトマーカーが残っています: ${marked.join(', ')}`;
+      return null;
+    });
+    if (problem) {
+      await this.abandonResolution(
+        integ.id,
+        actor,
+        `Integrator の解消を確認できませんでした: ${problem}`,
+      );
+      return;
+    }
+    const sha = await gitOut(wsPath, ['rev-parse', 'HEAD']);
+    this.completeResolution(
+      integ.id,
+      actor,
+      `Integrator がコンフリクトを解消し、マージをコミットしました（${short(sha)}）`,
+    );
+  }
+
+  /** Mark the fix step done and resume the attempt on the integration branch as it is. */
+  private completeResolution(id: string, actor: Actor, detail: string): Integration {
+    this.resolutions.delete(id);
+    const now = this.ctx.clock.iso();
+    const integ = this.update(id, actor, ['steps'], (i) => ({
+      ...i,
+      // Merges from the conflicting one on, verification and apply run again; the record of
+      // where it conflicted (conflictFiles) is kept.
+      steps: i.steps.map((s) =>
+        s.kind === 'fix'
+          ? s.status === 'running'
+            ? { ...s, status: 'succeeded' as const, detail, endedAt: now }
+            : s
+          : s.status === 'succeeded'
+            ? s
+            : { ...resetStep(s), conflictFiles: s.conflictFiles },
+      ),
+    }));
+    this.startJob(id, integ.projectId, actor, 'resume');
+    return integ;
+  }
+
+  private patchFix(id: string, actor: Actor, patch: Partial<IntegrationStep>): Integration {
+    return this.update(id, actor, ['steps'], (i) => ({
+      ...i,
+      steps: i.steps.map((s) =>
+        s.kind === 'fix' && s.status === 'running' ? { ...s, ...patch } : s,
+      ),
+    }));
+  }
+
+  /** Whether a source branch's tip is already contained in the integration worktree's HEAD. */
+  private async alreadyMerged(
+    wsPath: string,
+    repo: string,
+    branch: string | null,
+  ): Promise<boolean> {
+    if (!branch) return false;
+    const tip = await resolveCommit(repo, `refs/heads/${branch}`);
+    return !!tip && (await gitTest(wsPath, ['merge-base', '--is-ancestor', tip, 'HEAD']));
+  }
+
+  // -------------------------------------------------------------------------
   // lifecycle
   // -------------------------------------------------------------------------
 
@@ -755,6 +1058,39 @@ function planSteps(sources: Source[], project: Project, target: string): Integra
 
 function verifyTitle(project: Project): string {
   return project.testCommand ? `テストを実行（${project.testCommand}）` : 'テストを実行';
+}
+
+function renumber(steps: IntegrationStep[]): IntegrationStep[] {
+  return steps.map((s, index) => (s.index === index ? s : { ...s, index }));
+}
+
+/** Insert a step right after the step with `afterIndex`, renumbering the rest. */
+function insertAfter(
+  steps: IntegrationStep[],
+  afterIndex: number,
+  step: IntegrationStep,
+): IntegrationStep[] {
+  const at = steps.findIndex((s) => s.index === afterIndex) + 1;
+  return renumber([...steps.slice(0, at), step, ...steps.slice(at)]);
+}
+
+const CONFLICT_MARKER = /^(<{7}|>{7})(\s|$)|^={7}\r?$/m;
+
+/** Files (relative to `cwd`) that still contain conflict markers. */
+async function filesWithMarkers(cwd: string, files: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const f of files) {
+    try {
+      if (CONFLICT_MARKER.test(await readFile(join(cwd, f), 'utf8'))) out.push(f);
+    } catch {
+      // Deleted while resolving: nothing left to check.
+    }
+  }
+  return out;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function resetStep(s: IntegrationStep): IntegrationStep {

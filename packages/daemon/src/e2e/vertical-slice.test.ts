@@ -76,6 +76,8 @@ interface Slice {
   approvals: Approval[];
   projectId: string;
   sessionId: string;
+  /** What each agent run got from the daemon (prompt, tools ...). */
+  inputs: AgentRunInput[];
 }
 
 async function setup(): Promise<Slice> {
@@ -96,11 +98,13 @@ async function setup(): Promise<Slice> {
   // workers have started: if the daemon ran them one after another this would never happen
   // (and the test would time out), so passing proves they run in parallel.
   const fast = new MockAgentRuntime({ stepDelayMs: 0, typingDelayMs: 0 });
+  const inputs: AgentRunInput[] = [];
   let started = 0;
   let releaseAll!: () => void;
   const bothStarted = new Promise<void>((r) => (releaseAll = r));
   vi.spyOn(d.ctx.service('runtimes').get('mock'), 'run').mockImplementation(
     (input: AgentRunInput) => {
+      inputs.push(input);
       started += 1;
       if (started >= 2) releaseAll();
       return (async function* () {
@@ -134,7 +138,16 @@ async function setup(): Promise<Slice> {
     title: '設計チャット',
     model: 'mock/orchestrator',
   });
-  return { d, repo, client, events, approvals, projectId: project.id, sessionId: session.id };
+  return {
+    d,
+    repo,
+    client,
+    events,
+    approvals,
+    projectId: project.id,
+    sessionId: session.id,
+    inputs,
+  };
 }
 
 async function lastAssistantText(s: Slice): Promise<string> {
@@ -185,6 +198,13 @@ describe('vertical slice (concept §12.1)', () => {
         }),
       ),
     ).toBe('forbidden');
+    // Its runtime gets read-only Control API tools from its delegated grant (Claude: MCP "acc").
+    expect(
+      s.inputs
+        .find((i) => i.runId === workerRun.id)!
+        .tools!.map((t) => t.method)
+        .sort(),
+    ).toEqual(['artifact.get', 'artifact.list', 'task.get', 'workspace.diff', 'workspace.get']);
 
     await client.call('approval.respond', { approvalId: approval.id, decision: 'approve' });
 
@@ -305,6 +325,84 @@ describe('vertical slice (concept §12.1)', () => {
     expect(
       s.events.flatMap((e) => (e.type === 'policy.denied' ? [e.payload.permission] : [])),
     ).toEqual(['task.spawnWorker', 'grant.create', 'integration.approve']);
+  });
+
+  it('when both tasks touch the same file, an integrator agent resolves the merge conflict and the integration resumes', async () => {
+    const s = await setup();
+    const { d, client, repo } = s;
+    await client.call('session.grantOrchestration', {
+      sessionId: s.sessionId,
+      lifetime: 'session',
+    });
+    // "README" in the goal: both mock workers append to README.md → the second merge conflicts.
+    const { runId: orchRunId } = await client.call('session.send', {
+      sessionId: s.sessionId,
+      content: `${GOAL}。どちらも README から辿れるようにして`,
+    });
+    const approval = await until(() => s.approvals[0]);
+    await client.call('approval.respond', { approvalId: approval.id, decision: 'approve' });
+    expect((await d.ctx.service('runs').waitForEnd(orchRunId)).status).toBe('completed');
+
+    const integ = (await client.call('integration.list', { projectId: s.projectId })).items[0]!;
+    expect(integ.status).toBe('awaiting_approval');
+    expect(integ.steps.map((st) => [st.kind, st.status])).toEqual([
+      ['merge', 'succeeded'],
+      ['merge', 'succeeded'],
+      ['fix', 'succeeded'],
+      ['verify', 'succeeded'],
+      ['apply', 'pending'],
+    ]);
+    // Where it conflicted stays on record.
+    expect(integ.steps[1]!.conflictFiles).toEqual(['README.md']);
+    expect(integ.steps[2]!.conflictFiles).toEqual(['README.md']);
+
+    // The integrator was an agent run of the orchestrator, in the integration worktree.
+    const integrator = d.ctx.repos.runs.require(integ.resolverRunId!);
+    expect(integrator).toMatchObject({
+      kind: 'agent',
+      status: 'completed',
+      parentRunId: orchRunId,
+      workspaceId: integ.workspaceId,
+      taskId: null,
+    });
+    // It got both tasks' goals as context (and no worker's mock plan).
+    const prompt = (await client.call('session.messages', { sessionId: integrator.sessionId }))
+      .items[0]!;
+    const promptText = prompt.content.map((p) => (p.type === 'text' ? p.text : '')).join('');
+    expect(promptText).toContain('README.md');
+    expect(promptText).toContain('ドキュメントを整備する');
+    expect(promptText).toContain('テストを整備する');
+    expect(promptText).not.toContain('acc-mock');
+
+    const report = await lastAssistantText(s);
+    expect(report).toContain('統合候補ができました。テスト: 成功');
+    expect(report).toContain('Integrator が解消しました');
+
+    await client.call('integration.approve', { integrationId: integ.id });
+    const readme = await repo.git('show', 'main:README.md');
+    expect(readme).toContain('docs/auth.md');
+    expect(readme).toContain('テストの実行方法');
+    expect(readme).not.toMatch(/^(<{7}|={7}|>{7})/m);
+
+    expectStory(s.events, [
+      [
+        'conflict',
+        (e) => e.type === 'integration.updated' && e.payload.integration.status === 'conflict',
+      ],
+      [
+        'decision: resolve',
+        (e) =>
+          e.type === 'orchestrator.decision' &&
+          e.payload.decision === 'Integrator にコンフリクトの解消を任せる',
+      ],
+      ['integrator run', (e) => e.type === 'run.created' && e.payload.run.id === integrator.id],
+      [
+        'resumed and verified',
+        (e) =>
+          e.type === 'integration.updated' && e.payload.integration.status === 'awaiting_approval',
+      ],
+      ['orchestrator done', (e) => e.type === 'run.completed' && e.payload.run.id === orchRunId],
+    ]);
   });
 
   it('a failed worker fails its task and the orchestrator reports instead of integrating', async () => {

@@ -3,6 +3,8 @@ import {
   type Artifact,
   type CapabilityGrant,
   type Event,
+  type Integration,
+  type IntegrationStep,
   type Params,
   type Result,
   type Run,
@@ -39,13 +41,19 @@ export const WORKER_DEFAULT_PERMISSIONS = [
 export const WORKER_REASONS = {
   failed: 'worker_failed',
   cancelled: 'worker_cancelled',
-  interrupted: 'worker_interrupted',
 } as const;
+
+/** statusReason of a `ready` task whose worker run was cut off by a daemon stop / restart. */
+export const INTERRUPTED = 'interrupted';
 
 /** statusReason of a task whose worker completed without changing anything. */
 export const NO_CHANGES = 'no_changes';
 
 const SPAWNABLE: Task['status'][] = ['ready', 'failed', 'blocked'];
+/** Statuses task.retry accepts (plus review: send finished work back). */
+const RETRYABLE: Task['status'][] = ['review', ...SPAWNABLE];
+/** Characters of failed test output passed back to a worker. */
+const FAILURE_TAIL = 4000;
 const MAX_SUMMARY = 2000;
 
 /**
@@ -60,11 +68,15 @@ const MAX_SUMMARY = 2000;
 export class WorkerService {
   constructor(private readonly ctx: DaemonContext) {}
 
-  async spawn(p: Params<'task.spawnWorker'>, actor: Actor): Promise<Result<'task.spawnWorker'>> {
+  async spawn(
+    p: Params<'task.spawnWorker'>,
+    actor: Actor,
+    opts: { allowReview?: boolean } = {},
+  ): Promise<Result<'task.spawnWorker'>> {
     const { ctx } = this;
     const policy = ctx.service('policy');
     const task = ctx.repos.tasks.require(p.taskId);
-    this.assertSpawnable(task);
+    this.assertSpawnable(task, opts.allowReview);
     // Fail fast (before creating a worktree); checked again right before the run starts.
     policy.assertCanSpawnWorker(actor, { projectId: task.projectId });
 
@@ -75,7 +87,7 @@ export class WorkerService {
 
     return ctx.db.transaction(() => {
       const cur = ctx.repos.tasks.require(task.id);
-      this.assertSpawnable(cur);
+      this.assertSpawnable(cur, opts.allowReview);
       // Synchronous from here to runs.start: two spawns cannot both take the last slot.
       const parentGrant = policy.assertCanSpawnWorker(actor, { projectId: cur.projectId });
       const callerRun = actor.kind === 'agent' ? ctx.repos.runs.get(actor.runId) : undefined;
@@ -154,6 +166,296 @@ export class WorkerService {
   }
 
   /**
+   * task.retry: send a task back to its original worker — a new run in the same worker
+   * session and worktree (branch and commits kept; the runtime resumes its own session)
+   * whose prompt adds review feedback and, with `integrationId`, the failed integration's
+   * error and test output tail. Falls back to a fresh worker when the task never had one.
+   */
+  async retry(p: Params<'task.retry'>, actor: Actor): Promise<Result<'task.retry'>> {
+    const { ctx } = this;
+    const policy = ctx.service('policy');
+    const task = ctx.repos.tasks.require(p.taskId);
+    this.assertRetryable(task);
+    policy.assertCanSpawnWorker(actor, { projectId: task.projectId });
+    const feedback = this.retryFeedback(task, p.feedback, p.integrationId);
+
+    const session = task.assigneeSessionId
+      ? ctx.repos.sessions.get(task.assigneeSessionId)
+      : undefined;
+    const ws = task.workspaceId ? ctx.repos.workspaces.get(task.workspaceId) : undefined;
+    if (!session || session.kind !== 'agent' || !ws || ws.status !== 'ready') {
+      return this.spawn(
+        {
+          taskId: task.id,
+          instructions: feedback,
+          ...(p.model ? { model: p.model } : {}),
+          ...(p.runtime ? { runtime: p.runtime } : {}),
+        },
+        actor,
+        { allowReview: true },
+      );
+    }
+    if (ctx.service('workspaces').isLocked(ws.id)) {
+      throw conflict('このタスクのワークスペースは別の Run が使用中です', { workspaceId: ws.id });
+    }
+    const runtime = p.runtime ?? session.runtime ?? ctx.service('runtimes').defaultId();
+    ctx.service('runtimes').get(runtime);
+
+    return ctx.db.transaction(() => {
+      const cur = ctx.repos.tasks.require(task.id);
+      this.assertRetryable(cur);
+      const parentGrant = policy.assertCanSpawnWorker(actor, { projectId: cur.projectId });
+      const callerRun = actor.kind === 'agent' ? ctx.repos.runs.get(actor.runId) : undefined;
+      const prev = ctx.repos.runs.findOne({
+        where: { session_id: session.id },
+        direction: 'desc',
+      });
+      const message = ctx.service('sessions').appendMessage({
+        sessionId: session.id,
+        role: 'user',
+        content: [{ type: 'text', text: feedback }],
+        author: actor,
+      });
+      const kept = prev?.budgetId ? ctx.repos.budgets.get(prev.budgetId) : undefined;
+      const budget =
+        kept?.status === 'active'
+          ? kept
+          : this.carveBudget(undefined, callerRun, parentGrant, session.id, actor);
+      const run = ctx.service('runs').start({
+        sessionId: session.id,
+        kind: 'agent',
+        createdBy: actor,
+        taskId: cur.id,
+        projectId: cur.projectId,
+        workspaceId: ws.id,
+        parentRunId: callerRun?.id ?? null,
+        retryOfRunId: prev?.id ?? null,
+        model: p.model ?? session.model ?? null,
+        runtime,
+        budgetId: budget?.id ?? null,
+        triggerMessageId: message.id,
+      });
+      this.grantWorker(run, parentGrant, undefined, actor);
+      ctx.service('tasks').setStatus(cur.id, 'running', actor, null, {
+        assigneeSessionId: session.id,
+        workspaceId: ws.id,
+        resultSummary: null,
+      });
+      this.decide(
+        {
+          decision: `Task を元の Worker に差し戻しました: ${truncate(cur.title, 80)}`,
+          rationale: `同じ worktree（${ws.branch ?? ws.id}）と Worker セッションで作業をやり直します。指摘: ${truncate(feedback.replace(/\s+/g, ' '), 300)}`,
+          taskIds: [cur.id],
+          sessionIds: [session.id],
+          runIds: [run.id],
+        },
+        {
+          projectId: cur.projectId,
+          sessionId: actor.kind === 'agent' ? actor.sessionId : session.id,
+          runId: callerRun?.id ?? run.id,
+          taskId: cur.id,
+        },
+      );
+      return {
+        sessionId: session.id,
+        runId: run.id,
+        workspaceId: ws.id,
+        budgetId: budget?.id ?? null,
+      };
+    });
+  }
+
+  /**
+   * integration.resolveWithAgent: re-create the conflicting merge in the integration
+   * worktree and start an integrator agent there (an `agent` run without a task; the same
+   * grant, depth and budget rules as a worker). The integrations service resumes the
+   * integration when the run ends.
+   */
+  async resolveIntegration(
+    p: Params<'integration.resolveWithAgent'>,
+    actor: Actor,
+  ): Promise<Result<'integration.resolveWithAgent'>> {
+    const { ctx } = this;
+    const policy = ctx.service('policy');
+    const integrations = ctx.service('integrations');
+    const integ = integrations.get(p.integrationId);
+    policy.assertCanSpawnWorker(actor, { projectId: integ.projectId });
+    const runtime = p.runtime ?? ctx.service('runtimes').defaultId();
+    ctx.service('runtimes').get(runtime);
+
+    const prepared = await integrations.prepareResolution(integ.id, actor);
+    if (prepared.merged) {
+      return {
+        integration: integrations.resumeAfterCleanMerge(integ.id, actor),
+        sessionId: null,
+        runId: null,
+      };
+    }
+    try {
+      return ctx.db.transaction(() => {
+        const parentGrant = policy.assertCanSpawnWorker(actor, { projectId: integ.projectId });
+        const callerRun = actor.kind === 'agent' ? ctx.repos.runs.get(actor.runId) : undefined;
+        const current = integrations.get(integ.id);
+        const session = ctx.service('sessions').create(
+          {
+            kind: 'agent',
+            projectId: integ.projectId,
+            title: `Integrator: ${truncate(integ.title, 120)}`,
+            model: p.model ?? null,
+            runtime,
+            workspaceId: integ.workspaceId,
+            taskId: null,
+            parentSessionId: actor.kind === 'agent' ? actor.sessionId : null,
+          },
+          actor,
+        );
+        const budget = this.carveBudget(undefined, callerRun, parentGrant, session.id, actor);
+        const message = ctx.service('sessions').appendMessage({
+          sessionId: session.id,
+          role: 'user',
+          content: [
+            { type: 'text', text: this.integratorPrompt(current, prepared.step, p.instructions) },
+          ],
+          author: actor,
+        });
+        const run = ctx.service('runs').start({
+          sessionId: session.id,
+          kind: 'agent',
+          createdBy: actor,
+          projectId: integ.projectId,
+          workspaceId: integ.workspaceId,
+          parentRunId: callerRun?.id ?? null,
+          model: p.model ?? null,
+          runtime,
+          budgetId: budget?.id ?? null,
+          triggerMessageId: message.id,
+        });
+        this.grantWorker(run, parentGrant, undefined, actor);
+        const integration = integrations.attachResolver(integ.id, actor, run.id);
+        this.decide(
+          {
+            decision: `Integrator にコンフリクトの解消を任せました: ${truncate(integ.title, 80)}`,
+            rationale: `「${prepared.step.branch}」のマージが ${fixFiles(integration).join(', ')} でコンフリクトしました。両方の Task の目標を渡して統合ブランチ上で解消させ、終わったら統合を再開してテストで確かめます。`,
+            taskIds: integ.taskIds,
+            sessionIds: [session.id],
+            runIds: [run.id],
+          },
+          {
+            projectId: integ.projectId,
+            sessionId: actor.kind === 'agent' ? actor.sessionId : session.id,
+            runId: callerRun?.id ?? run.id,
+          },
+        );
+        return { integration, sessionId: session.id, runId: run.id };
+      });
+    } catch (err) {
+      await integrations.abandonResolution(
+        integ.id,
+        actor,
+        `Integrator を起動できませんでした: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err;
+    }
+  }
+
+  /** The integrator's instructions: the conflict, both sides' goals, and the rules. */
+  private integratorPrompt(
+    integ: Integration,
+    step: IntegrationStep,
+    instructions: string | undefined,
+  ): string {
+    const { repos } = this.ctx;
+    const describeTask = (taskId: string | null, branch: string | null) => {
+      const t = taskId ? repos.tasks.get(taskId) : undefined;
+      if (!t) return [`- ブランチ \`${branch ?? '?'}\``];
+      const lines = [`- Task「${t.title}」（ブランチ \`${branch ?? '?'}\`）`];
+      for (const c of t.acceptanceCriteria) lines.push(`  - 完了条件: ${c}`);
+      if (t.resultSummary) lines.push(`  - 作業の要約: ${oneLine(t.resultSummary, 300)}`);
+      return lines;
+    };
+    const ours = integ.steps.filter(
+      (s) => s.kind === 'merge' && s.index < step.index && s.status === 'succeeded',
+    );
+    const files = fixFiles(integ);
+    const project = repos.projects.get(integ.projectId);
+    const parts = [
+      `# 統合のコンフリクト解消: ${integ.title}`,
+      '',
+      `統合ブランチ \`${integ.branch}\`（反映先 \`${integ.targetRef}\`）に \`${step.branch}\` をマージしたところ、コンフリクトしました。マージは途中の状態（コンフリクトマーカー入り）でこの作業ディレクトリに残っています。`,
+      '',
+      '## コンフリクトしたファイル',
+      ...files.map((f) => `- ${f}`),
+      '',
+      '## 統合ブランチ側（ours）にすでに入っている変更',
+      ...(ours.length > 0
+        ? ours.flatMap((s) => describeTask(s.taskId, s.branch))
+        : [`- 反映先 \`${integ.targetRef}\` の内容のみ`]),
+      '',
+      `## マージ中の変更（theirs）`,
+      ...describeTask(step.taskId, step.branch),
+      '',
+      '## やること',
+      '1. 各ファイルのコンフリクトマーカー（<<<<<<< / ======= / >>>>>>>）をすべて取り除き、両方の変更の意図が保たれる内容にする',
+      '2. コンフリクトしたファイル以外は、両立させるのに必要なときだけ変更する',
+      `3. git の操作（commit・merge --abort・reset など）はしない。完了すると解消した内容がマージコミットとして記録され、統合が再開されてテスト（${project?.testCommand ?? 'テストコマンド未設定'}）で検証されます`,
+    ];
+    if (instructions?.trim()) parts.push('', '## 追加の指示', instructions.trim());
+    return parts.join('\n');
+  }
+
+  /** Feedback message of a retry (review notes + the failed integration's test output). */
+  private retryFeedback(
+    task: Task,
+    feedback: string | undefined,
+    integrationId: string | undefined,
+  ): string {
+    const { repos } = this.ctx;
+    const parts = ['差し戻し: 前回の作業を見直し、次の点を直してください。'];
+    if (feedback?.trim()) parts.push('', feedback.trim());
+    if (integrationId) {
+      const integ = repos.integrations.require(integrationId);
+      if (integ.projectId !== task.projectId) {
+        throw invalidParams('別のプロジェクトの統合は指定できません', { integrationId });
+      }
+      parts.push('', `統合 ${integ.id}（${integ.title}）が「${integ.status}」で止まりました。`);
+      if (integ.error) parts.push(`理由: ${integ.error.message}`);
+      const verify = integ.steps.find((s) => s.kind === 'verify');
+      const artifact = verify?.artifactId ? repos.artifacts.get(verify.artifactId) : undefined;
+      if (artifact?.kind === 'test_result') {
+        parts.push(`テストコマンド: ${artifact.data.command}（${artifact.data.summary}）`);
+        const out = artifact.data.output?.trim();
+        if (out) {
+          const tail = out.length > FAILURE_TAIL ? `…${out.slice(-FAILURE_TAIL)}` : out;
+          parts.push('', '出力（末尾）:', '```', tail, '```');
+        }
+      }
+      parts.push(
+        '',
+        'この Task の変更を他の Task の変更と合わせても、テストが通るようにしてください。',
+      );
+    }
+    if (parts.length === 1) {
+      parts.push('', '前回の Run は最後まで終わりませんでした。続きから作業を完了させてください。');
+    }
+    return parts.join('\n');
+  }
+
+  private assertRetryable(task: Task): void {
+    if (task.status === 'blocked' && task.statusReason?.startsWith('dependency_')) {
+      throw conflict(`タスク「${task.title}」は依存タスクの失敗で止まっています`, {
+        taskId: task.id,
+        status: task.status,
+      });
+    }
+    if (!RETRYABLE.includes(task.status)) {
+      throw conflict(`タスク「${task.title}」はこの状態（${task.status}）では差し戻せません`, {
+        taskId: task.id,
+        status: task.status,
+      });
+    }
+  }
+
+  /**
    * React to the end of an agent run that works on a task it is assigned to: completed →
    * review (or review with `no_changes`), anything else → failed with the reason. Tasks
    * moved on by someone else (cancelled, already reviewed …) are left alone.
@@ -196,7 +498,25 @@ export class WorkerService {
         );
         return;
       }
-      const status = run.status as 'failed' | 'cancelled' | 'interrupted';
+      if (run.status === 'interrupted') {
+        // Cut off by a daemon stop / restart, not a failure: ready to resume on the same
+        // worktree and branch (task.retry keeps the session, so the runtime resumes too).
+        ctx.service('tasks').setStatus(task.id, 'ready', ORCHESTRATION_SYSTEM, INTERRUPTED, {
+          resultSummary:
+            'デーモンの停止・再起動で Worker の作業が中断されました。task.retry で同じ worktree とブランチから再開できます。',
+        });
+        this.decide(
+          {
+            decision: `中断された Task を再開待ちにしました: ${truncate(task.title, 80)}`,
+            rationale:
+              'Worker の Run がデーモンの停止・再起動で中断されました。worktree・ブランチ・コミット済みの変更は残っており、task.retry で同じ Worker セッションから再開できます。',
+            ...ids,
+          },
+          refs,
+        );
+        return;
+      }
+      const status = run.status as 'failed' | 'cancelled';
       const reason = WORKER_REASONS[status];
       const why =
         run.error?.message ??
@@ -268,7 +588,7 @@ export class WorkerService {
 
   // -------------------------------------------------------------------------
 
-  private assertSpawnable(task: Task): void {
+  private assertSpawnable(task: Task, allowReview = false): void {
     if (task.status === 'running') {
       throw conflict(`タスク「${task.title}」はすでに実行中です`, { taskId: task.id });
     }
@@ -278,7 +598,7 @@ export class WorkerService {
         status: task.status,
       });
     }
-    if (!SPAWNABLE.includes(task.status)) {
+    if (!SPAWNABLE.includes(task.status) && !(allowReview && task.status === 'review')) {
       const why =
         task.status === 'pending'
           ? '依存タスクがまだ終わっていません'
@@ -327,8 +647,10 @@ export class WorkerService {
       const parent = budget.get(callerRun.budgetId);
       let amount = budgetUsd;
       if (amount === undefined) {
+        // An equal share among the worker slots left plus one kept by the caller, which
+        // still needs budget for its own (reserved) LLM calls while it supervises.
         const active = this.ctx.service('policy').activeWorkerCount(callerRun.id);
-        const slots = Math.max(1, (grant?.limits.maxWorkers ?? 2) - active);
+        const slots = Math.max(1, (grant?.limits.maxWorkers ?? 2) - active) + 1;
         amount = Math.floor((freeUsd(parent) / slots) * 1e6) / 1e6;
       }
       if (amount <= 0) {
@@ -441,4 +763,14 @@ function spawnRationale(i: {
 export function runEndedBy(e: Event): string | null {
   if (e.type !== 'run.status_changed') return null;
   return isTerminalRunStatus(e.payload.to) ? e.payload.runId : null;
+}
+
+/** Files of the integration's latest fix step (what the integrator resolves). */
+function fixFiles(integ: Integration): string[] {
+  return integ.steps.filter((s) => s.kind === 'fix').at(-1)?.conflictFiles ?? [];
+}
+
+function oneLine(s: string, max: number): string {
+  const t = s.replace(/\s+/g, ' ').trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 }

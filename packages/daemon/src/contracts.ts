@@ -13,6 +13,7 @@ import type {
   BudgetAllocation,
   BudgetSubject,
   ContentPart,
+  MethodName,
   Run,
   RunKind,
   Usage,
@@ -70,10 +71,32 @@ export interface RunController {
    * `running`. Rejects with an AbortError if the run is cancelled while waiting.
    */
   requestApproval(req: ApprovalRequest): Promise<ApprovalDecision>;
-  /** Add usage (tokens / cost) to the run and settle it against the run's budget. */
+  /**
+   * Add usage (tokens / cost) to the run and record the cost as spend on the run's budget
+   * (for runtimes that only report cost afterwards). Stops the run when the budget is used up.
+   */
   reportUsage(delta: Partial<Usage>): void;
+  /**
+   * Reserve budget for one LLM call before making it (architecture.md §2.5). The amount is
+   * `estimateUsd` (default `settings.llmCallReserveUsd`); a call whose reservation does not
+   * fit is refused with `budget_exceeded`, so concurrent runs sharing a budget cannot
+   * overshoot it. Without a budget the hold only reports usage.
+   */
+  reserveBudget(estimateUsd?: number): BudgetHold;
+  /** Throw `budget_exceeded` when the run's budget has nothing left (no-op without a budget). */
+  assertBudgetLeft(): void;
   /** Short "what is it doing now" line shown in Command Mode (e.g. "npm test を実行中"). */
   setActivity(text: string | null): void;
+}
+
+/** Budget held for one LLM call (RunController.reserveBudget). Settle or cancel it once. */
+export interface BudgetHold {
+  /** USD reserved (0 when the run has no budget). */
+  readonly amountUsd: number;
+  /** Report the call's usage on the run and settle its cost against the reservation. */
+  settle(usage: Partial<Usage>): void;
+  /** Free the reservation without spending (the call failed before it reported usage). */
+  cancel(): void;
 }
 
 /**
@@ -207,6 +230,20 @@ export interface AgentRunInput {
   signal: AbortSignal;
   /** Called before any tool that is not pre-approved. Resolve with the decision. */
   canUseTool(req: { toolName: string; input: unknown; title?: string }): Promise<ApprovalDecision>;
+  /**
+   * Control API methods the run's grant allows (read-only for workers by default). Runtimes
+   * that support custom tools expose them to the agent (Claude: in-process MCP server "acc").
+   */
+  tools?: AgentTool[];
+}
+
+/** A Control API method offered to an agent as a tool. */
+export interface AgentTool {
+  /** Control API method, e.g. "task.get" (params schema: `api[method].params`). */
+  method: MethodName;
+  description: string;
+  /** Calls the method through the dispatcher as the run's agent actor (grants enforced there). */
+  execute(input: unknown, opts: { signal: AbortSignal }): Promise<unknown>;
 }
 
 export interface AgentRuntime {

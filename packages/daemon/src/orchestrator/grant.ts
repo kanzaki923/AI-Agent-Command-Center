@@ -31,6 +31,7 @@ export const ORCHESTRATOR_PERMISSIONS = [
   'artifact.*',
   'integration.create',
   'integration.run',
+  'integration.resolveWithAgent',
   'integration.get',
   'integration.list',
   'integration.wait',
