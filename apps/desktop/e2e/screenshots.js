@@ -128,6 +128,43 @@ if (want('timeline')) {
   await shot('12-timeline');
 }
 
+if (want('board')) {
+  await page.keyboard.press('Control+1');
+  await page.waitForTimeout(400);
+  await page.getByRole('tab', { name: /Task/ }).click();
+  await page.getByTestId('task-board').waitFor();
+  await page.keyboard.press('j');
+  await page.waitForTimeout(400);
+  await shot('13-task-board');
+  await page.getByRole('tab', { name: 'エージェント' }).click();
+  await page.waitForTimeout(300);
+}
+
+if (want('palette')) {
+  await page.keyboard.press('Control+k');
+  await page.waitForTimeout(400);
+  await shot('14-palette');
+  await page.keyboard.type('進捗');
+  await page.waitForTimeout(900);
+  await shot('15-palette-search');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+}
+
+if (want('chat')) {
+  await page.getByRole('button', { name: 'レビュー観点の整理 を開く' }).first().click();
+  await page.waitForTimeout(1000);
+  await page.mouse.move(600, 200);
+  await shot('16-chat');
+}
+
+if (want('settings')) {
+  await page.keyboard.press('Control+,');
+  await page.waitForTimeout(500);
+  await shot('17-settings');
+  await page.keyboard.press('Escape');
+}
+
 if (errors.length) {
   console.log('--- page errors ---');
   for (const e of errors) console.log(e);

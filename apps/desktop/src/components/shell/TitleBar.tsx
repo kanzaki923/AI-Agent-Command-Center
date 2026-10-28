@@ -118,7 +118,7 @@ export function TitleBar() {
         </Menu>
         {demo && (
           <Tooltip content="組み込みの模擬モデルで動いています。費用はかかりません">
-            <span className="rounded-xs bg-selected px-1.5 text-micro text-fg-2">デモ</span>
+            <span className="shrink-0 rounded-xs bg-selected px-1.5 text-micro whitespace-nowrap text-fg-2">デモ</span>
           </Tooltip>
         )}
         <ChevronRight size={14} strokeWidth={1.5} className="shrink-0 text-fg-4" />

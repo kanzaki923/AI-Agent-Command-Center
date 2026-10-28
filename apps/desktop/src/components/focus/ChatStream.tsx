@@ -406,7 +406,7 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
     overscan: 8,
   });
 
-  const release = stick.release;
+  const { release, recheck } = stick;
   const jumpIndex = jumpTo ? blocks.findIndex((b) => blockMessageId(b) === jumpTo.messageId) : -1;
   // useEffect is required: scrolling the virtualized list is a DOM side effect that can only
   // run once the blocks are laid out; the jump request comes from outside (palette, Timeline).
@@ -414,9 +414,17 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
     if (!jumpTo || jumpIndex === -1) return;
     release();
     virt.scrollToIndex(jumpIndex, { align: 'center' });
+    // A message near the end lands at the bottom anyway: keep following then (no "new" pill).
+    const settle = setTimeout(recheck, 80);
     const t = setTimeout(clearJump, 1700);
-    return () => clearTimeout(t);
-  }, [jumpTo, jumpIndex, virt, clearJump, release]);
+    return () => {
+      clearTimeout(settle);
+      clearTimeout(t);
+    };
+  }, [jumpTo, jumpIndex, virt, clearJump, release, recheck]);
+  const working = runs.some(
+    (r) => r.sessionId === session.id && ['created', 'queued', 'running'].includes(r.status),
+  );
 
   if (messages.isPending) {
     return (
@@ -444,10 +452,18 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
           <OrchestratorIntro session={session} grant={orchestrator} />
         ) : blocks.length === 0 ? (
           <div className="mx-auto flex h-full max-w-[760px] flex-col items-center justify-center px-6 text-center">
-            <div className="text-title text-fg-2">{session.kind === 'agent' ? '作業内容を伝えてください' : '何でも聞いてください'}</div>
+            <div className="text-title text-fg-2">
+              {session.kind === 'agent'
+                ? working
+                  ? '作業を始めています…'
+                  : '作業内容を伝えてください'
+                : '何でも聞いてください'}
+            </div>
             <div className="mt-1 text-ui text-fg-3">
               {session.kind === 'agent'
-                ? 'エージェントは worktree の中で作業し、変更は右の「変更」タブに表示されます。'
+                ? working
+                  ? 'ファイルの読み取りや編集、コマンドの実行がここに順に表示されます。変更は右の「変更」タブで確認できます。'
+                  : 'エージェントは worktree の中で作業し、変更は右の「変更」タブに表示されます。'
                 : 'Enter で送信、Shift+Enter で改行します。'}
             </div>
           </div>

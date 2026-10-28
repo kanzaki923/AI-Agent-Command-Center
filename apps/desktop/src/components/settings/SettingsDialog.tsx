@@ -30,7 +30,7 @@ function Segmented<T extends string>({
   label: string;
 }) {
   return (
-    <div role="radiogroup" aria-label={label} className="inline-flex rounded-sm border border-line p-0.5">
+    <div role="radiogroup" aria-label={label} className="inline-flex shrink-0 rounded-sm border border-line p-0.5 whitespace-nowrap">
       {options.map((o) => (
         <button
           key={o.value}

@@ -233,6 +233,7 @@ export async function archiveSession(rt: AppRuntime, session: Session): Promise<
       sticky: false,
       action: {
         label: '元に戻す',
+        undo: true,
         run: () => {
           void rt.client
             .call('session.archive', { sessionId: session.id, archived: false })

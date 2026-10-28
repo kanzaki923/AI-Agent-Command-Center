@@ -569,10 +569,10 @@ function IntegrationReview({ integ, onClose }: { integ: Integration; onClose: ()
           data-region="main"
           tabIndex={-1}
         >
-          <div className="mb-3 flex h-7 items-center gap-3">
-            <h2 className="text-ui font-medium text-fg">統合後の差分</h2>
+          <div className="@container mb-3 flex h-7 items-center gap-3 whitespace-nowrap">
+            <h2 className="shrink-0 text-ui font-medium text-fg">統合後の差分</h2>
             {stats && (
-              <span className="flex items-center gap-2 text-meta text-fg-3">
+              <span className="flex shrink-0 items-center gap-2 text-meta text-fg-3">
                 {stats.files} ファイル{' '}
                 <DiffStatText additions={stats.additions} deletions={stats.deletions} />
               </span>
@@ -580,11 +580,12 @@ function IntegrationReview({ integ, onClose }: { integ: Integration; onClose: ()
             <span className="flex-1" />
             {files.length > 0 && (
               <span className="flex items-center gap-3 text-meta text-fg-4">
-                <span className="flex items-center gap-1">
+                {/* Key hints give way first in a narrow window; the buttons stay. */}
+                <span className="hidden items-center gap-1 @[620px]:flex">
                   <Kbd keys="J" />
                   <Kbd keys="K" /> ファイル移動
                 </span>
-                <span className="flex items-center gap-1">
+                <span className="hidden items-center gap-1 @[620px]:flex">
                   <Kbd keys="O" /> 開閉
                 </span>
                 <button

@@ -448,6 +448,20 @@
   :root:not([data-reduce-motion='off']) .acc-modal {
     transform: none !important;
   }
+  /* Dialogs, menus, popovers: no scale / slide, a short fade only (§3.3). */
+  :root:not([data-reduce-motion='off']) [class*='acc-dialog-in'],
+  :root:not([data-reduce-motion='off']) [class*='acc-pop-in'] {
+    animation-name: acc-fade-in !important;
+    animation-duration: 100ms !important;
+  }
+  :root:not([data-reduce-motion='off']) .acc-flash {
+    animation-duration: 1200ms;
+  }
+}
+:root[data-reduce-motion='on'] [class*='acc-dialog-in'],
+:root[data-reduce-motion='on'] [class*='acc-pop-in'] {
+  animation-name: acc-fade-in !important;
+  animation-duration: 100ms !important;
 }
 :root[data-reduce-motion='on'] .acc-pulse {
   animation: none;

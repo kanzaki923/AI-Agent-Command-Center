@@ -192,7 +192,7 @@ export const AttentionCard = memo(function AttentionCard({ item, selected, onSel
   const resolved = useResolvedApprovals();
   const justFailed = useJustEnded(item, 'failed') && item.state === 'failed';
   const view = item.approval ? describeApproval(item.approval) : null;
-  const { controls, onKeyDown } = useApprovalControls(item.approval, view);
+  const { controls, onKeyDown } = useApprovalControls(item.approval, view, () => onSelect(item));
   const recentDecision =
     !item.approval && item.state === 'awaiting_approval'
       ? resolved.find((a) => a.sessionId === item.session?.id || (item.run && a.runId === item.run.id))

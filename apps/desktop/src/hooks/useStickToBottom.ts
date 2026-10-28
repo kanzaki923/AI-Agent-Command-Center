@@ -20,6 +20,8 @@ export interface StickToBottom {
   scrollToBottom: (behavior?: ScrollBehavior) => void;
   /** Stop following (before a programmatic jump up the history). */
   release: () => void;
+  /** Follow again if the view ended up at the bottom anyway. */
+  recheck: () => void;
   /** The scroll container (for virtualizers); call from callbacks, not during render. */
   getElement: () => HTMLElement | null;
 }
@@ -126,6 +128,11 @@ export function useStickToBottom(): StickToBottom {
 
   const getElement = useCallback(() => scrollEl.current, []);
   const release = useCallback(() => setFollowing(false), [setFollowing]);
+  /** Re-decide following from where the view is now (after a programmatic jump settles). */
+  const recheck = useCallback(() => {
+    const el = scrollEl.current;
+    if (el) setFollowing(distanceFromBottom(el) <= STICK_THRESHOLD_PX);
+  }, [setFollowing]);
 
-  return { scrollRef, contentRef, following, unfollowedAt, hasUnseen, scrollToBottom, release, getElement };
+  return { scrollRef, contentRef, following, unfollowedAt, hasUnseen, scrollToBottom, release, recheck, getElement };
 }

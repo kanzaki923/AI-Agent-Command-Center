@@ -1,6 +1,6 @@
 import type { CapabilityGrant, Event, Project, Run, Session } from '@acc/protocol';
 import { CheckCircle2, CircleX, GitMerge, X } from 'lucide-react';
-import { motion } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
 import { Tabs } from 'radix-ui';
 import { type ReactNode, useMemo } from 'react';
 import {
@@ -42,7 +42,12 @@ import { TaskDetail } from './TaskDetail';
 
 const NONE: never[] = [];
 
-const TAB_LABEL: Record<PanelTab, string> = { overview: '概要', changes: '変更', tests: 'テスト', logs: 'ログ' };
+const TAB_LABEL: Record<PanelTab, string> = {
+  overview: '概要',
+  changes: '変更',
+  tests: 'テスト',
+  logs: 'ログ',
+};
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -69,7 +74,6 @@ function JsonBlock({ value }: { value: unknown }) {
     </pre>
   );
 }
-
 
 /** What a grant lets the session do, in words (raw patterns in the tooltip). */
 function GrantSummaryField({ grant, projects }: { grant: CapabilityGrant; projects: Project[] }) {
@@ -114,7 +118,9 @@ function SessionOverview({ session, runs }: { session: Session; runs: Run[] }) {
   const item = items.find((i) => i.id === session.id);
   const workspace = useWorkspace(session.workspaceId).data;
   const diff = useDiff(session.workspaceId).data;
-  const parent = session.parentSessionId ? sessions.find((s) => s.id === session.parentSessionId) : null;
+  const parent = session.parentSessionId
+    ? sessions.find((s) => s.id === session.parentSessionId)
+    : null;
   const usage = sumUsage(runs.map((r) => r.usage));
   const openSession = useUi((s) => s.openSession);
   const projects = useProjects().data ?? NONE;
@@ -145,7 +151,11 @@ function SessionOverview({ session, runs }: { session: Session; runs: Run[] }) {
       )}
       {parent && (
         <Field label="親">
-          <button type="button" className="text-left text-accent hover:underline" onClick={() => openSession(parent.id)}>
+          <button
+            type="button"
+            className="text-left text-accent hover:underline"
+            onClick={() => openSession(parent.id)}
+          >
             {untitled(parent)}
           </button>
         </Field>
@@ -184,26 +194,32 @@ function SessionOverview({ session, runs }: { session: Session; runs: Run[] }) {
         {activeGrant ? (
           <GrantSummaryField grant={activeGrant} projects={projects} />
         ) : (
-          <span className="text-fg-3">{session.kind === 'agent' ? 'worktree 内 · 既定の権限' : 'なし'}</span>
+          <span className="text-fg-3">
+            {session.kind === 'agent' ? 'worktree 内 · 既定の権限' : 'なし'}
+          </span>
         )}
       </Field>
       <Field label="コスト">
         <Cost usd={usage.costUsd} source={usage.costSource} className="text-ui text-fg" />
         {run && run.usage.inputTokens + run.usage.outputTokens > 0 && (
           <div className="text-meta text-fg-3 tabular">
-            入力 {run.usage.inputTokens.toLocaleString()} · 出力 {run.usage.outputTokens.toLocaleString()} トークン
+            入力 {run.usage.inputTokens.toLocaleString()} · 出力{' '}
+            {run.usage.outputTokens.toLocaleString()} トークン
           </div>
         )}
       </Field>
       {workspace && (
         <Field label="worktree">
-          <div className="font-mono text-meta break-all text-fg-2">{workspace.branch ?? workspace.path}</div>
+          <div className="font-mono text-meta break-all text-fg-2">
+            {workspace.branch ?? workspace.path}
+          </div>
         </Field>
       )}
       {diff && diff.stats.files > 0 && (
         <Field label="変更">
           <span className="flex items-center gap-2">
-            {diff.stats.files} ファイル <DiffStatText additions={diff.stats.additions} deletions={diff.stats.deletions} />
+            {diff.stats.files} ファイル{' '}
+            <DiffStatText additions={diff.stats.additions} deletions={diff.stats.deletions} />
           </span>
         </Field>
       )}
@@ -224,7 +240,12 @@ function ChangesTab({ session }: { session: Session }) {
     (artifacts.data?.[0]?.kind === 'diff' ? artifacts.data[0].data.patch : null);
   const files = useMemo(() => (patch ? parsePatch(patch) : []), [patch]);
   if (files.length === 0) {
-    return <Empty title="まだ変更はありません" body="このRunがファイルを編集すると、ここに差分が表示されます。" />;
+    return (
+      <Empty
+        title="まだ変更はありません"
+        body="このRunがファイルを編集すると、ここに差分が表示されます。"
+      />
+    );
   }
   return <DiffBrowser files={files} />;
 }
@@ -233,7 +254,12 @@ function TestsTab({ session }: { session: Session }) {
   const tests = useArtifacts(session.id, 'test_result').data ?? NONE;
   const latest = tests[0];
   if (!latest || latest.kind !== 'test_result') {
-    return <Empty title="テスト結果はまだありません" body="エージェントがテストを実行すると、ここに結果が表示されます。" />;
+    return (
+      <Empty
+        title="テスト結果はまだありません"
+        body="エージェントがテストを実行すると、ここに結果が表示されます。"
+      />
+    );
   }
   const d = latest.data;
   return (
@@ -253,7 +279,9 @@ function TestsTab({ session }: { session: Session }) {
           {d.output}
         </pre>
       )}
-      {tests.length > 1 && <div className="text-meta text-fg-3">過去の結果 {tests.length - 1} 件</div>}
+      {tests.length > 1 && (
+        <div className="text-meta text-fg-3">過去の結果 {tests.length - 1} 件</div>
+      )}
     </div>
   );
 }
@@ -278,7 +306,12 @@ function LogsTab({ session }: { session: Session }) {
         return (
           <div key={e.seq} className="flex min-h-6 items-start gap-2 px-3 py-0.5 text-meta">
             <span className="w-14 shrink-0 text-fg-4 tabular">{formatClockSeconds(e.ts)}</span>
-            <span className={cn('w-16 shrink-0 truncate', v.isError ? 'text-st-failed' : v.isDecision ? 'text-accent' : 'text-fg-3')}>
+            <span
+              className={cn(
+                'w-16 shrink-0 truncate',
+                v.isError ? 'text-st-failed' : v.isDecision ? 'text-accent' : 'text-fg-3',
+              )}
+            >
               {v.label}
             </span>
             <span className="min-w-0 flex-1 text-fg-2">{v.summary}</span>
@@ -297,8 +330,15 @@ function FocusPanel() {
   const runs = (useRuns().data ?? NONE).filter((r) => r.sessionId === focusSessionId);
   if (!session) return <Empty title="セッションが選ばれていません" />;
   return (
-    <Tabs.Root value={tab} onValueChange={(v) => setTab(v as PanelTab)} className="flex h-full min-h-0 flex-col">
-      <Tabs.List aria-label="詳細" className="flex h-11 shrink-0 items-end gap-4 border-b border-line-subtle px-4">
+    <Tabs.Root
+      value={tab}
+      onValueChange={(v) => setTab(v as PanelTab)}
+      className="flex h-full min-h-0 flex-col"
+    >
+      <Tabs.List
+        aria-label="詳細"
+        className="flex h-11 shrink-0 items-end gap-4 border-b border-line-subtle px-4"
+      >
         {PANEL_TABS.map((t) => (
           <Tabs.Trigger
             key={t}
@@ -344,7 +384,9 @@ function ItemDetail({ item }: { item: BoardItem }) {
       {item.approval && view && (
         <div className="mx-4 mb-2 flex flex-col gap-1.5 rounded-md border border-line bg-surface p-3">
           <div className="text-ui font-medium text-fg">{view.question}</div>
-          {view.target && <div className="font-mono text-code break-all text-fg-2">{view.target}</div>}
+          {view.target && (
+            <div className="font-mono text-code break-all text-fg-2">{view.target}</div>
+          )}
           <div className="text-micro text-fg-3">要求内容</div>
           <JsonBlock value={item.approval.payload} />
         </div>
@@ -385,7 +427,8 @@ function CommandPanel() {
   const { items } = useBoard();
   if (selectedId?.startsWith('tsk_')) return <TaskDetail taskId={selectedId} />;
   const item = items.find((i) => i.id === selectedId);
-  if (!item) return <Empty title="項目を選んでください" body="j / k で移動、Space で詳細を開閉します。" />;
+  if (!item)
+    return <Empty title="項目を選んでください" body="j / k で移動、Space で詳細を開閉します。" />;
   return <ItemDetail item={item} />;
 }
 
@@ -397,7 +440,9 @@ function EventDetail({ event }: { event: Event }) {
     <div className="flex flex-col gap-2 px-4 py-3">
       <div className="text-meta text-fg-3">{event.type}</div>
       <div className="text-title text-fg">{v.summary}</div>
-      {v.detail && <div className="text-ui text-fg-2">{v.isDecision ? `「${v.detail}」` : v.detail}</div>}
+      {v.detail && (
+        <div className="text-ui text-fg-2">{v.isDecision ? `「${v.detail}」` : v.detail}</div>
+      )}
       {ctx && (
         <div>
           <Button size="sm" shortcut="open" onClick={() => openEventContext(event)}>
@@ -435,7 +480,9 @@ function TimelinePanel() {
       </div>
     );
   }
-  return <Empty title="イベントを選んでください" body="行を選ぶと、イベントの全内容がここに出ます。" />;
+  return (
+    <Empty title="イベントを選んでください" body="行を選ぶと、イベントの全内容がここに出ます。" />
+  );
 }
 
 /**
@@ -450,39 +497,51 @@ export function DetailPanel() {
   const setPanelOpen = useUi((s) => s.setPanelOpen);
   const wide = useMediaQuery('(min-width: 1440px)');
   const overlay = !useMediaQuery('(min-width: 1100px)');
-  if (!open) return null;
   // Below 1440px the panel defaults to 320px unless the user widened it (§4.5).
   const w = wide || width > 360 ? width : 320;
   const content =
     mode === 'focus' ? <FocusPanel /> : mode === 'timeline' ? <TimelinePanel /> : <CommandPanel />;
   return (
-    <aside
-      aria-label="詳細パネル"
-      data-region="panel"
-      data-overlay={overlay ? 'true' : undefined}
-      className={cn(
-        'relative z-20 flex h-full shrink-0 flex-col border-l border-line-subtle bg-surface',
-        overlay && 'absolute top-0 right-0 bottom-0 shadow-float',
+    // Opening reserves the width at once and slides the contents in; closing fades them
+    // out in 120ms (0.7× the entrance, §3.1) before the width is given back.
+    <AnimatePresence initial={false}>
+      {open && (
+        <motion.aside
+          key="panel"
+          exit={{ opacity: 0, transition: { duration: 0.12, ease: [0.4, 0, 1, 1] } }}
+          aria-label="詳細パネル"
+          data-region="panel"
+          data-overlay={overlay ? 'true' : undefined}
+          className={cn(
+            'relative z-20 flex h-full shrink-0 flex-col border-l border-line-subtle bg-surface',
+            overlay && 'absolute top-0 right-0 bottom-0 shadow-float',
+          )}
+          style={{ width: w }}
+        >
+          {mode !== 'focus' && (
+            <div className="absolute top-2 right-2 z-10">
+              <IconButton
+                label="詳細パネルを閉じる"
+                size="sm"
+                shortcut="togglePanel"
+                onClick={() => setPanelOpen(mode, false)}
+              >
+                <X size={14} strokeWidth={1.5} />
+              </IconButton>
+            </div>
+          )}
+          <motion.div
+            key={mode}
+            initial={{ opacity: 0, x: 16 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            className="flex min-h-0 flex-1 flex-col overflow-y-auto"
+          >
+            {content}
+          </motion.div>
+          <ResizeHandle edge="left" width={width} onResize={setWidth} label="詳細パネルの幅" />
+        </motion.aside>
       )}
-      style={{ width: w }}
-    >
-      {mode !== 'focus' && (
-        <div className="absolute top-2 right-2 z-10">
-          <IconButton label="詳細パネルを閉じる" size="sm" shortcut="togglePanel" onClick={() => setPanelOpen(mode, false)}>
-            <X size={14} strokeWidth={1.5} />
-          </IconButton>
-        </div>
-      )}
-      <motion.div
-        key={mode}
-        initial={{ opacity: 0, x: 16 }}
-        animate={{ opacity: 1, x: 0 }}
-        transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-        className="flex min-h-0 flex-1 flex-col overflow-y-auto"
-      >
-        {content}
-      </motion.div>
-      <ResizeHandle edge="left" width={width} onResize={setWidth} label="詳細パネルの幅" />
-    </aside>
+    </AnimatePresence>
   );
 }

@@ -165,7 +165,11 @@ const TaskRow = memo(function TaskRow({
       </span>
       {spawnable && canSpawn(t) && !node.worker && (
         // Hover action floats over the row's right edge (no reserved column).
-        <span className="absolute inset-y-0 right-1 flex items-center bg-gradient-to-l from-[var(--bg-surface)] from-70% pl-6 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
+        <span
+          className="absolute inset-y-0 right-0 flex items-center rounded-r-sm pr-1 pl-8 opacity-0 [mask-image:linear-gradient(to_right,transparent,black_28px)] group-hover:opacity-100 group-focus-within:opacity-100"
+          // The row's own surface (card + hover tint), so the fade blends into it.
+          style={{ background: 'linear-gradient(var(--bg-hover), var(--bg-hover)), var(--bg-surface)' }}
+        >
           <Button
             size="sm"
             variant="secondary"
