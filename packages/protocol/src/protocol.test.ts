@@ -122,6 +122,7 @@ describe('settings', () => {
     expect(Settings.parse({})).toEqual({
       litellm: { baseUrl: null, apiKey: null },
       defaultModel: null,
+      defaultRuntime: null,
       maxConcurrentRuns: 10,
       maxDelegationDepth: 1,
     });

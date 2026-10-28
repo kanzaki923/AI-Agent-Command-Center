@@ -48,6 +48,7 @@ export function resolvePort(
 export type SettingsPatch = {
   litellm?: { baseUrl?: string | null | undefined; apiKey?: string | null | undefined } | undefined;
   defaultModel?: string | null | undefined;
+  defaultRuntime?: string | null | undefined;
   maxConcurrentRuns?: number | undefined;
   maxDelegationDepth?: number | undefined;
 };
@@ -119,6 +120,9 @@ export class SettingsStore {
     set('defaultModel', next.defaultModel, patch.defaultModel, () => {
       next.defaultModel = patch.defaultModel ?? null;
     });
+    set('defaultRuntime', next.defaultRuntime, patch.defaultRuntime, () => {
+      next.defaultRuntime = patch.defaultRuntime ?? null;
+    });
     set('maxConcurrentRuns', next.maxConcurrentRuns, patch.maxConcurrentRuns, () => {
       next.maxConcurrentRuns = patch.maxConcurrentRuns!;
     });
@@ -148,6 +152,7 @@ export function toSettingsView(s: Settings): SettingsView {
       apiKeyMasked: maskSecret(s.litellm.apiKey),
     },
     defaultModel: s.defaultModel,
+    defaultRuntime: s.defaultRuntime,
     maxConcurrentRuns: s.maxConcurrentRuns,
     maxDelegationDepth: s.maxDelegationDepth,
   };

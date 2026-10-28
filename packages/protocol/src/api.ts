@@ -197,6 +197,7 @@ export const api = defineApi({
         apiKey: z.string().min(1).nullable().optional().describe('null clears the key'),
       }).optional(),
       defaultModel: z.string().min(1).nullable().optional(),
+      defaultRuntime: z.string().min(1).nullable().optional(),
       maxConcurrentRuns: z.int().min(1).max(64).optional(),
       maxDelegationDepth: z.int().min(0).max(4).optional(),
     }),

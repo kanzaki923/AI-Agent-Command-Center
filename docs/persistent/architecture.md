@@ -98,6 +98,17 @@ packages/cli      `acc` コマンド（Control API クライアント）
 - `bus.emit` は呼び出し側のトランザクション内で追記し、**コミット後に**配信する（ロールバックされたイベントは誰にも届かない）。
 - 状態を変えるメソッドは、同じトランザクションで「エンティティ更新 + イベント追記」を行う。`*.updated` には変わったフィールド名を `changes` に入れる。
 
+### 2.8 Agent Runtime（`runtime/`）
+
+コーディングエージェントの実行基盤。契約は `contracts.ts` の `AgentRuntime` / `AgentEvent` / `RuntimesService`。
+
+- `ctx.service('runtimes')` に `mock`（オフライン、既定）と `claude-agent-sdk` を登録する。既定は `settings.defaultRuntime`（未登録の名前なら `mock`）。Run が使うのは `run.runtime` → `session.runtime` → 既定の順。
+- `agent` 種別の RunExecutor（`createAgentExecutor`）：ワークスペースのパスで Runtime を動かし、`AgentEvent` を `RunController` に流す。プロンプトは Task（目標・完了条件）＋起動メッセージ。終了時に `workspaces.commitAll`、`artifacts` サービスがあれば diff Artifact を記録する。
+- **ツール権限は `policy.ts` の純関数で決める**（プロンプトに任せない）：読み取り系はワークスペース内なら許可、編集系もワークスペース内なら許可（worktree が隔離されており、統合前に diff を確認するため）、コマンド（Bash / PowerShell）と、ワークスペース外のパスに触れるもの、未知のツールは承認（`tool_use` の Approval）。
+- Claude Agent SDK：SDK は遅延 import（読み込めなくてもデーモンは起動し、`available()` が理由を返す）。`permissionMode: 'default'` と `settingSources: []` を明示し、ユーザー / リポジトリの設定ファイルの allow ルールや hooks を効かせない（そのためリポジトリの CLAUDE.md は読まない）。子プロセスの環境は許可リストで組み立てる（`env.ts`。値はログに出さない）。LiteLLM の URL があれば `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / モデルを渡し、なければユーザーの Claude Code ログインをそのまま使う。
+- 再開：Runtime 自身のセッション ID を `runtime_sessions`（Session × Runtime）に保存し、次の Run に渡す（`Session.runtimeSessionId` にも反映）。SDK の使用量は SDK セッション単位の累積値なので、`runtime_usage_baselines` との差分を Run の使用量として報告する。
+- mock：プロンプト中の ` ```acc-mock ` JSON ブロック（`mock/plan.ts`。`say` / `write` / `append` / `run` / `ask` / `check` / `sleep` / `fail`）に従ってワークスペースを実際に変更する。ブロックがなければ `notes/<タスク名>.md` を作って確認する。デモと E2E はこれを使う。
+
 ## 3. Desktop UI
 
 - Tauri 2 のシェルは Core Daemon を起動（未起動なら）して接続情報をフロントへ渡すだけ。ロジックは持たない。
