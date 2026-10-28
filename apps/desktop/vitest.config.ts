@@ -5,7 +5,8 @@ export default defineProject({
   plugins: [react()],
   test: {
     name: 'desktop',
-    include: ['src/**/*.test.{ts,tsx}'],
+    // scripts/: build tooling (Node; tests opt out of jsdom with @vitest-environment node).
+    include: ['src/**/*.test.{ts,tsx}', 'scripts/**/*.test.js'],
     environment: 'jsdom',
     setupFiles: ['src/test/setup.ts'],
   },

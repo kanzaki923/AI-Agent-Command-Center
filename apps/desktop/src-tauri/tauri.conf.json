@@ -8,7 +8,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://127.0.0.1:5173",
     "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build"
+    "beforeBuildCommand": "pnpm build && node scripts/prepare-sidecar.js --release"
   },
   "app": {
     "withGlobalTauri": false,
@@ -42,7 +42,13 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico", "icons/icon.png"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
     "externalBin": ["binaries/acc-node"],
     "resources": {
       "resources/daemon/": "daemon/"

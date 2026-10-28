@@ -66,4 +66,10 @@ export interface DaemonContext {
 
   /** Register cleanup to run on daemon shutdown (reverse order). */
   onClose(fn: () => void | Promise<void>): void;
+
+  /**
+   * Stop this daemon shortly after the current call returns (so its reply still goes out).
+   * Closes the server too when there is one; the hosting process exits on `Daemon.closed`.
+   */
+  requestShutdown(): void;
 }

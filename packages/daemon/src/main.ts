@@ -22,17 +22,41 @@ async function main(): Promise<void> {
   const log = createLogger(parseLogLevel(process.env.ACC_LOG_LEVEL));
   const paths = resolvePaths();
 
+  // Exit 0 when another daemon already serves this ACC_HOME: launchers (the desktop shell,
+  // `pnpm dev:desktop`) treat exit 0 as "someone else owns it" and connect to the winner.
   const existing = readDaemonInfoFile(paths.daemonInfo);
   if (existing && existing.pid !== process.pid && isAlive(existing.pid)) {
-    log.error('another daemon is already running for this ACC_HOME', {
+    log.warn('another daemon is already running for this ACC_HOME; leaving it in charge', {
       pid: existing.pid,
       port: existing.port,
+    });
+    return;
+  }
+
+  let daemon: Awaited<ReturnType<typeof startDaemon>>;
+  try {
+    daemon = await startDaemon({ log });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw err;
+    // Lost a start race (UI and CLI at once): the winner writes daemon.json right after
+    // it binds. Anything else on the port is a real conflict.
+    const winner = await waitFor(() => {
+      const info = readDaemonInfoFile(paths.daemonInfo);
+      return info && info.pid !== process.pid && isAlive(info.pid) ? info : null;
+    }, 3000);
+    if (winner) {
+      log.warn('port taken by another daemon for this ACC_HOME; leaving it in charge', {
+        pid: winner.pid,
+        port: winner.port,
+      });
+      return;
+    }
+    log.error('port is in use by another program (set ACC_PORT to use another port)', {
+      err,
     });
     process.exitCode = 1;
     return;
   }
-
-  const daemon = await startDaemon({ log });
   log.info('core daemon ready', {
     version: daemon.ctx.version,
     url: daemon.url,
@@ -40,22 +64,32 @@ async function main(): Promise<void> {
     methods: daemon.ctx.methods.names().length,
   });
 
-  let stopping = false;
+  // One exit path for signals and `system.shutdown` (which closes the daemon from inside).
+  daemon.closed.then(
+    () => process.exit(0),
+    () => process.exit(1),
+  );
   const stop = (signal: string) => {
-    if (stopping) return;
-    stopping = true;
     log.info('shutting down', { signal });
-    daemon.close().then(
-      () => process.exit(0),
-      (err: unknown) => {
-        log.error('shutdown failed', { err });
-        process.exit(1);
-      },
-    );
+    daemon.close().catch((err: unknown) => {
+      log.error('shutdown failed', { err });
+      process.exit(1);
+    });
   };
   process.on('SIGINT', () => stop('SIGINT'));
   process.on('SIGTERM', () => stop('SIGTERM'));
   process.on('SIGHUP', () => stop('SIGHUP'));
+  // Windows: Ctrl+Break / closing the console window.
+  process.on('SIGBREAK', () => stop('SIGBREAK'));
+}
+
+async function waitFor<T>(probe: () => T | null, timeoutMs: number): Promise<T | null> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const v = probe();
+    if (v || Date.now() >= deadline) return v;
+    await new Promise((r) => setTimeout(r, 100));
+  }
 }
 
 function isAlive(pid: number): boolean {

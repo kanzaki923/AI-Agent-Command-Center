@@ -1,6 +1,7 @@
 import { Settings } from '@acc/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentEvent, AgentRunInput, ApprovalDecision } from '../contracts';
+import type { ClaudeCodeLocation } from './claude/locate';
 import { ClaudeMessageNormalizer } from './claude/normalize';
 import {
   ClaudeAgentSdkRuntime,
@@ -488,5 +489,27 @@ describe('ClaudeAgentSdkRuntime', () => {
     );
     // Failed loads are retried.
     expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('passes the located Claude Code executable, or reports why it is missing', async () => {
+    const sdk = fakeSdk(TURN);
+    let location: ClaudeCodeLocation = { ok: true, path: '/opt/claude/claude', source: 'path' };
+    const rt = new ClaudeAgentSdkRuntime({
+      settings: settings(),
+      loadSdk: async () => sdk.module,
+      locateExecutable: () => location,
+    });
+    expect(await rt.available()).toEqual({ ok: true });
+    await collect(rt.run(input()));
+    expect(sdk.queries[0]!.options.pathToClaudeCodeExecutable).toBe('/opt/claude/claude');
+
+    // Looked up again per call: uninstalling (or installing) needs no daemon restart.
+    location = { ok: false, reason: 'Claude Code の実行ファイルが見つかりません' };
+    expect(await rt.available()).toEqual({
+      ok: false,
+      reason: 'Claude Code の実行ファイルが見つかりません',
+    });
+    await expect(collect(rt.run(input()))).rejects.toThrow('実行ファイルが見つかりません');
+    expect(sdk.queries).toHaveLength(1);
   });
 });

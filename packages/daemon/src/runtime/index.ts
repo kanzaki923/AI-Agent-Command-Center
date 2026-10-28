@@ -1,4 +1,5 @@
 import { defineModule } from '../module';
+import { locateClaudeCode } from './claude/locate';
 import { CLAUDE_RUNTIME_ID, ClaudeAgentSdkRuntime } from './claude/runtime';
 import { createAgentExecutor } from './executor';
 import { MockAgentRuntime } from './mock/runtime';
@@ -6,6 +7,7 @@ import { RuntimeRegistry } from './registry';
 import { DbBaselineStore, runtimeMigrations } from './state';
 
 export { ClaudeAgentSdkRuntime, CLAUDE_RUNTIME_ID } from './claude/runtime';
+export { locateClaudeCode, CLAUDE_CODE_PATH_ENV } from './claude/locate';
 export { MockAgentRuntime } from './mock/runtime';
 export { RuntimeRegistry, MOCK_RUNTIME_ID } from './registry';
 export { createAgentExecutor, buildAgentPrompt } from './executor';
@@ -30,6 +32,7 @@ export const runtimeModule = defineModule({
       new ClaudeAgentSdkRuntime({
         settings: () => ctx.settings.get(),
         clientApp: `acc/${ctx.version}`,
+        locateExecutable: () => locateClaudeCode(),
         baselines: new DbBaselineStore(ctx.db, ctx.clock, CLAUDE_RUNTIME_ID),
         log: ctx.log.child('claude'),
       }),
