@@ -279,11 +279,14 @@ describe('client', () => {
     server.emitLive('sub_1'); // seq 2
     await until(() => got.length === 1);
 
-    server.current.close();
-    await until(() => c.state === 'reconnecting');
-    // Missed while offline.
+    // Never pushed live (as if they happened while offline): only the catch-up after the
+    // reconnect can deliver them. Added before close() so a fast reconnect cannot race them.
     server.addEvent(); // 3
     server.addEvent(); // 4
+    const states: string[] = [];
+    c.onStateChange((s) => states.push(s));
+    server.current.close();
+    await until(() => states.includes('reconnecting'));
     await until(() => got.length === 3);
     // A live duplicate of an already delivered event is ignored; new ones flow.
     server.current.push({ type: 'event', subscriptionId: 'sub_2', event: server.log[3] });

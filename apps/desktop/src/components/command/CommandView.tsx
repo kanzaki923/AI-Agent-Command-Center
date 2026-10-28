@@ -10,6 +10,7 @@ import { useNow } from '../../hooks/useNow';
 import { dayBucket } from '../../lib/format';
 import { useWindowKeydown } from '../../hooks/useWindowKeydown';
 import { cn } from '../../lib/cn';
+import { overlayOpen } from '../../lib/overlay';
 import { sumUsage } from '../../lib/format';
 import { isTypingTarget, matchShortcut } from '../../lib/shortcuts';
 import { describeApproval } from '../../model/approval';
@@ -278,7 +279,7 @@ export function CommandView() {
 
   useWindowKeydown((e) => {
     if (e.defaultPrevented || isTypingTarget(e.target)) return;
-    if (document.querySelector('[role="dialog"], [data-radix-popper-content-wrapper]')) return;
+    if (overlayOpen()) return;
     const idx = selected ? visible.findIndex((i) => i.id === selected.id) : -1;
     if (matchShortcut(e, 'down') || (e.key === 'ArrowDown' && !e.ctrlKey && !e.altKey && !e.metaKey)) {
       e.preventDefault();

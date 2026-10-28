@@ -3,6 +3,7 @@ import { qk } from '../daemon/keys';
 import { useRuntime } from '../daemon/runtime';
 import { useWindowKeydown } from '../hooks/useWindowKeydown';
 import { resolveEscape } from '../lib/escape';
+import { overlayOpen } from '../lib/overlay';
 import { isTypingTarget, matchShortcut } from '../lib/shortcuts';
 import { useUi } from '../store/ui';
 import { focusComposerSoon, goToAttention, newChat, stop, switchMode } from './commands';
@@ -34,9 +35,6 @@ function focusRegion(dir: 1 | -1) {
   target.focus();
 }
 
-function overlayOpen(): boolean {
-  return !!document.querySelector('[role="dialog"], [role="alertdialog"], [data-radix-popper-content-wrapper]');
-}
 
 /** Global keyboard map (ui-design §7.2). Single-key shortcuts never fire while typing. */
 export function GlobalShortcuts() {

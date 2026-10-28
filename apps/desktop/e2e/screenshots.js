@@ -71,6 +71,10 @@ if (want('focus')) {
   await page.waitForTimeout(300);
   await shot('05-focus-diff');
   await page.getByRole('tab', { name: '概要' }).click();
+  await page.keyboard.press('Control+M');
+  await page.waitForTimeout(300);
+  await shot('05b-model-picker');
+  await page.keyboard.press('Escape');
 }
 
 if (want('chat')) {

@@ -47,7 +47,7 @@ export function ModelPicker({
           <ChevronDown size={11} strokeWidth={1.75} className="text-fg-4" />
         </button>
       </PopoverTrigger>
-      <PopoverContent side="top" className="w-72">
+      <PopoverContent side="top" className="w-[360px]">
         <Command loop>
           <Command.Input
             placeholder="モデルを検索…"

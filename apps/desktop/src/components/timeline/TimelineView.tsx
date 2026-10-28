@@ -31,6 +31,7 @@ import { useRuntime } from '../../daemon/runtime';
 import { useStickToBottom } from '../../hooks/useStickToBottom';
 import { useWindowKeydown } from '../../hooks/useWindowKeydown';
 import { cn } from '../../lib/cn';
+import { overlayOpen } from '../../lib/overlay';
 import { formatAbsolute, formatClockSeconds } from '../../lib/format';
 import { isTypingTarget, matchShortcut } from '../../lib/shortcuts';
 import { runStatusToState } from '../../lib/status';
@@ -334,7 +335,7 @@ export function TimelineView() {
       return;
     }
     if (e.defaultPrevented || isTypingTarget(e.target)) return;
-    if (document.querySelector('[role="dialog"], [data-radix-popper-content-wrapper]')) return;
+    if (overlayOpen()) return;
     const idx = rows.findIndex((r) => r.key === selectedKey);
     const go = (i: number) => {
       const r = rows[Math.max(0, Math.min(rows.length - 1, i))];

@@ -199,7 +199,11 @@ export function Composer({
           'rounded-md border bg-surface transition-colors duration-[120ms]',
           'border-line focus-within:border-line-strong',
         )}
-        onClick={() => textarea.current?.focus()}
+        onClick={(e) => {
+          // Clicking the frame focuses the input; chips and buttons keep their own focus.
+          if (e.target instanceof Element && e.target.closest('button, input, textarea, a')) return;
+          textarea.current?.focus();
+        }}
       >
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">

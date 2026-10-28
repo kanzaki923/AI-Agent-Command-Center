@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { type EscapeContext, resolveEscape } from './escape';
+import { overlayOpen } from './overlay';
 import { isTypingTarget, keyParts, matchShortcut, matches } from './shortcuts';
 
 const base: EscapeContext = {
@@ -86,5 +87,17 @@ describe('isTypingTarget', () => {
     expect(isTypingTarget(checkbox)).toBe(false);
     expect(isTypingTarget(btn)).toBe(false);
     expect(isTypingTarget(null)).toBe(false);
+  });
+});
+
+describe('overlayOpen', () => {
+  it('counts dialogs and menus but not tooltips', () => {
+    document.body.innerHTML = '<div role="tooltip">hint</div>';
+    expect(overlayOpen()).toBe(false);
+    document.body.innerHTML = '<div role="menu"></div>';
+    expect(overlayOpen()).toBe(true);
+    document.body.innerHTML = '<div role="dialog"></div>';
+    expect(overlayOpen()).toBe(true);
+    document.body.innerHTML = '';
   });
 });
