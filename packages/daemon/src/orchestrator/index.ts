@@ -1,3 +1,4 @@
+import type { Actor } from '@acc/protocol';
 import { defineMethod } from '../api/registry';
 import { defineModule } from '../module';
 import { setupDemo } from './demo';
@@ -48,6 +49,18 @@ declare module '../core/context' {
 export const orchestratorModule = defineModule({
   name: 'orchestrator',
   register(ctx) {
+    /** An agent run blocked in a long wait lends its execution slot (its workers need one). */
+    const lendingSlot = async <T>(actor: Actor, wait: () => Promise<T>): Promise<T> => {
+      const back =
+        actor.kind === 'agent' && ctx.hasService('runs')
+          ? ctx.service('runs').lendSlot(actor.runId)
+          : () => undefined;
+      try {
+        return await wait();
+      } finally {
+        back();
+      }
+    };
     const workers = new WorkerService(ctx);
     ctx.provide('workers', workers);
 
@@ -80,7 +93,7 @@ export const orchestratorModule = defineModule({
 
       defineMethod('task.wait', {
         scope: (p) => taskScope(p.taskIds),
-        handler: (p, call) => waitForTasks(ctx, p, call.signal),
+        handler: (p, call) => lendingSlot(call.actor, () => waitForTasks(ctx, p, call.signal)),
       }),
 
       defineMethod('integration.wait', {
@@ -88,7 +101,8 @@ export const orchestratorModule = defineModule({
           const i = ctx.repos.integrations.get(p.integrationId);
           return { projectIds: i ? [i.projectId] : [] };
         },
-        handler: (p, call) => waitForIntegration(ctx, p, call.signal),
+        handler: (p, call) =>
+          lendingSlot(call.actor, () => waitForIntegration(ctx, p, call.signal)),
       }),
 
       defineMethod('orchestrator.recordDecision', {

@@ -96,13 +96,13 @@ packages/cli      `acc` コマンド（Control API クライアント）
 
 `created → queued → running → completed`。途中で `awaiting_approval`、終端は `completed / failed / cancelled / interrupted`。
 
-- 同時実行数の上限（`settings.maxConcurrentRuns`、既定 10）を超えた Run は `queued` で待ち、空きができた順（FIFO）に始まる。実行枠は `running` と `awaiting_approval` が占有する（承認待ちもプロセスやロックを持ったままのため）。
-- 1 つの worktree に書き込める Run は同時に 1 つ（ワークスペースロック）。ロック待ちの Run は `queued` のまま残り、後ろの Run は先に始まってよい。
+- 同時実行数の上限（`settings.maxConcurrentRuns`、既定 10）を超えた Run は `queued` で待ち、空きができた順（FIFO）に始まる。実行枠は `running` と `awaiting_approval` が占有する（承認待ちもプロセスやロックを持ったままのため）。ただし agent の Run が `task.wait` / `integration.wait` で眠っている間は、その枠を待ち行列に貸す（`runs.lendSlot`。待っている Worker が始まれずに止まらないように）。待ちから戻った Run は、枠が埋まっていても続ける（一時的に上限を超えうる）。
+- 1 つの worktree に書き込める Run は同時に 1 つ（ワークスペースロック）。ロック待ちの Run は `queued` のまま残り、後ろの Run は先に始まってよい。ワークスペースが `removed` / `error` になった Run は待たずに `failed`（`workspace_unavailable`）。
 - 1 セッションで同時に動く Run は 1 つ（2 つ目の `session.send` は `conflict`、ユーザーメッセージも残らない）。
 - `run.retry`：Task の Worker（`agent` で `taskId` あり）は `task.retry` として行う（Task の状態・権限・上限・予算の規則がそのまま効く）。Integrator の Run は再試行できない（統合から改めて Integrator に任せる）。
 - 実際の処理は Run の種類ごとの Executor（`ctx.service('runs').registerExecutor(kind, fn)`）が `RunController` 経由で行う（`chat` は sessions、`agent` は runtime、`orchestrator` は orchestrator）。登録は各モジュールの `start()` で行う。終端状態は RunManager だけが決める。
 - `agent` Run で `workspaceId` を省くと、セッション → Task のワークスペースを Run に記録してそのロックを取る（Executor が書き込む先と、ロックの対象を一致させる）。`chat` Run はロックを取らない。
-- キャンセルは即座に `cancelled` にして signal を abort する。実行枠とロックは Executor が止まってから返す（止まらなければ 10 秒で強制解放）。デーモン停止時は `running` / `queued` を `interrupted`（`daemon_shutdown`）にする。
+- キャンセルは即座に `cancelled` にして signal を abort する。実行枠とロックは Executor が止まってから返す（止まらなければ 10 秒で強制解放。強制解放の後で確定した LLM 呼び出しの実費も、Run の使用量と Budget に記録する）。デーモン停止時は `running` / `queued` を `interrupted`（`daemon_shutdown`）にする。
 - 「いま何をしているか」は `Run.activity`。変化は `run.updated`（`changes: ["activity"]`）で届き、使用量の加算も `run.updated`（`["usage"]`）。activity は実行中だけ意味を持つ。
 - 予算（Budget を持つ Run）：
   - LLM 呼び出しの前に `ctl.reserveBudget()` で `settings.llmCallReserveUsd`（既定 $0.25）を予約し、終わったら `hold.settle(usage)` で実額に確定、失敗した呼び出しは `hold.cancel()`。予約が入らない（空き < 予約額）呼び出しは拒否するので、同じ Budget を共有する Run が同時に動いても、1 回の実額が予約額以下である限り上限を超えない（`runToolLoop` が使う）。Run の終了時に残った予約は取り消す。
@@ -123,13 +123,14 @@ packages/cli      `acc` コマンド（Control API クライアント）
 
 - **Workspace**：worktree は `<ACC_HOME>/worktrees/<projectId>/<workspaceId>`、ブランチは既定 `acc/<slug>-<id末尾8文字>`（slug はラベルかタスク名の ASCII 部分、なければ `ws`）。リポジトリ本体は `kind: main` のワークスペースとして初回参照時（`workspace.list` で projectId 指定など）に登録し、削除できない。git は `workspace/git.ts` の `git(cwd, args)` で引数配列のまま spawn する（シェルを通さない）。worktree の中身はエージェントが書くので、デーモンの git はリポジトリ由来のプログラムを実行しない：毎回 `-c core.fsmonitor=false -c core.hooksPath=<null デバイス>`（コミット・マージは `--no-verify` も）、環境は許可リスト（`runtime/env.ts` + `GIT_CONFIG_*`）。linked worktree の `.git` ファイルは、作業ツリーの外の `<common>/worktrees/<name>` を指し、その `gitdir` が戻ってくるときだけ使い、`GIT_DIR` / `GIT_WORK_TREE` で固定する（書き換えられていれば git を実行せずエラー）。
 - **ロック**：書き込める Run は 1 つ。Run のロックはメモリ + `Workspace.lockedByRunId`（再起動時に `core/recovery.ts` と workspace モジュールの `start` が終わった Run のロックを外す）。統合など daemon 内部の作業は `hold()` でメモリだけのロックを取る。ロック中は削除不可。
-- **削除**：`workspace.remove` は worktree だけ消してブランチは必ず残す（成果物を失わない）。未コミットの変更があると `force` なしでは拒否。
+- **削除**：`workspace.remove` は worktree だけ消してブランチは必ず残す（成果物を失わない）。未コミットの変更があると `force` なしでは拒否。ロックの確認と同時に（await の前に）自分でロックを取るので、削除の途中で Run が始まって作業ディレクトリを消されることはない。
 - **diff**：`baseRef`（既定はワークスペースの baseRef）と HEAD の merge-base に対し、コミット済み・未ステージ・未追跡をすべて含めて出す。未追跡は一時 index（`GIT_INDEX_FILE`）に `add -A` して拾い、エージェントの index は触らない。パッチは 2M 文字で切る（ファイル別統計は完全）。
 - **コミット**：`commitAll` の author/committer は `Project.commitAuthor`、未設定なら `AI Agent Command Center <acc@localhost>`。
 - **Artifact**：`ctx.service('artifacts')` の `record` / `recordDiff` / `recordCommit` / `recordTestResult` で記録し `artifact.created` を出す。projectId・taskId はワークスペースや Run から補う。
 - **Integration**：`integration.create` で反映先（既定 `Project.defaultBranch`）から `acc/integration-<id末尾8文字>` を専用 worktree に作り、merge ×N → verify → apply の手順を `pending` で並べる。`integration.run` はすぐ返し、裏で毎回反映先の最新から `git merge --no-ff` を順に行い、`Project.testCommand` をシェルで実行する（タイムアウト既定 10 分、出力は末尾 64KiB を test_result Artifact に。環境はエージェントと同じ許可リスト + `CI=true`。出力に LiteLLM のキーやデーモンのトークンがあれば `[REDACTED]` にする）。
   - テストはエージェントの書いたコードをユーザーの権限で動かすので、**人間が始めていない試行**（agent の `integration.run`、Integrator の解消後の再開など）は、実行の前に `integration` 種別の Approval（`payload: { action: "verify", command }`、`integrationId` つき、`runId` なし）を出して待つ（状態は `verifying` のまま）。回答できるのは人間だけ（`integration` 種別の Approval は agent・system からは Grant があっても `forbidden`）。却下は `failed`（`tests_not_approved`）、停止・再起動で待ちが切れたら取り消す。UI は統合のカードで尋ねる。手順ごとに `integration.updated` を出す。
-  - 状態：`running` → `verifying` → `awaiting_approval`（反映待ち）／`conflict`（マージ中止済み、統合ブランチは直前の状態）／`failed`（テスト失敗・その他）。`conflict` / `failed` / `awaiting_approval` からは再実行できる。同じプロジェクトの統合と承認は 1 件ずつ直列に実行する。
+  - 状態：`running` → `verifying` → `awaiting_approval`（反映待ち）／`conflict`（マージ中止済み、統合ブランチは直前の状態）／`failed`（テスト失敗・その他）。`conflict` / `failed` / `awaiting_approval` からは再実行できる。同じプロジェクトの統合と承認は 1 件ずつ直列に実行する。承認（反映）の途中は、`integration.run` / `reject` / `resolveWithAgent` / 二重の承認を `conflict` にする（呼び出した時点で反映中の印を付ける）。順番待ちの試行は、始まる時点で `running` でなければ何もしない。
+  - テストコマンドの終了はシェルの `exit` で決める。残ったバックグラウンドプロセスが出力のパイプを持ち続けても、1 秒待ってパイプを閉じて終える（POSIX はプロセスグループごと止める）。
   - `integration.approve` は **human のみ**（agent・system は Grant があっても `forbidden`、LLM ツールにも出さない）。反映は早送りだけ：反映先がどこかの作業ツリーでチェックアウト中なら、そこが clean のときだけ `merge --ff-only`（dirty なら `conflict`）、どこにもチェックアウトされていなければ旧値つき `update-ref`。反映先が進んでいたら `conflict`（再実行を促す）。
   - 却下・失敗でも worktree とブランチは残す。再起動で中断された統合は `failed`（`daemon_restart`）になる。
   - **Integrator**（concept §6.1 の 5）：`integration.resolveWithAgent({ integrationId, instructions? })` は `conflict` の統合だけ。統合用 worktree にコンフリクトしたマージを再現し（マーカー入り）、コンフリクトしたマージの直後に `fix` 手順を挟んで状態を `running` にしてから（`integration.wait` は待ち続ける）、その worktree で `agent` Run（Task なし。権限・深さ・予算は Worker と同じ規則で `orchestrator/workers.ts` が起動）を始め、`Integration.resolverRunId` に記録する。プロンプトはコンフリクトしたファイルと両側の Task の目標・完了条件・要約（`acc-mock` 計画は渡さない）。Run が `completed` で、マージがコミット済み（`MERGE_HEAD` なし）・未解決ファイルなし・取り込むブランチが HEAD に含まれる・マーカーが残っていない、を確かめたら **再開モード**で続ける：統合ブランチを作り直さず、すでに含まれるソースは「取り込み済み」とし、残りのマージと検証を行う。満たさなければ worktree を再現前に戻して `conflict`（`error.code: resolution_failed`、理由つき）。通常の `integration.run` は反映先から作り直すので `fix` 手順と解消結果は消える。

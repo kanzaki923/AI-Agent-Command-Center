@@ -129,6 +129,15 @@ export interface RunsService {
   /** Resolves when the run reaches a terminal status. */
   waitForEnd(runId: string, signal?: AbortSignal): Promise<Run>;
   resolveApproval(approvalId: string, decision: ApprovalDecision, actor: Actor): Approval;
+  /**
+   * While a run blocks waiting on other runs (task.wait / integration.wait), its execution
+   * slot goes to queued runs — otherwise an orchestrator could wait forever on workers that
+   * never get a slot. Call the returned function when the wait ends; the run then counts
+   * again (briefly over the limit if the slot was used meanwhile).
+   */
+  lendSlot(runId: string): () => void;
+  /** Start queued runs that can start now (after a lock was freed outside the runs module). */
+  pump(): void;
 }
 
 // ---------------------------------------------------------------------------

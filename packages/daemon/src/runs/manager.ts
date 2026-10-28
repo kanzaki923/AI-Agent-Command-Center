@@ -131,6 +131,8 @@ export class RunManager implements RunsService {
   private readonly executors = new Map<RunKind, RunExecutor>();
   private queue: string[] = [];
   private readonly active = new Map<string, ActiveRun>();
+  /** Active runs that lent their slot while they wait (runId -> nested waits). */
+  private readonly lent = new Map<string, number>();
   private readonly waiters = new Map<string, Set<(run: Run) => void>>();
   private readonly approvalWaiters = new Map<string, ApprovalWaiter>();
   private readonly lockWaitNoted = new Set<string>();
@@ -333,6 +335,20 @@ export class RunManager implements RunsService {
 
   // ------------------------------------------------------------------ lifecycle
 
+  lendSlot(runId: string): () => void {
+    if (!this.active.has(runId)) return () => undefined;
+    this.lent.set(runId, (this.lent.get(runId) ?? 0) + 1);
+    this.pump();
+    let back = false;
+    return () => {
+      if (back) return;
+      back = true;
+      const n = (this.lent.get(runId) ?? 1) - 1;
+      if (n > 0) this.lent.set(runId, n);
+      else this.lent.delete(runId);
+    };
+  }
+
   /** Start queued runs while slots (and workspace locks) are available. */
   pump(): void {
     if (this.closed) return;
@@ -361,7 +377,7 @@ export class RunManager implements RunsService {
         removed.add(id);
         continue;
       }
-      if (this.active.size >= max) break;
+      if (this.active.size - this.lent.size >= max) break;
       const lock = this.tryLock(run);
       if (lock.kind === 'busy') {
         this.noteLockWait(run);
@@ -386,6 +402,17 @@ export class RunManager implements RunsService {
     if (!run.workspaceId || !this.ctx.hasService('workspaces')) return { kind: 'ok', lock: null };
     const ws = this.ctx.service('workspaces');
     try {
+      // Gone for good (removed, or removal failed): waiting would never end.
+      const status = ws.get(run.workspaceId).status;
+      if (status === 'removed' || status === 'error') {
+        return {
+          kind: 'error',
+          error: conflict(`ワークスペースが利用できないため実行できません（${status}）`, {
+            workspaceId: run.workspaceId,
+            status,
+          }),
+        };
+      }
       if (ws.isLocked(run.workspaceId)) return { kind: 'busy' };
       return { kind: 'ok', lock: ws.acquire(run.workspaceId, run.id) };
     } catch (err) {
@@ -507,6 +534,7 @@ export class RunManager implements RunsService {
       a.reservations.clear();
     }
     this.active.delete(a.runId);
+    this.lent.delete(a.runId);
     this.pump();
   }
 
@@ -869,9 +897,17 @@ export class RunManager implements RunsService {
     return {
       amountUsd: reservation.amountUsd,
       settle: (u) => {
-        if (!take()) return;
+        if (done || this.detached) return;
+        const cost = Math.max(0, u.costUsd ?? 0);
+        if (!take()) {
+          // The run was force-cleaned up (its reservation cancelled) while this call was in
+          // flight. The provider still charged it: book the fact on the run and the budget.
+          report(u);
+          if (cost > 0) this.spend(a, budgetId, (b, id) => b.recordSpend(id, cost));
+          return;
+        }
         report(u);
-        this.spend(a, budgetId, (b) => b.settle(reservation, Math.max(0, u.costUsd ?? 0)));
+        this.spend(a, budgetId, (b) => b.settle(reservation, cost));
       },
       cancel: () => {
         if (!take()) return;

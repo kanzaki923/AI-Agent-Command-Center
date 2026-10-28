@@ -19,6 +19,12 @@ export interface CommandOptions {
   maxOutputBytes: number;
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
+  /**
+   * After the shell exits, how long to wait for its output to end (default 1 s). Background
+   * processes it left (a test server, a watcher) inherit the pipes and would hold them open
+   * forever; they are killed where possible and the pipes are closed on our side.
+   */
+  exitGraceMs?: number;
 }
 
 /**
@@ -104,6 +110,8 @@ export function runShellCommand(command: string, opts: CommandOptions): Promise<
     let timedOut = false;
     let aborted = false;
     let settled = false;
+    let exitCode: number | null = null;
+    let graceTimer: NodeJS.Timeout | undefined;
     const stop = () => {
       if (child.pid !== undefined) killTree(child.pid);
     };
@@ -122,6 +130,7 @@ export function runShellCommand(command: string, opts: CommandOptions): Promise<
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(graceTimer);
       opts.signal?.removeEventListener('abort', onAbort);
       let output = Buffer.concat(chunks).toString('utf8');
       if (truncated) output = output.replace(/^[\s\S]*?\n/, ''); // drop the partial first line
@@ -136,6 +145,17 @@ export function runShellCommand(command: string, opts: CommandOptions): Promise<
       });
     };
     child.on('error', (err) => finish(null, `\n${err.message}\n`));
-    child.on('close', (code) => finish(code));
+    // 'close' waits for every holder of stdout/stderr, grandchildren included: the exit code
+    // comes from 'exit', and leftovers get a short grace period.
+    child.on('exit', (code) => {
+      exitCode = code;
+      graceTimer = setTimeout(() => {
+        if (process.platform !== 'win32') stop(); // the rest of the process group
+        child.stdout.destroy();
+        child.stderr.destroy();
+        finish(exitCode);
+      }, opts.exitGraceMs ?? 1000);
+    });
+    child.on('close', (code) => finish(code ?? exitCode));
   });
 }

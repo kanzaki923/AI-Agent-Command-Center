@@ -68,6 +68,11 @@ const short = (sha: string | null | undefined) => (sha ? sha.slice(0, 8) : '');
 export class IntegrationService {
   private readonly projectQueue = new KeyedMutex();
   private readonly jobs = new Map<string, Promise<Integration>>();
+  /**
+   * Integrations being applied. Marked synchronously when approve is called (before any
+   * await), so run / reject / resolveWithAgent cannot slip in while git moves the target.
+   */
+  private readonly applying = new Set<string>();
   /** Resolutions in progress: where the integration branch was before the re-created merge. */
   private readonly resolutions = new Map<string, { preSha: string | null; branch: string }>();
   private readonly shutdown = new AbortController();
@@ -229,6 +234,9 @@ export class IntegrationService {
   /** Start (or restart) an attempt in the background and return the `running` integration. */
   run(integrationId: string, actor: Actor): Integration {
     const cur = this.get(integrationId);
+    if (this.applying.has(integrationId)) {
+      throw conflict('この統合は反映中です', { integrationId });
+    }
     if (this.jobs.has(integrationId) || ACTIVE.includes(cur.status)) {
       throw conflict('この統合はすでに実行中です', { integrationId });
     }
@@ -274,6 +282,8 @@ export class IntegrationService {
    */
   private async execute(id: string, actor: Actor, mode: 'fresh' | 'resume'): Promise<Integration> {
     const integ = this.get(id);
+    // Queued behind other work of the project: only an attempt still marked running may go on.
+    if (integ.status !== 'running') return integ;
     const project = this.ctx.repos.projects.require(integ.projectId);
     const repo = this.workspaces.requireRepo(project);
     if (!integ.workspaceId || !integ.branch || !integ.targetRef) {
@@ -648,8 +658,24 @@ export class IntegrationService {
         '保護されたブランチへの反映には人間の承認が必要です。エージェントは統合を承認できません',
       );
     }
-    const projectId = this.get(integrationId).projectId;
-    return this.projectQueue.run(projectId, () => this.apply(integrationId, actor, note ?? null));
+    const cur = this.get(integrationId);
+    if (this.applying.has(integrationId)) {
+      throw conflict('この統合はすでに反映中です', { integrationId });
+    }
+    if (cur.status !== 'awaiting_approval' || this.jobs.has(integrationId)) {
+      throw conflict(`この統合は承認できる状態ではありません（${cur.status}）`, {
+        integrationId,
+        status: cur.status,
+      });
+    }
+    this.applying.add(integrationId);
+    try {
+      return await this.projectQueue.run(cur.projectId, () =>
+        this.apply(integrationId, actor, note ?? null),
+      );
+    } finally {
+      this.applying.delete(integrationId);
+    }
   }
 
   private async apply(id: string, actor: Actor, note: string | null): Promise<Integration> {
@@ -743,7 +769,11 @@ export class IntegrationService {
 
   reject(integrationId: string, actor: Actor, note?: string): Integration {
     const cur = this.get(integrationId);
-    if (ACTIVE.includes(cur.status) || this.jobs.has(integrationId)) {
+    if (
+      ACTIVE.includes(cur.status) ||
+      this.jobs.has(integrationId) ||
+      this.applying.has(integrationId)
+    ) {
       throw conflict('実行中の統合は却下できません。完了を待ってから却下してください', {
         integrationId,
       });
@@ -794,7 +824,11 @@ export class IntegrationService {
     actor: Actor,
   ): Promise<{ integration: Integration; step: IntegrationStep; merged: boolean }> {
     const cur = this.get(integrationId);
-    if (this.jobs.has(integrationId) || this.resolutions.has(integrationId)) {
+    if (
+      this.jobs.has(integrationId) ||
+      this.resolutions.has(integrationId) ||
+      this.applying.has(integrationId)
+    ) {
       throw conflict('この統合はすでに実行中です', { integrationId });
     }
     if (cur.status !== 'conflict') {

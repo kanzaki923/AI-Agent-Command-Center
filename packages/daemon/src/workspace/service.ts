@@ -274,6 +274,20 @@ export class WorkspaceService implements WorkspacesService {
         lockedBy: this.locks.get(workspaceId) ?? ws.lockedByRunId,
       });
     }
+    // Hold the lock from the check on (no await in between): a queued run must not start an
+    // agent in this directory while the removal waits for git, then lose it to --force.
+    const release = this.hold(workspaceId, `remove:${workspaceId}`);
+    try {
+      await this.removeHeld(ws, opts);
+    } finally {
+      release();
+      // Queued runs waiting on this workspace now fail (removed) or may start (kept).
+      if (this.ctx.hasService('runs')) this.ctx.service('runs').pump();
+    }
+  }
+
+  private async removeHeld(ws: Workspace, opts: { force: boolean; actor: Actor }): Promise<void> {
+    const workspaceId = ws.id;
     const project = this.ctx.repos.projects.require(ws.projectId);
     const repo = this.requireRepo(project);
     const exists = existsSync(ws.path);

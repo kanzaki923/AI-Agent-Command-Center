@@ -1,4 +1,4 @@
-import type { Event, Run } from '@acc/protocol';
+import type { Event, Run, Workspace } from '@acc/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { RunController, RunsService, WorkspaceLock, WorkspacesService } from '../contracts';
 import { conflict, invalidParams } from '../core/errors';
@@ -11,6 +11,7 @@ import {
   createTestDaemon,
   insertTestTask,
 } from '../testing';
+import { createTempRepo, isolateGitConfig } from '../workspace/git-fixture';
 import { mergeUsage } from './manager';
 
 let d: TestDaemonNoServer | null = null;
@@ -455,7 +456,8 @@ describe('workspace locks', () => {
   it('keeps a run queued until its workspace lock is free while others start', async () => {
     const locks = new Map<string, string>();
     let notify: () => void = () => {};
-    const fake: Pick<WorkspacesService, 'acquire' | 'isLocked'> = {
+    const fake: Pick<WorkspacesService, 'acquire' | 'isLocked' | 'get'> = {
+      get: (id) => ({ id, status: 'ready' }) as Workspace,
       isLocked: (id) => locks.has(id),
       acquire: (id, runId): WorkspaceLock => {
         if (locks.has(id)) throw conflict('locked');
@@ -634,5 +636,142 @@ describe('methods', () => {
     await expect(d.call(HUMAN, 'run.get', { runId: d.ctx.ids.next('run') })).rejects.toMatchObject({
       code: 'not_found',
     });
+  });
+});
+
+describe('liveness', () => {
+  it('a run waiting on others lends its slot, so the workers it waits for can start', async () => {
+    d = await createTestDaemon();
+    await d.call(HUMAN, 'settings.update', { maxConcurrentRuns: 1 });
+    const ex = blockingExecutor(d.ctx.service('runs'));
+    const waiter = startAgentRun(d, (await newSession(d)).id);
+    await until(() => ex.started(waiter.id));
+    d.ctx.repos.grants.insert({
+      id: d.ctx.ids.next('grant'),
+      subject: { kind: 'run', runId: waiter.id },
+      parentGrantId: null,
+      permissions: ['*'],
+      scope: {},
+      limits: {},
+      depth: 0,
+      lifetime: 'run',
+      expiresAt: null,
+      revokedAt: null,
+      reason: null,
+      grantedBy: HUMAN,
+      createdAt: d.ctx.clock.iso(),
+    });
+    const project = await d.call(HUMAN, 'project.create', { name: 'p' });
+    const task = await d.call(HUMAN, 'task.create', { projectId: project.id, title: 't' });
+    const worker = startAgentRun(d, (await newSession(d)).id);
+    expect(status(d, worker.id)).toBe('queued');
+
+    const actor = agentActor(waiter.sessionId, waiter.id);
+    const waiting = d.call(actor, 'task.wait', { taskIds: [task.id], timeoutMs: 60_000 });
+    await until(() => ex.started(worker.id));
+    expect(status(d, waiter.id)).toBe('running');
+    // A third run still waits: the slot went to the worker, not to everyone.
+    const third = startAgentRun(d, (await newSession(d)).id);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(status(d, third.id)).toBe('queued');
+
+    await d.call(HUMAN, 'task.update', { taskId: task.id, status: 'cancelled' });
+    await waiting;
+    ex.finish(worker.id);
+    await d.ctx.service('runs').waitForEnd(worker.id);
+    // The waiter has its slot back: the third run keeps waiting until the waiter ends.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(status(d, third.id)).toBe('queued');
+    ex.finish(waiter.id);
+    await until(() => ex.started(third.id));
+    ex.finish(third.id);
+  });
+
+  it('fails a queued run whose workspace was removed instead of waiting forever', async () => {
+    const restore = isolateGitConfig();
+    const repo = await createTempRepo();
+    try {
+      d = await createTestDaemon();
+      await d.call(HUMAN, 'settings.update', { maxConcurrentRuns: 1 });
+      const ex = blockingExecutor(d.ctx.service('runs'));
+      const project = await d.call(HUMAN, 'project.create', {
+        name: 'p',
+        repoPath: repo.path,
+        defaultBranch: 'main',
+      });
+      const ws = await d.call(HUMAN, 'workspace.create', { projectId: project.id });
+      const busy = startAgentRun(d, (await newSession(d)).id);
+      await until(() => ex.started(busy.id));
+      const queued = startAgentRun(d, (await newSession(d)).id, { workspaceId: ws.id });
+      expect(status(d, queued.id)).toBe('queued');
+
+      await d.call(HUMAN, 'workspace.remove', { workspaceId: ws.id });
+      ex.finish(busy.id);
+      const ended = await d.ctx.service('runs').waitForEnd(queued.id);
+      expect(ended).toMatchObject({ status: 'failed', statusReason: 'workspace_unavailable' });
+    } finally {
+      await d?.cleanup();
+      d = null;
+      await repo.cleanup();
+      restore();
+    }
+  }, 60_000);
+
+  it('holds the workspace lock from the moment a removal starts', async () => {
+    const restore = isolateGitConfig();
+    const repo = await createTempRepo();
+    try {
+      d = await createTestDaemon();
+      const ex = blockingExecutor(d.ctx.service('runs'));
+      const project = await d.call(HUMAN, 'project.create', {
+        name: 'p',
+        repoPath: repo.path,
+        defaultBranch: 'main',
+      });
+      const ws = await d.call(HUMAN, 'workspace.create', { projectId: project.id });
+      const svc = d.ctx.service('workspaceManager');
+      const removing = svc.remove(ws.id, { force: false, actor: HUMAN });
+      // Synchronously after the call: a run cannot take the workspace any more.
+      expect(svc.isLocked(ws.id)).toBe(true);
+      const run = startAgentRun(d, (await newSession(d)).id, { workspaceId: ws.id });
+      await removing;
+      const ended = await d.ctx.service('runs').waitForEnd(run.id);
+      expect(ended.statusReason).toBe('workspace_unavailable');
+      expect(ex.started(run.id)).toBe(false);
+    } finally {
+      await d?.cleanup();
+      d = null;
+      await repo.cleanup();
+      restore();
+    }
+  }, 60_000);
+
+  it('books the cost of a call that settles after its run was force-cleaned up', async () => {
+    d = await createTestDaemon();
+    const runs = d.ctx.service('runs');
+    (runs as unknown as { cancelGraceMs: number }).cancelGraceMs = 20;
+    const budget = d.ctx.service('budget').createRoot({
+      subject: { kind: 'global', id: null },
+      limitUsd: 1,
+      actor: HUMAN,
+    });
+    const settled = deferred();
+    let settle!: () => void;
+    runs.registerExecutor('agent', async (ctl) => {
+      const hold = ctl.reserveBudget(0.1);
+      // A provider call that ignores the abort and returns late.
+      await new Promise<void>((r) => (settle = r));
+      hold.settle({ inputTokens: 5, outputTokens: 5, costUsd: 0.07, costSource: 'reported' });
+      settled.resolve();
+    });
+    const run = startAgentRun(d, (await newSession(d)).id, { budgetId: budget.id });
+    await until(() => status(d!, run.id) === 'running' && settle !== undefined);
+    runs.cancel(run.id, HUMAN);
+    // Grace over: slot and reservation are freed although the executor did not return.
+    await until(() => d!.ctx.service('budget').get(budget.id).reservedUsd === 0, 3000);
+    settle();
+    await settled.promise;
+    expect(d.ctx.service('budget').get(budget.id).spentUsd).toBeCloseTo(0.07);
+    expect(d.ctx.repos.runs.require(run.id).usage.costUsd).toBeCloseTo(0.07);
   });
 });

@@ -96,6 +96,8 @@ const fakeServicesModule = defineModule({
       resolveApproval: () => {
         throw new Error('not used');
       },
+      lendSlot: () => () => undefined,
+      pump: () => undefined,
     });
     ctx.provide('artifacts', {
       recordDiff: async (input: unknown) => {

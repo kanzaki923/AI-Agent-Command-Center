@@ -496,6 +496,36 @@ describe('integration', () => {
     }
   });
 
+  it('refuses to re-run or reject an integration while it is being applied', async () => {
+    const s = await setup();
+    const ws = await workOn(s, { 'c.txt': 'c\n' });
+    const integ = await s.d.call(HUMAN, 'integration.create', {
+      projectId: s.project.id,
+      workspaceIds: [ws.id],
+    });
+    await runToEnd(s, integ.id);
+    const applying = s.d.call(HUMAN, 'integration.approve', { integrationId: integ.id });
+    // approve is still in git; nothing else may touch the integration meanwhile.
+    await vi.waitFor(() => {
+      const apply = s.d.ctx
+        .service('integrations')
+        .get(integ.id)
+        .steps.find((st) => st.kind === 'apply');
+      if (apply?.status !== 'running') throw new Error('not applying yet');
+    });
+    await expect(
+      s.d.call(HUMAN, 'integration.run', { integrationId: integ.id }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    await expect(
+      s.d.call(HUMAN, 'integration.reject', { integrationId: integ.id }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    await expect(
+      s.d.call(HUMAN, 'integration.approve', { integrationId: integ.id }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    expect((await applying).status).toBe('applied');
+    expect(s.d.ctx.service('integrations').get(integ.id).status).toBe('applied');
+  });
+
   it('rejects without deleting anything and refuses further runs', async () => {
     const s = await setup();
     const ws = await workOn(s, { 'c.txt': 'c\n' });
@@ -621,6 +651,17 @@ describe('runShellCommand', () => {
       ANTHROPIC_API_KEY: 'sk-secret',
     });
     expect(env).toEqual({ PATH: '/bin', HOME: '/home/u', CI: 'true' });
+  });
+
+  it('returns when the shell exits even if a background process keeps its output open', async () => {
+    // The grandchild inherits stdout/stderr and outlives the shell (a test server, a watcher).
+    const res = await runShellCommand(
+      `node -e "require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 15000)'], { stdio: 'inherit', detached: true }).unref(); console.log('tests done')"`,
+      { cwd: process.cwd(), timeoutMs: 30_000, maxOutputBytes: 4096, exitGraceMs: 300 },
+    );
+    expect(res).toMatchObject({ exitCode: 0, timedOut: false });
+    expect(res.output).toContain('tests done');
+    expect(res.durationMs).toBeLessThan(10_000);
   });
 
   it('redacts long secrets from output', () => {
