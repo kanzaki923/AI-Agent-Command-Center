@@ -3,7 +3,13 @@ import { join } from 'node:path';
 import type { Integration, Project, Task, Workspace } from '@acc/protocol';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { modules as defaultModules } from '../modules';
-import { HUMAN, type TestDaemonNoServer, agentActor, createTestDaemon } from '../testing';
+import {
+  HUMAN,
+  type TestDaemonNoServer,
+  agentActor,
+  createTestDaemon,
+  insertTestTask,
+} from '../testing';
 import { gitOut } from '../workspace/git';
 import { type TempRepo, createTempRepo, isolateGitConfig } from '../workspace/git-fixture';
 import { commandEnv, runShellCommand } from './command';
@@ -74,25 +80,7 @@ async function runToEnd(s: Setup, integrationId: string): Promise<Integration> {
 }
 
 function insertTask(s: Setup, title: string, workspaceId: string | null): Task {
-  const now = s.d.ctx.clock.iso();
-  return s.d.ctx.repos.tasks.insert({
-    id: s.d.ctx.ids.next('task'),
-    projectId: s.project.id,
-    parentTaskId: null,
-    title,
-    description: '',
-    acceptanceCriteria: [],
-    status: 'review',
-    priority: 'normal',
-    dependsOn: [],
-    assigneeSessionId: null,
-    workspaceId,
-    resultSummary: null,
-    createdBy: HUMAN,
-    createdAt: now,
-    updatedAt: now,
-    completedAt: null,
-  });
+  return insertTestTask(s.d.ctx, { projectId: s.project.id, title, status: 'review', workspaceId });
 }
 
 function statusesOf(s: Setup, integrationId: string): string[] {

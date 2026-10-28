@@ -2,11 +2,13 @@ import {
   type Actor,
   type AgentActor,
   type Approval,
+  type BudgetAllocation,
   type CostSource,
   type ErrorInfo,
   type Run,
   type RunKind,
   type RunStatus,
+  type Session,
   type SystemActor,
   type Usage,
   isTerminalRunStatus,
@@ -22,6 +24,12 @@ import type {
 } from '../contracts';
 import type { DaemonContext } from '../core/context';
 import { ApiError, conflict, forbidden } from '../core/errors';
+
+/** Unallocated, unreserved, unspent amount of a budget, in integer micro-dollars. */
+function remainingMicroUsd(b: BudgetAllocation): number {
+  const micro = (usd: number) => Math.round(usd * 1_000_000);
+  return micro(b.limitUsd) - micro(b.allocatedUsd) - micro(b.reservedUsd) - micro(b.spentUsd);
+}
 
 /** Statuses of a run that has not ended (at most one per session). */
 export const ACTIVE_RUN_STATUSES = [
@@ -165,17 +173,18 @@ export class RunManager implements RunsService {
         ? ctx.repos.runs.require(input.retryOfRunId).attempt + 1
         : 1;
       const now = ctx.clock.iso();
+      const taskId = input.taskId ?? session.taskId;
       const created = ctx.repos.runs.insert({
         id: ctx.ids.next('run'),
         sessionId: session.id,
         projectId: input.projectId ?? session.projectId,
-        taskId: input.taskId ?? session.taskId,
+        taskId,
         kind: input.kind,
         status: 'created',
         statusReason: null,
         model: input.model ?? null,
         runtime: input.runtime ?? null,
-        workspaceId: input.workspaceId ?? null,
+        workspaceId: input.workspaceId ?? this.defaultWorkspaceId(input.kind, session, taskId),
         parentRunId: input.parentRunId ?? null,
         retryOfRunId: input.retryOfRunId ?? null,
         attempt,
@@ -202,6 +211,20 @@ export class RunManager implements RunsService {
       this.pump();
     });
     return run;
+  }
+
+  /**
+   * Agent runs write to the session's (or task's) workspace when none is given — the agent
+   * executor falls back the same way — so resolve it here: the run must hold that lock.
+   */
+  private defaultWorkspaceId(
+    kind: RunKind,
+    session: Session,
+    taskId: string | null,
+  ): string | null {
+    if (kind !== 'agent') return null;
+    if (session.workspaceId) return session.workspaceId;
+    return (taskId && this.ctx.repos.tasks.get(taskId)?.workspaceId) || null;
   }
 
   cancel(runId: string, actor: Actor, reason?: string): Run {
@@ -697,18 +720,21 @@ export class RunManager implements RunsService {
         a.run = run;
         const cost = delta.costUsd ?? 0;
         if (cost > 0 && run.budgetId && ctx.hasService('budget')) {
+          const budget = ctx.service('budget');
+          let exhausted = false;
           try {
-            ctx.service('budget').recordSpend(run.budgetId, cost);
+            // recordSpend keeps the fact of spending even past the limit (it does not throw
+            // for that), so exhaustion is judged from what is left afterwards.
+            budget.recordSpend(run.budgetId, cost);
+            exhausted = remainingMicroUsd(budget.get(run.budgetId)) <= 0;
           } catch (err) {
-            if (err instanceof ApiError && err.code === 'budget_exceeded') {
-              if (!isTerminalRunStatus(a.run.status) && !a.abortKind) {
-                a.abortKind = 'budget';
-                this.rejectApprovalWaiters(a.runId, abortErr('Budget exhausted'));
-                a.abort.abort(abortErr('Budget exhausted'));
-              }
-            } else {
-              ctx.log.error('failed to record run spend', { runId: a.runId, err });
-            }
+            if (err instanceof ApiError && err.code === 'budget_exceeded') exhausted = true;
+            else ctx.log.error('failed to record run spend', { runId: a.runId, err });
+          }
+          if (exhausted && !isTerminalRunStatus(a.run.status) && !a.abortKind) {
+            a.abortKind = 'budget';
+            this.rejectApprovalWaiters(a.runId, abortErr('Budget exhausted'));
+            a.abort.abort(abortErr('Budget exhausted'));
           }
         }
       },

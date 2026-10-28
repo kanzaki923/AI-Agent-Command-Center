@@ -1,9 +1,6 @@
-import type { Actor, Event, Run, Task } from '@acc/protocol';
+import type { Event, Run, Task } from '@acc/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { RunsService } from '../contracts';
 import { ApiError } from '../core/errors';
-import { defineModule } from '../module';
-import { modules } from '../modules';
 import { actorOf, insertRun, setRunStatus } from '../policy/testutil';
 import { HUMAN, type TestDaemonNoServer, createTestDaemon } from '../testing';
 
@@ -36,6 +33,14 @@ async function setup() {
     return t.statusReason ? `${t.status}:${t.statusReason}` : t.status;
   };
   return { project, create, status, svc: d.ctx.service('tasks') };
+}
+
+async function until(fn: () => boolean, timeoutMs = 3000): Promise<void> {
+  const started = Date.now();
+  while (!fn()) {
+    if (Date.now() - started > timeoutMs) throw new Error('timed out waiting');
+    await new Promise((r) => setTimeout(r, 5));
+  }
 }
 
 function taskUpdates(): Extract<Event, { type: 'task.updated' }>[] {
@@ -239,20 +244,15 @@ describe('dependency DAG', () => {
 
 describe('task.cancel', () => {
   it('cancels the task, its subtasks and their active runs; dependents become blocked', async () => {
-    const cancelled: string[] = [];
-    const fakeRuns = defineModule({
-      name: 'fake-runs',
-      register(ctx) {
-        ctx.provide('runs', {
-          cancel: (runId: string, _actor: Actor) => {
-            cancelled.push(runId);
-            return ctx.repos.runs.require(runId);
-          },
-        } as unknown as RunsService);
-      },
-    });
-    d = await createTestDaemon({
-      modules: [...modules.filter((m) => m.name !== 'runs'), fakeRuns],
+    d = await createTestDaemon();
+    // A real RunManager with an executor that only ends when its run is aborted.
+    const runs = d.ctx.service('runs');
+    const started: string[] = [];
+    runs.registerExecutor('agent', (ctl) => {
+      started.push(ctl.run.id);
+      return new Promise<void>((_, reject) => {
+        ctl.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      });
     });
     const project = await d.call(HUMAN, 'project.create', { name: 'P' });
     const parent = await d.call(HUMAN, 'task.create', { projectId: project.id, title: 'parent' });
@@ -266,9 +266,15 @@ describe('task.cancel', () => {
       title: 'after',
       dependsOn: [parent.id],
     });
-    const session = await d.call(HUMAN, 'session.create', {});
-    const active = insertRun(d.ctx, { sessionId: session.id, taskId: sub.id });
-    insertRun(d.ctx, { sessionId: session.id, taskId: sub.id, status: 'failed' });
+    const session = await d.call(HUMAN, 'session.create', { kind: 'agent' });
+    const finished = insertRun(d.ctx, { sessionId: session.id, taskId: sub.id, status: 'failed' });
+    const active = runs.start({
+      sessionId: session.id,
+      kind: 'agent',
+      taskId: sub.id,
+      createdBy: HUMAN,
+    });
+    await until(() => started.includes(active.id));
 
     const t = await d.call(HUMAN, 'task.cancel', { taskId: parent.id, reason: 'scope cut' });
     expect(t).toMatchObject({ status: 'cancelled', statusReason: 'scope cut' });
@@ -281,7 +287,13 @@ describe('task.cancel', () => {
       status: 'blocked',
       statusReason: 'dependency_cancelled',
     });
-    expect(cancelled).toEqual([active.id]);
+    // Only the active run of the subtask is stopped; finished runs stay as they were.
+    await expect(runs.waitForEnd(active.id)).resolves.toMatchObject({
+      status: 'cancelled',
+      statusReason: 'task_cancelled',
+    });
+    expect(d.ctx.repos.runs.require(finished.id).status).toBe('failed');
+    expect(d.ctx.repos.sessions.require(session.id).activeRunId).toBeNull();
     // Idempotent; done tasks cannot be cancelled.
     await d.call(HUMAN, 'task.cancel', { taskId: parent.id });
     const done = await d.call(HUMAN, 'task.create', { projectId: project.id, title: 'd' });

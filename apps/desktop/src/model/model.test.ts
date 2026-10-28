@@ -200,6 +200,24 @@ describe('timeline rows (§5.3)', () => {
     expect(v).toMatchObject({ isDecision: true, label: '判断', summary: '分割', detail: '並列にできるため' });
   });
 
+  it('describes run updates and policy denials', () => {
+    const busy = { ...r, activity: 'npm test を実行中' };
+    expect(describeEvent(event('run.updated', { run: busy, changes: ['activity'] }))).toMatchObject({
+      group: 'run',
+      label: '状況',
+      summary: 'npm test を実行中',
+    });
+    const used = { ...r, usage: { inputTokens: 12, outputTokens: 3, costUsd: 0.25, costSource: 'reported' as const } };
+    expect(describeEvent(event('run.updated', { run: used, changes: ['usage'] }))).toMatchObject({
+      group: 'budget',
+      label: '使用量',
+      summary: '$0.25 · 入力 12 / 出力 3 トークン',
+    });
+    expect(
+      describeEvent(event('policy.denied', { permission: 'task.create', reason: 'no grant', projectIds: null })),
+    ).toMatchObject({ group: 'grant', label: '権限で拒否', summary: 'task.create · no grant', isError: true });
+  });
+
   it('filters by type group, actor and text', () => {
     const only = (f: Partial<typeof EMPTY_FILTERS>) =>
       buildTimelineRows({ events, filters: { ...EMPTY_FILTERS, ...f }, groupByRun: false, runs, toggled: {} }).length;

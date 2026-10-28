@@ -2,7 +2,13 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Project } from '@acc/protocol';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { HUMAN, type TestDaemonNoServer, agentActor, createTestDaemon } from '../testing';
+import {
+  HUMAN,
+  type TestDaemonNoServer,
+  agentActor,
+  createTestDaemon,
+  insertTestTask,
+} from '../testing';
 import { mergeStats, parseNameStatusZ, parseNumstatZ } from './diff';
 import { GitError, git, gitOut } from './git';
 import { type TempRepo, createTempRepo, isolateGitConfig } from './git-fixture';
@@ -280,25 +286,7 @@ describe('workspace worktrees', () => {
 
   it('links a worktree to its task and names the branch after it', async () => {
     const { d, project } = await setup();
-    const now = d.ctx.clock.iso();
-    const task = d.ctx.repos.tasks.insert({
-      id: d.ctx.ids.next('task'),
-      projectId: project.id,
-      parentTaskId: null,
-      title: 'Add search API',
-      description: '',
-      acceptanceCriteria: [],
-      status: 'ready',
-      priority: 'normal',
-      dependsOn: [],
-      assigneeSessionId: null,
-      workspaceId: null,
-      resultSummary: null,
-      createdBy: HUMAN,
-      createdAt: now,
-      updatedAt: now,
-      completedAt: null,
-    });
+    const task = insertTestTask(d.ctx, { projectId: project.id, title: 'Add search API' });
     const ws = await d.call(HUMAN, 'workspace.create', { projectId: project.id, taskId: task.id });
     expect(ws.taskId).toBe(task.id);
     expect(ws.branch).toMatch(/^acc\/add-search-api-[0-9a-z]{8}$/);

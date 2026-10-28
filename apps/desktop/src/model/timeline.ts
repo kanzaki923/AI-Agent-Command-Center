@@ -109,6 +109,19 @@ export function describeEvent(e: Event): EventView {
         isError: to === 'failed',
       };
     }
+    case 'run.updated': {
+      const r = e.payload.run;
+      if (e.payload.changes.includes('activity')) {
+        return { ...base, group: 'run', icon: 'run', label: '状況', summary: r.activity ?? '（なし）' };
+      }
+      return {
+        ...base,
+        group: 'budget',
+        icon: 'budget',
+        label: '使用量',
+        summary: `$${r.usage.costUsd.toFixed(2)} · 入力 ${r.usage.inputTokens} / 出力 ${r.usage.outputTokens} トークン`,
+      };
+    }
     case 'run.completed':
       return { ...base, group: 'run', icon: 'done', label: '完了', summary: `Run が完了しました` };
     case 'run.failed':
@@ -179,6 +192,15 @@ export function describeEvent(e: Event): EventView {
       return { ...base, group: 'grant', icon: 'grant', label: '権限付与', summary: e.payload.grant.permissions.join(', ') };
     case 'grant.revoked':
       return { ...base, group: 'grant', icon: 'grant', label: '権限剥奪', summary: e.payload.reason ?? '' };
+    case 'policy.denied':
+      return {
+        ...base,
+        group: 'grant',
+        icon: 'grant',
+        label: '権限で拒否',
+        summary: `${e.payload.permission} · ${e.payload.reason}`,
+        isError: true,
+      };
     case 'budget.updated':
       return {
         ...base,

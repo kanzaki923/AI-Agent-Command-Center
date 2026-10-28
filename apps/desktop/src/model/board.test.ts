@@ -1,7 +1,7 @@
 // @vitest-environment node
 import type { Integration } from '@acc/protocol';
 import { describe, expect, it } from 'vitest';
-import { T0, approval, id, iso, run, session, task } from '../test/fixtures';
+import { T0, approval, id, integration, iso, run, session, task } from '../test/fixtures';
 import { attentionCounts, buildBoard, compareItems, groupByZone, nextAttention } from './board';
 
 function scene() {
@@ -83,24 +83,31 @@ describe('buildBoard', () => {
   });
 
   it('adds integrations awaiting review to attention', () => {
-    const i: Integration = {
-      id: id('int'),
-      projectId: id('prj'),
-      title: '統合候補',
-      status: 'awaiting_approval',
-      taskIds: [],
-      branch: null,
-      targetRef: null,
-      workspaceId: null,
-      steps: [],
-      approvalId: null,
-      error: null,
-      createdBy: { kind: 'human' },
-      createdAt: iso(T0),
-      updatedAt: iso(T0),
-    };
+    const i = integration();
     const items = buildBoard({ sessions: [], runs: [], approvals: [], tasks: [], integrations: [i] });
     expect(items[0]).toMatchObject({ kind: 'integration', state: 'review', role: 'Integrator', zone: 'attention' });
+  });
+
+  it('puts conflicted and failed integrations in attention as failures; hides the rest', () => {
+    const conflicted = integration({ status: 'conflict' });
+    const failed = integration({ status: 'failed' });
+    const others = (['pending', 'running', 'verifying', 'applied', 'rejected', 'cancelled'] as const).map((status) =>
+      integration({ status }),
+    );
+    const items = buildBoard({
+      sessions: [],
+      runs: [],
+      approvals: [],
+      tasks: [],
+      integrations: [conflicted, failed, ...others],
+    });
+    expect(items.map((i) => [i.id, i.state, i.zone])).toEqual(
+      expect.arrayContaining([
+        [conflicted.id, 'failed', 'attention'],
+        [failed.id, 'failed', 'attention'],
+      ]),
+    );
+    expect(items).toHaveLength(2);
   });
 
   it('sums session cost across runs with the combined cost source', () => {

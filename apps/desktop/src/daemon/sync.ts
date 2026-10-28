@@ -166,6 +166,15 @@ export function applyEvent(qc: QueryClient, streams: Streams, event: Event): voi
       }
       return;
     }
+    case 'run.updated': {
+      const run = event.payload.run;
+      setRun(qc, run);
+      // The executor's own "what is it doing" line (RunController.setActivity).
+      if (event.payload.changes.includes('activity') && !isTerminalRunStatus(run.status)) {
+        streams.activity.set(run.id, run.activity ?? null);
+      }
+      return;
+    }
     case 'run.completed':
     case 'run.failed':
       if (event.type === 'run.completed') streams.recent.completed(event.payload.run.id);
@@ -232,6 +241,8 @@ export function applyEvent(qc: QueryClient, streams: Streams, event: Event): voi
     case 'grant.revoked':
       void qc.invalidateQueries({ queryKey: ['grant.list'] });
       return;
+    case 'policy.denied':
+      return;
 
     case 'budget.updated':
       void qc.invalidateQueries({ queryKey: ['budget.get'] });
@@ -244,21 +255,11 @@ export function applyEvent(qc: QueryClient, streams: Streams, event: Event): voi
 
     case 'orchestrator.decision':
       return;
-  }
-  applyForwardCompatible(streams, event);
-}
-
-/**
- * Event types other modules may add later. `run.activity` mirrors RunController.setActivity
- * (contracts.ts) once the runs module publishes it.
- */
-function applyForwardCompatible(
-  streams: Streams,
-  event: { type: string; runId: string | null; payload: unknown },
-): void {
-  if (event.type === 'run.activity' && event.runId) {
-    const text = (event.payload as { text?: unknown } | null)?.text;
-    streams.activity.set(event.runId, typeof text === 'string' && text ? text : null);
+    default: {
+      // A new event type must be handled (or deliberately ignored) above.
+      const _exhaustive: never = event;
+      return _exhaustive;
+    }
   }
 }
 

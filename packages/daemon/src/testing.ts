@@ -12,7 +12,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type AccClient, type ClientOptions, createClient } from '@acc/client';
-import type { AgentActor, HumanActor, SystemActor } from '@acc/protocol';
+import type { AgentActor, HumanActor, SystemActor, Task } from '@acc/protocol';
+import type { DaemonContext } from './core/context';
 import {
   type CreateDaemonOptions,
   type Daemon,
@@ -85,4 +86,35 @@ export async function connectTestClient(
   const client = createClient({ url: d.wsUrl, token: d.token, clientName: 'test', ...opts });
   await client.ready();
   return client;
+}
+
+/**
+ * Insert a Task row directly (no events, no dependency checks), for tests that need a task
+ * in a given state. Every field has a default, so fixtures keep compiling when the Task
+ * schema grows; prefer `task.create` when the test is about task behaviour itself.
+ */
+export function insertTestTask(
+  ctx: DaemonContext,
+  fields: Pick<Task, 'projectId'> & Partial<Task>,
+): Task {
+  const now = ctx.clock.iso();
+  return ctx.repos.tasks.insert({
+    id: ctx.ids.next('task'),
+    parentTaskId: null,
+    title: 'Test task',
+    description: '',
+    acceptanceCriteria: [],
+    status: 'ready',
+    statusReason: null,
+    priority: 'normal',
+    dependsOn: [],
+    assigneeSessionId: null,
+    workspaceId: null,
+    resultSummary: null,
+    createdBy: HUMAN,
+    createdAt: now,
+    updatedAt: now,
+    completedAt: null,
+    ...fields,
+  });
 }

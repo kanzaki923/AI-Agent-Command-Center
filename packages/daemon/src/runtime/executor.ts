@@ -1,4 +1,4 @@
-import type { Actor, ContentPart, DiffFileStat, Message, Run, Session, Task } from '@acc/protocol';
+import type { Actor, ContentPart, Message, Run, Session, Task } from '@acc/protocol';
 import type { AgentEvent, RunController, RunExecutor } from '../contracts';
 import type { DaemonContext } from '../core/context';
 import { abortError } from './async';
@@ -133,7 +133,7 @@ async function executeAgentRun(
     `${truncate(title, 72)}\n\nRun: ${run.id}`,
     ctl.actor,
   );
-  if (sha) await recordDiffArtifact(ctx, ctl, workspaceId, workspace.baseRef, sha, title);
+  if (sha) await recordDiffArtifact(ctx, ctl, workspaceId, title);
   ctl.setActivity(null);
 }
 
@@ -235,87 +235,24 @@ function rememberRuntimeSession(
 // ---- diff artifact ---------------------------------------------------------------
 
 /**
- * What this module expects from the artifacts service (built in parallel; not yet in
- * contracts.ts). Only used when `ctx.hasService('artifacts')`.
+ * Record the run's changes as a diff artifact through the artifacts service (integration
+ * module), when it is present.
  */
-export interface ArtifactsRecorder {
-  create(input: {
-    kind: 'diff';
-    title: string;
-    data: {
-      patch: string;
-      baseRef: string | null;
-      headRef: string | null;
-      stats: { files: number; additions: number; deletions: number };
-      files: DiffFileStat[];
-    };
-    projectId: string | null;
-    sessionId: string | null;
-    runId: string | null;
-    taskId: string | null;
-    workspaceId: string | null;
-    createdBy: Actor;
-  }): unknown;
-}
-
-const FILE_STATUSES = new Set<DiffFileStat['status']>([
-  'added',
-  'modified',
-  'deleted',
-  'renamed',
-  'copied',
-]);
-
-function artifactsService(ctx: DaemonContext): ArtifactsRecorder | null {
-  // `artifacts` is not declared in Services yet; look it up untyped.
-  const services = ctx as unknown as {
-    hasService(name: string): boolean;
-    service(name: string): unknown;
-  };
-  if (!services.hasService('artifacts')) return null;
-  const svc = services.service('artifacts') as Partial<ArtifactsRecorder> | null;
-  return svc && typeof svc.create === 'function' ? (svc as ArtifactsRecorder) : null;
-}
-
 async function recordDiffArtifact(
   ctx: DaemonContext,
   ctl: RunController,
   workspaceId: string,
-  baseRef: string | null,
-  sha: string,
   title: string,
 ): Promise<void> {
-  const artifacts = artifactsService(ctx);
-  if (!artifacts) return;
+  if (!ctx.hasService('artifacts')) return;
   try {
-    const diff = await ctx.service('workspaces').diff(workspaceId);
-    const files: DiffFileStat[] = diff.files.map((f) => ({
-      path: f.path,
-      status: FILE_STATUSES.has(f.status as DiffFileStat['status'])
-        ? (f.status as DiffFileStat['status'])
-        : 'unknown',
-      additions: f.additions,
-      deletions: f.deletions,
-    }));
-    artifacts.create({
-      kind: 'diff',
+    await ctx.service('artifacts').recordDiff({
+      workspaceId,
       title: `変更内容: ${truncate(title, 80)}`,
-      data: {
-        patch: diff.patch,
-        baseRef,
-        headRef: sha,
-        stats: {
-          files: files.length,
-          additions: files.reduce((n, f) => n + f.additions, 0),
-          deletions: files.reduce((n, f) => n + f.deletions, 0),
-        },
-        files,
-      },
       projectId: ctl.run.projectId,
       sessionId: ctl.run.sessionId,
       runId: ctl.run.id,
       taskId: ctl.run.taskId,
-      workspaceId,
       createdBy: ctl.actor,
     });
   } catch (err) {

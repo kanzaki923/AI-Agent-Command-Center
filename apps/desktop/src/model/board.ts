@@ -143,10 +143,11 @@ export function buildBoard(input: BoardInput): BoardItem[] {
 
   for (const i of input.integrations) {
     if (!inProject(i.projectId)) continue;
-    if (i.status !== 'awaiting_approval' && i.status !== 'failed') continue;
+    // A conflict stops the integration just like a failure: someone has to step in.
+    if (i.status !== 'awaiting_approval' && i.status !== 'failed' && i.status !== 'conflict') continue;
     const approval =
       input.approvals.find((a) => a.status === 'pending' && a.integrationId === i.id) ?? null;
-    const state: DisplayState = i.status === 'failed' ? 'failed' : 'review';
+    const state: DisplayState = i.status === 'awaiting_approval' ? 'review' : 'failed';
     items.push({
       id: i.id,
       kind: 'integration',

@@ -14,7 +14,7 @@ pnpm acc sessions
 pnpm acc events -f       # イベントを追従表示
 pnpm dev:desktop         # UI をブラウザで起動（127.0.0.1:5173。ACC_HOME の daemon.json に接続）
 
-pnpm lint                # ESLint（型情報つき）
+pnpm lint                # ESLint（型情報つき。.claude/ 配下のエージェント用 worktree などは対象外）
 pnpm typecheck           # 全パッケージ tsc --noEmit
 pnpm test                # vitest（全プロジェクト）
 pnpm check               # 上の 3 つ。コミット前に必ず通す
@@ -132,6 +132,8 @@ packages/cli        @acc/cli       `acc` コマンド
   await d.cleanup();                                  // 停止 + 一時ディレクトリ削除
   ```
 
+- 任意の状態の Task が要るテストは `insertTestTask(d.ctx, { projectId, ...上書き })`（`@acc/daemon/testing`）を使う。Task のリテラルを手で書かない（スキーマにフィールドが増えるたびに壊れる）。desktop は `src/test/fixtures.ts` の同種のファクトリを使う。
+- モジュールをまたぐ流れ（agent Run → コミット → Artifact → 統合、Task キャンセル → Run 停止）は `src/e2e.test.ts` が本物の全モジュールで確かめる。サービスを偽物に差し替えた単体テストでは継ぎ目の食い違いが見えないため、契約を変えたらここも通す。
 - 時刻は `createManualClock()` を `createDaemon({ clock })` に渡して制御する。
 - 再起動を伴うテストは `startTestDaemon({ home })` で同じ `ACC_HOME` を使い回す（例：`server.test.ts` のリカバリ）。
 - 本物の有料 LLM API はテストで呼ばない。llm / runtime の mock を使う。

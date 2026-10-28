@@ -1,4 +1,16 @@
-import type { Actor, Approval, Event, EventOf, EventPayload, EventType, Message, Run, Session, Task } from '@acc/protocol';
+import type {
+  Actor,
+  Approval,
+  Event,
+  EventOf,
+  EventPayload,
+  EventType,
+  Integration,
+  Message,
+  Run,
+  Session,
+  Task,
+} from '@acc/protocol';
 
 const HUMAN: Actor = { kind: 'human', client: 'test' };
 let n = 0;
@@ -93,6 +105,7 @@ export function task(over: Partial<Task> = {}): Task {
     description: '',
     acceptanceCriteria: [],
     status: 'running',
+    statusReason: null,
     priority: 'normal',
     dependsOn: [],
     assigneeSessionId: null,
@@ -102,6 +115,32 @@ export function task(over: Partial<Task> = {}): Task {
     createdAt: iso(T0),
     updatedAt: iso(T0),
     completedAt: null,
+    ...over,
+  };
+}
+
+export function integration(over: Partial<Integration> = {}): Integration {
+  return {
+    id: id('int'),
+    projectId: id('prj'),
+    title: '統合候補',
+    status: 'awaiting_approval',
+    taskIds: [],
+    workspaceIds: [],
+    branch: null,
+    targetRef: null,
+    workspaceId: null,
+    steps: [],
+    baseSha: null,
+    headSha: null,
+    approvalId: null,
+    decidedBy: null,
+    decidedAt: null,
+    decisionNote: null,
+    error: null,
+    createdBy: HUMAN,
+    createdAt: iso(T0),
+    updatedAt: iso(T0),
     ...over,
   };
 }

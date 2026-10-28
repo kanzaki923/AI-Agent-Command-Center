@@ -6,12 +6,16 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
+    // Keep in sync with .gitignore. `.claude/` holds agent worktrees: full repo copies whose
+    // typed linting would build one TS program per copy and exhaust the heap.
     ignores: [
       '**/node_modules/**',
       '**/dist/**',
       '**/target/**',
       '**/coverage/**',
-      'apps/desktop/src-tauri/**',
+      '**/src-tauri/**',
+      '**/.acc/**',
+      '.claude/**',
       'docs/**',
     ],
   },

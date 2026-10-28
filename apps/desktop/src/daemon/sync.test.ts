@@ -106,6 +106,25 @@ describe('applyEvent -> query cache', () => {
     expect(streams.activity.get('run_x')?.text).toBe('pnpm test auth を実行中');
   });
 
+  it('applies run.updated: the executor activity line and usage', () => {
+    const { qc, streams } = ctx;
+    const s = session();
+    const r = run(s, { status: 'running' });
+    qc.setQueryData<Run[]>(qk.runs, [r]);
+    const busy = { ...r, activity: 'npm test を実行中' };
+    applyEvent(qc, streams, event('run.updated', { run: busy, changes: ['activity'] }));
+    expect(streams.activity.get(r.id)?.text).toBe('npm test を実行中');
+    expect(qc.getQueryData<Run[]>(qk.runs)![0]!.activity).toBe('npm test を実行中');
+
+    const usage = { ...busy, usage: { inputTokens: 10, outputTokens: 5, costUsd: 0.3, costSource: 'reported' as const } };
+    applyEvent(qc, streams, event('run.updated', { run: usage, changes: ['usage'] }));
+    expect(qc.getQueryData<Run>(qk.run(r.id))?.usage.costUsd).toBe(0.3);
+    expect(streams.activity.get(r.id)?.text).toBe('npm test を実行中');
+
+    applyEvent(qc, streams, event('run.updated', { run: { ...usage, activity: null }, changes: ['activity'] }));
+    expect(streams.activity.get(r.id)).toBeUndefined();
+  });
+
   it('records every event in the timeline log once', () => {
     const { qc, streams } = ctx;
     const e = event('settings.updated', { changes: ['defaultModel'] });

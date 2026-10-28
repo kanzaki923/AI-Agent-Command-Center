@@ -1,16 +1,16 @@
 import type { Event, Run } from '@acc/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
-import type {
-  BudgetService,
-  RunController,
-  RunsService,
-  WorkspaceLock,
-  WorkspacesService,
-} from '../contracts';
-import { budgetExceeded, conflict, invalidParams } from '../core/errors';
+import type { RunController, RunsService, WorkspaceLock, WorkspacesService } from '../contracts';
+import { conflict, invalidParams } from '../core/errors';
 import { defineModule } from '../module';
 import { modules } from '../modules';
-import { HUMAN, type TestDaemonNoServer, agentActor, createTestDaemon } from '../testing';
+import {
+  HUMAN,
+  type TestDaemonNoServer,
+  agentActor,
+  createTestDaemon,
+  insertTestTask,
+} from '../testing';
 import { mergeUsage } from './manager';
 
 let d: TestDaemonNoServer | null = null;
@@ -338,7 +338,10 @@ describe('approvals', () => {
       'awaiting_approval->running',
       'running->completed',
       'run.completed',
+      // The run-lifetime grant above ends with the run (policy module).
+      'grant.revoked',
     ]);
+    expect(d.ctx.repos.grants.require(grantSelf.id).revokedAt).not.toBeNull();
   });
 
   it('cancel during approval cancels the approval and rejects the wait', async () => {
@@ -496,6 +499,57 @@ describe('workspace locks', () => {
     await d.ctx.service('runs').waitForEnd(b.id);
     expect(locks.size).toBe(0);
   });
+
+  it("locks the session's or task's workspace for agent runs that name none", async () => {
+    d = await createTestDaemon();
+    const ex = blockingExecutor(d.ctx.service('runs'));
+    const project = await d.call(HUMAN, 'project.create', { name: 'P' });
+    const ws = d.ctx.ids.next('workspace');
+    const now = d.ctx.clock.iso();
+    d.ctx.repos.workspaces.insert({
+      id: ws,
+      projectId: project.id,
+      kind: 'worktree',
+      status: 'ready',
+      path: 'unused',
+      branch: 'acc/test',
+      baseRef: 'main',
+      taskId: null,
+      lockedByRunId: null,
+      error: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const task = insertTestTask(d.ctx, { projectId: project.id, workspaceId: ws });
+    const viaTask = d.ctx.service('runs').start({
+      sessionId: (await newSession(d)).id,
+      kind: 'agent',
+      taskId: task.id,
+      createdBy: HUMAN,
+    });
+    expect(viaTask.workspaceId).toBe(ws);
+    const viaSession = startAgentRun(
+      d,
+      (await d.call(HUMAN, 'session.create', { projectId: project.id, workspaceId: ws })).id,
+    );
+    expect(viaSession.workspaceId).toBe(ws);
+    await until(() => ex.started(viaTask.id));
+    expect(d.ctx.service('workspaces').isLocked(ws)).toBe(true);
+    expect(status(d, viaSession.id)).toBe('queued');
+    // Chat runs never take a workspace lock.
+    const chat = d.ctx.service('runs').start({
+      sessionId: (await d.call(HUMAN, 'session.create', { workspaceId: ws })).id,
+      kind: 'chat',
+      createdBy: HUMAN,
+    });
+    expect(chat.workspaceId).toBeNull();
+    d.ctx.service('runs').cancel(chat.id, HUMAN);
+    ex.finish(viaTask.id);
+    await until(() => ex.started(viaSession.id));
+    ex.finish(viaSession.id);
+    await d.ctx.service('runs').waitForEnd(viaSession.id);
+    expect(d.ctx.service('workspaces').isLocked(ws)).toBe(false);
+  });
 });
 
 describe('usage and budget', () => {
@@ -514,25 +568,16 @@ describe('usage and budget', () => {
   });
 
   it('accumulates usage, records spend and stops the run when the budget is exhausted', async () => {
-    const spent: [string, number][] = [];
-    const fakeBudget = {
-      recordSpend: (id: string, usd: number) => {
-        if (spent.reduce((n, [, v]) => n + v, 0) + usd > 1) throw budgetExceeded('over');
-        spent.push([id, usd]);
-      },
-    } as unknown as BudgetService;
-    const budgetModule = defineModule({
-      name: 'policy',
-      register(ctx) {
-        ctx.provide('budget', fakeBudget);
-      },
-    });
-    d = await createTestDaemon({
-      modules: [...modules.filter((m) => m.name !== 'policy'), budgetModule],
+    // The real budget service (policy module): spend past the limit is recorded, not thrown.
+    d = await createTestDaemon();
+    const budget = d.ctx.service('budget').createRoot({
+      subject: { kind: 'global', id: null },
+      limitUsd: 1,
+      actor: HUMAN,
     });
     const runs = d.ctx.service('runs');
     const ex = blockingExecutor(runs);
-    const budgetId = d.ctx.ids.next('budget');
+    const budgetId = budget.id;
     const run = startAgentRun(d, (await newSession(d)).id, { budgetId });
     await until(() => ex.started(run.id));
     const ctl = ex.ctls.get(run.id)!;
@@ -543,7 +588,7 @@ describe('usage and budget', () => {
       costUsd: 0.6,
       costSource: 'reported',
     });
-    expect(spent).toEqual([[budgetId, 0.6]]);
+    expect(d.ctx.service('budget').get(budgetId).spentUsd).toBeCloseTo(0.6);
     expect(ctl.signal.aborted).toBe(false);
     ctl.reportUsage({ inputTokens: 50, outputTokens: 10, costUsd: 0.6, costSource: 'reported' });
     expect(ctl.signal.aborted).toBe(true);
@@ -555,6 +600,7 @@ describe('usage and budget', () => {
       usage: { inputTokens: 150, outputTokens: 30 },
     });
     expect(final.usage.costUsd).toBeCloseTo(1.2);
+    expect(d.ctx.service('budget').get(budgetId).spentUsd).toBeCloseTo(1.2);
     const updates = d.ctx.bus.list({ runId: run.id, types: ['run.updated'] }).events;
     expect(updates.map((e) => (e.type === 'run.updated' ? e.payload.changes : []))).toEqual([
       ['usage'],

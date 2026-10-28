@@ -15,9 +15,16 @@ import type {
   WorkspacesService,
 } from '../contracts';
 import type { DaemonContext } from '../core/context';
+import type { ArtifactService } from '../integration/artifacts';
 import { defineModule } from '../module';
 import { modules as allModules } from '../modules';
-import { HUMAN, type TestDaemonNoServer, agentActor, createTestDaemon } from '../testing';
+import {
+  HUMAN,
+  type TestDaemonNoServer,
+  agentActor,
+  createTestDaemon,
+  insertTestTask,
+} from '../testing';
 import { buildAgentPrompt, createAgentExecutor } from './executor';
 import { MockAgentRuntime } from './mock/runtime';
 import { RuntimeSessionStore } from './state';
@@ -90,13 +97,12 @@ const fakeServicesModule = defineModule({
         throw new Error('not used');
       },
     });
-    // `artifacts` is not in Services yet (built in parallel); provide it untyped.
-    (ctx as unknown as { provide(n: string, s: unknown): void }).provide('artifacts', {
-      create: (input: unknown) => {
+    ctx.provide('artifacts', {
+      recordDiff: async (input: unknown) => {
         fakes.artifacts.push(input);
         return input;
       },
-    });
+    } as unknown as ArtifactService);
   },
 });
 
@@ -150,24 +156,14 @@ async function setup(opts: { task?: Partial<Task>; message?: string; runtime?: s
   });
   let taskId: string | null = null;
   if (opts.task) {
-    const now = ctx.clock.iso();
-    const task = ctx.repos.tasks.insert({
-      id: ctx.ids.next('task'),
+    const task = insertTestTask(ctx, {
       projectId: project.id,
-      parentTaskId: null,
       title: 'README を整える',
       description: '見出しを揃える',
       acceptanceCriteria: ['見出しが統一されている'],
       status: 'running',
-      priority: 'normal',
-      dependsOn: [],
       assigneeSessionId: session.id,
       workspaceId: fakes.workspaceId,
-      resultSummary: null,
-      createdBy: HUMAN,
-      createdAt: now,
-      updatedAt: now,
-      completedAt: null,
       ...opts.task,
     });
     taskId = task.id;
@@ -258,18 +254,15 @@ describe('agent executor', () => {
       { workspaceId: fakes.workspaceId, message: `README を整える\n\nRun: ${run.id}` },
     ]);
     expect(fakes.artifacts).toEqual([
-      expect.objectContaining({
-        kind: 'diff',
+      {
+        workspaceId: fakes.workspaceId,
         title: '変更内容: README を整える',
+        projectId: run.projectId,
+        sessionId: run.sessionId,
         runId: run.id,
         taskId: run.taskId,
-        workspaceId: fakes.workspaceId,
-        data: expect.objectContaining({
-          headRef: 'c0ffee',
-          baseRef: 'main',
-          stats: { files: 1, additions: 3, deletions: 0 },
-        }),
-      }),
+        createdBy: ctl.actor,
+      },
     ]);
 
     // Runtime session id stored for resume and mirrored on the session.
