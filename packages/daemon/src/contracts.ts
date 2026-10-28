@@ -1,0 +1,226 @@
+/**
+ * Cross-module service contracts.
+ *
+ * Modules are built in parallel, so the seams between them are fixed here first.
+ * Each interface is implemented by exactly one module and looked up with
+ * `ctx.service(name)` at call time. Change a contract only together with every
+ * implementer and caller.
+ */
+import type {
+  Actor,
+  Approval,
+  ApprovalKind,
+  BudgetAllocation,
+  BudgetSubject,
+  ContentPart,
+  Run,
+  RunKind,
+  Usage,
+  Workspace,
+} from '@acc/protocol';
+
+// ---------------------------------------------------------------------------
+// runs (implemented by src/runs)
+// ---------------------------------------------------------------------------
+
+export interface ApprovalRequest {
+  kind: ApprovalKind;
+  title: string;
+  detail?: string | null;
+  /** Kind-specific data, e.g. `{ toolName, input }` for tool_use. */
+  payload?: unknown;
+}
+
+export type ApprovalDecision =
+  { decision: 'approved'; note?: string | null } | { decision: 'rejected'; note?: string | null };
+
+/**
+ * Handed to a RunExecutor while its run is `running`. Everything an executor does that
+ * other clients should see goes through here, so status, events and persistence stay
+ * consistent no matter which executor runs.
+ */
+export interface RunController {
+  readonly run: Run;
+  /** Aborted on run.cancel, daemon shutdown, or budget exhaustion. */
+  readonly signal: AbortSignal;
+  /** The actor this run acts as when it calls the Control API (`ctx.call(actor, ...)`). */
+  readonly actor: Extract<Actor, { kind: 'agent' }>;
+  /** Stream a text fragment of an in-progress assistant message (ephemeral, not persisted). */
+  emitDelta(messageId: string, text: string): void;
+  /** Persist a message of this run's session (emits message.created). */
+  appendMessage(input: {
+    role: 'assistant' | 'tool' | 'system';
+    content: ContentPart[];
+    id?: string;
+    model?: string | null;
+  }): void;
+  /** Record a tool call / result (emits tool.called / tool.result). */
+  toolCalled(call: { toolCallId: string; name: string; input: unknown }): void;
+  toolResult(result: {
+    toolCallId: string;
+    name: string;
+    output: unknown;
+    isError?: boolean;
+  }): void;
+  /**
+   * Ask for a decision. Moves the run to `awaiting_approval` until resolved, then back to
+   * `running`. Rejects with an AbortError if the run is cancelled while waiting.
+   */
+  requestApproval(req: ApprovalRequest): Promise<ApprovalDecision>;
+  /** Add usage (tokens / cost) to the run and settle it against the run's budget. */
+  reportUsage(delta: Partial<Usage>): void;
+  /** Short "what is it doing now" line shown in Command Mode (e.g. "npm test を実行中"). */
+  setActivity(text: string | null): void;
+}
+
+/**
+ * Executes one run. Resolve when the run's work is done (the run becomes `completed`);
+ * throw to fail it. Executors never set terminal statuses themselves.
+ */
+export type RunExecutor = (ctl: RunController) => Promise<void>;
+
+export interface StartRunInput {
+  sessionId: string;
+  kind: RunKind;
+  createdBy: Actor;
+  taskId?: string | null;
+  projectId?: string | null;
+  workspaceId?: string | null;
+  parentRunId?: string | null;
+  retryOfRunId?: string | null;
+  model?: string | null;
+  runtime?: string | null;
+  budgetId?: string | null;
+  triggerMessageId?: string | null;
+}
+
+export interface RunsService {
+  /** Register the executor for a run kind ('chat' | 'agent' | 'orchestrator'). */
+  registerExecutor(kind: RunKind, executor: RunExecutor): void;
+  /** Create a run and queue it; starts as soon as a concurrency slot (and workspace lock) is free. */
+  start(input: StartRunInput): Run;
+  cancel(runId: string, actor: Actor, reason?: string): Run;
+  /** Resolves when the run reaches a terminal status. */
+  waitForEnd(runId: string, signal?: AbortSignal): Promise<Run>;
+  resolveApproval(approvalId: string, decision: ApprovalDecision, actor: Actor): Approval;
+}
+
+// ---------------------------------------------------------------------------
+// budget (implemented by src/policy)
+// ---------------------------------------------------------------------------
+
+export interface BudgetReservation {
+  readonly id: string;
+  readonly budgetId: string;
+  readonly amountUsd: number;
+}
+
+export interface BudgetService {
+  get(budgetId: string): BudgetAllocation;
+  /** Create a root allocation (human/system only — enforced by the caller's method). */
+  createRoot(input: { subject: BudgetSubject; limitUsd: number; actor: Actor }): BudgetAllocation;
+  /** Carve a child allocation out of the parent's unallocated amount. Throws budget_exceeded. */
+  allocate(input: {
+    parentId: string;
+    subject: BudgetSubject;
+    limitUsd: number;
+    actor: Actor;
+  }): BudgetAllocation;
+  /** Return a child's unused amount to its parent and close it. */
+  release(budgetId: string, actor: Actor): BudgetAllocation;
+  /** Reserve before an LLM call. Throws budget_exceeded when it does not fit. */
+  reserve(budgetId: string, amountUsd: number): BudgetReservation;
+  /** Turn a reservation into spend (actual may differ from reserved; excess is freed). */
+  settle(reservation: BudgetReservation, actualUsd: number): void;
+  /** Free a reservation without spending (e.g. the call failed before any usage). */
+  cancelReservation(reservation: BudgetReservation): void;
+  /** Record spend that had no reservation (e.g. a runtime that reports cost afterwards). */
+  recordSpend(budgetId: string, amountUsd: number): void;
+}
+
+// ---------------------------------------------------------------------------
+// workspaces (implemented by src/workspace)
+// ---------------------------------------------------------------------------
+
+export interface WorkspaceLock {
+  readonly workspaceId: string;
+  readonly runId: string;
+  release(): void;
+}
+
+export interface WorkspacesService {
+  /** Create a git worktree for a project on a fresh branch from `baseRef` (default: project default branch). */
+  createWorktree(input: {
+    projectId: string;
+    branch?: string;
+    baseRef?: string;
+    label?: string;
+    actor: Actor;
+  }): Promise<Workspace>;
+  get(workspaceId: string): Workspace;
+  /** Exclusive write lock for a run. Throws `conflict` if another run holds it. */
+  acquire(workspaceId: string, runId: string): WorkspaceLock;
+  isLocked(workspaceId: string): boolean;
+  /** Commit everything in the worktree (no-op if clean). Returns the new commit sha or null. */
+  commitAll(workspaceId: string, message: string, actor: Actor): Promise<string | null>;
+  /** Unified diff + stats of the workspace branch against its base. */
+  diff(
+    workspaceId: string,
+  ): Promise<{
+    patch: string;
+    files: { path: string; status: string; additions: number; deletions: number }[];
+  }>;
+}
+
+// ---------------------------------------------------------------------------
+// runtimes (implemented by src/runtime)
+// ---------------------------------------------------------------------------
+
+/** Normalized event stream every coding-agent runtime produces. */
+export type AgentEvent =
+  | { type: 'text_delta'; messageId: string; text: string }
+  | { type: 'message'; messageId: string; role: 'assistant'; content: ContentPart[] }
+  | { type: 'tool_call'; toolCallId: string; name: string; input: unknown }
+  | { type: 'tool_result'; toolCallId: string; name: string; output: unknown; isError?: boolean }
+  | { type: 'activity'; text: string | null }
+  | { type: 'usage'; usage: Partial<Usage> }
+  | { type: 'session'; runtimeSessionId: string };
+
+export interface AgentRunInput {
+  runId: string;
+  /** Working directory (the worktree). */
+  cwd: string;
+  prompt: string;
+  systemPrompt?: string;
+  model?: string | null;
+  /** Previous runtime session to resume, if the runtime supports it. */
+  resumeSessionId?: string | null;
+  signal: AbortSignal;
+  /** Called before any tool that is not pre-approved. Resolve with the decision. */
+  canUseTool(req: { toolName: string; input: unknown; title?: string }): Promise<ApprovalDecision>;
+}
+
+export interface AgentRuntime {
+  readonly id: string;
+  readonly displayName: string;
+  /** False when prerequisites are missing (e.g. SDK not installed); the reason is user-facing Japanese. */
+  available(): Promise<{ ok: true } | { ok: false; reason: string }>;
+  run(input: AgentRunInput): AsyncIterable<AgentEvent>;
+}
+
+export interface RuntimesService {
+  register(runtime: AgentRuntime): void;
+  get(id: string): AgentRuntime;
+  list(): AgentRuntime[];
+  /** Runtime used when a session does not name one (settings, falling back to 'mock'). */
+  defaultId(): string;
+}
+
+declare module './core/context' {
+  interface Services {
+    runs: RunsService;
+    budget: BudgetService;
+    workspaces: WorkspacesService;
+    runtimes: RuntimesService;
+  }
+}
