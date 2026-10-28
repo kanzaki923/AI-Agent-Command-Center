@@ -1,7 +1,9 @@
+import { AccClientError } from '@acc/client';
 import type { ModelInfo, Project, Session } from '@acc/protocol';
 import { createSession } from '../daemon/actions';
+import { isNotImplemented } from '../daemon/errors';
 import { qk } from '../daemon/keys';
-import { grantOrchestrator, pickMethod } from '../daemon/orchestration';
+import { grantOrchestrator } from '../daemon/orchestration';
 import type { AppRuntime } from '../daemon/runtime';
 import { activeGrants, canOrchestrate } from '../model/grant';
 import { toastError } from '../store/toast';
@@ -28,6 +30,7 @@ interface DemoSetupResult {
   session?: { id?: string };
   projectId?: string;
   project?: { id?: string };
+  grant?: unknown;
   suggestedMessage?: string;
   message?: string;
 }
@@ -37,6 +40,8 @@ export function parseDemoResult(raw: unknown): {
   sessionId: string | null;
   projectId: string | null;
   message: string | null;
+  /** The setup already granted the orchestrator capability. */
+  granted: boolean;
 } {
   const r = (raw && typeof raw === 'object' ? raw : {}) as DemoSetupResult;
   const str = (v: unknown) => (typeof v === 'string' && v ? v : null);
@@ -44,6 +49,7 @@ export function parseDemoResult(raw: unknown): {
     sessionId: str(r.sessionId) ?? str(r.session?.id),
     projectId: str(r.projectId) ?? str(r.project?.id),
     message: str(r.suggestedMessage) ?? str(r.message),
+    granted: !!r.grant && typeof r.grant === 'object',
   };
 }
 
@@ -63,22 +69,27 @@ export async function startDemo(
   let sessionId: string | null = null;
   let projectId: string | null = null;
   let message = DEMO_MESSAGE;
+  let granted = false;
 
-  const setup = pickMethod(methods, DEMO_SETUP_METHODS);
-  if (setup) {
+  // Probe: the methods system.info lists, or (not loaded yet) simply try each in turn.
+  const candidates = methods ? DEMO_SETUP_METHODS.filter((m) => methods.has(m)) : DEMO_SETUP_METHODS;
+  const call = rt.client.call.bind(rt.client) as unknown as UntypedCall;
+  for (const setup of candidates) {
     try {
-      const res = parseDemoResult(
-        await (rt.client.call.bind(rt.client) as unknown as UntypedCall)(setup, {}),
-      );
+      const res = parseDemoResult(await call(setup, {}));
       sessionId = res.sessionId;
       projectId = res.projectId;
+      granted = res.granted;
       if (res.message) message = res.message;
       await Promise.all([
         qc.invalidateQueries({ queryKey: qk.sessions }),
         qc.invalidateQueries({ queryKey: qk.projects }),
       ]);
+      break;
     } catch (err) {
+      if (isNotImplemented(err) || (err instanceof AccClientError && err.code === 'not_found')) continue;
       toastError(err, 'デモを準備できませんでした');
+      break;
     }
   }
 
@@ -109,11 +120,15 @@ export async function startDemo(
   }
 
   // Make sure the chat holds the orchestrator grant (the demo's point, concept §3.1).
-  const grants = await rt
-    .callOr('grant.list', { sessionId }, { items: [] })
-    .then((r) => r.items)
-    .catch(() => []);
-  if (!activeGrants(grants, new Date().toISOString()).some(canOrchestrate)) {
+  const grants = granted
+    ? []
+    : await rt
+        .callOr('grant.list', { sessionId }, { items: [] })
+        .then((r) => r.items)
+        .catch(() => []);
+  if (granted) {
+    void qc.invalidateQueries({ queryKey: qk.grants(sessionId) });
+  } else if (!activeGrants(grants, new Date().toISOString()).some(canOrchestrate)) {
     await grantOrchestrator(
       rt,
       {

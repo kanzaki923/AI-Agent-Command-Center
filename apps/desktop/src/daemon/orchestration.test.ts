@@ -331,16 +331,20 @@ describe('integration decisions', () => {
 
 describe('demo', () => {
   it('reads ids from any demo setup result shape', () => {
-    expect(parseDemoResult({ session: { id: 'ses_1' }, project: { id: 'prj_1' } })).toEqual({
-      sessionId: 'ses_1',
-      projectId: 'prj_1',
-      message: null,
-    });
+    expect(
+      parseDemoResult({ session: { id: 'ses_1' }, project: { id: 'prj_1' }, grant: { id: 'g' } }),
+    ).toEqual({ sessionId: 'ses_1', projectId: 'prj_1', message: null, granted: true });
     expect(parseDemoResult({ sessionId: 'ses_2', suggestedMessage: 'やって' })).toMatchObject({
       sessionId: 'ses_2',
       message: 'やって',
+      granted: false,
     });
-    expect(parseDemoResult(null)).toEqual({ sessionId: null, projectId: null, message: null });
+    expect(parseDemoResult(null)).toEqual({
+      sessionId: null,
+      projectId: null,
+      message: null,
+      granted: false,
+    });
     expect(
       pickDemoModel([
         { id: 'mock/echo', label: null, provider: null },
@@ -413,6 +417,28 @@ describe('demo', () => {
     expect(fake.calls.some((c) => c.method === 'grant.create')).toBe(false);
     expect(useUi.getState()).toMatchObject({ focusSessionId: 'ses_demo', projectId: 'prj_demo' });
     expect(useUi.getState().suggestions.ses_demo).toBe(DEMO_MESSAGE);
+    rt.dispose();
+  });
+
+  it('probes system.setupDemo by calling it before system.info is known, and trusts its grant', async () => {
+    const fake = createFakeClient({
+      'system.setupDemo': () => ({
+        project: { id: 'prj_d' },
+        session: { id: 'ses_d' },
+        grant: { id: 'grt_d' },
+        repoPath: 'x',
+        created: true,
+      }),
+      'session.list': () => ({ items: [session({ id: 'ses_d' })], nextCursor: null }),
+      'project.list': () => ({ items: [] }),
+    });
+    const rt = createRuntime(fake.client);
+    await startDemo(rt, null);
+    const methods = fake.calls.map((c) => c.method);
+    expect(methods[0]).toBe('system.setupDemo');
+    expect(methods).not.toContain('grant.create');
+    expect(methods).not.toContain('session.create');
+    expect(useUi.getState()).toMatchObject({ focusSessionId: 'ses_d', projectId: 'prj_d', onboardingDone: true });
     rt.dispose();
   });
 });

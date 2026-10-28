@@ -15,6 +15,8 @@ import {
 } from '../../daemon/queries';
 import { describeGrant } from '../../model/grant';
 import { INTEGRATION_STATUS_LABEL, stepState } from '../../model/integration';
+import { flattenTasks, taskDisplay } from '../../model/tasks';
+import { useTaskGroups } from '../command/TaskTree';
 import { OrchestratorMark, useSessionGrants } from '../grant/Grant';
 import { Button } from '../ui/Button';
 import { Tooltip } from '../ui/Tooltip';
@@ -120,6 +122,8 @@ function SessionOverview({ session, runs }: { session: Session; runs: Run[] }) {
   const activeGrant = orchestrator ?? active[0] ?? null;
   const run = item?.run ?? runs[0] ?? null;
   const range = item ? elapsedRange(item) : { start: null, end: null };
+  // The tasks this chat created as an orchestrator (its plan, visible from the chat).
+  const plan = useTaskGroups().find((g) => g.id === session.id) ?? null;
   return (
     <div className="flex flex-col px-4 py-3">
       <Field label="状態">
@@ -144,6 +148,36 @@ function SessionOverview({ session, runs }: { session: Session; runs: Run[] }) {
           <button type="button" className="text-left text-accent hover:underline" onClick={() => openSession(parent.id)}>
             {untitled(parent)}
           </button>
+        </Field>
+      )}
+      {plan && (
+        <Field label="Task">
+          <div className="mb-1 text-meta text-fg-3 tabular">
+            {plan.counts.done}/{plan.counts.total} 完了
+            {plan.counts.review > 0 && ` · レビュー待ち ${plan.counts.review}`}
+            {plan.counts.running > 0 && ` · 進行中 ${plan.counts.running}`}
+          </div>
+          <ul className="flex flex-col">
+            {flattenTasks([plan])
+              .slice(0, 8)
+              .map((n) => (
+                <li key={n.task.id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const ui = useUi.getState();
+                      ui.setMode('command');
+                      ui.select(n.task.id);
+                      ui.setPanelOpen('command', true);
+                    }}
+                    className="flex h-6 w-full items-center gap-1.5 rounded-xs text-left text-ui text-fg-2 hover:text-fg"
+                  >
+                    <StatusIcon state={taskDisplay(n).state} size={12} />
+                    <span className="truncate">{n.task.title}</span>
+                  </button>
+                </li>
+              ))}
+          </ul>
         </Field>
       )}
       <Field label="権限">
