@@ -7,6 +7,7 @@ import type {
   Task,
 } from '@acc/protocol';
 import { type OrchestratorGrantInput, grantParams } from '../model/grant';
+import { type RepoInspection, normalizeInspection } from '../model/repo';
 import { toast, toastError } from '../store/toast';
 import { isNotImplemented } from './errors';
 import { qk } from './keys';
@@ -240,17 +241,57 @@ export async function createProject(
   return { ok: true, project, detectedBranch };
 }
 
-function projectError(err: unknown): string {
+/** The daemon's repository errors in one Japanese sentence (null when unrecognised). */
+export function projectErrorText(err: unknown): string | null {
   const msg = err instanceof Error ? err.message : String(err);
-  if (/must be an absolute path/.test(msg))
+  if (/must be an absolute path|absolute/i.test(msg))
     return '絶対パスで指定してください（例: C:\\work\\my-repo）';
-  if (/does not exist|見つかりません/.test(msg))
+  if (/does not exist|no such file|ENOENT|見つかりません/i.test(msg))
     return 'フォルダが見つかりません。パスを確認してください';
-  if (/git リポジトリではありません/.test(msg))
+  if (/not a git repository|git リポジトリではありません/i.test(msg))
     return 'git リポジトリではありません。リポジトリのルートフォルダを選んでください';
   if (/detached HEAD/.test(msg))
     return 'detached HEAD のため既定ブランチを決められません。既定ブランチを入力してください';
-  return toastError(err, 'プロジェクトを追加できませんでした').title;
+  return null;
+}
+
+function projectError(err: unknown): string {
+  return projectErrorText(err) ?? toastError(err, 'プロジェクトを追加できませんでした').title;
+}
+
+/**
+ * Look at a folder before creating a project (`project.inspectRepo`, when the daemon offers
+ * it): repository or not, its root, branch, uncommitted changes, a test command. Null when
+ * the daemon cannot inspect (the form then validates on create, as before).
+ */
+export async function inspectRepo(rt: AppRuntime, path: string): Promise<RepoInspection | null> {
+  const call = untyped(rt);
+  try {
+    let raw: unknown;
+    try {
+      raw = await call('project.inspectRepo', { path });
+    } catch (err) {
+      if ((err as { code?: string }).code !== 'invalid_params') throw err;
+      raw = await call('project.inspectRepo', { repoPath: path });
+    }
+    return normalizeInspection(raw);
+  } catch (err) {
+    if (isNotImplemented(err)) {
+      rt.markUnimplemented('project.inspectRepo');
+      return null;
+    }
+    const code = (err as { code?: string }).code;
+    if (code === 'connection_lost' || code === 'timeout' || code === 'closed') return null;
+    return {
+      isRepo: false,
+      root: null,
+      name: null,
+      branch: null,
+      dirty: false,
+      testCommand: null,
+      error: projectErrorText(err) ?? (err instanceof Error ? err.message : String(err)),
+    };
+  }
 }
 
 export async function updateProject(
