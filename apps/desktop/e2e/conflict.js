@@ -128,6 +128,32 @@ try {
   await page.locator('[data-step="fix"]').first().waitFor({ timeout: 15_000 });
   if (await page.getByTestId('resolving').isVisible().catch(() => false)) await shot('resolving');
 
+  // 5. the integrator's code runs only once a human allows it: the board asks, Y answers.
+  const ask = await waitFor(
+    async () =>
+      (await rpc.call('approval.list', { status: ['pending'] })).items.find(
+        (a) => a.integrationId === created.id,
+      ),
+    'the request to run the tests',
+    60_000,
+  );
+  await page.keyboard.press('Control+1');
+  await page.keyboard.press('Control+j');
+  await page.waitForTimeout(250);
+  await shot('tests-asked');
+  await page.keyboard.press('y');
+  await waitFor(
+    async () =>
+      (await rpc.call('approval.list', { status: ['approved'] })).items.find((a) => a.id === ask.id),
+    'the test run to be allowed',
+    15_000,
+  );
+  log('the human allowed the tests from the board');
+  await page.keyboard.press('Control+k');
+  await page.keyboard.type('README の 2 つの節');
+  await page.getByText('統合をレビュー: README の 2 つの節').first().click();
+  await view.waitFor();
+
   const settled = (await rpc.call('integration.wait', { integrationId: created.id, timeoutMs: 120_000 }))
     .integration;
   if (settled.status !== 'awaiting_approval')
