@@ -99,6 +99,8 @@ export const Session = z.object({
   parentSessionId: SessionId.nullable(),
   /** Run currently executing in this session, if any. */
   activeRunId: RunId.nullable(),
+  /** The agent runtime's own session id from the latest run (used to resume the conversation). */
+  runtimeSessionId: z.string().nullable().optional(),
   pinned: z.boolean(),
   createdBy: Actor,
   createdAt: Timestamp,
@@ -569,6 +571,8 @@ export const Settings = z.object({
     })
     .default({ baseUrl: null, apiKey: null }),
   defaultModel: z.string().nullable().default(null),
+  /** Agent runtime for sessions that do not name one (e.g. "claude-agent-sdk"); null = "mock". */
+  defaultRuntime: z.string().min(1).nullable().default(null),
   /** Max runs in `running` state at once; the rest wait in `queued`. */
   maxConcurrentRuns: z.int().min(1).max(64).default(10),
   /** Max capability delegation depth (1 = orchestrator -> worker only). */
@@ -585,6 +589,7 @@ export const SettingsView = z.object({
     apiKeyMasked: z.string().nullable(),
   }),
   defaultModel: z.string().nullable(),
+  defaultRuntime: z.string().nullable(),
   maxConcurrentRuns: z.int(),
   maxDelegationDepth: z.int(),
 });
