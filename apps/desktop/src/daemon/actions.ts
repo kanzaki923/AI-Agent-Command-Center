@@ -1,5 +1,6 @@
-import type { Approval, Run, Session, SessionKind } from '@acc/protocol';
+import { type Approval, type Run, type Session, type SessionKind, isTerminalRunStatus } from '@acc/protocol';
 import { toast, toastError } from '../store/toast';
+import { useUi } from '../store/ui';
 import { qk } from './keys';
 import type { AppRuntime } from './runtime';
 import { type ChatMessage, patchIn, removeFrom, upsertIn } from './sync';
@@ -100,6 +101,38 @@ export async function sendMessage(
     );
     return false;
   }
+}
+
+/**
+ * Edit-and-resend of the last unanswered message (↑ in an empty composer, §6). The daemon
+ * keeps history immutable, so the original stays (folded as 「編集前」 in this window) and
+ * the edited text is sent as a new message. A chat run the original started and that is
+ * still going is stopped first, so the answer belongs to the edited text.
+ */
+export async function resendEdited(
+  rt: AppRuntime,
+  sessionId: string,
+  original: ChatMessage,
+  text: string,
+): Promise<boolean> {
+  const qc = rt.queryClient;
+  if (original.local?.status === 'failed') {
+    return sendMessage(rt, sessionId, text, { reuseLocalId: original.id });
+  }
+  const runs = qc.getQueryData<Run[]>(qk.runs) ?? [];
+  const run =
+    runs.find((r) => r.triggerMessageId === original.id) ??
+    (original.runId ? runs.find((r) => r.id === original.runId) : undefined);
+  if (run && !isTerminalRunStatus(run.status)) {
+    try {
+      await rt.client.call('run.cancel', { runId: run.id, reason: 'メッセージを編集して送り直しました' });
+    } catch (err) {
+      toastError(err, '送り直せませんでした');
+      return false;
+    }
+  }
+  useUi.getState().markSuperseded(original.id);
+  return sendMessage(rt, sessionId, text);
 }
 
 export async function createSession(

@@ -1,11 +1,12 @@
-import type { Run, Session } from '@acc/protocol';
-import { ArrowUp, CornerDownLeft, FileText, Square, X } from 'lucide-react';
+import { type Run, type Session, isTerminalRunStatus } from '@acc/protocol';
+import { ArrowUp, CornerDownLeft, FileText, Pencil, Square, X } from 'lucide-react';
 import { motion } from 'motion/react';
 import { type KeyboardEvent, useRef, useState } from 'react';
 import { newChat, stop } from '../../app/commands';
-import { sendMessage } from '../../daemon/actions';
+import { resendEdited, sendMessage } from '../../daemon/actions';
 import { qk } from '../../daemon/keys';
-import { useSettings } from '../../daemon/queries';
+import { useMessages, useSettings } from '../../daemon/queries';
+import { lastUnanswered, messageText } from '../../model/chat';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { patchIn } from '../../daemon/sync';
 import { cn } from '../../lib/cn';
@@ -96,6 +97,9 @@ export function Composer({
   const setGrantDialog = useUi((s) => s.setGrantDialog);
   const suggestion = useUi((s) => s.suggestions[session.id] ?? null);
   const setSuggestion = useUi((s) => s.setSuggestion);
+  const editing = useUi((s) => (s.editing?.sessionId === session.id ? s.editing : null));
+  const setEditing = useUi((s) => s.setEditing);
+  const messages = useMessages(session.id).data;
   const settings = useSettings().data;
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const composing = useRef(false);
@@ -129,11 +133,25 @@ export function Composer({
       return;
     }
     // Optimistic: clear in the same frame the message appears (§6).
+    const original = editing ? messages?.find((m) => m.id === editing.messageId) : undefined;
     setDraft(session.id, '');
     setAttachments([]);
     setSuggestion(session.id, null);
+    if (editing) setEditing(null);
     onSent();
-    void sendMessage(rt, session.id, body);
+    if (original) void resendEdited(rt, session.id, original, body);
+    else void sendMessage(rt, session.id, body);
+  };
+
+  /** ↑ in an empty composer: edit the last message nothing answered yet (§6). */
+  const editLast = (): boolean => {
+    const last = lastUnanswered(messages ?? []);
+    if (!last || last.local?.status === 'sending') return false;
+    const running = !!activeRun && !isTerminalRunStatus(activeRun.status);
+    // An agent at work is stopped with its own control (with a confirmation), not by ↑.
+    if (running && session.kind !== 'chat') return false;
+    setEditing({ sessionId: session.id, messageId: last.id, text: messageText(last) });
+    return true;
   };
 
   const sendSuggestion = () => {
@@ -161,10 +179,25 @@ export function Composer({
       if (connected) send();
       return;
     }
+    if (
+      e.key === 'ArrowUp' &&
+      !e.shiftKey &&
+      !e.altKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      draft === '' &&
+      attachments.length === 0 &&
+      !composing.current
+    ) {
+      if (editLast()) e.preventDefault();
+      return;
+    }
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
-      if (canStopInline && activeRun) void stop(rt, activeRun);
+      // Ladder step 2: an edit in progress is cancelled first (the draft goes with it).
+      if (editing) setEditing(null);
+      else if (canStopInline && activeRun) void stop(rt, activeRun);
       else e.currentTarget.blur();
     }
   };
@@ -178,6 +211,25 @@ export function Composer({
     <div className="mx-auto w-full max-w-[760px] px-6 pb-4">
       {suggestion && !generating && !draft && (
         <SuggestionChip text={suggestion} onSend={sendSuggestion} onDismiss={() => setSuggestion(session.id, null)} />
+      )}
+      {editing && (
+        <div className="mb-1.5 flex h-6 items-center gap-1.5 px-1 text-meta text-fg-3" data-testid="editing-banner">
+          <Pencil size={12} strokeWidth={1.75} className="text-accent" />
+          <span className="text-fg-2">直前のメッセージを編集しています</span>
+          <span className="text-fg-4">·</span>
+          送信すると送り直します
+          <span className="flex-1" />
+          <button
+            type="button"
+            onClick={() => {
+              setEditing(null);
+              textarea.current?.focus();
+            }}
+            className="flex items-center gap-1 rounded-xs px-1 hover:text-fg"
+          >
+            取り消す <Kbd keys="Esc" />
+          </button>
+        </div>
       )}
       <div
         className={cn(

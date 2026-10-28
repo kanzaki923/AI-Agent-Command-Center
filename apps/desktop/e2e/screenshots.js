@@ -19,10 +19,13 @@ const url = arg('url', 'http://127.0.0.1:5173/');
 const out = arg('out', join(tmpdir(), 'acc-desktop-screenshots'));
 const only = arg('only', null);
 const theme = arg('theme', 'dark');
+// --size 1100x720 for the narrow layout (default 1440x900).
+const [width, height] = arg('size', '1440x900').split('x').map(Number);
+const prefix = arg('prefix', '');
 mkdirSync(out, { recursive: true });
 
 const browser = await chromium.launch();
-const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+const context = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 1 });
 // The scene is already set up: skip the first-run screen; pick the theme (--theme light).
 await context.addInitScript((t) => {
   try {
@@ -42,7 +45,7 @@ page.on('console', (m) => {
 });
 
 const shot = async (name) => {
-  const path = join(out, `${name}.png`);
+  const path = join(out, `${prefix}${name}.png`);
   await page.screenshot({ path });
   console.log(path);
 };

@@ -32,14 +32,69 @@ export function filtersToSearch(base: string, f: TimelineFilters): string {
   return s ? `?${s}` : '';
 }
 
-interface TimelineState {
+/** What survives a restart (the desktop window has no address bar to keep the URL). */
+interface Saved {
   filters: TimelineFilters;
   groupByRun: boolean;
+  showAll: boolean;
+}
+
+const STORAGE_KEY = 'acc.timeline';
+
+function readSaved(): Partial<Saved> {
+  try {
+    const raw = globalThis.localStorage?.getItem(STORAGE_KEY);
+    if (!raw) return {};
+    const v = JSON.parse(raw) as Partial<Saved>;
+    const f = v.filters;
+    return {
+      ...(typeof v.groupByRun === 'boolean' ? { groupByRun: v.groupByRun } : {}),
+      ...(typeof v.showAll === 'boolean' ? { showAll: v.showAll } : {}),
+      ...(f
+        ? {
+            filters: {
+              ...EMPTY_FILTERS,
+              groups: (f.groups ?? []).filter((g) => (EVENT_GROUPS as string[]).includes(g)),
+              actors: (f.actors ?? []).filter((a) => ['human', 'agent', 'system'].includes(a)),
+              sessionId: typeof f.sessionId === 'string' ? f.sessionId : null,
+              runId: typeof f.runId === 'string' ? f.runId : null,
+              text: typeof f.text === 'string' ? f.text : '',
+            },
+          }
+        : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function writeSaved(s: Saved): void {
+  try {
+    globalThis.localStorage?.setItem(STORAGE_KEY, JSON.stringify(s));
+  } catch {
+    /* storage blocked: the URL still carries the filters */
+  }
+}
+
+/** URL first (a shared link wins), else what was used last time. */
+export function initialTimelineState(search: string): Saved {
+  const saved = readSaved();
+  const fromUrl = filtersFromSearch(search);
+  const urlHasFilters = /(^|[?&])tl\./.test(search);
+  return {
+    filters: urlHasFilters ? fromUrl : (saved.filters ?? EMPTY_FILTERS),
+    groupByRun: saved.groupByRun ?? true,
+    showAll: saved.showAll ?? false,
+  };
+}
+
+interface TimelineState extends Saved {
   toggled: Record<string, boolean>;
   setFilters: (patch: Partial<TimelineFilters>) => void;
   clearFilters: () => void;
   toggleRun: (runId: string, currentlyCollapsed: boolean) => void;
   setGroupByRun: (v: boolean) => void;
+  setShowAll: (v: boolean) => void;
 }
 
 function writeUrl(f: TimelineFilters) {
@@ -48,23 +103,35 @@ function writeUrl(f: TimelineFilters) {
   window.history.replaceState(window.history.state, '', `${window.location.pathname}${next}${window.location.hash}`);
 }
 
-export const useTimeline = create<TimelineState>((set, get) => ({
-  filters: typeof window === 'undefined' ? EMPTY_FILTERS : filtersFromSearch(window.location.search),
-  groupByRun: true,
-  toggled: {},
-  setFilters(patch) {
-    const filters = { ...get().filters, ...patch };
-    set({ filters });
-    writeUrl(filters);
-  },
-  clearFilters() {
-    set({ filters: EMPTY_FILTERS });
-    writeUrl(EMPTY_FILTERS);
-  },
-  toggleRun(runId, currentlyCollapsed) {
-    set((s) => ({ toggled: { ...s.toggled, [runId]: !currentlyCollapsed } }));
-  },
-  setGroupByRun(groupByRun) {
-    set({ groupByRun });
-  },
-}));
+export const useTimeline = create<TimelineState>((set, get) => {
+  const persist = () => {
+    const { filters, groupByRun, showAll } = get();
+    writeSaved({ filters, groupByRun, showAll });
+  };
+  return {
+    ...initialTimelineState(typeof window === 'undefined' ? '' : window.location.search),
+    toggled: {},
+    setFilters(patch) {
+      const filters = { ...get().filters, ...patch };
+      set({ filters });
+      writeUrl(filters);
+      persist();
+    },
+    clearFilters() {
+      set({ filters: EMPTY_FILTERS });
+      writeUrl(EMPTY_FILTERS);
+      persist();
+    },
+    toggleRun(runId, currentlyCollapsed) {
+      set((s) => ({ toggled: { ...s.toggled, [runId]: !currentlyCollapsed } }));
+    },
+    setGroupByRun(groupByRun) {
+      set({ groupByRun });
+      persist();
+    },
+    setShowAll(showAll) {
+      set({ showAll });
+      persist();
+    },
+  };
+});

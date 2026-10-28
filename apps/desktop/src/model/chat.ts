@@ -1,7 +1,13 @@
 import type { Approval, CapabilityGrant, Run } from '@acc/protocol';
 import type { StreamingMessage } from '../daemon/deltas';
 import type { ChatMessage } from '../daemon/sync';
-import { TOOL_CATEGORY_LABEL, type ToolCategory, type ToolDescription, describeTool } from '../lib/tools';
+import {
+  TOOL_CATEGORY_LABEL,
+  type ToolCategory,
+  type ToolDescription,
+  type ToolLookup,
+  describeTool,
+} from '../lib/tools';
 
 export interface ToolCallView {
   id: string;
@@ -44,6 +50,8 @@ export function buildChatBlocks(input: {
   runs: Run[];
   /** Grants held by this session (revoked ones included). */
   grants?: CapabilityGrant[];
+  /** Names for Control API tool calls (task titles). */
+  lookup?: ToolLookup;
 }): ChatBlock[] {
   const results = new Map<string, { output: unknown; isError: boolean; at: string }>();
   for (const m of input.messages) {
@@ -104,7 +112,7 @@ export function buildChatBlocks(input: {
           output: r?.output,
           done: !!r,
           isError: r?.isError ?? false,
-          desc: describeTool(p.name, p.input),
+          desc: describeTool(p.name, p.input, input.lookup),
           at: m.createdAt,
           endedAt: r?.at ?? null,
         });
@@ -137,6 +145,85 @@ export function buildChatBlocks(input: {
   // Streams always render last (they are the newest content).
   for (const s of input.streaming) blocks.push({ kind: 'streaming', id: `stream:${s.messageId}`, stream: s });
   return blocks;
+}
+
+function sameCalls(a: ToolCallView[], b: ToolCallView[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((c, i) => {
+      const d = b[i]!;
+      return (
+        c.id === d.id &&
+        c.done === d.done &&
+        c.isError === d.isError &&
+        c.output === d.output &&
+        c.endedAt === d.endedAt &&
+        c.desc.label === d.desc.label
+      );
+    })
+  );
+}
+
+function sameBlock(a: ChatBlock, b: ChatBlock): boolean {
+  switch (a.kind) {
+    case 'user':
+      return b.kind === 'user' && a.message === b.message && a.fromAgent === b.fromAgent;
+    case 'assistant':
+      return (
+        b.kind === 'assistant' &&
+        a.text === b.text &&
+        a.reasoning === b.reasoning &&
+        a.message.id === b.message.id &&
+        a.message.runId === b.message.runId
+      );
+    case 'tools':
+      return b.kind === 'tools' && sameCalls(a.calls, b.calls);
+    case 'approval':
+      return b.kind === 'approval' && a.approval === b.approval;
+    case 'streaming':
+      return false;
+    case 'run-error':
+    case 'run-stopped':
+      return b.kind === a.kind && a.run === b.run;
+    case 'grant':
+      return b.kind === 'grant' && a.grant === b.grant && a.change === b.change;
+  }
+}
+
+/**
+ * Keep the previous block object when nothing it shows changed. Blocks are rebuilt on every
+ * streaming frame; without this every visible block (and its markdown) re-rendered with it.
+ * `prev` is updated in place to the returned blocks.
+ */
+export function stabilizeBlocks(prev: Map<string, ChatBlock>, next: ChatBlock[]): ChatBlock[] {
+  const out = next.map((b) => {
+    const old = prev.get(b.id);
+    return old && sameBlock(old, b) ? old : b;
+  });
+  prev.clear();
+  for (const b of out) prev.set(b.id, b);
+  return out;
+}
+
+/**
+ * The human's last message when nothing answered it yet (no assistant / tool output after
+ * it): the one `↑` in an empty composer may edit and send again (§6).
+ */
+export function lastUnanswered(messages: readonly ChatMessage[]): ChatMessage | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role === 'system') continue;
+    if (m.role !== 'user') return null;
+    return m.author.kind === 'human' ? m : null;
+  }
+  return null;
+}
+
+export function messageText(m: { content: ChatMessage['content'] }): string {
+  return m.content
+    .filter((p) => p.type === 'text')
+    .map((p) => p.text)
+    .join('\n\n');
 }
 
 /** `ツール実行 6 件 · 読み取り 4 · 検索 2` */

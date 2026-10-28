@@ -9,6 +9,7 @@ import {
   CircleDot,
   CircleX,
   Coins,
+  CornerDownLeft,
   Diamond,
   FileBox,
   Folder,
@@ -20,13 +21,20 @@ import {
   Play,
   Search,
   Settings2,
+  ShieldBan,
   ShieldQuestion,
   User,
   Wrench,
 } from 'lucide-react';
 import { DropdownMenu } from 'radix-ui';
 import { type ReactNode, useMemo, useRef } from 'react';
-import { useEventHistory, useEventLogVersion, useRuns, useSessions } from '../../daemon/queries';
+import {
+  useEventHistory,
+  useEventLogVersion,
+  useRuns,
+  useSessions,
+  useTasks,
+} from '../../daemon/queries';
 import { useRuntime } from '../../daemon/runtime';
 import { useStickToBottom } from '../../hooks/useStickToBottom';
 import { useWindowKeydown } from '../../hooks/useWindowKeydown';
@@ -42,10 +50,13 @@ import {
   EVENT_GROUPS,
   EVENT_GROUP_LABEL,
   type EventIcon,
+  type TimelineNames,
   type TimelineRow,
   actorName,
   buildTimelineRows,
+  eventContext,
   filtersActive,
+  formatGap,
   runIdOfKey,
 } from '../../model/timeline';
 import { useTimeline } from '../../store/timeline';
@@ -70,6 +81,7 @@ const ICONS: Record<EventIcon, ReactNode> = {
   integration: <GitMerge size={13} strokeWidth={1.75} />,
   budget: <Coins size={13} strokeWidth={1.75} />,
   grant: <KeyRound size={13} strokeWidth={1.75} />,
+  denied: <ShieldBan size={13} strokeWidth={1.75} />,
   message: <MessageSquare size={13} strokeWidth={1.75} />,
   workspace: <GitBranch size={13} strokeWidth={1.75} />,
   artifact: <FileBox size={13} strokeWidth={1.75} />,
@@ -78,11 +90,60 @@ const ICONS: Record<EventIcon, ReactNode> = {
   session: <MessageSquare size={13} strokeWidth={1.75} />,
 };
 
-function actorIcon(kind: ActorKind, orchestrator: boolean): ReactNode {
-  if (orchestrator) return <Diamond size={11} strokeWidth={1.75} className="text-accent" fill="currentColor" />;
-  if (kind === 'human') return <User size={13} strokeWidth={1.75} />;
-  if (kind === 'agent') return <Bot size={13} strokeWidth={1.75} />;
-  return <Settings2 size={13} strokeWidth={1.75} />;
+/**
+ * Who acted, as a badge (principle 6): `あなた` / `AI` + its role / `システム`. The badge is
+ * the same shape for all three so a column of them scans as "who", not as decoration.
+ */
+function ActorBadge({ kind, name, orchestrator }: { kind: ActorKind; name: string; orchestrator: boolean }) {
+  return (
+    <span className="flex min-w-0 items-center gap-1.5">
+      <span
+        className={cn(
+          'flex h-4 shrink-0 items-center gap-1 rounded-xs px-1 text-micro',
+          kind === 'human'
+            ? 'bg-[color-mix(in_oklch,var(--accent)_14%,transparent)] text-fg'
+            : kind === 'agent'
+              ? 'bg-selected text-fg-2'
+              : 'border border-line-subtle text-fg-3',
+        )}
+      >
+        {kind === 'agent' && orchestrator ? (
+          <Diamond size={9} strokeWidth={1.75} className="text-accent" fill="currentColor" />
+        ) : kind === 'agent' ? (
+          <Bot size={10} strokeWidth={1.75} />
+        ) : kind === 'human' ? (
+          <User size={10} strokeWidth={1.75} />
+        ) : (
+          <Settings2 size={10} strokeWidth={1.75} />
+        )}
+        {ACTOR_LABEL[kind]}
+      </span>
+      {kind === 'agent' && <span className="truncate text-fg-2">{name}</span>}
+    </span>
+  );
+}
+
+/** Session and task titles from the caches, so events read "「設計チャット」が作業を開始". */
+export function useTimelineNames(): TimelineNames {
+  const sessions = useSessions().data;
+  const tasks = useTasks().data;
+  return useMemo(() => {
+    const s = new Map((sessions ?? NONE).map((x) => [x.id, untitled(x)]));
+    const t = new Map((tasks ?? NONE).map((x) => [x.id, x.title]));
+    return { sessionTitle: (id) => s.get(id), taskTitle: (id) => t.get(id) };
+  }, [sessions, tasks]);
+}
+
+/** Jump from an event to where it happened (the chat message, the task, the integration). */
+export function openEventContext(e: Event): boolean {
+  const ctx = eventContext(e);
+  if (!ctx) return false;
+  const ui = useUi.getState();
+  if (ctx.kind === 'message') ui.openMessage(ctx.sessionId, ctx.messageId, { from: 'timeline' });
+  else if (ctx.kind === 'session') ui.openSession(ctx.sessionId, { from: 'timeline' });
+  else if (ctx.kind === 'task') ui.openTask(ctx.taskId);
+  else ui.openIntegration(ctx.integrationId);
+  return true;
 }
 
 function FilterMenu<T extends string>({
@@ -171,7 +232,7 @@ function RunHeader({
       type="button"
       onClick={() => toggleRun(row.runId, row.collapsed)}
       className={cn(
-        'flex h-7 w-full items-center gap-2 border-b border-line-subtle bg-canvas pr-6 pl-[86px] text-left text-ui',
+        'flex h-7 w-full items-center gap-2 border-b border-line-subtle bg-canvas pr-6 pl-[120px] text-left text-ui',
         selected ? 'bg-selected' : 'hover:bg-hover',
       )}
     >
@@ -219,6 +280,9 @@ function EventRow({
   const { event: e, view } = row;
   const orchestrator = e.actor.kind === 'agent' && runs.get(e.actor.runId)?.kind === 'orchestrator';
   const name = actorName(e.actor, sessions, runs);
+  const gap = formatGap(row.gapMs);
+  const ctx = eventContext(e);
+  const denied = e.type === 'policy.denied';
   return (
     <div
       role="option"
@@ -227,21 +291,35 @@ function EventRow({
       onClick={onSelect}
       onDoubleClick={onOpen}
       className={cn(
-        'relative flex flex-col justify-center pr-6 text-ui',
+        'group relative flex flex-col justify-center pr-6 text-ui',
         view.detail ? 'h-11' : 'h-7',
         selected ? 'bg-selected' : 'hover:bg-hover',
       )}
     >
-      {(view.isDecision || selected) && (
-        <span className={cn('absolute top-0.5 bottom-0.5 left-0 w-0.5 rounded-full', 'bg-accent')} />
+      {(view.isDecision || denied || selected) && (
+        <span
+          className={cn(
+            'absolute top-0.5 bottom-0.5 left-0 w-0.5 rounded-full',
+            denied && !selected ? 'bg-st-failed' : 'bg-accent',
+          )}
+        />
       )}
       <div className="flex h-7 items-center">
         <Tooltip content={formatAbsolute(e.ts)}>
           <span className="w-[72px] shrink-0 pl-4 text-meta text-fg-3 tabular">{formatClockSeconds(e.ts)}</span>
         </Tooltip>
-        <span className={cn('flex w-[140px] shrink-0 items-center gap-1.5 truncate text-fg-2', row.inRun && 'pl-4')}>
-          <span className="text-fg-3">{actorIcon(e.actor.kind, orchestrator)}</span>
-          <span className="truncate">{name}</span>
+        {/* The pause before this step: long waits stand out without a chart. */}
+        <span
+          className={cn(
+            'w-12 shrink-0 pr-2 text-right text-micro tabular',
+            row.gapMs != null && row.gapMs >= 60_000 ? 'text-fg-3' : 'text-fg-4',
+          )}
+          aria-label={gap ? `前のイベントから ${gap.slice(1)}` : undefined}
+        >
+          {gap}
+        </span>
+        <span className={cn('flex w-[150px] shrink-0 items-center gap-1.5 truncate', row.inRun && 'pl-3')}>
+          <ActorBadge kind={e.actor.kind} name={name} orchestrator={orchestrator} />
           {row.runTag && <span className="shrink-0 font-mono text-micro text-fg-4">#{row.runTag.slice(-3)}</span>}
         </span>
         <span
@@ -259,11 +337,28 @@ function EventRow({
             </>
           )}
         </span>
-        <span className={cn('min-w-0 flex-1 truncate', view.isError ? 'text-fg' : 'text-fg')}>{view.summary}</span>
+        <span className="min-w-0 flex-1 truncate text-fg">{view.summary}</span>
+        {ctx && (
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={(ev) => {
+              ev.stopPropagation();
+              onOpen();
+            }}
+            className={cn(
+              'ml-2 flex h-5 shrink-0 items-center gap-1 rounded-xs px-1.5 text-meta text-fg-3 hover:bg-hover hover:text-fg',
+              selected ? 'visible' : 'invisible group-hover:visible',
+            )}
+          >
+            {ctx.label}
+            <CornerDownLeft size={11} strokeWidth={1.75} />
+          </button>
+        )}
       </div>
       {view.detail && (
-        <div className="-mt-1 truncate pl-[332px] text-meta text-fg-3">
-          {view.isDecision ? `「${view.detail}」` : view.detail}
+        <div className="-mt-1 truncate pl-[390px] text-meta text-fg-3">
+          {view.isDecision ? `「${view.detail}」` : denied ? `理由: ${view.detail}` : view.detail}
         </div>
       )}
     </div>
@@ -282,21 +377,23 @@ export function TimelineView() {
   const groupByRun = useTimeline((s) => s.groupByRun);
   const toggled = useTimeline((s) => s.toggled);
   const toggleRun = useTimeline((s) => s.toggleRun);
+  const showAll = useTimeline((s) => s.showAll);
+  const setShowAll = useTimeline((s) => s.setShowAll);
   const selectedKey = useUi((s) => s.timelineSelected);
   const setSelected = useUi((s) => s.setTimelineSelected);
   const setPanelOpen = useUi((s) => s.setPanelOpen);
-  const openSession = useUi((s) => s.openSession);
   const stick = useStickToBottom();
   const searchRef = useRef<HTMLInputElement | null>(null);
+  const names = useTimelineNames();
 
   const sessions = useMemo(() => new Map((sessionsQ.data ?? NONE).map((s) => [s.id, s])), [sessionsQ.data]);
   const runs = useMemo(() => new Map((runsQ.data ?? NONE).map((r) => [r.id, r])), [runsQ.data]);
   const events = rt.streams.events.events;
   const rows = useMemo(
-    () => buildTimelineRows({ events, filters, groupByRun, runs, toggled }),
+    () => buildTimelineRows({ events, filters, groupByRun, runs, toggled, showAll, names }),
     // `version` changes whenever the (mutable) event log changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [version, events, filters, groupByRun, runs, toggled],
+    [version, events, filters, groupByRun, runs, toggled, showAll, names],
   );
 
 
@@ -321,7 +418,7 @@ export function TimelineView() {
   });
 
   const open = (e: Event) => {
-    if (e.sessionId) openSession(e.sessionId, { from: 'timeline' });
+    openEventContext(e);
   };
   const selectRow = (key: string) => {
     setSelected(key);
@@ -418,6 +515,34 @@ export function TimelineView() {
           </button>
         )}
         <span className="flex-1" />
+        <Tooltip content="ロックの変更・使用量・ツールの結果など、細かな記録も並べます">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={showAll}
+            onClick={() => setShowAll(!showAll)}
+            className={cn(
+              'flex h-7 items-center gap-1.5 rounded-sm px-2 text-meta',
+              showAll ? 'bg-selected text-fg' : 'text-fg-3 hover:text-fg-2',
+            )}
+          >
+            <span
+              className={cn(
+                'relative h-3 w-5 rounded-full transition-colors duration-[120ms]',
+                showAll ? 'bg-accent' : 'bg-line-strong',
+              )}
+              aria-hidden="true"
+            >
+              <span
+                className={cn(
+                  'absolute top-0.5 size-2 rounded-full bg-white transition-transform duration-[120ms]',
+                  showAll ? 'translate-x-2.5' : 'translate-x-0.5',
+                )}
+              />
+            </span>
+            詳細なイベントも表示
+          </button>
+        </Tooltip>
         <button
           type="button"
           onClick={() => stick.scrollToBottom()}

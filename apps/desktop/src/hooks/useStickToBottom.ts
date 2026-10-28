@@ -18,6 +18,8 @@ export interface StickToBottom {
   /** Content arrived while not following (show "↓ 新しいメッセージ"). */
   hasUnseen: boolean;
   scrollToBottom: (behavior?: ScrollBehavior) => void;
+  /** Stop following (before a programmatic jump up the history). */
+  release: () => void;
   /** The scroll container (for virtualizers); call from callbacks, not during render. */
   getElement: () => HTMLElement | null;
 }
@@ -123,6 +125,7 @@ export function useStickToBottom(): StickToBottom {
   );
 
   const getElement = useCallback(() => scrollEl.current, []);
+  const release = useCallback(() => setFollowing(false), [setFollowing]);
 
-  return { scrollRef, contentRef, following, unfollowedAt, hasUnseen, scrollToBottom, getElement };
+  return { scrollRef, contentRef, following, unfollowedAt, hasUnseen, scrollToBottom, release, getElement };
 }

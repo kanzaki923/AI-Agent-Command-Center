@@ -1,35 +1,89 @@
-import type { Approval, Run, Session } from '@acc/protocol';
+import { type Approval, type Run, type Session, isTerminalRunStatus } from '@acc/protocol';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { AlertTriangle, ArrowDown, Bot, Square } from 'lucide-react';
-import { memo, useMemo } from 'react';
-import { retry } from '../../app/commands';
+import { AlertTriangle, ArrowDown, Bot, Brain, ChevronRight, Pencil, RotateCcw, Square } from 'lucide-react';
+import { type ReactNode, memo, useEffect, useMemo, useState } from 'react';
+import { focusComposerSoon, retry } from '../../app/commands';
 import { sendMessage } from '../../daemon/actions';
-import { useGrants, useMessages, usePendingApprovals, useResolvedApprovals, useRuns, useStreaming } from '../../daemon/queries';
+import {
+  useGrants,
+  useMessages,
+  usePendingApprovals,
+  useResolvedApprovals,
+  useRuns,
+  useStreaming,
+  useTasks,
+} from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import type { ChatMessage } from '../../daemon/sync';
 import type { StickToBottom } from '../../hooks/useStickToBottom';
 import { cn } from '../../lib/cn';
 import { headLines } from '../../lib/tools';
 import { describeApproval } from '../../model/approval';
-import { type ChatBlock, buildChatBlocks } from '../../model/chat';
+import {
+  type ChatBlock,
+  buildChatBlocks,
+  lastUnanswered,
+  messageText,
+  stabilizeBlocks,
+} from '../../model/chat';
+import { useUi } from '../../store/ui';
 import { ResolvedLine, RiskNote, useApprovalControls } from '../approval/ApprovalControls';
 import { GrantLine, OrchestratorIntro, useSessionGrants } from '../grant/Grant';
 import { Button } from '../ui/Button';
+import { CopyButton } from '../ui/CopyButton';
+import { Kbd } from '../ui/Kbd';
 import { Skeleton, TimeStamp } from '../ui/Meta';
 import { Markdown } from './Markdown';
 import { ToolGroup } from './ToolBlocks';
 
 const NONE: never[] = [];
 
-function UserBlock({ message, fromAgent }: { message: ChatMessage; fromAgent: boolean }) {
-  const rt = useRuntime();
-  const text = message.content
-    .filter((p) => p.type === 'text')
-    .map((p) => p.text)
-    .join('\n\n');
-  const failed = message.local?.status === 'failed';
+/** A user message longer than this folds to its first lines (a pasted log stays readable). */
+const FOLD_LINES = 18;
+const FOLD_CHARS = 1800;
+
+/**
+ * Copy / edit as a small floating bar over the message's top-right corner, shown on hover
+ * or keyboard focus. It takes no layout space: a conversation keeps its rhythm whether or
+ * not the pointer is on it. Hover appears instantly and fades out in 120ms (§3.1).
+ */
+function MessageActions({ children }: { children: ReactNode }) {
   return (
-    <div className="flex flex-col gap-1">
+    <div
+      role="toolbar"
+      aria-label="メッセージの操作"
+      className={cn(
+        'absolute -top-3.5 right-0 z-10 flex h-7 items-center gap-0.5 rounded-sm border border-line bg-raised px-0.5 shadow-float',
+        'invisible opacity-0 transition-[opacity,visibility] duration-[120ms]',
+        'group-hover/msg:visible group-hover/msg:opacity-100 group-hover/msg:duration-0',
+        'group-focus-within/msg:visible group-focus-within/msg:opacity-100',
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+function UserBlock({ message, fromAgent, editable }: { message: ChatMessage; fromAgent: boolean; editable: boolean }) {
+  const rt = useRuntime();
+  const setEditing = useUi((s) => s.setEditing);
+  const superseded = useUi((s) => !!s.superseded[message.id]);
+  const text = messageText(message);
+  const failed = message.local?.status === 'failed';
+  const long = text.length > FOLD_CHARS || text.split('\n').length > FOLD_LINES;
+  const [expanded, setExpanded] = useState(false);
+  if (superseded) {
+    return (
+      <div className="flex items-center gap-1.5 text-meta text-fg-4">
+        <Pencil size={11} strokeWidth={1.75} />
+        <span className="shrink-0">編集前:</span>
+        <span className="min-w-0 truncate line-through decoration-fg-4/60">{text}</span>
+      </div>
+    );
+  }
+  const folded = long && !expanded;
+  return (
+    <div className="group/msg relative flex flex-col gap-1">
       {fromAgent && (
         <div className="flex items-center gap-1.5 text-micro text-fg-3">
           <Bot size={12} strokeWidth={1.75} />
@@ -38,11 +92,15 @@ function UserBlock({ message, fromAgent }: { message: ChatMessage; fromAgent: bo
       )}
       <div
         className={cn(
-          'selectable rounded-md border bg-surface px-3.5 py-2.5 text-chat whitespace-pre-wrap text-fg',
+          'selectable relative overflow-hidden rounded-md border bg-surface px-3.5 py-2.5 text-chat whitespace-pre-wrap text-fg',
           failed ? 'border-[color-mix(in_oklch,var(--st-failed)_45%,transparent)]' : 'border-line',
+          folded && 'max-h-[312px]',
         )}
       >
         {text}
+        {folded && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-[var(--bg-surface)] to-transparent" />
+        )}
       </div>
       {failed && (
         <div className="flex items-center gap-1.5 text-meta text-st-failed">
@@ -58,6 +116,102 @@ function UserBlock({ message, fromAgent }: { message: ChatMessage; fromAgent: bo
         </div>
       )}
       {message.local?.status === 'sending' && <div className="text-meta text-fg-4">送信中…</div>}
+      {long && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="flex h-6 items-center gap-1 self-start rounded-xs px-1.5 text-meta text-fg-3 hover:bg-hover hover:text-fg"
+        >
+          <ChevronRight
+            size={12}
+            strokeWidth={1.75}
+            className={cn('transition-transform duration-[120ms]', expanded ? '-rotate-90' : 'rotate-90')}
+          />
+          {expanded ? '折りたたむ' : `全文を表示（${text.split('\n').length} 行）`}
+        </button>
+      )}
+      {!message.local && (
+        <MessageActions>
+          <CopyButton text={text} iconOnly label="メッセージをコピー" />
+          {editable && (
+            <button
+              type="button"
+              onClick={() => {
+                setEditing({ sessionId: message.sessionId, messageId: message.id, text });
+                focusComposerSoon();
+              }}
+              className="flex h-6 items-center gap-1 rounded-xs px-1.5 text-meta text-fg-3 hover:bg-hover hover:text-fg"
+            >
+              <Pencil size={11} strokeWidth={1.75} />
+              編集して送り直す
+              <Kbd keys="ArrowUp" />
+            </button>
+          )}
+          <span className="px-1 text-meta text-fg-4">
+            <TimeStamp iso={message.createdAt} />
+          </span>
+        </MessageActions>
+      )}
+    </div>
+  );
+}
+
+/** Model reasoning: folded to one quiet line; the answer is what matters (§5.2). */
+function Reasoning({ text, live = false }: { text: string; live?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const chars = text.length;
+  return (
+    <div className="flex flex-col">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="flex h-6 items-center gap-1.5 self-start rounded-xs pr-1.5 text-meta text-fg-3 hover:text-fg-2"
+      >
+        <ChevronRight
+          size={12}
+          strokeWidth={1.75}
+          className={cn('transition-transform duration-[120ms]', open && 'rotate-90')}
+        />
+        <Brain size={12} strokeWidth={1.75} />
+        {live ? '考えています…' : '思考過程'}
+        <span className="text-fg-4 tabular">· {chars.toLocaleString()} 文字</span>
+      </button>
+      {open && (
+        <div className="selectable mt-1 border-l-2 border-line pl-3 text-ui whitespace-pre-wrap text-fg-3">
+          {text}
+          {live && <span className="acc-caret" aria-hidden="true" />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AssistantBlock({ block }: { block: ChatBlock & { kind: 'assistant' } }) {
+  const rt = useRuntime();
+  const connected = useConnectionState() === 'open';
+  const run = useRuns().data?.find((r) => r.id === block.message.runId) ?? null;
+  const retryable = !!run && ['failed', 'cancelled', 'interrupted'].includes(run.status);
+  return (
+    <div className="group/msg relative flex flex-col gap-1.5">
+      {block.reasoning.trim() && <Reasoning text={block.reasoning} />}
+      {block.text.trim() && <Markdown text={block.text} />}
+      {block.text.trim() && (
+        <MessageActions>
+          <CopyButton text={block.text} label="コピー" />
+          {retryable && run && (
+            <button
+              type="button"
+              disabled={!connected}
+              onClick={() => void retry(rt, run)}
+              className="flex h-6 items-center gap-1 rounded-xs px-1.5 text-meta text-fg-2 hover:bg-hover hover:text-fg disabled:text-fg-4"
+            >
+              <RotateCcw size={11} strokeWidth={1.75} />
+              再試行
+            </button>
+          )}
+        </MessageActions>
+      )}
     </div>
   );
 }
@@ -115,17 +269,46 @@ function RunError({ run }: { run: Run }) {
         <Button size="sm" shortcut="retry" onClick={() => void retry(rt, run)} disabled={!connected}>
           再試行
         </Button>
+        <CopyButton text={msg} label="エラーをコピー" />
       </div>
     </div>
   );
 }
 
-const Block = memo(function Block({ block }: { block: ChatBlock }) {
+function RunStopped({ run }: { run: Run }) {
+  const rt = useRuntime();
+  const connected = useConnectionState() === 'open';
+  return (
+    <div className="flex items-center gap-1.5 text-meta text-fg-3">
+      <Square size={11} strokeWidth={2} />
+      停止しました
+      {run.endedAt && (
+        <>
+          <span className="text-fg-4">·</span>
+          <TimeStamp iso={run.endedAt} />
+        </>
+      )}
+      <span className="text-fg-4">·</span>
+      <button
+        type="button"
+        disabled={!connected}
+        onClick={() => void retry(rt, run)}
+        className="text-accent hover:underline disabled:text-fg-4"
+      >
+        もう一度生成
+      </button>
+    </div>
+  );
+}
+
+const Block = memo(function Block({ block, editableId }: { block: ChatBlock; editableId: string | null }) {
   switch (block.kind) {
     case 'user':
-      return <UserBlock message={block.message} fromAgent={block.fromAgent} />;
+      return (
+        <UserBlock message={block.message} fromAgent={block.fromAgent} editable={block.message.id === editableId} />
+      );
     case 'assistant':
-      return <Markdown text={block.text} />;
+      return <AssistantBlock block={block} />;
     case 'tools':
       return <ToolGroup calls={block.calls} />;
     case 'approval':
@@ -138,25 +321,19 @@ const Block = memo(function Block({ block }: { block: ChatBlock }) {
           回答を生成中…<span className="acc-caret" aria-hidden="true" />
         </div>
       ) : (
-        <Markdown text={block.stream.text} streaming />
+        <div className="flex flex-col gap-1.5">
+          {block.stream.reasoning.trim() && <Reasoning text={block.stream.reasoning} live={!block.stream.text} />}
+          {(block.stream.text || !block.stream.reasoning) && (
+            <Markdown text={block.stream.text} streaming streamId={block.stream.messageId} />
+          )}
+        </div>
       );
     case 'run-error':
       return <RunError run={block.run} />;
     case 'grant':
       return <GrantLine grant={block.grant} change={block.change} />;
     case 'run-stopped':
-      return (
-        <div className="flex items-center gap-1.5 text-meta text-fg-3">
-          <Square size={11} strokeWidth={2} />
-          停止しました
-          {block.run.endedAt && (
-            <>
-              <span className="text-fg-4">·</span>
-              <TimeStamp iso={block.run.endedAt} />
-            </>
-          )}
-        </div>
-      );
+      return <RunStopped run={block.run} />;
   }
 });
 
@@ -169,26 +346,55 @@ function gapBefore(prev: ChatBlock | undefined, cur: ChatBlock): number {
   return 14;
 }
 
+/** The message a block shows (jump targets). */
+function blockMessageId(b: ChatBlock): string | null {
+  if (b.kind === 'user' || b.kind === 'assistant') return b.message.id;
+  return null;
+}
+
 export function ChatStream({ session, stick }: { session: Session; stick: StickToBottom }) {
   const messages = useMessages(session.id);
   const pending = usePendingApprovals().data ?? NONE;
   const resolved = useResolvedApprovals();
   const runs = useRuns().data ?? NONE;
+  const tasks = useTasks().data;
   const streaming = useStreaming(session.id);
   const grants = useGrants(session.id).data ?? NONE;
   const activeOrchestrator = useSessionGrants(session.kind === 'chat' ? session.id : null).orchestrator;
+  const jumpTo = useUi((s) => (s.jumpTo?.sessionId === session.id ? s.jumpTo : null));
+  const clearJump = useUi((s) => s.clearJump);
+  // Previous blocks by id (structural sharing). A cache, not state: writing it never renders.
+  const [previous] = useState(() => new Map<string, ChatBlock>());
+
+  const lookup = useMemo(() => {
+    const titles = new Map((tasks ?? NONE).map((t) => [t.id, t.title]));
+    return { taskTitle: (id: string) => titles.get(id) };
+  }, [tasks]);
 
   const blocks = useMemo(() => {
     const approvals = [...pending, ...resolved].filter((a) => a.sessionId === session.id);
     const unique = [...new Map(approvals.map((a) => [a.id, a])).values()];
-    return buildChatBlocks({
-      messages: messages.data ?? NONE,
-      approvals: unique,
-      streaming,
-      runs: runs.filter((r) => r.sessionId === session.id),
-      grants: grants.filter((g) => g.subject.kind === 'session'),
-    });
-  }, [messages.data, pending, resolved, streaming, runs, session.id, grants]);
+    return stabilizeBlocks(
+      previous,
+      buildChatBlocks({
+        messages: messages.data ?? NONE,
+        approvals: unique,
+        streaming,
+        runs: runs.filter((r) => r.sessionId === session.id),
+        grants: grants.filter((g) => g.subject.kind === 'session'),
+        lookup,
+      }),
+    );
+  }, [previous, messages.data, pending, resolved, streaming, runs, session.id, grants, lookup]);
+
+  // ↑-editable: the last human message nothing answered yet (an agent run in progress is
+  // not interrupted from here; its own stop control does that).
+  const unanswered = lastUnanswered(messages.data ?? NONE);
+  const activeRun = session.activeRunId ? runs.find((r) => r.id === session.activeRunId) : undefined;
+  const editableId =
+    unanswered && streaming.length === 0 && (session.kind === 'chat' || !activeRun || isTerminalRunStatus(activeRun.status))
+      ? unanswered.id
+      : null;
 
   // The React Compiler is not used in this app; TanStack Virtual is fine without memoization.
   // eslint-disable-next-line react-hooks/incompatible-library
@@ -199,6 +405,18 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
     getItemKey: (i) => blocks[i]?.id ?? i,
     overscan: 8,
   });
+
+  const release = stick.release;
+  const jumpIndex = jumpTo ? blocks.findIndex((b) => blockMessageId(b) === jumpTo.messageId) : -1;
+  // useEffect is required: scrolling the virtualized list is a DOM side effect that can only
+  // run once the blocks are laid out; the jump request comes from outside (palette, Timeline).
+  useEffect(() => {
+    if (!jumpTo || jumpIndex === -1) return;
+    release();
+    virt.scrollToIndex(jumpIndex, { align: 'center' });
+    const t = setTimeout(clearJump, 1700);
+    return () => clearTimeout(t);
+  }, [jumpTo, jumpIndex, virt, clearJump, release]);
 
   if (messages.isPending) {
     return (
@@ -241,11 +459,14 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
                 <div
                   key={vi.key}
                   data-index={vi.index}
+                  data-message-id={blockMessageId(b) ?? undefined}
                   ref={virt.measureElement}
                   className="absolute right-6 left-6"
                   style={{ transform: `translateY(${vi.start}px)`, paddingTop: gapBefore(blocks[vi.index - 1], b) }}
                 >
-                  <Block block={b} />
+                  <div className={cn(jumpIndex === vi.index && '-mx-2 px-2 py-1 acc-flash')}>
+                    <Block block={b} editableId={editableId} />
+                  </div>
                 </div>
               );
             })}

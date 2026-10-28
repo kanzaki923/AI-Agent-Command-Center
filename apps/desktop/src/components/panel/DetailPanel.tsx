@@ -28,7 +28,7 @@ import { RUN_STATUS_LABEL, TASK_STATUS_LABEL, runStatusToState } from '../../lib
 import { describeApproval } from '../../model/approval';
 import { type BoardItem, elapsedRange, untitled } from '../../model/board';
 import { parsePatch } from '../../model/diff';
-import { describeEvent } from '../../model/timeline';
+import { describeEvent, eventContext } from '../../model/timeline';
 import { useBoard } from '../../model/useBoard';
 import { PANEL_TABS, type PanelTab, useUi } from '../../store/ui';
 import { IconButton } from '../ui/Button';
@@ -36,7 +36,7 @@ import { Kbd } from '../ui/Kbd';
 import { Cost, ElapsedTime, TimeStamp } from '../ui/Meta';
 import { ResizeHandle } from '../ui/ResizeHandle';
 import { StatusIcon, StatusLabel } from '../ui/StatusIcon';
-import { useTimelineSelection } from '../timeline/TimelineView';
+import { openEventContext, useTimelineNames, useTimelineSelection } from '../timeline/TimelineView';
 import { DiffBrowser, DiffStatText } from './DiffViewer';
 import { TaskDetail } from './TaskDetail';
 
@@ -263,6 +263,7 @@ function LogsTab({ session }: { session: Session }) {
   useEventHistory();
   const version = useEventLogVersion();
   const events = rt.streams.events.events;
+  const names = useTimelineNames();
   const mine = useMemo(
     () => events.filter((e) => e.sessionId === session.id).slice(-500),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the log is mutable; `version` tracks it
@@ -272,7 +273,8 @@ function LogsTab({ session }: { session: Session }) {
   return (
     <div className="flex flex-col py-1 font-sans">
       {mine.map((e) => {
-        const v = describeEvent(e);
+        const v = describeEvent(e, names);
+        if (v.noise) return null;
         return (
           <div key={e.seq} className="flex min-h-6 items-start gap-2 px-3 py-0.5 text-meta">
             <span className="w-14 shrink-0 text-fg-4 tabular">{formatClockSeconds(e.ts)}</span>
@@ -388,12 +390,21 @@ function CommandPanel() {
 }
 
 function EventDetail({ event }: { event: Event }) {
-  const v = describeEvent(event);
+  const names = useTimelineNames();
+  const v = describeEvent(event, names);
+  const ctx = eventContext(event);
   return (
     <div className="flex flex-col gap-2 px-4 py-3">
       <div className="text-meta text-fg-3">{event.type}</div>
       <div className="text-title text-fg">{v.summary}</div>
       {v.detail && <div className="text-ui text-fg-2">{v.isDecision ? `「${v.detail}」` : v.detail}</div>}
+      {ctx && (
+        <div>
+          <Button size="sm" shortcut="open" onClick={() => openEventContext(event)}>
+            {ctx.label}
+          </Button>
+        </div>
+      )}
       <Field label="時刻">
         <TimeStamp iso={event.ts} />
       </Field>
