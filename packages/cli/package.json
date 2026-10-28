@@ -1,0 +1,24 @@
+{
+  "name": "@acc/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "`acc` command line client for the Core Daemon.",
+  "bin": {
+    "acc": "./bin/acc.js"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@acc/client": "workspace:*",
+    "@acc/protocol": "workspace:*",
+    "tsx": "^4.20.6"
+  },
+  "devDependencies": {
+    "@acc/daemon": "workspace:*"
+  }
+}

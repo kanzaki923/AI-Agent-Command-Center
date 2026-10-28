@@ -1,0 +1,21 @@
+{
+  "name": "@acc/client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Typed Control API client over WebSocket (browser + Node).",
+  "exports": {
+    ".": "./src/index.ts",
+    "./node": "./src/node.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@acc/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "ws": "^8.18.3"
+  }
+}

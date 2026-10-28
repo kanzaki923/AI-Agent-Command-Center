@@ -1,0 +1,26 @@
+{
+  "name": "@acc/daemon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Core Daemon: persistence, event bus, Control API server and all domain modules.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch --clear-screen=false src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@acc/protocol": "workspace:*",
+    "ws": "^8.18.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@acc/client": "workspace:*",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.6"
+  }
+}
