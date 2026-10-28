@@ -1,0 +1,56 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AI Agent Command Center",
+  "mainBinaryName": "acc-desktop",
+  "version": "0.1.0",
+  "identifier": "com.acc.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "AI Agent Command Center",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 760,
+        "minHeight": 520,
+        "center": true,
+        "decorations": false,
+        "shadow": true,
+        "visible": false,
+        "backgroundColor": "#0b0c0e",
+        "useHttpsScheme": false
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "connect-src": "'self' ipc: http://ipc.localhost http://127.0.0.1:* ws://127.0.0.1:*",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data: blob:",
+        "font-src": "'self' data:"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico", "icons/icon.png"],
+    "externalBin": ["binaries/acc-node"],
+    "resources": {
+      "resources/daemon/": "daemon/"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

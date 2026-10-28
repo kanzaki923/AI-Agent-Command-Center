@@ -24,3 +24,9 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 .idea/
+
+# desktop (Tauri)
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/binaries/
+apps/desktop/src-tauri/resources/daemon/
