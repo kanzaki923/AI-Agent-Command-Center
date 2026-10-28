@@ -376,7 +376,7 @@ export function GrantLine({
     <div className="flex items-center gap-3 py-1" data-testid={`grant-line-${change}`}>
       <span className="h-px min-w-6 flex-1 bg-line-subtle" />
       {/* One flowing sentence: in a narrow column it wraps as text, not as columns. */}
-      <span className="max-w-[560px] text-center text-meta text-fg-3">
+      <span className="max-w-[560px] text-center text-meta [word-break:keep-all] text-fg-3">
         <span className="mr-1.5 inline-block align-[-1px]">
           <OrchestratorMark size={10} hollow={change === 'ended'} />
         </span>
