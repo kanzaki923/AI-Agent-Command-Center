@@ -247,6 +247,87 @@ export function goalFromMessages(messages: readonly Message[], max = 80): string
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
 
+// ---------------------------------------------------------------------------
+// Task board (Command Mode → Task): every task by status, with or without a worker
+// ---------------------------------------------------------------------------
+
+/**
+ * Sections of the task board, in the Command order: what needs you (review, failed,
+ * blocked) → what is moving → what can start → what waits → what is over.
+ */
+export const BOARD_SECTIONS: readonly { status: TaskStatus; label: string; collapsed: boolean }[] = [
+  { status: 'review', label: 'レビュー待ち', collapsed: false },
+  { status: 'failed', label: '失敗', collapsed: false },
+  { status: 'blocked', label: '止まっている', collapsed: false },
+  { status: 'running', label: '進行中', collapsed: false },
+  { status: 'ready', label: '着手可能', collapsed: false },
+  { status: 'pending', label: '未着手（依存待ち）', collapsed: false },
+  { status: 'done', label: '完了', collapsed: true },
+  { status: 'cancelled', label: '中止', collapsed: true },
+];
+
+export interface BoardTask extends TaskNode {
+  group: TaskGroup;
+}
+
+export interface BoardSection {
+  status: TaskStatus;
+  label: string;
+  collapsedByDefault: boolean;
+  tasks: BoardTask[];
+}
+
+/** All tasks of the shown goal(s), sectioned by status; empty sections are dropped. */
+export function buildBoardSections(groups: TaskGroup[], goal: string | null): BoardSection[] {
+  const shown = goal ? groups.filter((g) => g.id === goal) : groups;
+  const all: BoardTask[] = [];
+  for (const g of shown) for (const n of flattenTasks([g])) all.push({ ...n, group: g });
+  return BOARD_SECTIONS.map((s) => ({
+    status: s.status,
+    label: s.label,
+    collapsedByDefault: s.collapsed,
+    tasks: all
+      .filter((t) => t.task.status === s.status)
+      .sort((a, b) =>
+        s.status === 'done' || s.status === 'cancelled'
+          ? b.task.updatedAt.localeCompare(a.task.updatedAt)
+          : a.task.createdAt.localeCompare(b.task.createdAt),
+      ),
+  })).filter((s) => s.tasks.length > 0);
+}
+
+/** Stopped because a dependency failed or was cancelled (the daemon refuses a worker). */
+export function blockedByDependency(task: Task): boolean {
+  return task.status === 'blocked' && !!task.statusReason?.startsWith('dependency_');
+}
+
+/** "このTaskを実行": what task.spawnWorker accepts (ready, failed, blocked for a human reason). */
+export function canRun(task: Task): boolean {
+  return canSpawn(task) || (task.status === 'blocked' && !blockedByDependency(task));
+}
+
+/** "Worker に差し戻す": the worker's result is there to be corrected. */
+export function canRework(n: TaskNode): boolean {
+  return (n.task.status === 'review' || n.task.status === 'failed') && (!!n.worker || !!n.workspace);
+}
+
+export function canCancel(task: Task): boolean {
+  return !isTerminalTask(task.status);
+}
+
+/** Why a task waits, in words (`statusReason` codes from the daemon). */
+export function statusReasonText(task: Task): string | null {
+  const r = task.statusReason;
+  if (!r) return null;
+  if (r === 'dependency_failed') return '依存する Task が失敗しました';
+  if (r === 'dependency_cancelled') return '依存する Task が中止されました';
+  if (r === 'worker_failed') return 'Worker がエラーで止まりました';
+  if (r === 'worker_cancelled') return 'Worker が停止されました';
+  if (r === 'worker_interrupted') return 'Worker が中断されました';
+  if (r === 'no_changes') return 'Worker は変更を加えずに終わりました';
+  return r;
+}
+
 /** The worker's name for a `Worker · …` column (a "Worker: " title prefix would repeat it). */
 export function workerLabel(n: TaskNode): string | null {
   return n.worker ? untitled(n.worker).replace(/^Worker\s*[:：·]\s*/i, '') : null;

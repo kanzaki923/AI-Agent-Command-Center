@@ -91,6 +91,8 @@ export function GlobalShortcuts() {
       e.preventDefault();
       ui.openPalette('#');
     } else if (matchShortcut(e, 'stopRun')) {
+      // On the task board the same chord cancels the selected task (TaskBoard handles it).
+      if (ui.mode === 'command' && ui.selectedId?.startsWith('tsk_')) return;
       e.preventDefault();
       const sessions = rt.queryClient.getQueryData<Session[]>(qk.sessions) ?? [];
       const runs = rt.queryClient.getQueryData<Run[]>(qk.runs) ?? [];

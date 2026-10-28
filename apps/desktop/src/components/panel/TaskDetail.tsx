@@ -1,12 +1,23 @@
-import { ArrowRight, Check, Circle, GitBranch, GitMerge, Play } from 'lucide-react';
-import { type ReactNode, useMemo } from 'react';
+import { ArrowRight, Check, Circle, CornerUpLeft, GitBranch, GitMerge, Play, X } from 'lucide-react';
+import { type ReactNode, useMemo, useState } from 'react';
+import { confirmCancelTask } from '../../app/commands';
 import { spawnWorker, startIntegration } from '../../daemon/orchestration';
 import { useDiff, useIntegrations, useMethods } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { parsePatch } from '../../model/diff';
 import { INTEGRATION_STATUS_LABEL } from '../../model/integration';
-import { type TaskNode, canSpawn, flattenTasks, taskDisplay, taskState } from '../../model/tasks';
+import {
+  type TaskNode,
+  canCancel,
+  canRework,
+  canRun,
+  flattenTasks,
+  statusReasonText,
+  taskDisplay,
+  taskState,
+} from '../../model/tasks';
 import { useUi } from '../../store/ui';
+import { FeedbackBox } from '../command/TaskBoard';
 import { useTaskGroups } from '../command/TaskTree';
 import { Button } from '../ui/Button';
 import { TimeStamp } from '../ui/Meta';
@@ -38,6 +49,7 @@ export function TaskDetail({ taskId }: { taskId: string }) {
   const diff = useDiff(node?.workspace?.id);
   const patch = diff.data?.patch;
   const files = useMemo(() => (patch ? parsePatch(patch) : []), [patch]);
+  const [feedback, setFeedback] = useState(false);
   if (!node)
     return <div className="px-4 py-12 text-center text-meta text-fg-3">Task が見つかりません</div>;
   const t = node.task;
@@ -54,7 +66,7 @@ export function TaskDetail({ taskId }: { taskId: string }) {
         <div className="text-title text-fg">{t.title}</div>
       </div>
       <div className="flex flex-wrap gap-2 px-4 pb-2">
-        {canSpawn(t) && !node.worker && (
+        {canRun(t) && (!node.worker || t.status === 'failed') && (
           <Button
             variant="primary"
             icon={<Play size={11} strokeWidth={2} fill="currentColor" />}
@@ -70,7 +82,17 @@ export function TaskDetail({ taskId }: { taskId: string }) {
               )
             }
           >
-            このTaskを実行
+            {t.status === 'failed' ? 'もう一度実行' : 'このTaskを実行'}
+          </Button>
+        )}
+        {canRework(node) && (
+          <Button
+            icon={<CornerUpLeft size={12} strokeWidth={1.75} />}
+            disabled={!connected}
+            shortcut="reworkTask"
+            onClick={() => setFeedback(true)}
+          >
+            Worker に差し戻す
           </Button>
         )}
         {node.worker && (
@@ -104,13 +126,30 @@ export function TaskDetail({ taskId }: { taskId: string }) {
             </Button>
           )
         )}
+        {canCancel(t) && (
+          <Button
+            variant="ghost"
+            icon={<X size={12} strokeWidth={1.75} />}
+            disabled={!connected}
+            onClick={() => confirmCancelTask(rt, t)}
+          >
+            中止
+          </Button>
+        )}
       </div>
+      {feedback && (
+        <div className="-mx-3">
+          <FeedbackBox task={t} onClose={() => setFeedback(false)} />
+        </div>
+      )}
       <div className="flex flex-col px-4 py-2">
         <Field label="状態">
-          <span className="flex items-center gap-2">
-            <StatusIcon state={taskDisplay(node).state} size={13} />
-            {taskDisplay(node).label}
-            {t.statusReason && <span className="text-meta text-fg-3">（{t.statusReason}）</span>}
+          <span className="flex flex-col">
+            <span className="flex items-center gap-2">
+              <StatusIcon state={taskDisplay(node).state} size={13} />
+              {taskDisplay(node).label}
+            </span>
+            {statusReasonText(t) && <span className="text-meta text-fg-3">{statusReasonText(t)}</span>}
           </span>
         </Field>
         <Field label="Worker">
