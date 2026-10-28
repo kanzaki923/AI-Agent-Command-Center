@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { allowlistedEnv } from '../runtime/env';
 
 export interface CommandResult {
   exitCode: number | null;
@@ -21,17 +22,25 @@ export interface CommandOptions {
 }
 
 /**
- * Environment for project commands: the daemon's environment without its own ACC_* settings
- * (they can carry the LiteLLM key), with CI=true so test runners never enter watch mode or
- * wait for input.
+ * Environment for project commands, which run code agents wrote: the same allowlist as agent
+ * processes (`runtime/env.ts`), never the daemon's whole environment with the LiteLLM key and
+ * the user's cloud tokens. CI=true so test runners never enter watch mode or wait for input.
  */
 export function commandEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(base)) {
-    if (!k.toUpperCase().startsWith('ACC_')) env[k] = v;
+  return { ...allowlistedEnv(base), CI: 'true' };
+}
+
+/** Replace every occurrence of the given secrets (e.g. keys a test printed) with a marker. */
+export function redactSecrets(
+  text: string,
+  secrets: readonly (string | null | undefined)[],
+): string {
+  let out = text;
+  for (const s of secrets) {
+    // Short values would redact ordinary words; real keys and tokens are long.
+    if (s && s.length >= 8) out = out.split(s).join('[REDACTED]');
   }
-  env.CI = 'true';
-  return env;
+  return out;
 }
 
 /** Kill a process and everything it spawned (shell + test runner + workers). */

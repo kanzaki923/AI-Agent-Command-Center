@@ -53,6 +53,16 @@ function describeBase(a: Approval): Omit<ApprovalView, 'riskLevel'> {
   // only add caution, never remove it.
   const explicitHigh = p.risk === 'high' || p.risk === 'critical' || p.outsideWorkspace === true;
 
+  if (a.kind === 'integration' && (p as { action?: unknown }).action === 'verify') {
+    const command = (p as { command?: unknown }).command;
+    return {
+      question: '統合後のテストを実行しますか？',
+      target: typeof command === 'string' ? command : a.detail,
+      targetKind: 'command',
+      scope: 'エージェントが書いたコードを、統合用 worktree であなたの権限で実行します',
+      risk: 'normal',
+    };
+  }
   if (a.kind === 'integration') {
     return {
       question: '統合結果を反映しますか？',

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, truncateSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Project } from '@acc/protocol';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -195,6 +195,51 @@ describe('workspace worktrees', () => {
 
     const diff = await svc.diff(ws.id);
     expect(diff.files.map((f) => f.path)).toEqual(['feature.txt']);
+  });
+
+  it('never runs repository-controlled programs or leaks the environment from its own git calls', async () => {
+    const { d, repo, project } = await setup();
+    const ws = await d.call(HUMAN, 'workspace.create', { projectId: project.id });
+    const svc = d.ctx.service('workspaces');
+    const marker = join(repo.path, '..', `pwned-${ws.id}`);
+    const script = `node -e "require('fs').writeFileSync(process.argv[1], process.env.ACC_SECRET_PROBE || 'ran')" "${marker.replace(/\\/g, '/')}"`;
+
+    // 1. husky-style relative hooksPath in the shared config + a hook written in the tree.
+    await repo.git('config', 'core.hooksPath', '.hooks');
+    // post-commit runs even with --no-verify.
+    repo.write('.hooks/post-commit', `#!/bin/sh\n${script}\n`, ws.path);
+    process.env.ACC_SECRET_PROBE = 'secret';
+    try {
+      expect(await svc.commitAll(ws.id, 'With hook', HUMAN)).toMatch(/^[0-9a-f]{40}$/);
+      expect(existsSync(marker)).toBe(false);
+
+      // 2. `.git` redirected to a gitdir the agent made, whose config sets core.fsmonitor.
+      repo.write('evil/HEAD', 'ref: refs/heads/main\n', ws.path);
+      repo.write('evil/objects/.keep', '', ws.path);
+      repo.write('evil/refs/.keep', '', ws.path);
+      repo.write(
+        'evil/config',
+        `[core]\n\tfsmonitor = "${script.replace(/"/g, '\\"')}"\n`,
+        ws.path,
+      );
+      // git marks `.git` hidden on Windows, where only an in-place rewrite (r+) is allowed.
+      const dotGit = join(ws.path, '.git');
+      truncateSync(dotGit);
+      writeFileSync(dotGit, 'gitdir: evil\n', { flag: 'r+' });
+      repo.write('more.txt', 'x', ws.path);
+      await expect(svc.commitAll(ws.id, 'Redirected', HUMAN)).rejects.toThrow(/\.git/);
+      expect(existsSync(marker)).toBe(false);
+
+      // 3. Whatever git does run sees only the allowlisted environment.
+      const seen = await gitOut(repo.path, [
+        '-c',
+        `alias.probe=!node -p "process.env.ACC_SECRET_PROBE || 'none'"`,
+        'probe',
+      ]);
+      expect(seen).toBe('none');
+    } finally {
+      delete process.env.ACC_SECRET_PROBE;
+    }
   });
 
   it('locks a workspace for one run at a time and refuses removal while locked', async () => {

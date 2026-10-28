@@ -1,4 +1,8 @@
 import { spawn } from 'node:child_process';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { devNull } from 'node:os';
+import path from 'node:path';
+import { BASE_ENV_ALLOWLIST, allowlistedEnv } from '../runtime/env';
 
 /**
  * Thin async wrapper around the git CLI. Always spawned with an argument array (never a
@@ -15,7 +19,7 @@ export interface GitResult {
 export interface GitOptions {
   /** Exit codes treated as success (default [0]). */
   okCodes?: number[];
-  /** Extra environment variables (merged over process.env). */
+  /** Extra environment variables (merged over the allowlisted environment). */
   env?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -34,8 +38,33 @@ export class GitError extends Error {
   }
 }
 
-/** Options prepended to every command: stable, unquoted, non-interactive output. */
-const BASE_ARGS = ['-c', 'core.quotepath=false', '-c', 'color.ui=false'];
+/**
+ * Options prepended to every command: stable, unquoted, non-interactive output, and nothing
+ * that executes repository-controlled programs. Worktree contents are written by agents, so
+ * hooks (a relative `core.hooksPath` such as husky's points into the tree) and fsmonitor
+ * must never run from the daemon's own git calls.
+ */
+const BASE_ARGS = [
+  '-c',
+  'core.quotepath=false',
+  '-c',
+  'color.ui=false',
+  '-c',
+  'core.fsmonitor=false',
+  '-c',
+  `core.hooksPath=${devNull}`,
+];
+
+/**
+ * Environment git gets: the process basics plus git's own config selectors. Not the
+ * daemon's whole environment, which holds the LiteLLM key and the user's other secrets.
+ */
+const GIT_ENV_ALLOWLIST: readonly string[] = [
+  ...BASE_ENV_ALLOWLIST,
+  'GIT_CONFIG_GLOBAL',
+  'GIT_CONFIG_SYSTEM',
+  'GIT_CONFIG_NOSYSTEM',
+];
 
 const BASE_ENV: Record<string, string> = {
   GIT_TERMINAL_PROMPT: '0',
@@ -55,10 +84,21 @@ export function git(
   opts: GitOptions = {},
 ): Promise<GitResult> {
   const okCodes = opts.okCodes ?? [0];
+  let pinned: Record<string, string>;
+  try {
+    pinned = pinLinkedWorktree(cwd);
+  } catch (err) {
+    return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+  }
   return new Promise((resolvePromise, reject) => {
     const child = spawn('git', [...BASE_ARGS, ...args], {
       cwd,
-      env: { ...process.env, ...BASE_ENV, ...opts.env },
+      env: {
+        ...allowlistedEnv(process.env, GIT_ENV_ALLOWLIST),
+        ...BASE_ENV,
+        ...pinned,
+        ...opts.env,
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       signal: opts.signal,
@@ -112,6 +152,61 @@ export function git(
       );
     });
   });
+}
+
+/**
+ * A linked worktree's `.git` is a file in the (agent-writable) tree that tells git where the
+ * repository is. Redirected to a directory the agent made, it would hand git an attacker's
+ * config. So it must point at `<common>/worktrees/<name>` outside the tree, whose `gitdir`
+ * points back here; the checked location is then pinned with GIT_DIR / GIT_WORK_TREE.
+ * Plain repositories (a `.git` directory) and non-repositories are left alone.
+ */
+export function pinLinkedWorktree(cwd: string): Record<string, string> {
+  const dotGit = path.join(cwd, '.git');
+  let isFile: boolean;
+  try {
+    isFile = statSync(dotGit).isFile();
+  } catch {
+    return {};
+  }
+  if (!isFile) return {};
+  const tampered = (why: string) =>
+    new GitError(
+      `ワークスペースの .git が想定外の場所を指しているため、git を実行しません（${why}）: ${cwd}`,
+      [],
+      cwd,
+      null,
+      '',
+    );
+  const m = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(dotGit, 'utf8'));
+  if (!m?.[1]) throw tampered('gitdir がありません');
+  const real = (p: string) => {
+    try {
+      return realpathSync.native(p);
+    } catch {
+      throw tampered(`${p} が見つかりません`);
+    }
+  };
+  const gitDir = real(path.resolve(cwd, m[1]));
+  const root = real(cwd);
+  const fold = (s: string) =>
+    process.platform === 'win32' || process.platform === 'darwin' ? s.toLowerCase() : s;
+  const rel = path.relative(fold(root), fold(gitDir));
+  const outside = rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
+  if (!outside) throw tampered('作業ツリーの中を指しています');
+  if (path.basename(path.dirname(gitDir)) !== 'worktrees') {
+    throw tampered('リポジトリの worktrees ではありません');
+  }
+  let back: string;
+  try {
+    back = readFileSync(path.join(gitDir, 'gitdir'), 'utf8').trim();
+  } catch {
+    throw tampered('戻り先がありません');
+  }
+  if (fold(real(path.dirname(path.resolve(gitDir, back)))) !== fold(root)) {
+    throw tampered('戻り先が一致しません');
+  }
+  return { GIT_DIR: gitDir, GIT_WORK_TREE: path.resolve(cwd) };
 }
 
 /** Run git and return trimmed stdout. */

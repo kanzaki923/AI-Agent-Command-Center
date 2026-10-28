@@ -10,7 +10,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import type { AgentRunInput } from '../contracts';
 import { ApiError } from '../core/errors';
 import { MockAgentRuntime } from '../runtime/mock/runtime';
-import { HUMAN, type TestDaemonNoServer, agentActor, createTestDaemon } from '../testing';
+import {
+  HUMAN,
+  type TestDaemonNoServer,
+  agentActor,
+  approveIntegrationTests,
+  createTestDaemon,
+} from '../testing';
 import { gitOut, resolveCommit } from '../workspace/git';
 import { type TempRepo, createTempRepo, isolateGitConfig } from '../workspace/git-fixture';
 
@@ -40,6 +46,8 @@ interface Setup {
 async function setup(): Promise<Setup> {
   repo = await createTempRepo({ 'shared.txt': 'base\n' });
   d = await createTestDaemon();
+  // The integrator's code is tested only once a human allows it.
+  approveIntegrationTests(d.ctx);
   // The offline mock agent without its human-like pauses.
   const fast = new MockAgentRuntime({ stepDelayMs: 0, typingDelayMs: 0 });
   vi.spyOn(d.ctx.service('runtimes').get('mock'), 'run').mockImplementation(

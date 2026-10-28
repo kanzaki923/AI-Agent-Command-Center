@@ -474,7 +474,7 @@ export class WorkspaceService implements WorkspacesService {
       okCodes: [0, 1],
     }).then((r) => r.code === 0));
     if (!hasChanges) return null;
-    await git(ws.path, ['commit', '--quiet', '-m', message], {
+    await git(ws.path, ['commit', '--quiet', '--no-verify', '-m', message], {
       env: this.identityEnv(ws.projectId),
     });
     const sha = await gitOut(ws.path, ['rev-parse', 'HEAD']);

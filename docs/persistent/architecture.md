@@ -22,7 +22,8 @@ packages/cli      `acc` コマンド（Control API クライアント）
 
 - データディレクトリ：`ACC_HOME`（既定 `~/.acc`）。`acc.sqlite`、`config.json`（LiteLLM の URL / キーなど。リポジトリには置かない）、`worktrees/`、`daemon.json`（接続情報）。
 - `127.0.0.1:47821`（`ACC_PORT` で変更）で待ち受け。HTTP `GET /health`（認証なし。`{ ok, service: "acc-daemon", pid, version, protocolVersion }`。ランチャーは `service` と `pid` で自分のデーモンか確かめる）、WebSocket `/ws?token=...`。
-- 起動時にランダムトークンを生成し `daemon.json` に `{ port, token, pid, startedAt, version }` を書く（終了時に削除）。クライアントはこれを読んで接続する（同一ユーザー以外・ブラウザの任意ページからの操作を防ぐ）。同じ `ACC_HOME` で生きているデーモンがいれば 2 つ目は起動せず exit 0 で終わる（同時起動で bind に負けた側も、勝者の `daemon.json` を確かめて exit 0。ランチャーは exit 0 を「他が担当」とみなして勝者に接続する。ポートを別のプログラムが使っていれば exit 1）。
+- 起動時にランダムトークンを生成し `daemon.json` に `{ port, token, pid, startedAt, version }` を書く（終了時に削除）。クライアントはこれを読んで接続する（同一ユーザー以外・ブラウザの任意ページからの操作を防ぐ）。WebSocket の upgrade は `Origin` も確かめ、デスクトップ（`tauri://localhost` / `http(s)://tauri.localhost`）とループバックの開発サーバ、`Origin` なし（CLI 等）だけを通す。
+  - トークンは同じ OS ユーザーのプロセスなら読める。だから「human だけ」の操作（`integration.approve`、Grant、設定など）は、**エージェントの書いたコードを人間の判断なしに実行しない**ことで守る（コマンドは承認、統合テストは §2.8、デーモン自身の git は §2.8）。人間が承認したコマンドや統合テストはそのユーザーの権限で動き、トークンも読めるので、承認は「そのコードを信頼する」判断になる（OS レベルの隔離は未対応）。同じ `ACC_HOME` で生きているデーモンがいれば 2 つ目は起動せず exit 0 で終わる（同時起動で bind に負けた側も、勝者の `daemon.json` を確かめて exit 0。ランチャーは exit 0 を「他が担当」とみなして勝者に接続する。ポートを別のプログラムが使っていれば exit 1）。
 - 停止は `system.shutdown`（人間だけ。`tool: false`。実行中の Run があれば `force` なしでは `conflict`）。応答を返してからサーバ・モジュール・DB を閉じ、`daemon.json` を消してプロセスを終える（`ctx.requestShutdown()` → `Daemon.closed`）。CLI は `acc daemon stop`。
 - 再起動時、`running` / `queued` / `awaiting_approval` のまま残った Run は `interrupted`（`statusReason: "daemon_restart"`）にし、イベントを残す。あわせてその Run の pending Approval を `cancelled`、ワークスペースロックと `session.activeRunId` を解放する（`core/recovery.ts`）。その後の各モジュールの照合（中断された Worker の Task、統合、Orchestrator の再開）は §2.8・§2.12。
 - DB は Node 組み込みの `node:sqlite`（WAL）。ドライバは `core/db.ts` の `Db` インターフェースの裏に隠す。エンティティのテーブルは「絞り込み用のインデックス列 + `data`（エンティティ全体の JSON、読み書き時に zod で検証）」の形。フィールド追加にマイグレーションは要らず、絞り込み列を足すときだけ要る。
@@ -117,13 +118,14 @@ packages/cli      `acc` コマンド（Control API クライアント）
 
 ### 2.8 Workspace と Integration
 
-- **Workspace**：worktree は `<ACC_HOME>/worktrees/<projectId>/<workspaceId>`、ブランチは既定 `acc/<slug>-<id末尾8文字>`（slug はラベルかタスク名の ASCII 部分、なければ `ws`）。リポジトリ本体は `kind: main` のワークスペースとして初回参照時（`workspace.list` で projectId 指定など）に登録し、削除できない。git は `workspace/git.ts` の `git(cwd, args)` で引数配列のまま spawn する（シェルを通さない）。
+- **Workspace**：worktree は `<ACC_HOME>/worktrees/<projectId>/<workspaceId>`、ブランチは既定 `acc/<slug>-<id末尾8文字>`（slug はラベルかタスク名の ASCII 部分、なければ `ws`）。リポジトリ本体は `kind: main` のワークスペースとして初回参照時（`workspace.list` で projectId 指定など）に登録し、削除できない。git は `workspace/git.ts` の `git(cwd, args)` で引数配列のまま spawn する（シェルを通さない）。worktree の中身はエージェントが書くので、デーモンの git はリポジトリ由来のプログラムを実行しない：毎回 `-c core.fsmonitor=false -c core.hooksPath=<null デバイス>`（コミット・マージは `--no-verify` も）、環境は許可リスト（`runtime/env.ts` + `GIT_CONFIG_*`）。linked worktree の `.git` ファイルは、作業ツリーの外の `<common>/worktrees/<name>` を指し、その `gitdir` が戻ってくるときだけ使い、`GIT_DIR` / `GIT_WORK_TREE` で固定する（書き換えられていれば git を実行せずエラー）。
 - **ロック**：書き込める Run は 1 つ。Run のロックはメモリ + `Workspace.lockedByRunId`（再起動時に `core/recovery.ts` と workspace モジュールの `start` が終わった Run のロックを外す）。統合など daemon 内部の作業は `hold()` でメモリだけのロックを取る。ロック中は削除不可。
 - **削除**：`workspace.remove` は worktree だけ消してブランチは必ず残す（成果物を失わない）。未コミットの変更があると `force` なしでは拒否。
 - **diff**：`baseRef`（既定はワークスペースの baseRef）と HEAD の merge-base に対し、コミット済み・未ステージ・未追跡をすべて含めて出す。未追跡は一時 index（`GIT_INDEX_FILE`）に `add -A` して拾い、エージェントの index は触らない。パッチは 2M 文字で切る（ファイル別統計は完全）。
 - **コミット**：`commitAll` の author/committer は `Project.commitAuthor`、未設定なら `AI Agent Command Center <acc@localhost>`。
 - **Artifact**：`ctx.service('artifacts')` の `record` / `recordDiff` / `recordCommit` / `recordTestResult` で記録し `artifact.created` を出す。projectId・taskId はワークスペースや Run から補う。
-- **Integration**：`integration.create` で反映先（既定 `Project.defaultBranch`）から `acc/integration-<id末尾8文字>` を専用 worktree に作り、merge ×N → verify → apply の手順を `pending` で並べる。`integration.run` はすぐ返し、裏で毎回反映先の最新から `git merge --no-ff` を順に行い、`Project.testCommand` をシェルで実行する（タイムアウト既定 10 分、出力は末尾 64KiB を test_result Artifact に、`ACC_*` 環境変数は渡さず `CI=true`）。手順ごとに `integration.updated` を出す。
+- **Integration**：`integration.create` で反映先（既定 `Project.defaultBranch`）から `acc/integration-<id末尾8文字>` を専用 worktree に作り、merge ×N → verify → apply の手順を `pending` で並べる。`integration.run` はすぐ返し、裏で毎回反映先の最新から `git merge --no-ff` を順に行い、`Project.testCommand` をシェルで実行する（タイムアウト既定 10 分、出力は末尾 64KiB を test_result Artifact に。環境はエージェントと同じ許可リスト + `CI=true`。出力に LiteLLM のキーやデーモンのトークンがあれば `[REDACTED]` にする）。
+  - テストはエージェントの書いたコードをユーザーの権限で動かすので、**人間が始めていない試行**（agent の `integration.run`、Integrator の解消後の再開など）は、実行の前に `integration` 種別の Approval（`payload: { action: "verify", command }`、`integrationId` つき、`runId` なし）を出して待つ（状態は `verifying` のまま）。回答できるのは人間だけ（`integration` 種別の Approval は agent・system からは Grant があっても `forbidden`）。却下は `failed`（`tests_not_approved`）、停止・再起動で待ちが切れたら取り消す。UI は統合のカードで尋ねる。手順ごとに `integration.updated` を出す。
   - 状態：`running` → `verifying` → `awaiting_approval`（反映待ち）／`conflict`（マージ中止済み、統合ブランチは直前の状態）／`failed`（テスト失敗・その他）。`conflict` / `failed` / `awaiting_approval` からは再実行できる。同じプロジェクトの統合と承認は 1 件ずつ直列に実行する。
   - `integration.approve` は **human のみ**（agent・system は Grant があっても `forbidden`、LLM ツールにも出さない）。反映は早送りだけ：反映先がどこかの作業ツリーでチェックアウト中なら、そこが clean のときだけ `merge --ff-only`（dirty なら `conflict`）、どこにもチェックアウトされていなければ旧値つき `update-ref`。反映先が進んでいたら `conflict`（再実行を促す）。
   - 却下・失敗でも worktree とブランチは残す。再起動で中断された統合は `failed`（`daemon_restart`）になる。
@@ -143,6 +145,8 @@ packages/cli      `acc` コマンド（Control API クライアント）
 - `ctx.service('runtimes')` に `mock`（オフライン、既定）と `claude-agent-sdk` を登録する。既定は `settings.defaultRuntime`（未登録の名前なら `mock`）。Run が使うのは `run.runtime` → `session.runtime` → 既定の順。
 - `agent` 種別の RunExecutor（`createAgentExecutor`）：ワークスペースのパスで Runtime を動かし、`AgentEvent` を `RunController` に流す。プロンプトは Task（目標・完了条件）＋起動メッセージ。終了時に `workspaces.commitAll` し、変更があれば `artifacts.recordDiff` で diff Artifact を記録する（失敗しても Run は失敗させない）。
 - **ツール権限は `policy.ts` の純関数で決める**（プロンプトに任せない）：読み取り系はワークスペース内なら許可、編集系もワークスペース内なら許可（worktree が隔離されており、統合前に diff を確認するため）、コマンド（Bash / PowerShell）と、ワークスペース外のパスに触れるもの、未知のツールは承認（`tool_use` の Approval）。
+  - 「ワークスペース内」は字面と実パス（シンボリックリンク・ジャンクションを解決。まだないパスは存在する最も深い祖先を解決して残りを足す）の両方で判定する。リポジトリにコミットされたリンクから外へ出る読み書きは承認になる。
+  - パスのどこかに `.git` を含む編集（`.git` ファイル、`.git/config`、hooks など。Windows / macOS は大文字小文字を区別せず、Windows は末尾のドット・空白も無視）は承認。gitdir の向き先や設定は、デーモン自身の git が何を実行するかを決めるため。
 - 承認の payload は `ToolApprovalPayload` `{ toolName, input, risk }`。`risk`（`low` / `medium` / `high`）はデーモンが決める（`runtime/risk.ts`）：`rm -rf`・`git push`・`git reset --hard`・ネットワークからのインストールやダウンロード・`sudo` などのコマンドとワークスペース外への編集は `high`、それ以外のコマンド・外の読み取り・Web・未知のツールは `medium`、ワークスペース内の読み書きは `low`。
 - Claude Agent SDK：SDK は遅延 import（読み込めなくてもデーモンは起動し、`available()` が理由を返す）。`permissionMode: 'default'` と `settingSources: []` を明示し、ユーザー / リポジトリの設定ファイルの allow ルールや hooks を効かせない（そのためリポジトリの CLAUDE.md は読まない）。子プロセスの環境は許可リストで組み立てる（`env.ts`。値はログに出さない）。LiteLLM の URL があれば `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / モデルを渡し、なければユーザーの Claude Code ログインをそのまま使う。
 - **Control API ツール**：Executor は Run の Grant が許すメソッド（`apiTools`。Orchestrator が起動した Worker なら読み取りのプリセット、人間が起動した Run は Grant がないのでなし）を `AgentRunInput.tools` で渡す。Claude ランタイムはこれを in-process MCP サーバ `acc`（`createSdkMcpServer`、`claude/mcp.ts`）にし、ツール名は `mcp__acc__task_get` のようにメソッドの `.` を `_` にしたもの、入力スキーマは契約の params。呼び出しはディスパッチャを Run の agent actor で通る（Grant 外は `forbidden` をツールのエラーとして返す）ので、`allowedTools` に載せて CLI の確認は省く。
@@ -184,6 +188,6 @@ Orchestrator は**セッション種別ではなく役割**（concept §3.1）�
   - single-instance（2 つ目の起動は既存ウィンドウを前面に）、window-state（位置・大きさ・最大化を復元。表示は最初のページ読み込み後）、notification（OS 通知。capability は `is_permission_granted` / `request_permission` / `notify` だけ。UI は `lib/notify.ts` から直接 invoke）、枠なし + HTML のタイトルバー。
   - アプリを開いたまま `system.shutdown` すると、UI の再接続でシェルが新しいデーモンを起動する。だから UI の停止ボタンはデスクトップアプリでは `再起動` と呼ぶ。
   - Claude Code の CLI は同梱しない。デーモンが実行ファイルを探して Agent SDK に渡す（`runtime/claude/locate.ts`、見つからなければ理由つきで Run が失敗）。
-- ブラウザ（`pnpm dev`）でも同じ UI が動く（Vite の開発ミドルウェアが `daemon.json` を渡す）。E2E テストはこの経路で行う。
+- ブラウザ（`pnpm dev`）でも同じ UI が動く（Vite の開発ミドルウェアが `daemon.json` を渡す）。E2E テストはこの経路で行う。`/__acc/connection` は同じオリジンのページ（`Sec-Fetch-Site: same-origin`、`Origin` が自分）か、ブラウザ以外からの要求だけに答え（`scripts/same-origin.js`）、dev / preview サーバの CORS は切る（ほかのローカルポートのページにトークンを読ませない）。
 - 状態：サーバ状態は TanStack Query、イベントストリームで無効化・差分反映。UI 状態は Zustand。
 - 3 モード：Command（要対応を優先した俯瞰）/ Focus（1 セッション集中）/ Timeline（イベント時系列）。コマンドパレットとキーボード操作を一級に扱う。

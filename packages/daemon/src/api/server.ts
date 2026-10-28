@@ -37,6 +37,17 @@ function tokenMatches(given: string | null, expected: string): boolean {
 }
 
 /**
+ * Web origins that may open the Control API: the desktop shell and local dev servers. A
+ * request without `Origin` is not from a web page (CLI, tests). Defense in depth behind the
+ * token: a page elsewhere that somehow learned it still cannot connect.
+ */
+export function isAllowedOrigin(origin: string | undefined): boolean {
+  if (origin === undefined) return true;
+  if (origin === 'tauri://localhost') return true;
+  return /^https?:\/\/(?:tauri\.localhost|localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/.test(origin);
+}
+
+/**
  * HTTP + WebSocket server.
  * - `GET /health` (no auth): liveness for launchers.
  * - `GET /ws?token=...&client=...`: JSON-RPC over WebSocket. Every connection acts as a
@@ -85,6 +96,10 @@ export async function startServer(
     }
     if (!tokenMatches(url.searchParams.get('token'), opts.token)) {
       refuse(socket, '401 Unauthorized');
+      return;
+    }
+    if (!isAllowedOrigin(req.headers.origin)) {
+      refuse(socket, '403 Forbidden');
       return;
     }
     const client = url.searchParams.get('client') ?? undefined;

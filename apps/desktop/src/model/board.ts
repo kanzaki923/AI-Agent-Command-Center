@@ -150,11 +150,18 @@ export function buildBoard(input: BoardInput): BoardItem[] {
 
   for (const i of input.integrations) {
     if (!inProject(i.projectId)) continue;
-    // A conflict stops the integration just like a failure: someone has to step in.
-    if (i.status !== 'awaiting_approval' && i.status !== 'failed' && i.status !== 'conflict') continue;
     const approval =
       input.approvals.find((a) => a.status === 'pending' && a.integrationId === i.id) ?? null;
-    const state: DisplayState = i.status === 'awaiting_approval' ? 'review' : 'failed';
+    // A conflict stops the integration just like a failure: someone has to step in. So does
+    // a question to a human (e.g. may the tests of an agent-started attempt run?).
+    if (!approval && i.status !== 'awaiting_approval' && i.status !== 'failed' && i.status !== 'conflict') {
+      continue;
+    }
+    const state: DisplayState = approval
+      ? 'awaiting_approval'
+      : i.status === 'awaiting_approval'
+        ? 'review'
+        : 'failed';
     items.push({
       id: i.id,
       kind: 'integration',

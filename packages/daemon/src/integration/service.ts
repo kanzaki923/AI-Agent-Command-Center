@@ -1,8 +1,9 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   type Actor,
+  type Approval,
   type ErrorInfo,
   type Integration,
   type IntegrationStatus,
@@ -27,7 +28,7 @@ import {
 } from '../workspace/git';
 import { KeyedMutex } from '../workspace/mutex';
 import { shortId } from '../workspace/service';
-import { runShellCommand } from './command';
+import { redactSecrets, runShellCommand } from './command';
 
 export interface IntegrationOptions {
   /** Kill the test command after this long (default 10 minutes). */
@@ -394,7 +395,15 @@ export class IntegrationService {
 
     const r = await git(
       wsPath,
-      ['merge', '--no-ff', '--no-edit', '-m', `Merge ${branch} into ${integrationBranch}`, branch],
+      [
+        'merge',
+        '--no-ff',
+        '--no-edit',
+        '--no-verify',
+        '-m',
+        `Merge ${branch} into ${integrationBranch}`,
+        branch,
+      ],
       { okCodes: [0, 1, 128], env },
     );
     if (r.code === 0) {
@@ -471,6 +480,28 @@ export class IntegrationService {
       }),
     }));
 
+    // The test command runs code agents wrote, as the user. An attempt a human started is
+    // that human's decision; any other attempt waits for one (like a Bash tool use).
+    if (actor.kind !== 'human') {
+      const consent = await this.awaitVerifyConsent(id, actor, project, command, step.index);
+      if (consent !== 'approved') {
+        const message =
+          consent === 'rejected'
+            ? 'テストの実行が却下されました'
+            : 'テストの実行の承認を待つ間に中断されました';
+        this.setStep(id, actor, step.index, {
+          status: 'failed',
+          detail: message,
+          endedAt: this.ctx.clock.iso(),
+        });
+        return this.finish(id, actor, 'failed', {
+          code: consent === 'rejected' ? 'tests_not_approved' : 'aborted',
+          message,
+        });
+      }
+      this.setStep(id, actor, step.index, { detail: null });
+    }
+
     const res = await runShellCommand(command, {
       cwd: wsPath,
       timeoutMs: this.opts.testTimeoutMs,
@@ -494,7 +525,9 @@ export class IntegrationService {
       exitCode: res.exitCode,
       durationMs: res.durationMs,
       summary,
-      output: res.output,
+      // Agents read this artifact: never hand them the daemon's own credentials, even if the
+      // code under test printed them.
+      output: redactSecrets(res.output, this.daemonSecrets()),
       title: `統合後のテスト: ${command}`,
       createdBy: actor,
     });
@@ -509,6 +542,95 @@ export class IntegrationService {
       code: res.timedOut ? 'tests_timed_out' : res.aborted ? 'aborted' : 'tests_failed',
       message: `統合後のテストが${summary}`,
     });
+  }
+
+  /**
+   * Ask a human whether the test command may run (an `integration` Approval with
+   * `payload.action: "verify"`; only humans can answer it) and wait for the answer.
+   */
+  private async awaitVerifyConsent(
+    id: string,
+    actor: Actor,
+    project: Project,
+    command: string,
+    stepIndex: number,
+  ): Promise<'approved' | 'rejected' | 'aborted'> {
+    const { ctx } = this;
+    const approvalId = ctx.ids.next('approval');
+    const answered = ctx.bus.waitFor(
+      { types: ['approval.resolved'] },
+      (e) => e.type === 'approval.resolved' && e.payload.approval.id === approvalId,
+      { timeoutMs: 2 ** 31 - 1, signal: this.shutdown.signal },
+    );
+    ctx.db.transaction(() => {
+      const approval = ctx.repos.approvals.insert({
+        id: approvalId,
+        kind: 'integration',
+        status: 'pending',
+        title: '統合後のテストを実行',
+        detail: command,
+        payload: { action: 'verify', command },
+        projectId: project.id,
+        sessionId: actor.kind === 'agent' ? actor.sessionId : null,
+        runId: null,
+        taskId: null,
+        integrationId: id,
+        requestedBy: actor,
+        resolvedBy: null,
+        resolutionNote: null,
+        createdAt: ctx.clock.iso(),
+        resolvedAt: null,
+      });
+      ctx.bus.emit({ type: 'approval.requested', actor, payload: { approval } });
+    });
+    this.setStep(id, actor, stepIndex, {
+      detail: 'エージェントが書いたコードを実行するため、テストの前に人間の承認を待っています',
+    });
+    const event = await answered;
+    if (event?.type === 'approval.resolved') {
+      return event.payload.approval.status === 'approved' ? 'approved' : 'rejected';
+    }
+    try {
+      this.cancelApprovals(id, { kind: 'system', component: 'integration' });
+    } catch {
+      // DB already closed (shutdown): the next start cancels it.
+    }
+    return 'aborted';
+  }
+
+  /** Cancel the integration's pending approvals (an attempt that can no longer use them). */
+  private cancelApprovals(integrationId: string, actor: Actor): void {
+    const { ctx } = this;
+    ctx.db.transaction(() => {
+      for (const ap of ctx.repos.approvals.find({
+        where: { status: 'pending' },
+      })) {
+        if (ap.integrationId !== integrationId) continue;
+        const approval: Approval = ctx.repos.approvals.update(ap.id, (x) => ({
+          ...x,
+          status: 'cancelled',
+          resolvedBy: actor,
+          resolvedAt: ctx.clock.iso(),
+        }));
+        ctx.bus.emit({ type: 'approval.resolved', actor, payload: { approval } });
+      }
+    });
+  }
+
+  /** Values that must never reach an agent-readable artifact. */
+  private daemonSecrets(): string[] {
+    const out: string[] = [];
+    const key = this.ctx.settings.get().litellm.apiKey;
+    if (key) out.push(key);
+    try {
+      const info = JSON.parse(readFileSync(this.ctx.paths.daemonInfo, 'utf8')) as {
+        token?: unknown;
+      };
+      if (typeof info.token === 'string') out.push(info.token);
+    } catch {
+      // no daemon.json (tests, or not written yet)
+    }
+    return out;
   }
 
   // -------------------------------------------------------------------------
@@ -581,7 +703,7 @@ export class IntegrationService {
         );
       }
       try {
-        await git(checkedOut.path, ['merge', '--ff-only', '--quiet', headSha!]);
+        await git(checkedOut.path, ['merge', '--ff-only', '--quiet', '--no-verify', headSha!]);
       } catch (err) {
         refuse(
           `「${target}」への早送りマージに失敗しました: ${err instanceof Error ? err.message : String(err)}`,
@@ -735,6 +857,7 @@ export class IntegrationService {
             'merge',
             '--no-ff',
             '--no-edit',
+            '--no-verify',
             '-m',
             `Merge ${branch} into ${integrationBranch}`,
             branch,
@@ -926,6 +1049,7 @@ export class IntegrationService {
     const actor: Actor = { kind: 'system', component: 'integration' };
     const stale = this.ctx.repos.integrations.find({ where: { status: ACTIVE } });
     for (const integ of stale) {
+      this.cancelApprovals(integ.id, actor);
       this.update(integ.id, actor, ['status', 'steps', 'error'], (i) => ({
         ...i,
         status: 'failed',

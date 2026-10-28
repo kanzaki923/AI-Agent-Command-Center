@@ -1,10 +1,11 @@
 import { readFile } from 'node:fs/promises';
-import type { ServerResponse } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { type Plugin, defineConfig } from 'vite';
+import { isSameOriginRequest } from './scripts/same-origin.js';
 
 interface DaemonJson {
   port: number;
@@ -19,7 +20,12 @@ interface DaemonJson {
  * --prod); the Tauri bundle is loaded from disk and never exposes the token over HTTP.
  */
 function accConnection(): Plugin {
-  const handler = (_req: unknown, res: ServerResponse) => {
+  const handler = (req: IncomingMessage, res: ServerResponse) => {
+    if (!isSameOriginRequest(req)) {
+      res.statusCode = 403;
+      res.end();
+      return;
+    }
     const home = process.env.ACC_HOME || join(homedir(), '.acc');
     readFile(join(home, 'daemon.json'), 'utf8')
       .then((raw) => {
@@ -56,7 +62,9 @@ function accConnection(): Plugin {
 export default defineConfig({
   plugins: [react(), tailwindcss(), accConnection()],
   clearScreen: false, // keep Rust errors visible under `tauri dev`
-  server: { port: 5173, strictPort: true, host: '127.0.0.1' },
+  // The app is same-origin; Vite's default CORS would let any localhost page read responses.
+  server: { port: 5173, strictPort: true, host: '127.0.0.1', cors: false },
+  preview: { cors: false },
   envPrefix: ['VITE_', 'TAURI_ENV_'],
   build: {
     target: 'chrome120', // WebView2 is evergreen Chromium

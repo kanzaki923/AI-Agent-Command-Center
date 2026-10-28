@@ -118,3 +118,18 @@ export function insertTestTask(
     ...fields,
   });
 }
+
+/**
+ * Answer every "run the integration tests?" approval as a human, as the person watching an
+ * orchestration would (agent-started attempts wait for one). Returns an unsubscribe.
+ */
+export function approveIntegrationTests(ctx: DaemonContext): () => void {
+  return ctx.bus.subscribe({ types: ['approval.requested'] }, (e) => {
+    if (e.type !== 'approval.requested') return;
+    const a = e.payload.approval;
+    if (a.kind !== 'integration') return;
+    void ctx
+      .call(HUMAN, 'approval.respond', { approvalId: a.id, decision: 'approve' })
+      .catch(() => undefined);
+  });
+}

@@ -66,6 +66,27 @@ describe('server', () => {
     expect(client.state).toBe('closed');
   });
 
+  it('refuses WebSocket connections from web pages that are not the app, even with the token', async () => {
+    const d = await start();
+    const { WebSocket } = await import('ws');
+    const open = (origin?: string) =>
+      new Promise<number>((resolve) => {
+        const ws = new WebSocket(`${d.wsUrl}?token=${d.token}`, origin ? { origin } : {});
+        ws.on('open', () => {
+          ws.close();
+          resolve(101);
+        });
+        ws.on('unexpected-response', (_req, res) => resolve(res.statusCode ?? 0));
+        ws.on('error', () => resolve(-1));
+      });
+    expect(await open('https://evil.example')).toBe(403);
+    expect(await open('http://localhost.evil.example')).toBe(403);
+    expect(await open()).toBe(101);
+    expect(await open('tauri://localhost')).toBe(101);
+    expect(await open('http://tauri.localhost')).toBe(101);
+    expect(await open('http://127.0.0.1:5173')).toBe(101);
+  });
+
   it('round-trips typed calls and errors over WebSocket', async () => {
     const d = await start();
     const client = await connectTestClient(d);

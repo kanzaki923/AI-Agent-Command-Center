@@ -14,7 +14,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import type { AgentRunInput } from '../contracts';
 import { ApiError } from '../core/errors';
 import { MockAgentRuntime } from '../runtime/mock/runtime';
-import { type TestDaemon, agentActor, connectTestClient, startTestDaemon } from '../testing';
+import {
+  type TestDaemon,
+  agentActor,
+  approveIntegrationTests,
+  connectTestClient,
+  startTestDaemon,
+} from '../testing';
 import { type TempRepo, createTempRepo, isolateGitConfig } from '../workspace/git-fixture';
 
 // Real git, worktrees and `node --test` child processes; Windows is slow under parallel load.
@@ -92,6 +98,8 @@ async function setup(): Promise<Slice> {
   cleanups.push(() => repo.cleanup());
   const d = await startTestDaemon();
   cleanups.push(() => d.cleanup());
+  // The person watching lets the orchestrator's integration run its tests.
+  cleanups.push(approveIntegrationTests(d.ctx));
   d.ctx.service('llm').mock.chunkDelayMs = 0;
 
   // The offline mock agent without its human-like pauses. Each worker stays alive until both
@@ -307,6 +315,14 @@ describe('vertical slice (concept §12.1)', () => {
       ['review 1', isTask('review')],
       ['review 2', isTask('review')],
       ['integration created', (e) => e.type === 'integration.created'],
+      [
+        'human allowed the tests',
+        (e) =>
+          e.type === 'approval.resolved' &&
+          e.payload.approval.kind === 'integration' &&
+          e.payload.approval.status === 'approved' &&
+          e.actor.kind === 'human',
+      ],
       [
         'integration verified',
         (e) =>

@@ -3,6 +3,7 @@ import type { Integration } from '@acc/protocol';
 import { describe, expect, it } from 'vitest';
 import { T0, approval, id, integration, iso, run, session, task } from '../test/fixtures';
 import { attentionCounts, buildBoard, compareItems, groupByZone, nextAttention } from './board';
+import { describeApproval } from './approval';
 
 function scene() {
   const sRun = session({ title: '実行中' });
@@ -86,6 +87,29 @@ describe('buildBoard', () => {
     const i = integration();
     const items = buildBoard({ sessions: [], runs: [], approvals: [], tasks: [], integrations: [i] });
     expect(items[0]).toMatchObject({ kind: 'integration', state: 'review', role: 'Integrator', zone: 'attention' });
+  });
+
+  it('asks on the integration card before the tests of an agent-started attempt run', () => {
+    const i = integration({ status: 'verifying' });
+    const s = session();
+    const ask = {
+      ...approval(run(s), { kind: 'integration', integrationId: i.id, runId: null }),
+      payload: { action: 'verify', command: 'pnpm test' },
+    };
+    const items = buildBoard({ sessions: [s], runs: [], approvals: [ask], tasks: [], integrations: [i] });
+    expect(items.find((x) => x.kind === 'integration')).toMatchObject({
+      id: i.id,
+      state: 'awaiting_approval',
+      zone: 'attention',
+      approval: { id: ask.id },
+    });
+    // Asked once, on the integration card only.
+    expect(items.find((x) => x.kind === 'session')?.approval).toBeNull();
+    expect(describeApproval(ask)).toMatchObject({
+      question: '統合後のテストを実行しますか？',
+      target: 'pnpm test',
+      targetKind: 'command',
+    });
   });
 
   it('puts conflicted and failed integrations in attention as failures; hides the rest', () => {

@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Settings } from '@acc/protocol';
 import { describe, expect, it } from 'vitest';
 import {
@@ -7,7 +10,7 @@ import {
   normalizeAnthropicBaseUrl,
   resolveModelRouting,
 } from './env';
-import { decideToolPermission, isInside } from './policy';
+import { decideToolPermission, isInside, realpathDeep } from './policy';
 import { approvalDetailFor, approvalTitleFor, describeToolActivity } from './tools';
 
 const POSIX = '/work/ws';
@@ -70,6 +73,45 @@ describe('decideToolPermission', () => {
     expect(decide('Write', { content: 'no path' })).toBe('ask');
     expect(decide('Write', { file_path: 'C:\\Windows\\x.dll' }, WIN, 'win32')).toBe('ask');
     expect(decide('Write', { file_path: 'src\\x.ts' }, WIN, 'win32')).toBe('allow');
+  });
+
+  it('asks before editing git metadata (gitdir pointer, config, hooks)', () => {
+    // A redirected `.git` or a planted core.fsmonitor / hook would run code in the daemon's
+    // own git calls, so these edits never go through without a human.
+    expect(decide('Write', { file_path: '.git', content: 'gitdir: evil' })).toBe('ask');
+    expect(decide('Edit', { file_path: '/work/ws/.git/config' })).toBe('ask');
+    expect(decide('Write', { file_path: 'sub/.git/hooks/pre-commit' })).toBe('ask');
+    expect(decide('Write', { file_path: '.GIT\\config' }, WIN, 'win32')).toBe('ask');
+    expect(decide('Write', { file_path: '.git.\\config' }, WIN, 'win32')).toBe('ask');
+    expect(decide('Write', { file_path: '.gitignore', content: 'x' })).toBe('allow');
+    expect(decide('Write', { file_path: 'docs/.github/x.md', content: 'x' })).toBe('allow');
+    expect(decide('Read', { file_path: '.git/config' })).toBe('allow');
+  });
+
+  it('follows symlinks before deciding a path is inside the workspace', () => {
+    const root = mkdtempSync(join(tmpdir(), 'acc-policy-'));
+    try {
+      const ws = join(root, 'ws');
+      const outside = join(root, 'home');
+      mkdirSync(ws);
+      mkdirSync(outside);
+      try {
+        // A junction needs no privilege on Windows; a dir symlink elsewhere.
+        symlinkSync(outside, join(ws, 'cfg'), process.platform === 'win32' ? 'junction' : 'dir');
+      } catch {
+        return; // the platform does not allow links here
+      }
+      const real = (toolName: string, input: unknown) =>
+        decideToolPermission({ toolName, input, cwd: ws }).decision;
+      expect(real('Write', { file_path: join(ws, 'cfg', '.bashrc'), content: 'x' })).toBe('ask');
+      expect(real('Read', { file_path: 'cfg/id_ed25519' })).toBe('ask');
+      expect(real('Write', { file_path: 'new/dir/a.txt', content: 'x' })).toBe('allow');
+      expect(realpathDeep(join(ws, 'cfg', 'missing', 'x'))).toBe(
+        join(realpathDeep(outside), 'missing', 'x'),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('always asks for commands', () => {

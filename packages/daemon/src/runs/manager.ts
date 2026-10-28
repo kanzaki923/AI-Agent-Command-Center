@@ -288,6 +288,11 @@ export class RunManager implements RunsService {
       if (actor.kind === 'agent' && cur.runId !== null && actor.runId === cur.runId) {
         throw forbidden('自分が出した承認リクエストには回答できません');
       }
+      // Integration approvals (running the tests on agent-written code, applying to a
+      // protected branch) are decisions only a human makes, whatever the grants say.
+      if (cur.kind === 'integration' && actor.kind !== 'human') {
+        throw forbidden('統合に関する承認は人間だけが回答できます');
+      }
       const approval = ctx.repos.approvals.update(approvalId, (ap) => ({
         ...ap,
         status: decision.decision,

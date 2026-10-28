@@ -518,7 +518,9 @@ function DecisionBar({
     body = (
       <span className="text-ui text-fg-3">
         {integ.status === 'verifying'
-          ? 'テストを実行しています。終わると反映できます'
+          ? // The daemon says why it is not running yet (e.g. waiting for a human's go-ahead).
+            (verify?.status === 'running' && verify.detail) ||
+            'テストを実行しています。終わると反映できます'
           : '変更を順番にマージしています…'}
       </span>
     );

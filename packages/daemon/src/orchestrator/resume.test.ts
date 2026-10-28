@@ -12,7 +12,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import type { AgentRunInput } from '../contracts';
 import { textOfParts } from '../llm/messages';
 import { MockAgentRuntime } from '../runtime/mock/runtime';
-import { HUMAN, type TestDaemon, startTestDaemon } from '../testing';
+import { HUMAN, type TestDaemon, approveIntegrationTests, startTestDaemon } from '../testing';
 import { type TempRepo, createTempRepo, isolateGitConfig } from '../workspace/git-fixture';
 import { ORCHESTRATOR_RESUME_NOTICE } from './executor';
 
@@ -44,6 +44,7 @@ async function until<T>(fn: () => T | undefined | null | false, timeoutMs = 60_0
 /** A daemon on `home` whose mock agent has no pauses. */
 async function boot(home: string): Promise<TestDaemon> {
   const d = await startTestDaemon({ home });
+  approveIntegrationTests(d.ctx);
   d.ctx.service('llm').mock.chunkDelayMs = 0;
   const fast = new MockAgentRuntime({ stepDelayMs: 0, typingDelayMs: 0 });
   vi.spyOn(d.ctx.service('runtimes').get('mock'), 'run').mockImplementation(

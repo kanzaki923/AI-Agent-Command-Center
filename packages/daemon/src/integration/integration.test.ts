@@ -12,7 +12,7 @@ import {
 } from '../testing';
 import { gitOut } from '../workspace/git';
 import { type TempRepo, createTempRepo, isolateGitConfig } from '../workspace/git-fixture';
-import { commandEnv, runShellCommand } from './command';
+import { commandEnv, redactSecrets, runShellCommand } from './command';
 import { type IntegrationOptions, createIntegrationModule } from './index';
 
 // Real git + child processes on Windows are slow; leave headroom under parallel load.
@@ -418,6 +418,84 @@ describe('integration', () => {
     expect(await s.repo.git('rev-parse', 'main')).toBe(integ.baseSha);
   });
 
+  it('runs the tests of an attempt an agent started only after a human allows it', async () => {
+    const s = await setup({
+      testCommand: `node -e "console.log('token=' + (process.env.ACC_TEST_LEAK || 'none'))"`,
+    });
+    const ws = await workOn(s, { 'c.txt': 'c\n' });
+    const integ = await s.d.call(HUMAN, 'integration.create', {
+      projectId: s.project.id,
+      workspaceIds: [ws.id],
+    });
+    const run = s.d.ctx.ids.next('run');
+    const session = s.d.ctx.ids.next('session');
+    const agent = agentActor(session, run);
+    s.d.ctx.repos.grants.insert({
+      id: s.d.ctx.ids.next('grant'),
+      subject: { kind: 'run', runId: run },
+      parentGrantId: null,
+      permissions: ['*'],
+      scope: {},
+      limits: {},
+      depth: 0,
+      lifetime: 'run',
+      expiresAt: null,
+      revokedAt: null,
+      reason: null,
+      grantedBy: HUMAN,
+      createdAt: s.d.ctx.clock.iso(),
+    });
+    const pendingVerify = () =>
+      s.d.ctx.repos.approvals
+        .find({ where: { status: 'pending' } })
+        .find((a) => a.integrationId === integ.id);
+
+    process.env.ACC_TEST_LEAK = 'leaked';
+    try {
+      await s.d.call(agent, 'integration.run', { integrationId: integ.id });
+      const ap = await vi.waitFor(() => {
+        const a = pendingVerify();
+        if (!a) throw new Error('no approval yet');
+        return a;
+      });
+      expect(ap).toMatchObject({
+        kind: 'integration',
+        payload: { action: 'verify', command: expect.stringContaining('node') as unknown },
+        sessionId: session,
+      });
+      expect(s.d.ctx.repos.integrations.require(integ.id).status).toBe('verifying');
+      // Not even an agent holding "*" can answer it.
+      await expect(
+        s.d.call(agent, 'approval.respond', { approvalId: ap.id, decision: 'approve' }),
+      ).rejects.toMatchObject({ code: 'forbidden' });
+      expect(s.d.ctx.service('integrations').get(integ.id).status).toBe('verifying');
+
+      await s.d.call(HUMAN, 'approval.respond', { approvalId: ap.id, decision: 'approve' });
+      const done = await s.d.ctx.service('integrations').settled(integ.id);
+      expect(done.status).toBe('awaiting_approval');
+      const testArtifact = s.d.ctx.repos.artifacts.find({}).find((a) => a.kind === 'test_result');
+      expect(JSON.stringify(testArtifact)).toContain('token=none');
+
+      // A rejected request fails the attempt without running anything.
+      await s.d.call(agent, 'integration.run', { integrationId: integ.id });
+      const second = await vi.waitFor(() => {
+        const a = pendingVerify();
+        if (!a) throw new Error('no approval yet');
+        return a;
+      });
+      await s.d.call(HUMAN, 'approval.respond', { approvalId: second.id, decision: 'reject' });
+      const rejected = await s.d.ctx.service('integrations').settled(integ.id);
+      expect(rejected.status).toBe('failed');
+      expect(rejected.error).toMatchObject({ code: 'tests_not_approved' });
+
+      // A human-started attempt is the human's decision: no extra approval.
+      expect((await runToEnd(s, integ.id)).status).toBe('awaiting_approval');
+      expect(pendingVerify()).toBeUndefined();
+    } finally {
+      delete process.env.ACC_TEST_LEAK;
+    }
+  });
+
   it('rejects without deleting anything and refuses further runs', async () => {
     const s = await setup();
     const ws = await workOn(s, { 'c.txt': 'c\n' });
@@ -532,8 +610,22 @@ describe('runShellCommand', () => {
     expect(res.output).not.toContain('line 0\n');
   });
 
-  it('strips ACC_* variables and sets CI for project commands', () => {
-    const env = commandEnv({ PATH: '/bin', ACC_LITELLM_API_KEY: 'secret', acc_home: 'x' });
-    expect(env).toEqual({ PATH: '/bin', CI: 'true' });
+  it('gives project commands only the allowlisted environment, with CI set', () => {
+    const env = commandEnv({
+      PATH: '/bin',
+      HOME: '/home/u',
+      ACC_LITELLM_API_KEY: 'secret',
+      acc_home: 'x',
+      GITHUB_TOKEN: 'ghp-secret',
+      AWS_SECRET_ACCESS_KEY: 'aws-secret',
+      ANTHROPIC_API_KEY: 'sk-secret',
+    });
+    expect(env).toEqual({ PATH: '/bin', HOME: '/home/u', CI: 'true' });
+  });
+
+  it('redacts long secrets from output', () => {
+    expect(redactSecrets('key=sk-abcdefgh1234 and sk-abcdefgh1234', ['sk-abcdefgh1234', 'x'])).toBe(
+      'key=[REDACTED] and [REDACTED]',
+    );
   });
 });
