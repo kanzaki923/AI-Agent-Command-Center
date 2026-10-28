@@ -10,6 +10,7 @@ import { useDeferredReorder } from '../../hooks/useDeferredReorder';
 import { useNow } from '../../hooks/useNow';
 import { dayBucket } from '../../lib/format';
 import { useWindowKeydown } from '../../hooks/useWindowKeydown';
+import { claimKeyDecision } from '../../lib/approvalKeys';
 import { cn } from '../../lib/cn';
 import { overlayOpen } from '../../lib/overlay';
 import { sumUsage } from '../../lib/format';
@@ -237,7 +238,7 @@ function EmptyBoard() {
 function DoneToday({ items }: { items: BoardItem[] }) {
   const now = useNow();
   const n = items.filter((i) => i.run?.endedAt && dayBucket(i.run.endedAt, now) === 'today').length;
-  return n > 0 ? <span className="text-fg-4">· 今日 {n}</span> : null;
+  return n > 0 ? <span className="text-fg-3">· 今日 {n}</span> : null;
 }
 
 function SectionTitle({
@@ -370,9 +371,10 @@ export function CommandView() {
       const view = describeApproval(selected.approval);
       if (view.risk === 'high' ? matchShortcut(e, 'approveDanger') : matchShortcut(e, 'approve')) {
         e.preventDefault();
-        void approve(rt, selected.approval);
+        if (claimKeyDecision(e)) void approve(rt, selected.approval);
       } else if (matchShortcut(e, 'reject')) {
         e.preventDefault();
+        if (e.repeat) return;
         // Move focus onto the card, whose own handler opens the reason input.
         const el = document.querySelector<HTMLElement>(`[data-board-item="${CSS.escape(selected.id)}"]`);
         el?.focus();

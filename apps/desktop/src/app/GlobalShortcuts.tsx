@@ -7,7 +7,7 @@ import { overlayOpen } from '../lib/overlay';
 import { isTypingTarget, matchShortcut } from '../lib/shortcuts';
 import { undoLatest } from '../store/toast';
 import { useUi } from '../store/ui';
-import { focusComposerSoon, goToAttention, newChat, stop, switchMode } from './commands';
+import { focusComposerSoon, goToAttention, newChat, retry, stop, switchMode } from './commands';
 
 const REGIONS = ['sidebar', 'main', 'panel', 'composer'] as const;
 
@@ -102,9 +102,12 @@ export function GlobalShortcuts() {
       const run = s?.activeRunId ? runs.find((r) => r.id === s.activeRunId) : undefined;
       if (run) void stop(rt, run);
     } else if (matchShortcut(e, 'back')) {
+      // In a text field Alt+←/→ (macOS Option+←/→) moves by word.
+      if (typing) return;
       e.preventDefault();
       ui.goBack();
     } else if (matchShortcut(e, 'forward')) {
+      if (typing) return;
       e.preventDefault();
       ui.goForward();
     } else if (matchShortcut(e, 'settings')) {
@@ -159,6 +162,16 @@ export function GlobalShortcuts() {
       } else if (ui.mode === 'focus' && matchShortcut(e, 'nextTab')) {
         e.preventDefault();
         ui.cyclePanelTab(1);
+      } else if (ui.mode === 'focus' && matchShortcut(e, 'retry')) {
+        // The chat's 再試行 button shows R: the focused session's latest run, if it failed.
+        const runs = rt.queryClient.getQueryData<Run[]>(qk.runs) ?? [];
+        const latest = runs
+          .filter((r) => r.sessionId === ui.focusSessionId)
+          .reduce<Run | undefined>((a, r) => (!a || r.createdAt > a.createdAt ? r : a), undefined);
+        if (latest && (latest.status === 'failed' || latest.status === 'interrupted')) {
+          e.preventDefault();
+          void retry(rt, latest);
+        }
       }
     }
   });

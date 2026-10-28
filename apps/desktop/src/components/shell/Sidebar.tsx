@@ -209,7 +209,7 @@ export function Sidebar() {
       <div className="mt-3 min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         <SectionHeader label="要対応" count={counts.total} />
         {counts.total === 0 ? (
-          <div className="px-2 pb-1 text-meta text-fg-4">要対応はありません</div>
+          <div className="px-2 pb-1 text-meta text-fg-3">要対応はありません</div>
         ) : (
           <div className="flex flex-col gap-px" aria-live="polite">
             {ATTN_ROWS.filter((r) => counts[r.state] > 0).map((r) => (
@@ -257,7 +257,7 @@ export function Sidebar() {
         {!isCollapsed('sb.recent') &&
           recentGroups.map((g) => (
             <div key={g.bucket} className="mb-1">
-              <div className="flex h-6 items-center px-2 text-[11px] text-fg-4">
+              <div className="flex h-6 items-center px-2 text-[11px] text-fg-3">
                 {g.bucket === 'pinned' ? 'ピン留め' : DAY_BUCKET_LABEL[g.bucket]}
               </div>
               <div className="flex flex-col gap-px">
@@ -268,7 +268,7 @@ export function Sidebar() {
             </div>
           ))}
         {!isCollapsed('sb.recent') && recentGroups.length === 0 && (
-          <div className="px-2 text-meta text-fg-4">まだセッションはありません</div>
+          <div className="px-2 text-meta text-fg-3">まだセッションはありません</div>
         )}
       </div>
 

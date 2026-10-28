@@ -73,11 +73,11 @@ export function ModelPicker({
                 <span className="w-4 text-accent">{m.id === current && <Check size={13} />}</span>
                 <span className="min-w-0 flex-1 truncate">{m.label ?? m.id}</span>
                 {m.provider && <span className="text-meta text-fg-3">{m.provider}</span>}
-                <span className={cn('w-7 text-right text-meta tabular', 'text-fg-4')}>{relativeCost(m.id)}</span>
+                <span className={cn('w-7 text-right text-meta tabular', 'text-fg-3')}>{relativeCost(m.id)}</span>
               </Command.Item>
             ))}
           </Command.List>
-          <div className="flex h-7 items-center justify-end gap-1.5 border-t border-line-subtle px-2 text-micro text-fg-4">
+          <div className="flex h-7 items-center justify-end gap-1.5 border-t border-line-subtle px-2 text-micro text-fg-3">
             <Kbd id="modelPicker" /> で開く
           </div>
         </Command>

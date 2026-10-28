@@ -124,7 +124,7 @@ export function LiteLlmForm({ onDone, compact = false }: { onDone?: () => void; 
           autoComplete="off"
         />
         {err?.field === 'key' && <p className="mt-1 text-meta text-st-failed">{err.message}</p>}
-        {!compact && <p className="mt-1 text-meta text-fg-4">キーは Core Daemon の設定にだけ保存され、画面には残りません。</p>}
+        {!compact && <p className="mt-1 text-meta text-fg-3">キーは Core Daemon の設定にだけ保存され、画面には残りません。</p>}
       </div>
       {state.kind === 'ok' && (
         <div className="flex flex-col gap-2 rounded-md border border-line-subtle bg-canvas p-3">

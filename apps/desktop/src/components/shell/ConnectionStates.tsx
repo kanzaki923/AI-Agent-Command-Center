@@ -49,7 +49,7 @@ export function StartupScreen({ startedAt }: { startedAt: number }) {
       <AppMark />
       <div className="h-10 text-center">
         {waited >= 1000 && <div className="text-ui text-fg-3">デーモンの起動を待っています…</div>}
-        {waited >= 3000 && lastError && <div className="mt-1 max-w-[520px] text-meta text-fg-4">{lastError}</div>}
+        {waited >= 3000 && lastError && <div className="mt-1 max-w-[520px] text-meta text-fg-3">{lastError}</div>}
       </div>
     </div>
   );

@@ -1,4 +1,4 @@
-import type { Session, SessionSearchHit } from '@acc/protocol';
+import type { SessionSearchHit } from '@acc/protocol';
 import { useQuery } from '@tanstack/react-query';
 import { Command, useCommandState } from 'cmdk';
 import {
@@ -50,8 +50,7 @@ import {
   stop,
   switchMode,
 } from '../../app/commands';
-import { archiveSession, setPinned } from '../../daemon/actions';
-import { qk } from '../../daemon/keys';
+import { archiveSession, setPinned, setSessionModel } from '../../daemon/actions';
 import { startDemo } from '../../app/demo';
 import { resumeTask, revokeGrant, spawnWorker } from '../../daemon/orchestration';
 import {
@@ -62,8 +61,7 @@ import {
   useSessions,
   useTasks,
 } from '../../daemon/queries';
-import { type AppRuntime, useRuntime } from '../../daemon/runtime';
-import { patchIn } from '../../daemon/sync';
+import { useRuntime } from '../../daemon/runtime';
 import { cn } from '../../lib/cn';
 import { highlightTerms } from '../../lib/highlight';
 import { relativeCost } from '../../lib/models';
@@ -75,7 +73,6 @@ import { INTEGRATION_STATUS_LABEL, integrationState } from '../../model/integrat
 import { canCancel, canResume, canRun } from '../../model/tasks';
 import { useBoard } from '../../model/useBoard';
 import { useTimeline } from '../../store/timeline';
-import { toastError } from '../../store/toast';
 import { useUi } from '../../store/ui';
 import { useSessionGrants } from '../grant/Grant';
 import { Kbd } from '../ui/Kbd';
@@ -206,11 +203,6 @@ function NoMatches({ text, pending, hits }: { text: string; pending: boolean; hi
       「{text}」に一致するものはありません
     </div>
   );
-}
-
-function setSessionModel(rt: AppRuntime, session: Session, model: string) {
-  patchIn<Session>(rt.queryClient, qk.sessions, session.id, (s) => ({ ...s, model }));
-  rt.client.call('session.update', { sessionId: session.id, model }).catch((err: unknown) => toastError(err));
 }
 
 /**
@@ -572,7 +564,7 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
       hint: [m.provider, relativeCost(m.id)].filter(Boolean).join(' · '),
       icon: m.id === focused.model ? <Check size={15} className="text-accent" /> : I(Cpu),
       keywords: [m.id, m.provider ?? ''],
-      run: () => setSessionModel(rt, focused, m.id),
+      run: () => void setSessionModel(rt, focused, m.id),
     }));
     body = items.length ? <Group heading="モデル" items={items} onRun={runItem} /> : null;
   } else if (prefix === '?') {
@@ -650,6 +642,11 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
             } else if (e.key === 'Backspace' && query === '' && pages.length > 0) {
               e.preventDefault();
               ui.popPalettePage();
+            } else if (e.key === 'Tab') {
+              // aria-modal: focus stays here (↑↓ move between items). Tab would otherwise walk
+              // into the app behind the overlay, where Enter / Space act unseen.
+              e.preventDefault();
+              inputRef.current?.focus();
             }
           }}
         >
@@ -667,7 +664,7 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
               className="h-full min-w-0 flex-1 bg-transparent text-[15px] text-fg placeholder:text-fg-4"
             />
             {hits.isFetching && searchTerm.length >= 2 && (
-              <span className="shrink-0 text-meta text-fg-4">メッセージを検索中…</span>
+              <span className="shrink-0 text-meta text-fg-3">メッセージを検索中…</span>
             )}
           </div>
           <Command.List className="max-h-[336px] overflow-y-auto scroll-py-1 p-1">
@@ -699,7 +696,7 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
               </Command.Group>
             )}
           </Command.List>
-          <div className="flex h-8 items-center gap-3 border-t border-line-subtle px-3 text-micro text-fg-4">
+          <div className="flex h-8 items-center gap-3 border-t border-line-subtle px-3 text-micro text-fg-3">
             <span className="flex items-center gap-1">
               <Kbd keys="ArrowUp" />
               <Kbd keys="ArrowDown" /> 移動

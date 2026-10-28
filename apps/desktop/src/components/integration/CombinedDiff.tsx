@@ -80,7 +80,7 @@ const FileSection = memo(function FileSection({
         <FileKindIcon f={file} />
         <PathLabel path={file.path} className="flex-1" />
         {file.oldPath && file.oldPath !== file.path && (
-          <span className="truncate font-mono text-meta text-fg-4">← {file.oldPath}</span>
+          <span className="truncate font-mono text-meta text-fg-3">← {file.oldPath}</span>
         )}
         <DiffStatText additions={file.additions} deletions={file.deletions} />
       </button>

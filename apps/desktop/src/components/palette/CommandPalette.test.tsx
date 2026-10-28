@@ -71,6 +71,19 @@ describe('<CommandPalette>', () => {
     expect(useUi.getState().paletteOpen).toBe(false);
   });
 
+  it('keeps Tab inside the palette (it is a modal)', async () => {
+    mount({ 'session.list': () => ({ items: [], nextCursor: null }) });
+    act(() => useUi.getState().openPalette());
+    const input = await screen.findByRole('combobox');
+    input.focus();
+    const tab = fireEvent.keyDown(input, { key: 'Tab' });
+    const shiftTab = fireEvent.keyDown(input, { key: 'Tab', shiftKey: true });
+    // Default prevented: the browser does not move focus to the app behind the overlay.
+    expect(tab).toBe(false);
+    expect(shiftTab).toBe(false);
+    expect(document.activeElement).toBe(input);
+  });
+
   it('says when nothing matches and still offers to ask the AI', async () => {
     mount({ 'session.list': () => ({ items: [], nextCursor: null }), 'session.search': () => ({ items: [] }) });
     act(() => useUi.getState().openPalette());

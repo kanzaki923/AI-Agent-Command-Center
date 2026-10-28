@@ -183,7 +183,7 @@ const TaskRow = memo(function TaskRow({
           <span className="truncate text-ui text-fg">{t.title}</span>
           {node.waitsFor.length > 0 && (
             <Tooltip content={`先に終わる必要がある Task: ${node.waitsFor.map((d) => d.title).join('、')}`}>
-              <span className="hidden min-w-0 shrink truncate text-meta text-fg-4 @[640px]:inline">
+              <span className="hidden min-w-0 shrink truncate text-meta text-fg-3 @[640px]:inline">
                 ← {node.waitsFor.map((d) => d.title).join('、')}
               </span>
             </Tooltip>
@@ -199,7 +199,7 @@ const TaskRow = memo(function TaskRow({
           </span>
         )}
         <span className="hidden w-36 shrink-0 truncate text-meta text-fg-2 @[720px]:block">
-          {worker ? `Worker · ${worker}` : <span className="text-fg-4">未割り当て</span>}
+          {worker ? `Worker · ${worker}` : <span className="text-fg-3">未割り当て</span>}
         </span>
         <span className="w-16 shrink-0 text-right">
           {node.diff && node.diff.files > 0 ? (
@@ -430,7 +430,7 @@ export function TaskBoard() {
       <div className="flex h-10 items-center gap-2 px-6">
         <GoalPicker groups={groups} goal={goalShown} />
         <span className="min-w-0 flex-1 truncate text-meta text-fg-3 tabular">{counts.join(' · ')}</span>
-        <span className="hidden items-center gap-3 text-micro text-fg-4 @[720px]:flex">
+        <span className="hidden items-center gap-3 text-micro text-fg-3 @[720px]:flex">
           <span className="flex items-center gap-1">
             <Kbd id="runTask" /> 実行
           </span>

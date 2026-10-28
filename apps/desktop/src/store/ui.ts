@@ -64,6 +64,8 @@ export interface UiState {
    * `nonce` makes a repeated jump to the same message run again.
    */
   jumpTo: { sessionId: string; messageId: string; nonce: number } | null;
+  /** The message a jump just landed on, highlighted for a moment (cleared by a timer). */
+  flash: { sessionId: string; messageId: string; nonce: number } | null;
   /** OS notifications while the window is in the background (§8.5). */
   notifyOs: boolean;
   /** In-app toasts for things that happen outside the current view. */
@@ -71,7 +73,8 @@ export interface UiState {
   /** Messages replaced by "edit and resend" (shown folded, this window only). */
   superseded: Record<string, true>;
   /** The unanswered message being edited in the composer (↑ in an empty composer). */
-  editing: { sessionId: string; messageId: string } | null;
+  /** `prevDraft`: what the composer held before the edit started; it comes back afterwards. */
+  editing: { sessionId: string; messageId: string; prevDraft: string } | null;
 }
 
 export type CommandView = 'agents' | 'tasks';
@@ -119,9 +122,17 @@ interface UiActions {
   /** Focus the session and scroll to one message. */
   openMessage: (sessionId: string, messageId: string, opts?: { from?: 'command' | 'timeline' }) => void;
   clearJump: () => void;
+  /**
+   * The chat has scrolled to `jumpTo`: drop the request at once (so reopening the session
+   * later does not jump again) and flash the message for a moment.
+   */
+  landJump: () => void;
   setNotify: (patch: { os?: boolean; inApp?: boolean }) => void;
   markSuperseded: (messageId: string) => void;
-  /** Start editing (text goes into the session's draft) or stop (`null`). */
+  /**
+   * Start editing (text goes into the session's draft, the draft that was there is kept
+   * aside) or stop (`null`: the kept draft comes back, so cancelling loses nothing).
+   */
   setEditing: (e: { sessionId: string; messageId: string; text: string } | null) => void;
 }
 
@@ -163,6 +174,7 @@ const initial: UiState = {
   commandView: 'agents',
   taskGoal: null,
   jumpTo: null,
+  flash: null,
   notifyOs: true,
   notifyInApp: true,
   superseded: {},
@@ -170,6 +182,8 @@ const initial: UiState = {
 };
 
 let jumpNonce = 0;
+/** Matches the acc-flash animation (index.css). */
+const FLASH_MS = 1700;
 
 const view = (s: UiState): View => ({ mode: s.mode, sessionId: s.focusSessionId });
 
@@ -336,6 +350,12 @@ export const createUiStore = () =>
           set({ jumpTo: { sessionId, messageId, nonce: ++jumpNonce } });
         },
         clearJump: () => set((s) => (s.jumpTo ? { jumpTo: null } : s)),
+        landJump: () => {
+          const flash = get().jumpTo;
+          if (!flash) return;
+          set({ jumpTo: null, flash });
+          setTimeout(() => set((s) => (s.flash === flash ? { flash: null } : s)), FLASH_MS);
+        },
         setNotify: (patch) =>
           set((s) => ({ notifyOs: patch.os ?? s.notifyOs, notifyInApp: patch.inApp ?? s.notifyInApp })),
         markSuperseded: (messageId) => set((s) => ({ superseded: { ...s.superseded, [messageId]: true } })),
@@ -345,11 +365,15 @@ export const createUiStore = () =>
               const cur = s.editing;
               if (!cur) return s;
               const drafts = { ...s.drafts };
-              delete drafts[cur.sessionId];
+              if (cur.prevDraft) drafts[cur.sessionId] = cur.prevDraft;
+              else delete drafts[cur.sessionId];
               return { editing: null, drafts };
             }
+            // Switching to another message keeps the draft from before the first edit.
+            const prevDraft =
+              s.editing?.sessionId === e.sessionId ? s.editing.prevDraft : (s.drafts[e.sessionId] ?? '');
             return {
-              editing: { sessionId: e.sessionId, messageId: e.messageId },
+              editing: { sessionId: e.sessionId, messageId: e.messageId, prevDraft },
               drafts: { ...s.drafts, [e.sessionId]: e.text },
             };
           }),

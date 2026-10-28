@@ -3,14 +3,11 @@ import { ArrowUp, CornerDownLeft, FileText, Pencil, Square, X } from 'lucide-rea
 import { motion } from 'motion/react';
 import { type KeyboardEvent, useRef, useState } from 'react';
 import { newChat, stop } from '../../app/commands';
-import { resendEdited, sendMessage } from '../../daemon/actions';
-import { qk } from '../../daemon/keys';
+import { resendEdited, sendMessage, setSessionModel } from '../../daemon/actions';
 import { useMessages, useSettings } from '../../daemon/queries';
 import { lastUnanswered, messageText } from '../../model/chat';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
-import { patchIn } from '../../daemon/sync';
 import { cn } from '../../lib/cn';
-import { toastError } from '../../store/toast';
 import { useUi } from '../../store/ui';
 import { GrantChip, OrchestratorMark } from '../grant/Grant';
 import { Kbd } from '../ui/Kbd';
@@ -37,12 +34,12 @@ function SuggestionChip({ text, onSend, onDismiss }: { text: string; onSend: () 
       >
         <OrchestratorMark size={11} />
         <span className="min-w-0 truncate">{text}</span>
-        <span className="flex items-center gap-1 text-meta text-fg-4 group-hover:text-fg-3">
+        <span className="flex items-center gap-1 text-meta text-fg-3 group-hover:text-fg-2">
           <CornerDownLeft size={12} strokeWidth={1.75} />
           送信
         </span>
       </button>
-      <button type="button" onClick={onDismiss} aria-label="提案を閉じる" className="flex size-6 items-center justify-center rounded-full text-fg-4 hover:text-fg-2">
+      <button type="button" onClick={onDismiss} aria-label="提案を閉じる" className="flex size-6 items-center justify-center rounded-full text-fg-3 hover:text-fg-2">
         <X size={12} strokeWidth={1.75} />
       </button>
     </motion.div>
@@ -202,10 +199,7 @@ export function Composer({
     }
   };
 
-  const setModel = (model: string) => {
-    patchIn<Session>(rt.queryClient, qk.sessions, session.id, (s) => ({ ...s, model }));
-    rt.client.call('session.update', { sessionId: session.id, model }).catch((err: unknown) => toastError(err));
-  };
+  const setModel = (model: string) => void setSessionModel(rt, session, model);
 
   return (
     <div className="mx-auto w-full max-w-[760px] px-6 pb-4">
@@ -290,7 +284,7 @@ export function Composer({
           <ModelPicker value={session.model} fallback={settings?.defaultModel ?? null} onChange={setModel} />
           {session.kind === 'chat' && <GrantChip session={session} />}
           <span className="flex-1" />
-          <span className="mr-1 flex items-center gap-1 text-micro text-fg-4">
+          <span className="mr-1 flex items-center gap-1 text-micro text-fg-3">
             <Kbd keys="Enter" /> 送信
           </span>
           {canStopInline ? (

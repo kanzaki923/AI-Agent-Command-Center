@@ -2,7 +2,7 @@ import { act, fireEvent, render, renderHook, screen } from '@testing-library/rea
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HOLD_AFTER_KEYBOARD_MS, HOLD_MAX_MS, useDeferredReorder } from './useDeferredReorder';
 import { tickerSubscriberCount, useNow } from './useNow';
-import { distanceFromBottom } from './useStickToBottom';
+import { type StickToBottom, distanceFromBottom, useStickToBottom } from './useStickToBottom';
 
 interface Item {
   id: string;
@@ -100,4 +100,51 @@ describe('useNow', () => {
 
 it('measures distance from the bottom', () => {
   expect(distanceFromBottom({ scrollHeight: 1000, scrollTop: 600, clientHeight: 360 })).toBe(40);
+});
+
+function Content({
+  scrollRef,
+  contentRef,
+  contentKey,
+}: Pick<StickToBottom, 'scrollRef' | 'contentRef'> & { contentKey: string }) {
+  return (
+    <div ref={scrollRef}>
+      <div ref={contentRef} data-content-key={contentKey} />
+    </div>
+  );
+}
+
+const refsOf = (s: StickToBottom) => ({ scrollRef: s.scrollRef, contentRef: s.contentRef });
+
+describe('useStickToBottom: "新しいメッセージ" only for new content', () => {
+  it('ignores size changes that are re-measurement (same content key)', () => {
+    const observers: (() => void)[] = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(cb: () => void) {
+          observers.push(cb);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+    try {
+      const { result } = renderHook(() => useStickToBottom());
+      const view = render(<Content {...refsOf(result.current)} contentKey="3:a:10" />);
+      act(() => result.current.release());
+      // Scrolling up: virtualized rows replace their estimates, the height changes.
+      act(() => observers.forEach((cb) => cb()));
+      expect(result.current.hasUnseen).toBe(false);
+      view.rerender(<Content {...refsOf(result.current)} contentKey="4:b:0" />);
+      act(() => observers.forEach((cb) => cb()));
+      expect(result.current.hasUnseen).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
+import { resetKeyDecisions } from '../../lib/approvalKeys';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
 import { approval, event, run, session, task } from '../../test/fixtures';
@@ -23,6 +24,7 @@ function mount(handlers: Parameters<typeof createFakeClient>[0]) {
 describe('<CommandView>', () => {
   beforeEach(() => {
     useUi.setState({ selectedId: null, collapsed: {}, projectId: null });
+    resetKeyDecisions();
   });
 
   it('degrades to the empty state when list methods are not implemented', async () => {
@@ -73,6 +75,43 @@ describe('<CommandView>', () => {
       fake.emit(event('run.status_changed', { runId: r.id, from: 'awaiting_approval', to: 'running', reason: null }));
     });
     await waitFor(() => expect(screen.queryByText('コマンドの実行を承認しますか？')).not.toBeInTheDocument());
+  });
+
+  it('a held or doubled Y never approves the next pending approval unseen', async () => {
+    const s = session({ title: '並列のツール呼び出し' });
+    const r = run(s, { status: 'awaiting_approval' });
+    s.activeRunId = r.id;
+    const first = approval(r, { payload: { toolName: 'Bash', input: { command: 'pnpm lint' } } });
+    const second = approval(r, {
+      createdAt: new Date(Date.parse(first.createdAt) + 1000).toISOString(),
+      payload: { toolName: 'Bash', input: { command: 'pnpm build' } },
+    });
+    const responded: string[] = [];
+    mount({
+      'session.list': () => ({ items: [s], nextCursor: null }),
+      'run.list': () => ({ items: [r], nextCursor: null }),
+      'approval.list': (p) => ({
+        items: (p.status as string[]).includes('pending') ? [first, second] : [],
+        nextCursor: null,
+      }),
+      'approval.respond': (p) => {
+        responded.push(p.approvalId as string);
+        return { ...first, status: 'approved' };
+      },
+    });
+    const card = await screen.findByRole('option', { name: /並列のツール呼び出し · 承認待ち/ });
+    expect(screen.getByText('$ pnpm lint')).toBeInTheDocument();
+    card.focus();
+    await act(async () => {
+      fireEvent.keyDown(card, { key: 'y' });
+    });
+    // The same card now shows the second one; auto-repeat and a quick second press do nothing.
+    await waitFor(() => expect(screen.getByText('$ pnpm build')).toBeInTheDocument());
+    await act(async () => {
+      fireEvent.keyDown(card, { key: 'y', repeat: true });
+      fireEvent.keyDown(card, { key: 'y' });
+    });
+    expect(responded).toEqual([first.id]);
   });
 
   it('moves a row into the attention zone when an approval arrives (live)', async () => {

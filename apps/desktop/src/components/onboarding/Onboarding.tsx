@@ -139,7 +139,7 @@ export function Onboarding() {
                 onFocus={() => setChoice(1)}
               />
             </div>
-            <p className="mt-5 flex items-center gap-1.5 text-meta text-fg-4">
+            <p className="mt-5 flex items-center gap-1.5 text-meta text-fg-3">
               <Kbd keys="ArrowLeft" />
               <Kbd keys="ArrowRight" /> で選択 · <Kbd keys="Enter" /> で決定
             </p>

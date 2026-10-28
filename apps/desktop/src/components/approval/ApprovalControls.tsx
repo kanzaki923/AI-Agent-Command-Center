@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { type KeyboardEvent, useState } from 'react';
 import { approve, reject } from '../../app/commands';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
+import { claimKeyDecision } from '../../lib/approvalKeys';
 import { formatClock } from '../../lib/format';
 import { matchShortcut } from '../../lib/shortcuts';
 import { cn } from '../../lib/cn';
@@ -84,10 +85,10 @@ export function useApprovalControls(
     if (!approval || e.target !== e.currentTarget) return;
     if (high ? matchShortcut(e, 'approveDanger') : matchShortcut(e, 'approve')) {
       e.preventDefault();
-      doApprove();
+      if (claimKeyDecision(e)) doApprove();
     } else if (matchShortcut(e, 'reject')) {
       e.preventDefault();
-      setRejecting(true);
+      if (claimKeyDecision(e)) setRejecting(true);
     } else if (onExpand && matchShortcut(e, 'expand')) {
       e.preventDefault();
       onExpand();

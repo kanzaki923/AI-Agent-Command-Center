@@ -130,7 +130,7 @@ function StepRow({
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="text-micro text-fg-4 tabular">{n}</span>
+          <span className="text-micro text-fg-3 tabular">{n}</span>
           <span
             className={cn(
               'min-w-0 flex-1 truncate text-ui',
@@ -140,7 +140,7 @@ function StepRow({
             {step.title}
           </span>
           {dur != null && (
-            <span className="text-meta text-fg-4 tabular">{formatDuration(dur)}</span>
+            <span className="text-meta text-fg-3 tabular">{formatDuration(dur)}</span>
           )}
         </div>
         {running && (
@@ -196,7 +196,7 @@ function StepRow({
                 <AlertTriangle
                   size={11}
                   strokeWidth={1.75}
-                  className={cn('shrink-0', step.status === 'failed' ? 'text-st-failed' : 'text-fg-4')}
+                  className={cn('shrink-0', step.status === 'failed' ? 'text-st-failed' : 'text-fg-3')}
                 />
                 {f}
               </li>
@@ -224,7 +224,7 @@ function TestResult({ integ }: { integ: Integration }) {
     );
   }
   if (verify.status === 'pending')
-    return <p className="text-meta text-fg-4">マージが終わるとテストを実行します。</p>;
+    return <p className="text-meta text-fg-3">マージが終わるとテストを実行します。</p>;
   if (verify.status === 'running')
     return <p className="text-meta text-fg-3">テストを実行しています…</p>;
   if (!art || art.kind !== 'test_result') return <Skeleton className="h-16 w-full" />;
@@ -765,7 +765,7 @@ function IntegrationReview({ integ, onClose }: { integ: Integration; onClose: ()
             )}
             <span className="flex-1" />
             {files.length > 0 && (
-              <span className="flex items-center gap-3 text-meta text-fg-4">
+              <span className="flex items-center gap-3 text-meta text-fg-3">
                 {/* Key hints give way first in a narrow window; the buttons stay. */}
                 <span className="hidden items-center gap-1 @[620px]:flex">
                   <Kbd keys="J" />

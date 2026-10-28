@@ -104,7 +104,7 @@ function FocusHeader({ session, run, runs }: { session: Session; run: Run | null
         <Cost usd={usage.costUsd} source={usage.costSource} />
         {budget && (
           <Tooltip content="このチャットの予算（Worker への配分を含む使用額 / 上限）">
-            <span className="tabular text-meta text-fg-4">
+            <span className="tabular text-meta text-fg-3">
               / ${budget.limitUsd.toFixed(2)}
             </span>
           </Tooltip>

@@ -18,6 +18,7 @@ import type {
 import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { useStore } from 'zustand';
+import { useShallow } from 'zustand/react/shallow';
 import type { ActivityEntry } from './activity';
 import { type StreamingMessage, streamingForSession } from './deltas';
 import { isNotImplemented } from './errors';
@@ -110,6 +111,34 @@ export function useRuns() {
   const rt = useRuntime();
   return useQuery<Run[]>({ queryKey: qk.runs, queryFn: () => fetchRuns(rt) });
 }
+
+/**
+ * One run out of the shared run list. Re-renders only when that run changes (the list
+ * updates on every run.updated of every run).
+ */
+export function useRunFromList(runId: string | null | undefined): Run | null {
+  const rt = useRuntime();
+  return (
+    useQuery<Run[], Error, Run | null>({
+      queryKey: qk.runs,
+      queryFn: () => fetchRuns(rt),
+      select: (runs) => (runId ? (runs.find((r) => r.id === runId) ?? null) : null),
+    }).data ?? null
+  );
+}
+
+/** The runs of one session (same identity until one of them changes: structural sharing). */
+export function useSessionRuns(sessionId: string): Run[] {
+  const rt = useRuntime();
+  return (
+    useQuery<Run[], Error, Run[]>({
+      queryKey: qk.runs,
+      queryFn: () => fetchRuns(rt),
+      select: (runs) => runs.filter((r) => r.sessionId === sessionId),
+    }).data ?? EMPTY_RUNS
+  );
+}
+const EMPTY_RUNS: Run[] = [];
 
 export function useRun(runId: string | null | undefined) {
   const rt = useRuntime();
@@ -301,12 +330,19 @@ export function useMethods(): ReadonlySet<string> | null {
   return useMemo(() => (info ? new Set(info.methods) : null), [info]);
 }
 
+/** A session's history (the latest 500 messages). Shared by the chat and optimistic sends. */
+export function messagesQuery(rt: AppRuntime, sessionId: string) {
+  return {
+    queryKey: qk.messages(sessionId),
+    queryFn: () =>
+      rt.client.call('session.messages', { sessionId, limit: 500 }).then((r): ChatMessage[] => r.items),
+  };
+}
+
 export function useMessages(sessionId: string | null | undefined) {
   const rt = useRuntime();
   return useQuery<ChatMessage[]>({
-    queryKey: qk.messages(sessionId ?? ''),
-    queryFn: () =>
-      rt.client.call('session.messages', { sessionId: sessionId!, limit: 500 }).then((r) => r.items),
+    ...messagesQuery(rt, sessionId ?? ''),
     enabled: !!sessionId,
   });
 }
@@ -331,10 +367,16 @@ export function useEventHistory() {
   });
 }
 
+/**
+ * Streaming messages of one session. Deltas of other sessions arrive every frame; the
+ * shallow compare keeps this from re-rendering the chat unless its own messages changed.
+ */
 export function useStreaming(sessionId: string | null | undefined): StreamingMessage[] {
   const rt = useRuntime();
-  const byMessage = useStore(rt.streams.deltas.store, (s) => s.byMessage);
-  return sessionId ? streamingForSession({ byMessage }, sessionId) : EMPTY;
+  return useStore(
+    rt.streams.deltas.store,
+    useShallow((s) => (sessionId ? streamingForSession(s, sessionId) : EMPTY)),
+  );
 }
 
 export function useActivity(runId: string | null | undefined): ActivityEntry | undefined {
@@ -345,4 +387,12 @@ export function useActivity(runId: string | null | undefined): ActivityEntry | u
 export function useEventLogVersion(): number {
   const rt = useRuntime();
   return useStore(rt.streams.events.store, (s) => s.version);
+}
+
+/** Changes only when an event of this session arrives (others' events do not re-render). */
+export function useSessionEventVersion(sessionId: string): number {
+  const rt = useRuntime();
+  const log = rt.streams.events;
+  // The counter lives beside the store and is updated before each store change.
+  return useStore(log.store, () => log.sessionVersion(sessionId));
 }

@@ -19,6 +19,11 @@ export function createEventLog(cap = EVENT_LOG_CAP) {
   const store = createStore<EventLogState>(() => ({ version: 0, oldestSeq: null }));
   const events: Event[] = [];
   const seen = new Set<number>();
+  /** Per-session change counters, so a view of one session can ignore the others' events. */
+  const bySession = new Map<string, number>();
+  const touch = (e: Event) => {
+    if (e.sessionId) bySession.set(e.sessionId, (bySession.get(e.sessionId) ?? 0) + 1);
+  };
 
   const bump = () =>
     store.setState((s) => ({ version: s.version + 1, oldestSeq: events[0]?.seq ?? null }));
@@ -32,9 +37,14 @@ export function createEventLog(cap = EVENT_LOG_CAP) {
   return {
     store,
     events,
+    /** Bumped whenever an event of this session was added. */
+    sessionVersion(sessionId: string): number {
+      return bySession.get(sessionId) ?? 0;
+    },
     add(e: Event) {
       if (seen.has(e.seq)) return;
       seen.add(e.seq);
+      touch(e);
       const last = events[events.length - 1];
       if (!last || last.seq < e.seq) events.push(e);
       else {
@@ -51,6 +61,7 @@ export function createEventLog(cap = EVENT_LOG_CAP) {
       for (const e of list) {
         if (seen.has(e.seq)) continue;
         seen.add(e.seq);
+        touch(e);
         events.push(e);
         changed = true;
       }

@@ -2,6 +2,7 @@ import { type Approval, type Run, type Session, type SessionKind, isTerminalRunS
 import { toast, toastError } from '../store/toast';
 import { useUi } from '../store/ui';
 import { qk } from './keys';
+import { messagesQuery } from './queries';
 import type { AppRuntime } from './runtime';
 import { type ChatMessage, patchIn, removeFrom, upsertIn } from './sync';
 
@@ -67,6 +68,12 @@ export async function sendMessage(
 ): Promise<boolean> {
   const qc = rt.queryClient;
   const key = qk.messages(sessionId);
+  // Never loaded (e.g. "AI に頼む" into a chat not opened yet): load the history first. A
+  // cache entry holding only the new message would look fresh (staleTime: Infinity) and the
+  // chat would never fetch what came before.
+  if (qc.getQueryState(key)?.status !== 'success') {
+    await qc.ensureQueryData(messagesQuery(rt, sessionId)).catch(() => undefined);
+  }
   let msg: ChatMessage;
   if (opts.reuseLocalId) {
     msg = { ...optimisticMessage(sessionId, text), id: opts.reuseLocalId };
@@ -218,6 +225,20 @@ export async function renameSession(rt: AppRuntime, session: Session, title: str
   } catch (err) {
     patchIn<Session>(rt.queryClient, qk.sessions, session.id, (s) => ({ ...s, title: prev }));
     toastError(err, '名前を変更できませんでした');
+  }
+}
+
+/** Optimistic model switch; rolled back when the daemon refuses (it would run the old one). */
+export async function setSessionModel(rt: AppRuntime, session: Session, model: string): Promise<void> {
+  const prev = session.model;
+  patchIn<Session>(rt.queryClient, qk.sessions, session.id, (s) => ({ ...s, model }));
+  try {
+    await rt.client.call('session.update', { sessionId: session.id, model });
+  } catch (err) {
+    patchIn<Session>(rt.queryClient, qk.sessions, session.id, (s) =>
+      s.model === model ? { ...s, model: prev } : s,
+    );
+    toastError(err, 'モデルを変更できませんでした');
   }
 }
 

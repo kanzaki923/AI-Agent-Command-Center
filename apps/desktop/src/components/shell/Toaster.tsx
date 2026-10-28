@@ -80,7 +80,7 @@ export function Toaster() {
               type="button"
               aria-label="閉じる"
               onClick={() => dismiss(t.id)}
-              className="flex size-5 shrink-0 items-center justify-center rounded-xs text-fg-4 hover:text-fg-2"
+              className="flex size-5 shrink-0 items-center justify-center rounded-xs text-fg-3 hover:text-fg-2"
             >
               <X size={13} />
             </button>

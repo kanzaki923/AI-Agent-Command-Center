@@ -9,7 +9,8 @@ import {
   useMessages,
   usePendingApprovals,
   useResolvedApprovals,
-  useRuns,
+  useRunFromList,
+  useSessionRuns,
   useStreaming,
   useTasks,
 } from '../../daemon/queries';
@@ -22,10 +23,12 @@ import { describeApproval } from '../../model/approval';
 import {
   type ChatBlock,
   buildChatBlocks,
+  contentKey,
   lastUnanswered,
   messageText,
   stabilizeBlocks,
 } from '../../model/chat';
+import { toast } from '../../store/toast';
 import { useUi } from '../../store/ui';
 import { ResolvedLine, RiskNote, useApprovalControls } from '../approval/ApprovalControls';
 import { GrantLine, OrchestratorIntro, useSessionGrants } from '../grant/Grant';
@@ -74,7 +77,7 @@ function UserBlock({ message, fromAgent, editable }: { message: ChatMessage; fro
   const [expanded, setExpanded] = useState(false);
   if (superseded) {
     return (
-      <div className="flex items-center gap-1.5 text-meta text-fg-4">
+      <div className="flex items-center gap-1.5 text-meta text-fg-3">
         <Pencil size={11} strokeWidth={1.75} />
         <span className="shrink-0">編集前:</span>
         <span className="min-w-0 truncate line-through decoration-fg-4/60">{text}</span>
@@ -115,7 +118,7 @@ function UserBlock({ message, fromAgent, editable }: { message: ChatMessage; fro
           </button>
         </div>
       )}
-      {message.local?.status === 'sending' && <div className="text-meta text-fg-4">送信中…</div>}
+      {message.local?.status === 'sending' && <div className="text-meta text-fg-3">送信中…</div>}
       {long && (
         <button
           type="button"
@@ -147,7 +150,7 @@ function UserBlock({ message, fromAgent, editable }: { message: ChatMessage; fro
               <Kbd keys="ArrowUp" />
             </button>
           )}
-          <span className="px-1 text-meta text-fg-4">
+          <span className="px-1 text-meta text-fg-3">
             <TimeStamp iso={message.createdAt} />
           </span>
         </MessageActions>
@@ -175,7 +178,7 @@ function Reasoning({ text, live = false }: { text: string; live?: boolean }) {
         />
         <Brain size={12} strokeWidth={1.75} />
         {live ? '考えています…' : '思考過程'}
-        <span className="text-fg-4 tabular">· {chars.toLocaleString()} 文字</span>
+        <span className="text-fg-3 tabular">· {chars.toLocaleString()} 文字</span>
       </button>
       {open && (
         <div className="selectable mt-1 border-l-2 border-line pl-3 text-ui whitespace-pre-wrap text-fg-3">
@@ -190,7 +193,7 @@ function Reasoning({ text, live = false }: { text: string; live?: boolean }) {
 function AssistantBlock({ block }: { block: ChatBlock & { kind: 'assistant' } }) {
   const rt = useRuntime();
   const connected = useConnectionState() === 'open';
-  const run = useRuns().data?.find((r) => r.id === block.message.runId) ?? null;
+  const run = useRunFromList(block.message.runId);
   const retryable = !!run && ['failed', 'cancelled', 'interrupted'].includes(run.status);
   return (
     <div className="group/msg relative flex flex-col gap-1.5">
@@ -356,13 +359,16 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
   const messages = useMessages(session.id);
   const pending = usePendingApprovals().data ?? NONE;
   const resolved = useResolvedApprovals();
-  const runs = useRuns().data ?? NONE;
+  // Only this session's runs: run.updated of other sessions' runs must not rebuild the chat.
+  const runs = useSessionRuns(session.id);
   const tasks = useTasks().data;
   const streaming = useStreaming(session.id);
   const grants = useGrants(session.id).data ?? NONE;
   const activeOrchestrator = useSessionGrants(session.kind === 'chat' ? session.id : null).orchestrator;
   const jumpTo = useUi((s) => (s.jumpTo?.sessionId === session.id ? s.jumpTo : null));
   const clearJump = useUi((s) => s.clearJump);
+  const landJump = useUi((s) => s.landJump);
+  const flashId = useUi((s) => (s.flash?.sessionId === session.id ? s.flash.messageId : null));
   // Previous blocks by id (structural sharing). A cache, not state: writing it never renders.
   const [previous] = useState(() => new Map<string, ChatBlock>());
 
@@ -380,7 +386,7 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
         messages: messages.data ?? NONE,
         approvals: unique,
         streaming,
-        runs: runs.filter((r) => r.sessionId === session.id),
+        runs,
         grants: grants.filter((g) => g.subject.kind === 'session'),
         lookup,
       }),
@@ -410,18 +416,25 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
   const jumpIndex = jumpTo ? blocks.findIndex((b) => blockMessageId(b) === jumpTo.messageId) : -1;
   // useEffect is required: scrolling the virtualized list is a DOM side effect that can only
   // run once the blocks are laid out; the jump request comes from outside (palette, Timeline).
+  const loaded = messages.data !== undefined;
   useEffect(() => {
-    if (!jumpTo || jumpIndex === -1) return;
+    if (!jumpTo) return;
+    if (jumpIndex === -1) {
+      // Loaded, and not among the latest 500: say so instead of keeping the request around.
+      if (loaded) {
+        clearJump();
+        toast({ title: 'メッセージが見つかりませんでした', detail: '最新の 500 件より前のメッセージです', tone: 'info', sticky: false });
+      }
+      return;
+    }
     release();
     virt.scrollToIndex(jumpIndex, { align: 'center' });
+    // Consumed now: leaving within the flash must not leave a jump for the next visit.
+    landJump();
     // A message near the end lands at the bottom anyway: keep following then (no "new" pill).
     const settle = setTimeout(recheck, 80);
-    const t = setTimeout(clearJump, 1700);
-    return () => {
-      clearTimeout(settle);
-      clearTimeout(t);
-    };
-  }, [jumpTo, jumpIndex, virt, clearJump, release, recheck]);
+    return () => clearTimeout(settle);
+  }, [jumpTo, jumpIndex, loaded, virt, clearJump, landJump, release, recheck]);
   const working = runs.some(
     (r) => r.sessionId === session.id && ['created', 'queued', 'running'].includes(r.status),
   );
@@ -468,7 +481,12 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
             </div>
           </div>
         ) : (
-          <div ref={stick.contentRef} className="relative mx-auto w-full max-w-[760px] px-6" style={{ height: virt.getTotalSize() + 32 }}>
+          <div
+            ref={stick.contentRef}
+            data-content-key={contentKey(blocks)}
+            className="relative mx-auto w-full max-w-[760px] px-6"
+            style={{ height: virt.getTotalSize() + 32 }}
+          >
             {items.map((vi) => {
               const b = blocks[vi.index]!;
               return (
@@ -480,7 +498,7 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
                   className="absolute right-6 left-6"
                   style={{ transform: `translateY(${vi.start}px)`, paddingTop: gapBefore(blocks[vi.index - 1], b) }}
                 >
-                  <div className={cn(jumpIndex === vi.index && '-mx-2 px-2 py-1 acc-flash')}>
+                  <div className={cn(flashId !== null && blockMessageId(b) === flashId && '-mx-2 px-2 py-1 acc-flash')}>
                     <Block block={b} editableId={editableId} />
                   </div>
                 </div>

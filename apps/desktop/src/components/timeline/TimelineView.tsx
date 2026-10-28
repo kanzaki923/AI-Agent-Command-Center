@@ -312,7 +312,7 @@ function EventRow({
         <span
           className={cn(
             'w-12 shrink-0 pr-2 text-right text-micro tabular',
-            row.gapMs != null && row.gapMs >= 60_000 ? 'text-fg-3' : 'text-fg-4',
+            row.gapMs != null && row.gapMs >= 60_000 ? 'text-fg-2' : 'text-fg-3',
           )}
           aria-label={gap ? `前のイベントから ${gap.slice(1)}` : undefined}
         >
@@ -320,7 +320,7 @@ function EventRow({
         </span>
         <span className={cn('flex w-[150px] shrink-0 items-center gap-1.5 truncate', row.inRun && 'pl-3')}>
           <ActorBadge kind={e.actor.kind} name={name} orchestrator={orchestrator} />
-          {row.runTag && <span className="shrink-0 font-mono text-micro text-fg-4">#{row.runTag.slice(-3)}</span>}
+          {row.runTag && <span className="shrink-0 font-mono text-micro text-fg-3">#{row.runTag.slice(-3)}</span>}
         </span>
         <span
           className={cn(
@@ -546,7 +546,7 @@ export function TimelineView() {
         <button
           type="button"
           onClick={() => stick.scrollToBottom()}
-          className={cn('flex items-center gap-1.5 text-meta', stick.following ? 'text-fg-2' : 'text-fg-4 hover:text-fg-2')}
+          className={cn('flex items-center gap-1.5 text-meta', stick.following ? 'text-fg-2' : 'text-fg-3 hover:text-fg-2')}
         >
           <span
             className="size-1.5 rounded-full"

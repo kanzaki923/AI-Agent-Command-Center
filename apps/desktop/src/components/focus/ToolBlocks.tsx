@@ -107,7 +107,7 @@ export function ToolLine({ call, nested = false }: { call: ToolCallView; nested?
           </span>
         )}
         {!call.done && <span className="shrink-0 text-meta text-fg-3">実行中…</span>}
-        {dur && <span className="w-10 shrink-0 text-right text-meta text-fg-4 tabular">{dur}</span>}
+        {dur && <span className="w-10 shrink-0 text-right text-meta text-fg-3 tabular">{dur}</span>}
       </button>
       <Expand open={open}>
         <div className="flex flex-col gap-2 px-3 pt-1 pb-3">
@@ -145,7 +145,7 @@ export function ToolGroup({ calls }: { calls: ToolCallView[] }) {
         <span className="min-w-0 flex-1 truncate">{summarizeTools(calls)}</span>
         {failed.length > 0 && <span className="shrink-0 text-meta text-st-failed">失敗 {failed.length}</span>}
         {running && <span className="shrink-0 text-meta text-fg-3">実行中…</span>}
-        {total > 0 && <span className="w-10 shrink-0 text-right text-meta text-fg-4 tabular">{formatDuration(total)}</span>}
+        {total > 0 && <span className="w-10 shrink-0 text-right text-meta text-fg-3 tabular">{formatDuration(total)}</span>}
       </button>
       <Expand open={open}>
         <div className="flex flex-col border-t border-line-subtle py-1">

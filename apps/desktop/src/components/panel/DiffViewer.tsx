@@ -43,8 +43,8 @@ export function FileDiffView({ file }: { file: DiffFile }) {
                 </td>
               ) : (
                 <>
-                  <td className="w-9 pr-1 text-right align-top text-fg-4 select-none tabular">{l.oldNo ?? ''}</td>
-                  <td className="w-9 pr-2 text-right align-top text-fg-4 select-none tabular">{l.newNo ?? ''}</td>
+                  <td className="w-9 pr-1 text-right align-top text-fg-3 select-none tabular">{l.oldNo ?? ''}</td>
+                  <td className="w-9 pr-2 text-right align-top text-fg-3 select-none tabular">{l.newNo ?? ''}</td>
                   <td
                     className={cn(
                       'pr-3 whitespace-pre',

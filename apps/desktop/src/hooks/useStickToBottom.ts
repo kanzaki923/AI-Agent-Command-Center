@@ -10,7 +10,11 @@ const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home
 export interface StickToBottom {
   /** Ref callback for the scroll container. */
   scrollRef: (el: HTMLElement | null) => void;
-  /** Ref callback for the element whose size grows with content. */
+  /**
+   * Ref callback for the element whose size grows with content. Its `data-content-key`
+   * names the content (e.g. last block + its length): a size change with the same key is
+   * only re-measurement (virtualized rows), not something new to see.
+   */
   contentRef: (el: HTMLElement | null) => void;
   following: boolean;
   /** When follow mode was left (ms), null while following. */
@@ -41,6 +45,9 @@ export function useStickToBottom(): StickToBottom {
   const [hasUnseen, setHasUnseen] = useState(false);
   const followingRef = useRef(true);
   const scrollEl = useRef<HTMLElement | null>(null);
+  const contentEl = useRef<HTMLElement | null>(null);
+  /** Content key last seen while following. */
+  const seenKey = useRef<string | undefined>(undefined);
   const intentAt = useRef(0);
   const [unfollowedAt, setUnfollowedAt] = useState<number | null>(null);
 
@@ -48,7 +55,10 @@ export function useStickToBottom(): StickToBottom {
     if (followingRef.current !== v) setUnfollowedAt(v ? null : Date.now());
     followingRef.current = v;
     setFollowingState(v);
-    if (v) setHasUnseen(false);
+    if (v) {
+      setHasUnseen(false);
+      seenKey.current = contentEl.current?.dataset.contentKey;
+    }
   }, []);
 
   const pin = useCallback(() => {
@@ -96,15 +106,22 @@ export function useStickToBottom(): StickToBottom {
 
   const contentRef = useCallback(
     (el: HTMLElement | null) => {
+      contentEl.current = el;
       if (!el || typeof ResizeObserver === 'undefined') return;
+      seenKey.current = el.dataset.contentKey;
       let frame = 0;
       // Defer to the next frame: reacting inside the observer callback can trigger
       // "ResizeObserver loop completed with undelivered notifications".
       const ro = new ResizeObserver(() => {
         cancelAnimationFrame(frame);
         frame = requestAnimationFrame(() => {
-          if (followingRef.current) pin();
-          else setHasUnseen(true);
+          const key = el.dataset.contentKey;
+          if (followingRef.current) {
+            pin();
+            seenKey.current = key;
+          } else if (key !== seenKey.current) {
+            setHasUnseen(true);
+          }
         });
       });
       ro.observe(el);

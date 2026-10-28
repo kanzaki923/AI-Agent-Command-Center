@@ -2,7 +2,8 @@ import { AccClientError } from '@acc/client';
 import { describe, expect, it } from 'vitest';
 import { createFakeClient } from '../test/fakeClient';
 import { id, run, session } from '../test/fixtures';
-import { makeOrchestrator, retryRun, runTask } from './actions';
+import { makeOrchestrator, retryRun, runTask, sendMessage, setSessionModel } from './actions';
+import { qk } from './keys';
 import { createRuntime } from './runtime';
 
 describe('makeOrchestrator ("Orchestrator にする")', () => {
@@ -65,5 +66,48 @@ describe('retryRun ("再試行" / "再開")', () => {
       { method: 'run.retry', params: { runId: r1.id } },
       { method: 'run.retry', params: { runId: r2.id } },
     ]);
+  });
+});
+
+describe('sendMessage', () => {
+  it('loads the history of a chat that was never opened before adding the message', async () => {
+    const s = session({ kind: 'chat' });
+    const older = {
+      id: id('msg'),
+      sessionId: s.id,
+      role: 'user' as const,
+      content: [{ type: 'text' as const, text: '前の話' }],
+      author: { kind: 'human' as const, client: 'test' },
+      runId: null,
+      model: null,
+      createdAt: new Date(0).toISOString(),
+    };
+    const fake = createFakeClient({
+      'session.messages': () => ({ items: [older], hasMore: false }),
+      'session.send': () => ({ messageId: id('msg'), runId: id('run') }),
+    });
+    const rt = createRuntime(fake.client);
+    expect(await sendMessage(rt, s.id, 'つづき')).toBe(true);
+    const cached = rt.queryClient.getQueryData<{ id: string }[]>(qk.messages(s.id)) ?? [];
+    expect(cached.map((m) => m.id)[0]).toBe(older.id);
+    expect(cached).toHaveLength(2);
+    expect(fake.calls.map((c) => c.method)).toEqual(['session.messages', 'session.send']);
+  });
+});
+
+describe('setSessionModel', () => {
+  it('shows the new model at once and puts the old one back when the daemon refuses', async () => {
+    const s = session({ model: 'gpt-old' });
+    const fake = createFakeClient({
+      'session.update': () => {
+        throw new AccClientError('invalid_params', 'unknown model');
+      },
+    });
+    const rt = createRuntime(fake.client);
+    rt.queryClient.setQueryData(qk.sessions, [s]);
+    const pending = setSessionModel(rt, s, 'gpt-new');
+    expect(rt.queryClient.getQueryData<{ model: string }[]>(qk.sessions)?.[0]?.model).toBe('gpt-new');
+    await pending;
+    expect(rt.queryClient.getQueryData<{ model: string }[]>(qk.sessions)?.[0]?.model).toBe('gpt-old');
   });
 });

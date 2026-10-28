@@ -391,7 +391,7 @@ export function GrantLine({
         ) : (
           <span>{v.title} の権限が終了しました</span>
         )}
-        <span className="whitespace-nowrap text-fg-4 tabular"> · {formatClock(at)}</span>
+        <span className="whitespace-nowrap text-fg-3 tabular"> · {formatClock(at)}</span>
       </span>
       <span className="h-px min-w-6 flex-1 bg-line-subtle" />
     </div>
@@ -698,7 +698,7 @@ function GrantForm({ session, onDone }: { session: Session; onDone: () => void }
       </div>
 
       <div className="mt-4 flex items-center justify-end gap-2">
-        <span className="mr-auto flex items-center gap-1 text-meta text-fg-4">
+        <span className="mr-auto flex items-center gap-1 text-meta text-fg-3">
           <Kbd keys="Mod+Enter" /> で付与
         </span>
         <Button variant="ghost" onClick={onDone}>

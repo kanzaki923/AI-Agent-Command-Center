@@ -247,3 +247,21 @@ export function formatDuration(ms: number | null): string {
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   return `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`;
 }
+
+/**
+ * Names what the chat shows at its end: changes when a block is added or the last one grows
+ * (streaming text, more tool calls), not when rows are merely re-measured.
+ */
+export function contentKey(blocks: readonly ChatBlock[]): string {
+  const last = blocks.at(-1);
+  if (!last) return '0';
+  const size =
+    last.kind === 'streaming'
+      ? last.stream.text.length + last.stream.reasoning.length
+      : last.kind === 'assistant'
+        ? last.text.length
+        : last.kind === 'tools'
+          ? last.calls.length
+          : 0;
+  return `${blocks.length}:${last.id}:${size}`;
+}

@@ -130,7 +130,7 @@ const TaskRow = memo(function TaskRow({
         <Tooltip
           content={`先に終わる必要がある Task: ${node.waitsFor.map((d) => d.title).join('、')}`}
         >
-          <span className="hidden max-w-48 shrink truncate text-meta text-fg-4 @[720px]:block">
+          <span className="hidden max-w-48 shrink truncate text-meta text-fg-3 @[720px]:block">
             ← {node.waitsFor.map((d) => d.title).join('、')}
           </span>
         </Tooltip>
@@ -145,7 +145,7 @@ const TaskRow = memo(function TaskRow({
         {label}
       </span>
       <span className="hidden w-36 shrink-0 truncate text-meta text-fg-2 @[560px]:block">
-        {worker ? `Worker · ${worker}` : <span className="text-fg-4">未割り当て</span>}
+        {worker ? `Worker · ${worker}` : <span className="text-fg-3">未割り当て</span>}
       </span>
       <span className="hidden w-48 shrink-0 items-center gap-1 font-mono text-meta text-fg-3 @[760px]:flex">
         {node.workspace?.branch ? (
@@ -306,7 +306,7 @@ function GroupCard({
           aria-expanded={!collapsed}
           aria-label={collapsed ? 'Task を表示' : 'Task を隠す'}
           onClick={() => toggle(`tasks.${group.id}`, group.finished)}
-          className="flex size-5 items-center justify-center rounded-xs text-fg-4 hover:text-fg-2"
+          className="flex size-5 items-center justify-center rounded-xs text-fg-3 hover:text-fg-2"
         >
           <ChevronRight
             size={13}

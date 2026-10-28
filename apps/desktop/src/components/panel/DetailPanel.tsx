@@ -2,12 +2,12 @@ import type { CapabilityGrant, Event, Project, Run, Session } from '@acc/protoco
 import { CheckCircle2, CircleX, GitMerge, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Tabs } from 'radix-ui';
-import { type ReactNode, useMemo } from 'react';
+import { type ReactNode, memo, useMemo } from 'react';
 import {
   useArtifacts,
   useDiff,
   useEventHistory,
-  useEventLogVersion,
+  useSessionEventVersion,
   useProjects,
   useRuns,
   useSessions,
@@ -28,7 +28,7 @@ import { RUN_STATUS_LABEL, TASK_STATUS_LABEL, runStatusToState } from '../../lib
 import { describeApproval } from '../../model/approval';
 import { type BoardItem, elapsedRange, untitled } from '../../model/board';
 import { parsePatch } from '../../model/diff';
-import { describeEvent, eventContext } from '../../model/timeline';
+import { type TimelineNames, describeEvent, eventContext } from '../../model/timeline';
 import { useBoard } from '../../model/useBoard';
 import { PANEL_TABS, type PanelTab, useUi } from '../../store/ui';
 import { IconButton } from '../ui/Button';
@@ -289,7 +289,8 @@ function TestsTab({ session }: { session: Session }) {
 function LogsTab({ session }: { session: Session }) {
   const rt = useRuntime();
   useEventHistory();
-  const version = useEventLogVersion();
+  // Only this session's events re-filter the log; ten other busy runs do not.
+  const version = useSessionEventVersion(session.id);
   const events = rt.streams.events.events;
   const names = useTimelineNames();
   const mine = useMemo(
@@ -300,27 +301,32 @@ function LogsTab({ session }: { session: Session }) {
   if (mine.length === 0) return <Empty title="ログはまだありません" />;
   return (
     <div className="flex flex-col py-1 font-sans">
-      {mine.map((e) => {
-        const v = describeEvent(e, names);
-        if (v.noise) return null;
-        return (
-          <div key={e.seq} className="flex min-h-6 items-start gap-2 px-3 py-0.5 text-meta">
-            <span className="w-14 shrink-0 text-fg-4 tabular">{formatClockSeconds(e.ts)}</span>
-            <span
-              className={cn(
-                'w-16 shrink-0 truncate',
-                v.isError ? 'text-st-failed' : v.isDecision ? 'text-accent' : 'text-fg-3',
-              )}
-            >
-              {v.label}
-            </span>
-            <span className="min-w-0 flex-1 text-fg-2">{v.summary}</span>
-          </div>
-        );
-      })}
+      {mine.map((e) => (
+        <LogRow key={e.seq} event={e} names={names} />
+      ))}
     </div>
   );
 }
+
+/** One log line. Memoized: a new event adds a row without redoing the 500 before it. */
+const LogRow = memo(function LogRow({ event: e, names }: { event: Event; names: TimelineNames }) {
+  const v = describeEvent(e, names);
+  if (v.noise) return null;
+  return (
+    <div className="flex min-h-6 items-start gap-2 px-3 py-0.5 text-meta">
+      <span className="w-14 shrink-0 text-fg-3 tabular">{formatClockSeconds(e.ts)}</span>
+      <span
+        className={cn(
+          'w-16 shrink-0 truncate',
+          v.isError ? 'text-st-failed' : v.isDecision ? 'text-accent' : 'text-fg-3',
+        )}
+      >
+        {v.label}
+      </span>
+      <span className="min-w-0 flex-1 text-fg-2">{v.summary}</span>
+    </div>
+  );
+});
 
 function FocusPanel() {
   const focusSessionId = useUi((s) => s.focusSessionId);
@@ -349,7 +355,7 @@ function FocusPanel() {
           </Tabs.Trigger>
         ))}
         <span className="flex-1" />
-        <span className="mb-2.5 flex items-center gap-1 text-micro text-fg-4">
+        <span className="mb-2.5 flex items-center gap-1 text-micro text-fg-3">
           <Kbd id="prevTab" />
           <Kbd id="nextTab" />
         </span>
