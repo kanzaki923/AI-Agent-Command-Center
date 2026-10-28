@@ -89,6 +89,9 @@ describe('server', () => {
     const a = await client.call('session.create', { title: 'a' });
     const b = await client.call('session.create', { title: 'b' });
 
+    // Modules subscribe to the bus too; only this subscription's listener must go away.
+    const busListeners = () => (d.ctx.bus as unknown as { listeners: Set<unknown> }).listeners.size;
+    const baseListeners = busListeners();
     const events: Event[] = [];
     const deltas: Delta[] = [];
     const sub = client.subscribe({
@@ -110,9 +113,7 @@ describe('server', () => {
     expect(deltas.map((x) => x.text)).toEqual(['Hel']);
 
     sub.unsubscribe();
-    await until(
-      () => (d.ctx.bus as unknown as { listeners: Set<unknown> }).listeners.size === 0 || undefined,
-    );
+    await until(() => busListeners() === baseListeners || undefined);
   });
 
   it('replays history with `since` before streaming live events', async () => {

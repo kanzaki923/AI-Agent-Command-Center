@@ -66,6 +66,10 @@ export function summarizeEvent(e: Event): string {
       return `${e.payload.run.kind} run`;
     case 'run.status_changed':
       return `${e.payload.from} → ${e.payload.to}${e.payload.reason ? ` (${e.payload.reason})` : ''}`;
+    case 'run.updated':
+      return e.payload.changes.includes('activity') && e.payload.run.activity
+        ? truncate(e.payload.run.activity, 80)
+        : `changed: ${e.payload.changes.join(', ') || '-'}`;
     case 'run.completed':
       return `usage in=${e.payload.run.usage.inputTokens} out=${e.payload.run.usage.outputTokens}`;
     case 'run.failed':

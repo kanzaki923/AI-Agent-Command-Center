@@ -1,21 +1,25 @@
-import type { Session } from '@acc/protocol';
+import type { ContentPart, Session } from '@acc/protocol';
 import { defineMethod } from '../api/registry';
-import { invalidParams } from '../core/errors';
+import { conflict, invalidParams } from '../core/errors';
 import { defineModule } from '../module';
+import { createChatExecutor, resolveChatModel } from './chat';
+import { searchMessages, sessionsMigrations } from './search';
 import { SessionService } from './service';
 
 export { SessionService } from './service';
+export { createChatExecutor, resolveChatModel, OFFLINE_FALLBACK_MODEL } from './chat';
+export { searchMessages, makeSnippet } from './search';
 
 /**
- * Sessions and messages.
+ * Sessions and messages: session.create/list/get/update/archive/messages/send/search.
  *
- * Implemented: session.create/list/get/update/archive/messages.
- * TODO(sessions): session.send (user message -> chat run via `runs` + `llm`; agent sessions
- *   go through `runtime`), session.search (add an FTS5 `messages_fts` table with the
- *   `trigram` tokenizer via a `sessions/0001_fts` migration so Japanese substrings match).
+ * `session.send` appends the user message and starts a run through `runs` (kind `chat`
+ * for chat sessions, `agent` for agent sessions). This module registers the `chat`
+ * executor (sessions/chat.ts); the `agent` executor belongs to the runtime module.
  */
 export const sessionsModule = defineModule({
   name: 'sessions',
+  migrations: sessionsMigrations,
   register(ctx) {
     const { repos, bus, db } = ctx;
     const service = new SessionService(ctx);
@@ -162,6 +166,56 @@ export const sessionsModule = defineModule({
           return { items: rows.slice(0, p.limit).reverse(), hasMore };
         },
       }),
+
+      defineMethod('session.send', {
+        scope: (p) => sessionScope(p.sessionId),
+        handler: (p, call) =>
+          db.transaction(() => {
+            const session = repos.sessions.require(p.sessionId);
+            if (session.archivedAt) {
+              throw conflict('アーカイブ済みのセッションには送信できません');
+            }
+            const content: ContentPart[] =
+              typeof p.content === 'string' ? [{ type: 'text', text: p.content }] : p.content;
+            if (content.some((c) => c.type === 'tool_result' || c.type === 'tool_call')) {
+              throw invalidParams('User messages may only contain text parts');
+            }
+            const kind = session.kind === 'agent' ? 'agent' : 'chat';
+            const message = service.appendMessage({
+              sessionId: session.id,
+              role: 'user',
+              content,
+              author: call.actor,
+            });
+            // Rolls back the message too if the session is busy (conflict).
+            const run = ctx.service('runs').start({
+              sessionId: session.id,
+              kind,
+              createdBy: call.actor,
+              triggerMessageId: message.id,
+              model:
+                kind === 'chat'
+                  ? resolveChatModel(ctx, session.model, p.model)
+                  : (p.model ?? session.model),
+              runtime: session.runtime,
+              workspaceId: kind === 'agent' ? session.workspaceId : null,
+            });
+            return { messageId: message.id, runId: run.id };
+          }),
+      }),
+
+      defineMethod('session.search', {
+        scope: (p) => ({ projectIds: p.projectId ? [p.projectId] : [] }),
+        handler: (p) => ({ items: searchMessages(ctx, p) }),
+      }),
     );
+
+    return {
+      start() {
+        // Executors are registered once every module provided its services.
+        if (ctx.hasService('runs'))
+          ctx.service('runs').registerExecutor('chat', createChatExecutor(ctx));
+      },
+    };
   },
 });

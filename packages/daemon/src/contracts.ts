@@ -45,8 +45,11 @@ export interface RunController {
   readonly signal: AbortSignal;
   /** The actor this run acts as when it calls the Control API (`ctx.call(actor, ...)`). */
   readonly actor: Extract<Actor, { kind: 'agent' }>;
-  /** Stream a text fragment of an in-progress assistant message (ephemeral, not persisted). */
-  emitDelta(messageId: string, text: string): void;
+  /**
+   * Stream a fragment of an in-progress assistant message (ephemeral, not persisted).
+   * `kind` defaults to "text"; "reasoning" is for model thinking shown separately.
+   */
+  emitDelta(messageId: string, text: string, kind?: 'text' | 'reasoning'): void;
   /** Persist a message of this run's session (emits message.created). */
   appendMessage(input: {
     role: 'assistant' | 'tool' | 'system';

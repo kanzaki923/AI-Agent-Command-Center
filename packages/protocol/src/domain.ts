@@ -264,6 +264,12 @@ export const Run = z.object({
   triggerMessageId: MessageId.nullable(),
   usage: Usage,
   error: ErrorInfo.nullable(),
+  /**
+   * Short "what is it doing now" line for Command Mode (e.g. "npm test を実行中").
+   * Only meaningful while the run is active; cleared when it ends. Updates arrive as
+   * `run.updated` with `changes: ["activity"]`.
+   */
+  activity: z.string().nullable().optional(),
   createdBy: Actor,
   createdAt: Timestamp,
   updatedAt: Timestamp,
