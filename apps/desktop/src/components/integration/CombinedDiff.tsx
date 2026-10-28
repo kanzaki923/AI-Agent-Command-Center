@@ -12,15 +12,19 @@ export function initiallyCollapsed(f: DiffFile): boolean {
 }
 
 export function fileKind(f: DiffFile): 'added' | 'deleted' | 'modified' {
-  if (f.deletions === 0 && f.additions > 0 && f.lines.every((l) => l.kind !== 'context')) return 'added';
-  if (f.additions === 0 && f.deletions > 0 && f.lines.every((l) => l.kind !== 'context')) return 'deleted';
+  if (f.deletions === 0 && f.additions > 0 && f.lines.every((l) => l.kind !== 'context'))
+    return 'added';
+  if (f.additions === 0 && f.deletions > 0 && f.lines.every((l) => l.kind !== 'context'))
+    return 'deleted';
   return 'modified';
 }
 
 export function FileKindIcon({ f }: { f: DiffFile }) {
   const k = fileKind(f);
-  if (k === 'added') return <FilePlus2 size={13} strokeWidth={1.5} className="shrink-0 text-st-completed" />;
-  if (k === 'deleted') return <FileMinus2 size={13} strokeWidth={1.5} className="shrink-0 text-st-failed" />;
+  if (k === 'added')
+    return <FilePlus2 size={13} strokeWidth={1.5} className="shrink-0 text-st-completed" />;
+  if (k === 'deleted')
+    return <FileMinus2 size={13} strokeWidth={1.5} className="shrink-0 text-st-failed" />;
   return <FileDiff size={13} strokeWidth={1.5} className="shrink-0 text-fg-3" />;
 }
 
@@ -68,7 +72,10 @@ const FileSection = memo(function FileSection({
         <ChevronRight
           size={13}
           strokeWidth={1.75}
-          className={cn('shrink-0 text-fg-4 transition-transform duration-[120ms]', !collapsed && 'rotate-90')}
+          className={cn(
+            'shrink-0 text-fg-4 transition-transform duration-[120ms]',
+            !collapsed && 'rotate-90',
+          )}
         />
         <FileKindIcon f={file} />
         <PathLabel path={file.path} className="flex-1" />
@@ -82,7 +89,9 @@ const FileSection = memo(function FileSection({
       ) : (
         initiallyCollapsed(file) && (
           <div className="px-3 py-2 text-meta text-fg-3">
-            {file.binary ? 'バイナリファイル' : `大きな差分のため折りたたんでいます（${file.lines.length} 行）`}
+            {file.binary
+              ? 'バイナリファイル'
+              : `大きな差分のため折りたたんでいます（${file.lines.length} 行）`}
           </div>
         )
       )}
@@ -140,7 +149,15 @@ export function CombinedDiff({ files, state }: { files: DiffFile[]; state: Combi
 }
 
 /** Compact file index (left column): click to jump, current file highlighted. */
-export function FileIndex({ files, state, onJump }: { files: DiffFile[]; state: CombinedDiffState; onJump: (path: string) => void }) {
+export function FileIndex({
+  files,
+  state,
+  onJump,
+}: {
+  files: DiffFile[];
+  state: CombinedDiffState;
+  onJump: (path: string) => void;
+}) {
   return (
     <ul className="flex flex-col">
       {files.map((f) => (

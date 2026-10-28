@@ -1,4 +1,3 @@
-/* global document */
 // Visual check of the desktop UI in browser mode, against the REAL daemon scene
 // (scripts/scene.ts) and the Vite dev server pointed at the same ACC_HOME:
 //
@@ -24,17 +23,17 @@ mkdirSync(out, { recursive: true });
 
 const browser = await chromium.launch();
 const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
-// The scene is already set up: skip the first-run screen.
-await context.addInitScript(() => {
+// The scene is already set up: skip the first-run screen; pick the theme (--theme light).
+await context.addInitScript((t) => {
   try {
     const raw = localStorage.getItem('acc.ui');
     const cur = raw ? JSON.parse(raw) : { state: {}, version: 1 };
-    cur.state = { ...cur.state, onboardingDone: true };
+    cur.state = { ...cur.state, onboardingDone: true, theme: t };
     localStorage.setItem('acc.ui', JSON.stringify(cur));
   } catch {
     /* storage blocked: the onboarding check also yields to existing sessions */
   }
-});
+}, theme);
 const page = await context.newPage();
 const errors = [];
 page.on('pageerror', (e) => errors.push(String(e)));
@@ -50,7 +49,6 @@ const shot = async (name) => {
 const want = (name) => !only || only.split(',').includes(name);
 
 await page.goto(url);
-if (theme === 'light') await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
 await page.getByRole('heading', { name: '司令室' }).waitFor({ timeout: 20_000 });
 await page.waitForTimeout(1200);
 

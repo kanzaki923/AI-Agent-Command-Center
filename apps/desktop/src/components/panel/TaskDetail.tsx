@@ -3,10 +3,9 @@ import { type ReactNode, useMemo } from 'react';
 import { spawnWorker, startIntegration } from '../../daemon/orchestration';
 import { useDiff, useIntegrations, useMethods } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
-import { TASK_STATUS_LABEL } from '../../lib/status';
 import { parsePatch } from '../../model/diff';
 import { INTEGRATION_STATUS_LABEL } from '../../model/integration';
-import { type TaskNode, canSpawn, flattenTasks, taskState } from '../../model/tasks';
+import { type TaskNode, canSpawn, flattenTasks, taskDisplay, taskState } from '../../model/tasks';
 import { useUi } from '../../store/ui';
 import { useTaskGroups } from '../command/TaskTree';
 import { Button } from '../ui/Button';
@@ -39,11 +38,14 @@ export function TaskDetail({ taskId }: { taskId: string }) {
   const diff = useDiff(node?.workspace?.id);
   const patch = diff.data?.patch;
   const files = useMemo(() => (patch ? parsePatch(patch) : []), [patch]);
-  if (!node) return <div className="px-4 py-12 text-center text-meta text-fg-3">Task が見つかりません</div>;
+  if (!node)
+    return <div className="px-4 py-12 text-center text-meta text-fg-3">Task が見つかりません</div>;
   const t = node.task;
   const deps = t.dependsOn.map((id) => all.find((n) => n.task.id === id)?.task).filter((x) => !!x);
   const spawnSupported = !methods || methods.has('task.spawnWorker');
-  const integ = integrations.find((i) => i.taskIds.includes(t.id) && !['rejected', 'cancelled'].includes(i.status));
+  const integ = integrations.find(
+    (i) => i.taskIds.includes(t.id) && !['rejected', 'cancelled'].includes(i.status),
+  );
 
   return (
     <div className="flex flex-col" data-testid="task-detail">
@@ -57,19 +59,33 @@ export function TaskDetail({ taskId }: { taskId: string }) {
             variant="primary"
             icon={<Play size={11} strokeWidth={2} fill="currentColor" />}
             disabled={!connected || !spawnSupported}
-            hint={spawnSupported ? 'worktree を作り、Worker を起動します' : 'この Core Daemon は task.spawnWorker に未対応です'}
-            onClick={() => void spawnWorker(rt, t).then((r) => r && openSession(r.sessionId, { from: 'command' }))}
+            hint={
+              spawnSupported
+                ? 'worktree を作り、Worker を起動します'
+                : 'この Core Daemon は task.spawnWorker に未対応です'
+            }
+            onClick={() =>
+              void spawnWorker(rt, t).then(
+                (r) => r && openSession(r.sessionId, { from: 'command' }),
+              )
+            }
           >
             このTaskを実行
           </Button>
         )}
         {node.worker && (
-          <Button icon={<ArrowRight size={12} strokeWidth={1.75} />} onClick={() => openSession(node.worker!.id, { from: 'command' })}>
+          <Button
+            icon={<ArrowRight size={12} strokeWidth={1.75} />}
+            onClick={() => openSession(node.worker!.id, { from: 'command' })}
+          >
             Worker を開く
           </Button>
         )}
         {integ ? (
-          <Button icon={<GitMerge size={12} strokeWidth={1.75} />} onClick={() => openIntegration(integ.id)}>
+          <Button
+            icon={<GitMerge size={12} strokeWidth={1.75} />}
+            onClick={() => openIntegration(integ.id)}
+          >
             統合: {INTEGRATION_STATUS_LABEL[integ.status]}
           </Button>
         ) : (
@@ -78,7 +94,11 @@ export function TaskDetail({ taskId }: { taskId: string }) {
             <Button
               icon={<GitMerge size={12} strokeWidth={1.75} />}
               disabled={!connected}
-              onClick={() => void startIntegration(rt, t.projectId, [t.id]).then((i) => i && openIntegration(i.id))}
+              onClick={() =>
+                void startIntegration(rt, t.projectId, [t.id]).then(
+                  (i) => i && openIntegration(i.id),
+                )
+              }
             >
               統合する
             </Button>
@@ -88,14 +108,18 @@ export function TaskDetail({ taskId }: { taskId: string }) {
       <div className="flex flex-col px-4 py-2">
         <Field label="状態">
           <span className="flex items-center gap-2">
-            <StatusIcon state={taskState(t.status)} size={13} />
-            {TASK_STATUS_LABEL[t.status]}
+            <StatusIcon state={taskDisplay(node).state} size={13} />
+            {taskDisplay(node).label}
             {t.statusReason && <span className="text-meta text-fg-3">（{t.statusReason}）</span>}
           </span>
         </Field>
         <Field label="Worker">
           {node.worker ? (
-            <button type="button" className="text-left text-accent hover:underline" onClick={() => openSession(node.worker!.id, { from: 'command' })}>
+            <button
+              type="button"
+              className="text-left text-accent hover:underline"
+              onClick={() => openSession(node.worker!.id, { from: 'command' })}
+            >
               {node.worker.title || 'Worker'}
             </button>
           ) : (
@@ -113,7 +137,8 @@ export function TaskDetail({ taskId }: { taskId: string }) {
         {node.diff && (
           <Field label="変更">
             <span className="flex items-center gap-2">
-              {node.diff.files} ファイル <DiffStatText additions={node.diff.additions} deletions={node.diff.deletions} />
+              {node.diff.files} ファイル{' '}
+              <DiffStatText additions={node.diff.additions} deletions={node.diff.deletions} />
             </span>
           </Field>
         )}
@@ -131,7 +156,11 @@ export function TaskDetail({ taskId }: { taskId: string }) {
         )}
         <Field label="作成">
           <span className="flex items-center gap-1.5 text-meta text-fg-3">
-            {t.createdBy.kind === 'human' ? 'あなた' : t.createdBy.kind === 'agent' ? 'Orchestrator' : 'システム'}
+            {t.createdBy.kind === 'human'
+              ? 'あなた'
+              : t.createdBy.kind === 'agent'
+                ? 'Orchestrator'
+                : 'システム'}
             <span>·</span>
             <TimeStamp iso={t.createdAt} />
           </span>
@@ -150,7 +179,11 @@ export function TaskDetail({ taskId }: { taskId: string }) {
             {t.acceptanceCriteria.map((c) => (
               <li key={c} className="flex items-start gap-2 text-ui text-fg-2">
                 {t.status === 'done' ? (
-                  <Check size={13} strokeWidth={2} className="mt-[3px] shrink-0 text-st-completed" />
+                  <Check
+                    size={13}
+                    strokeWidth={2}
+                    className="mt-[3px] shrink-0 text-st-completed"
+                  />
                 ) : (
                   <Circle size={11} strokeWidth={1.75} className="mt-[4px] shrink-0 text-fg-4" />
                 )}

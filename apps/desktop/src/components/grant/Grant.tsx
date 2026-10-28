@@ -3,7 +3,13 @@ import { Check, Diamond, Minus, Plus, ShieldCheck, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { type ReactNode, useMemo, useState } from 'react';
 import { grantOrchestrator, revokeGrant } from '../../daemon/orchestration';
-import { useGrants, useMethods, useProjects, useSessionBudgets, useSessions } from '../../daemon/queries';
+import {
+  useGrants,
+  useMethods,
+  useProjects,
+  useSessionBudgets,
+  useSessions,
+} from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { useNow } from '../../hooks/useNow';
 import { cn } from '../../lib/cn';
@@ -48,7 +54,13 @@ function activeBudget(budgets: readonly BudgetAllocation[] | undefined): BudgetA
 const usd = (n: number) => `$${n.toFixed(2)}`;
 
 /** The orchestrator mark: a filled diamond in the accent colour (§5.1 goal bar uses it too). */
-export function OrchestratorMark({ size = 12, hollow = false }: { size?: number; hollow?: boolean }) {
+export function OrchestratorMark({
+  size = 12,
+  hollow = false,
+}: {
+  size?: number;
+  hollow?: boolean;
+}) {
   return (
     <Diamond
       size={size}
@@ -64,7 +76,15 @@ export function OrchestratorMark({ size = 12, hollow = false }: { size?: number;
 // Chip (composer toolbar) + details popover
 // ---------------------------------------------------------------------------
 
-function GrantDetails({ session, grant, budget }: { session: Session; grant: CapabilityGrant; budget: BudgetAllocation | null }) {
+function GrantDetails({
+  session,
+  grant,
+  budget,
+}: {
+  session: Session;
+  grant: CapabilityGrant;
+  budget: BudgetAllocation | null;
+}) {
   const rt = useRuntime();
   const projects = useProjects().data ?? NONE;
   const setGrantDialog = useUi((s) => s.setGrantDialog);
@@ -80,13 +100,15 @@ function GrantDetails({ session, grant, budget }: { session: Session; grant: Cap
           <div className="text-meta text-fg-3">
             {v.lifetime}
             {grant.lifetime === 'run' && ' · 次の実行が終わると自動で失効します'}
-            {v.custom && ' · 個別に設定された権限'}
+            {v.custom && !v.orchestrates && ' · 個別に設定された権限'}
           </div>
         </div>
       </div>
       <dl className="grid grid-cols-[72px_1fr] gap-x-3 gap-y-1.5 border-t border-line-subtle px-3.5 py-2.5 text-ui">
         <dt className="text-meta text-fg-3">対象</dt>
-        <dd className="min-w-0 truncate text-fg-2">{v.projects ? v.projects.join('、') : 'すべてのプロジェクト'}</dd>
+        <dd className="min-w-0 truncate text-fg-2">
+          {v.projects ? v.projects.join('、') : 'すべてのプロジェクト'}
+        </dd>
         {v.workers && (
           <>
             <dt className="text-meta text-fg-3">Worker</dt>
@@ -126,7 +148,11 @@ function GrantDetails({ session, grant, budget }: { session: Session; grant: Cap
         <Button size="sm" variant="ghost" onClick={() => setGrantDialog(session.id)}>
           設定を変える
         </Button>
-        <Button size="sm" variant="secondary" onClick={() => void revokeGrant(rt, session.id, grant)}>
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => void revokeGrant(rt, session.id, grant)}
+        >
           権限を取り消す
         </Button>
       </div>
@@ -190,7 +216,12 @@ export function GrantChip({ session }: { session: Session }) {
           </Tooltip>
         </motion.span>
       ) : (
-        <motion.span key="none" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, transition: { duration: 0.12 } }}>
+        <motion.span
+          key="none"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0, transition: { duration: 0.12 } }}
+        >
           <Tooltip content="権限を与えると、このチャットが Task を分けて Worker を指揮できます">
             <button
               type="button"
@@ -218,8 +249,11 @@ function GrantSummary({
   projects: ReturnType<typeof useProjects>['data'];
 }) {
   const v = describeGrant(grant, projects ?? NONE);
-  const workers = v.workers && grant.limits.maxWorkers != null ? `Worker ${grant.limits.maxWorkers}` : null;
-  const parts = [workers, budget ? usd(budget.limitUsd) : null, v.lifetime].filter((x): x is string => !!x);
+  const workers =
+    v.workers && grant.limits.maxWorkers != null ? `Worker ${grant.limits.maxWorkers}` : null;
+  const parts = [workers, budget ? usd(budget.limitUsd) : null, v.lifetime].filter(
+    (x): x is string => !!x,
+  );
   return (
     <span className="flex items-center gap-1.5">
       <span className="font-medium">{v.title}</span>
@@ -245,7 +279,10 @@ export function RoleBadge({ session, fallback }: { session: Session; fallback: s
         animate={{ opacity: 1 }}
         exit={{ opacity: 0, transition: { duration: 0.12 } }}
         transition={{ duration: 0.18 }}
-        className={cn('flex shrink-0 items-center gap-1 text-ui', orchestrator ? 'text-fg-2' : 'text-fg-3')}
+        className={cn(
+          'flex shrink-0 items-center gap-1 text-ui',
+          orchestrator ? 'text-fg-2' : 'text-fg-3',
+        )}
       >
         {orchestrator && <OrchestratorMark size={11} />}
         {label}
@@ -260,7 +297,13 @@ const FLOW = ['目標', 'Task に分割', 'Worker が並列に作業', '統合�
  * An orchestrator chat before its first message: what this chat can now do, within which
  * limits, and how the work will flow — the grant made legible (concept §3.1).
  */
-export function OrchestratorIntro({ session, grant }: { session: Session; grant: CapabilityGrant }) {
+export function OrchestratorIntro({
+  session,
+  grant,
+}: {
+  session: Session;
+  grant: CapabilityGrant;
+}) {
   const projects = useProjects().data ?? NONE;
   const budget = activeBudget(useSessionBudgets(session.id).data);
   const v = describeGrant(grant, projects);
@@ -271,44 +314,63 @@ export function OrchestratorIntro({ session, grant }: { session: Session; grant:
     v.projects ? `対象: ${v.projects.join('、')}` : '対象: すべてのプロジェクト',
   ].filter((x): x is string => !!x);
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-      className="mx-auto flex h-full max-w-[560px] flex-col items-center justify-center px-6 text-center"
-      data-testid="orchestrator-intro"
-    >
-      <span className="acc-grant-glow flex size-10 items-center justify-center rounded-full bg-[color-mix(in_oklch,var(--accent)_16%,transparent)]">
-        <OrchestratorMark size={16} />
-      </span>
-      <h2 className="mt-4 text-heading text-fg">このチャットは Orchestrator です</h2>
-      <p className="mt-1.5 text-ui text-fg-3">
-        目標を伝えると、Task に分けて Worker を並列に動かします。統合の反映は必ずあなたが承認します。
-      </p>
-      <ul className="mt-4 flex flex-wrap justify-center gap-1.5">
-        {facts.map((f) => (
-          <li key={f} className="rounded-xs bg-selected px-2 py-0.5 text-meta text-fg-2 tabular">
-            {f}
-          </li>
-        ))}
-      </ul>
-      <ol className="mt-6 flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1 text-meta text-fg-3" aria-label="作業の流れ">
-        {FLOW.map((s, i) => (
-          <li key={s} className="flex items-center gap-1.5">
-            {i > 0 && <span className="text-fg-4">→</span>}
-            <span className={i === FLOW.length - 1 ? 'text-fg-2' : undefined}>{s}</span>
-          </li>
-        ))}
-      </ol>
-    </motion.div>
+    <div className="mx-auto flex h-full w-full max-w-[760px] flex-col px-6 pt-6">
+      {/* Who gave the role and when stays on record, like it will in the conversation. */}
+      <GrantLine grant={grant} change="given" />
+      <motion.div
+        initial={{ opacity: 0, y: 4 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+        className="mx-auto flex max-w-[560px] flex-1 flex-col items-center justify-center pb-16 text-center"
+        data-testid="orchestrator-intro"
+      >
+        <span className="acc-grant-glow flex size-10 items-center justify-center rounded-full bg-[color-mix(in_oklch,var(--accent)_16%,transparent)]">
+          <OrchestratorMark size={16} />
+        </span>
+        <h2 className="mt-4 text-heading text-fg">このチャットは Orchestrator です</h2>
+        <p className="mt-1.5 text-ui text-fg-3">
+          目標を伝えると、Task に分けて Worker
+          を並列に動かします。統合の反映は必ずあなたが承認します。
+        </p>
+        <ul className="mt-4 flex flex-wrap justify-center gap-1.5">
+          {facts.map((f) => (
+            <li key={f} className="rounded-xs bg-selected px-2 py-0.5 text-meta text-fg-2 tabular">
+              {f}
+            </li>
+          ))}
+        </ul>
+        <ol
+          className="mt-6 flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1 text-meta text-fg-3"
+          aria-label="作業の流れ"
+        >
+          {FLOW.map((s, i) => (
+            <li key={s} className="flex items-center gap-1.5">
+              {i > 0 && <span className="text-fg-4">→</span>}
+              <span className={i === FLOW.length - 1 ? 'text-fg-2' : undefined}>{s}</span>
+            </li>
+          ))}
+        </ol>
+      </motion.div>
+    </div>
   );
 }
 
 /** Chat stream line: "◆ Orchestrator 権限を付与しました …" / "◇ … が終了しました". */
-export function GrantLine({ grant, change }: { grant: CapabilityGrant; change: 'given' | 'ended' }) {
+export function GrantLine({
+  grant,
+  change,
+}: {
+  grant: CapabilityGrant;
+  change: 'given' | 'ended';
+}) {
   const projects = useProjects().data ?? NONE;
   const v = describeGrant(grant, projects);
-  const by = grant.grantedBy.kind === 'human' ? 'あなた' : grant.grantedBy.kind === 'agent' ? 'Orchestrator' : 'システム';
+  const by =
+    grant.grantedBy.kind === 'human'
+      ? 'あなた'
+      : grant.grantedBy.kind === 'agent'
+        ? 'Orchestrator'
+        : 'システム';
   const at = change === 'given' ? grant.createdAt : (grant.revokedAt ?? grant.createdAt);
   return (
     <div className="flex items-center gap-3 py-1" data-testid={`grant-line-${change}`}>
@@ -349,7 +411,11 @@ function Segmented<T extends string | number | null>({
   label: string;
 }) {
   return (
-    <div role="radiogroup" aria-label={label} className="inline-flex h-7 rounded-sm border border-line bg-canvas p-0.5">
+    <div
+      role="radiogroup"
+      aria-label={label}
+      className="inline-flex h-7 rounded-sm border border-line bg-canvas p-0.5"
+    >
       {options.map((o) => (
         <button
           key={String(o.value)}
@@ -393,7 +459,9 @@ function GrantForm({ session, onDone }: { session: Session; onDone: () => void }
   const setProjectDialog = useUi((s) => s.setProjectDialog);
   const demo = useIsDemo();
   const [preset, setPreset] = useState<GrantPresetId>(DEFAULT_GRANT_INPUT.preset);
-  const [projectId, setProjectId] = useState<string | null>(session.projectId ?? uiProject ?? projects[0]?.id ?? null);
+  const [projectId, setProjectId] = useState<string | null>(
+    session.projectId ?? uiProject ?? projects[0]?.id ?? null,
+  );
   const [maxWorkers, setMaxWorkers] = useState(DEFAULT_GRANT_INPUT.maxWorkers);
   const [budget, setBudget] = useState<number | null>(DEFAULT_GRANT_INPUT.budgetUsd);
   const [customBudget, setCustomBudget] = useState('');
@@ -404,8 +472,11 @@ function GrantForm({ session, onDone }: { session: Session; onDone: () => void }
   const budgetUsd = budget === -1 ? Number(customBudget) || null : budget;
 
   const sentence = useMemo(() => {
-    const where = project ? `「${project.name}」で` : 'すべてのプロジェクトで';
-    const doing = p.spawns ? `Task を分け、Worker を ${maxWorkers} 人まで並列に起動できます` : 'Task を作成・整理できます（Worker は起動しません）';
+    // A half-width space between Japanese and a Latin word reads better (§9.1 style).
+    const where = project ? `「${project.name}」で ` : 'すべてのプロジェクトで ';
+    const doing = p.spawns
+      ? `Task を分け、Worker を ${maxWorkers} 人まで並列に起動できます`
+      : 'Task を作成・整理できます（Worker は起動しません）';
     const money = p.spawns && budgetUsd ? `Worker に配れる予算は ${usd(budgetUsd)} です。` : '';
     const until =
       lifetime === 'run'
@@ -464,13 +535,17 @@ function GrantForm({ session, onDone }: { session: Session; onDone: () => void }
               onClick={() => setPreset(id)}
               className={cn(
                 'flex min-h-[92px] flex-col items-start gap-1 rounded-md border p-3 text-left transition-colors duration-[120ms]',
-                on ? 'border-[var(--focus-ring)] bg-selected' : 'border-line bg-canvas hover:border-line-strong',
+                on
+                  ? 'border-[var(--focus-ring)] bg-selected'
+                  : 'border-line bg-canvas hover:border-line-strong',
               )}
             >
               <span className="flex w-full items-center gap-1.5 text-ui font-medium text-fg">
                 {id === 'orchestrate' ? <OrchestratorMark size={11} hollow={!on} /> : null}
                 {x.label}
-                {id === 'orchestrate' && <span className="ml-auto text-micro font-normal text-fg-3">推奨</span>}
+                {id === 'orchestrate' && (
+                  <span className="ml-auto text-micro font-normal text-fg-3">推奨</span>
+                )}
               </span>
               <span className="text-meta text-fg-3">{x.summary}</span>
             </button>
@@ -485,7 +560,11 @@ function GrantForm({ session, onDone }: { session: Session; onDone: () => void }
             !project ? (
               <span>
                 プロジェクトがないと Worker は worktree を作れません。
-                <button type="button" className="ml-1 text-accent hover:underline" onClick={() => setProjectDialog({ kind: 'new' })}>
+                <button
+                  type="button"
+                  className="ml-1 text-accent hover:underline"
+                  onClick={() => setProjectDialog({ kind: 'new' })}
+                >
                   プロジェクトを追加
                 </button>
               </span>
@@ -509,7 +588,10 @@ function GrantForm({ session, onDone }: { session: Session; onDone: () => void }
           </select>
         </Row>
         {p.spawns && (
-          <Row label="Worker 数" hint="同時に動かせる Worker の上限です。超える起動は Core Daemon が拒否します。">
+          <Row
+            label="Worker 数"
+            hint="同時に動かせる Worker の上限です。超える起動は Core Daemon が拒否します。"
+          >
             <div className="flex items-center gap-1">
               <button
                 type="button"
@@ -536,7 +618,11 @@ function GrantForm({ session, onDone }: { session: Session; onDone: () => void }
         {p.spawns && (
           <Row
             label="予算"
-            hint={demo ? 'デモモードでは費用はかかりません。' : 'Worker に配分できる上限です。使い切ると Worker は止まります。'}
+            hint={
+              demo
+                ? 'デモモードでは費用はかかりません。'
+                : 'Worker に配分できる上限です。使い切ると Worker は止まります。'
+            }
           >
             <div className="flex items-center gap-2">
               <Segmented
@@ -636,7 +722,9 @@ export function GrantDialog() {
       description="権限を与えると、このチャットが Task を分け、Worker を指揮して作業を進めます。"
       className="w-[640px]"
     >
-      {session && <GrantForm key={session.id} session={session} onDone={() => setGrantDialog(null)} />}
+      {session && (
+        <GrantForm key={session.id} session={session} onDone={() => setGrantDialog(null)} />
+      )}
     </Dialog>
   );
 }

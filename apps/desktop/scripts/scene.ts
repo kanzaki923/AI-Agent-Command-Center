@@ -49,10 +49,19 @@ async function main(): Promise<void> {
   const { createLogger, parseLogLevel } = await import('../../../packages/daemon/src/core/log');
   const { startDaemon } = await import('../../../packages/daemon/src/daemon');
   const { createTempRepo } = await import('../../../packages/daemon/src/workspace/git-fixture');
-  const daemon = await startDaemon({ home, log: createLogger(parseLogLevel(process.env.ACC_LOG_LEVEL ?? 'warn')) });
-  const call = <M extends MethodName>(m: M, p: ParamsInput<M>, actor: Actor = HUMAN): Promise<Result<M>> =>
-    daemon.call(actor, m, p as never);
-  const until = async <T>(fn: () => Promise<T | null | undefined | false>, ms = 20_000): Promise<T> => {
+  const daemon = await startDaemon({
+    home,
+    log: createLogger(parseLogLevel(process.env.ACC_LOG_LEVEL ?? 'warn')),
+  });
+  const call = <M extends MethodName>(
+    m: M,
+    p: ParamsInput<M>,
+    actor: Actor = HUMAN,
+  ): Promise<Result<M>> => daemon.call(actor, m, p as never);
+  const until = async <T>(
+    fn: () => Promise<T | null | undefined | false>,
+    ms = 20_000,
+  ): Promise<T> => {
     const end = Date.now() + ms;
     for (;;) {
       const v = await fn();
@@ -90,7 +99,7 @@ async function main(): Promise<void> {
     ].join('\n'),
     'scripts/test.js': [
       "const files = ['auth/session', 'auth/login', 'api/users'];",
-      "for (const f of files) console.log(`✓ ${f}.test.ts`);",
+      'for (const f of files) console.log(`✓ ${f}.test.ts`);',
       "console.log('\\nTest Files  3 passed (3)\\n     Tests  24 passed (24)');",
       '',
     ].join('\n'),
@@ -102,7 +111,10 @@ async function main(): Promise<void> {
     testCommand: 'node scripts/test.js',
   });
   await call('workspace.create', { projectId: project.id, kind: 'main' });
-  await call('project.create', { name: 'docs-site', description: 'ドキュメントサイト（リポジトリ未設定）' });
+  await call('project.create', {
+    name: 'docs-site',
+    description: 'ドキュメントサイト（リポジトリ未設定）',
+  });
 
   // ---------------------------------------------------------------- orchestrator chat
   const design = await call('session.create', {
@@ -113,14 +125,33 @@ async function main(): Promise<void> {
   });
   const grant = await call('grant.create', {
     subject: { kind: 'session', sessionId: design.id },
-    permissions: ['task.*', 'session.*', 'workspace.*', 'artifact.*', 'integration.create', 'integration.run', 'integration.get', 'integration.list', 'run.get', 'run.list', 'project.get', 'grant.create', 'budget.*', 'events.list'],
+    permissions: [
+      'task.*',
+      'session.*',
+      'workspace.*',
+      'artifact.*',
+      'integration.create',
+      'integration.run',
+      'integration.get',
+      'integration.list',
+      'run.get',
+      'run.list',
+      'project.get',
+      'grant.create',
+      'budget.*',
+      'events.list',
+    ],
     scope: { projectIds: [project.id] },
     limits: { maxWorkers: 2, maxDepth: 1 },
     lifetime: 'session',
     expiresAt: new Date(Date.now() + 8 * 3600_000).toISOString(),
     reason: 'scene',
   });
-  await call('budget.allocate', { parentId: null, subject: { kind: 'session', id: design.id }, limitUsd: 5 });
+  await call('budget.allocate', {
+    parentId: null,
+    subject: { kind: 'session', id: design.id },
+    limitUsd: 5,
+  });
   const sent = await call('session.send', {
     sessionId: design.id,
     content: '認証まわりのドキュメントとテストを並列で整備して',
@@ -159,7 +190,8 @@ async function main(): Promise<void> {
     actor: orchestrator,
     payload: {
       decision: 'Task を 3 つに分割し、2 つを並列で進めます',
-      rationale: 'ドキュメントとテストは互いに独立しており、README はドキュメントの完成後に着手できるため',
+      rationale:
+        'ドキュメントとテストは互いに独立しており、README はドキュメントの完成後に着手できるため',
       refs: { taskIds: [tDocs.id, tTests.id] },
     },
     refs: { sessionId: design.id, runId: sent.runId, projectId: project.id },
@@ -217,7 +249,11 @@ async function main(): Promise<void> {
     )}`,
   );
   await daemon.ctx.service('runs').waitForEnd(docs.runId);
-  await call('task.update', { taskId: tDocs.id, status: 'review', resultSummary: 'docs/auth.md に 3 つのエンドポイントを説明しました。' });
+  await call('task.update', {
+    taskId: tDocs.id,
+    status: 'review',
+    resultSummary: 'docs/auth.md に 3 つのエンドポイントを説明しました。',
+  });
 
   const tests = await worker(
     tTests.id,
@@ -248,7 +284,9 @@ async function main(): Promise<void> {
     )}`,
   );
   // tests now waits for the approval of its `node scripts/test.js` command.
-  await until(async () => (await call('approval.list', { status: ['pending'], runId: tests.runId })).items[0]);
+  await until(
+    async () => (await call('approval.list', { status: ['pending'], runId: tests.runId })).items[0],
+  );
 
   // A worker that failed (an attention card with the error).
   const flakyWs = await call('workspace.create', { projectId: project.id, label: 'e2e-flaky' });
@@ -263,17 +301,29 @@ async function main(): Promise<void> {
     sessionId: flaky.id,
     content: `E2E テストを安定させてください。${plan([
       { type: 'say', text: 'ログイン画面の E2E テストを確認します。' },
-      { type: 'fail', message: 'テストが 3 件失敗しました: LoginForm.test.tsx\nExpected "ログイン" but received "Sign in"' },
+      {
+        type: 'fail',
+        message:
+          'テストが 3 件失敗しました: LoginForm.test.tsx\nExpected "ログイン" but received "Sign in"',
+      },
     ])}`,
   });
-  await daemon.ctx.service('runs').waitForEnd(flakyRun.runId).catch(() => undefined);
+  await daemon.ctx
+    .service('runs')
+    .waitForEnd(flakyRun.runId)
+    .catch(() => undefined);
 
   // Everyday chats.
   for (const [title, text] of [
     ['週次レポートの下書き', '今週の進捗を 3 行でまとめて'],
     ['レビュー観点の整理', 'コードレビューで見るべき観点を挙げて'],
   ] as const) {
-    const s = await call('session.create', { kind: 'chat', projectId: project.id, title, model: 'mock/fast' });
+    const s = await call('session.create', {
+      kind: 'chat',
+      projectId: project.id,
+      title,
+      model: 'mock/fast',
+    });
     const r = await call('session.send', { sessionId: s.id, content: text });
     await daemon.ctx.service('runs').waitForEnd(r.runId);
   }
@@ -289,9 +339,18 @@ async function main(): Promise<void> {
   // ---------------------------------------------------------------- optional load
   const load = Number(arg('load') ?? 0);
   if (load > 0) {
-    const long = Array.from({ length: 40 }, (_, i) => `段落 ${i + 1}: 並列で動くエージェントの出力を、滑らかに描画できるかを確かめるための長めの文章です。`).join('\n\n');
+    const long = Array.from(
+      { length: 40 },
+      (_, i) =>
+        `段落 ${i + 1}: 並列で動くエージェントの出力を、滑らかに描画できるかを確かめるための長めの文章です。`,
+    ).join('\n\n');
     for (let i = 0; i < load; i++) {
-      const s = await call('session.create', { kind: 'chat', projectId: project.id, title: `負荷確認 ${i + 1}`, model: 'mock/echo' });
+      const s = await call('session.create', {
+        kind: 'chat',
+        projectId: project.id,
+        title: `負荷確認 ${i + 1}`,
+        model: 'mock/echo',
+      });
       await call('session.send', { sessionId: s.id, content: long });
     }
     console.log(`load: ${load} streaming chats started`);

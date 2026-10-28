@@ -1,6 +1,15 @@
-import type { Artifact, DiffStats, Message, Run, Session, Task, TaskStatus, Workspace } from '@acc/protocol';
+import type {
+  Artifact,
+  DiffStats,
+  Message,
+  Run,
+  Session,
+  Task,
+  TaskStatus,
+  Workspace,
+} from '@acc/protocol';
 import { TERMINAL_TASK_STATUSES } from '@acc/protocol';
-import type { DisplayState } from '../lib/status';
+import { type DisplayState, TASK_STATUS_LABEL } from '../lib/status';
 import { untitled } from './board';
 
 /**
@@ -58,7 +67,11 @@ export function isTerminalTask(status: TaskStatus): boolean {
 
 /** Tasks a human may start a worker for (dependencies done, nothing running). */
 export function canSpawn(task: Task): boolean {
-  return task.status === 'ready' || (task.status === 'pending' && task.dependsOn.length === 0) || task.status === 'failed';
+  return (
+    task.status === 'ready' ||
+    (task.status === 'pending' && task.dependsOn.length === 0) ||
+    task.status === 'failed'
+  );
 }
 
 export interface TaskTreeInput {
@@ -109,13 +122,18 @@ export function buildTaskGroups(input: TaskTreeInput): TaskGroup[] {
   for (const a of input.diffs) {
     if (a.kind !== 'diff') continue;
     if (a.taskId && !diffByTask.has(a.taskId)) diffByTask.set(a.taskId, a.data.stats);
-    if (a.workspaceId && !diffByWorkspace.has(a.workspaceId)) diffByWorkspace.set(a.workspaceId, a.data.stats);
+    if (a.workspaceId && !diffByWorkspace.has(a.workspaceId))
+      diffByWorkspace.set(a.workspaceId, a.data.stats);
   }
 
-  const groupOf = (t: Task): string => (t.createdBy.kind === 'agent' ? t.createdBy.sessionId : 'human');
+  const groupOf = (t: Task): string =>
+    t.createdBy.kind === 'agent' ? t.createdBy.sessionId : 'human';
 
   const node = (t: Task): TaskNode => {
-    const worker = (t.assigneeSessionId ? sessions.get(t.assigneeSessionId) : undefined) ?? sessionByTask.get(t.id) ?? null;
+    const worker =
+      (t.assigneeSessionId ? sessions.get(t.assigneeSessionId) : undefined) ??
+      sessionByTask.get(t.id) ??
+      null;
     const workspace =
       (t.workspaceId ? workspaces.get(t.workspaceId) : undefined) ??
       wsByTask.get(t.id) ??
@@ -128,7 +146,10 @@ export function buildTaskGroups(input: TaskTreeInput): TaskGroup[] {
       worker,
       workerRun: worker ? (latestRun.get(worker.id) ?? null) : null,
       workspace,
-      diff: diffByTask.get(t.id) ?? (workspaceId ? diffByWorkspace.get(workspaceId) : undefined) ?? null,
+      diff:
+        diffByTask.get(t.id) ??
+        (workspaceId ? diffByWorkspace.get(workspaceId) : undefined) ??
+        null,
       waitsFor: t.dependsOn
         .map((id) => byId.get(id))
         .filter((d): d is Task => !!d && d.status !== 'done'),
@@ -206,6 +227,17 @@ export function integrableTasks(group: TaskGroup): Task[] {
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
+/**
+ * Icon state + label of a task row. A running task whose worker waits for a human says so:
+ * that is why it is not moving (and where to look).
+ */
+export function taskDisplay(n: TaskNode): { state: DisplayState; label: string } {
+  if (n.task.status === 'running' && n.workerRun?.status === 'awaiting_approval') {
+    return { state: 'awaiting_approval', label: '承認待ち' };
+  }
+  return { state: taskState(n.task.status), label: TASK_STATUS_LABEL[n.task.status] };
+}
+
 /** First line of the first message a human wrote in the orchestrator chat (the goal). */
 export function goalFromMessages(messages: readonly Message[], max = 80): string | null {
   const first = messages.find((m) => m.role === 'user' && m.author.kind === 'human');
@@ -215,6 +247,7 @@ export function goalFromMessages(messages: readonly Message[], max = 80): string
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
 
+/** The worker's name for a `Worker · …` column (a "Worker: " title prefix would repeat it). */
 export function workerLabel(n: TaskNode): string | null {
-  return n.worker ? untitled(n.worker) : null;
+  return n.worker ? untitled(n.worker).replace(/^Worker\s*[:：·]\s*/i, '') : null;
 }

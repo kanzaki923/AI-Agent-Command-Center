@@ -14,7 +14,6 @@ import {
 } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { cn } from '../../lib/cn';
-import { TASK_STATUS_LABEL } from '../../lib/status';
 import { INTEGRATION_STATUS_LABEL, integrationState } from '../../model/integration';
 import {
   type TaskGroup,
@@ -23,7 +22,7 @@ import {
   canSpawn,
   goalFromMessages,
   integrableTasks,
-  taskState,
+  taskDisplay,
   workerLabel,
 } from '../../model/tasks';
 import { useUi } from '../../store/ui';
@@ -51,7 +50,10 @@ export function useTaskGroups(): TaskGroup[] {
 }
 
 /** The integration that covers a group's tasks (latest first), if any. */
-export function groupIntegration(group: TaskGroup, integrations: readonly Integration[]): Integration | null {
+export function groupIntegration(
+  group: TaskGroup,
+  integrations: readonly Integration[],
+): Integration | null {
   const ids = new Set<string>();
   const walk = (n: TaskNode) => {
     ids.add(n.task.id);
@@ -80,10 +82,7 @@ const TaskRow = memo(function TaskRow({
   const openSession = useUi((s) => s.openSession);
   const connected = useConnectionState() === 'open';
   const t = node.task;
-  // A running task whose worker waits for a human says so (the reason it is not moving).
-  const waiting = t.status === 'running' && node.workerRun?.status === 'awaiting_approval';
-  const state = waiting ? 'awaiting_approval' : taskState(t.status);
-  const label = waiting ? '承認待ち' : TASK_STATUS_LABEL[t.status];
+  const { state, label } = taskDisplay(node);
   const worker = workerLabel(node);
   const choose = () => {
     select(t.id);
@@ -116,7 +115,9 @@ const TaskRow = memo(function TaskRow({
       )}
       style={{ paddingLeft: 12 + depth * 18 }}
     >
-      {selected && <span className="absolute top-1.5 bottom-1.5 left-0 w-0.5 rounded-full bg-accent" />}
+      {selected && (
+        <span className="absolute top-1.5 bottom-1.5 left-0 w-0.5 rounded-full bg-accent" />
+      )}
       {/* Tree guide: a quiet elbow joins each task to its goal. */}
       <span aria-hidden="true" className="relative h-full w-3 shrink-0">
         <span className={cn('absolute left-1 w-px bg-line', last ? 'top-0 h-1/2' : 'inset-y-0')} />
@@ -125,14 +126,21 @@ const TaskRow = memo(function TaskRow({
       <StatusIcon state={state} size={13} />
       <span className="min-w-0 flex-1 truncate text-ui text-fg">{t.title}</span>
       {node.waitsFor.length > 0 && (
-        <Tooltip content={`先に終わる必要がある Task: ${node.waitsFor.map((d) => d.title).join('、')}`}>
+        <Tooltip
+          content={`先に終わる必要がある Task: ${node.waitsFor.map((d) => d.title).join('、')}`}
+        >
           <span className="hidden max-w-48 shrink truncate text-meta text-fg-4 @[720px]:block">
             ← {node.waitsFor.map((d) => d.title).join('、')}
           </span>
         </Tooltip>
       )}
       {/* Fixed columns; the less important ones give way first as the board narrows. */}
-      <span className={cn('w-24 shrink-0 text-right text-meta whitespace-nowrap', state === 'awaiting_approval' ? 'text-st-awaiting_approval' : 'text-fg-3')}>
+      <span
+        className={cn(
+          'w-24 shrink-0 text-right text-meta whitespace-nowrap',
+          state === 'awaiting_approval' ? 'text-st-awaiting_approval' : 'text-fg-3',
+        )}
+      >
         {label}
       </span>
       <span className="hidden w-36 shrink-0 truncate text-meta text-fg-2 @[560px]:block">
@@ -149,7 +157,11 @@ const TaskRow = memo(function TaskRow({
         )}
       </span>
       <span className="w-16 shrink-0 text-right">
-        {node.diff && node.diff.files > 0 ? <DiffStatText additions={node.diff.additions} deletions={node.diff.deletions} /> : <span className="text-meta text-fg-4">—</span>}
+        {node.diff && node.diff.files > 0 ? (
+          <DiffStatText additions={node.diff.additions} deletions={node.diff.deletions} />
+        ) : (
+          <span className="text-meta text-fg-4">—</span>
+        )}
       </span>
       {spawnable && canSpawn(t) && !node.worker && (
         // Hover action floats over the row's right edge (no reserved column).
@@ -172,13 +184,36 @@ const TaskRow = memo(function TaskRow({
   );
 });
 
-function Nodes({ nodes, depth, selectedId, spawnable }: { nodes: TaskNode[]; depth: number; selectedId: string | null; spawnable: boolean }) {
+function Nodes({
+  nodes,
+  depth,
+  selectedId,
+  spawnable,
+}: {
+  nodes: TaskNode[];
+  depth: number;
+  selectedId: string | null;
+  spawnable: boolean;
+}) {
   return (
     <>
       {nodes.map((n, i) => (
         <div key={n.task.id} role="group">
-          <TaskRow node={n} depth={depth} last={i === nodes.length - 1} selected={selectedId === n.task.id} spawnable={spawnable} />
-          {n.children.length > 0 && <Nodes nodes={n.children} depth={depth + 1} selectedId={selectedId} spawnable={spawnable} />}
+          <TaskRow
+            node={n}
+            depth={depth}
+            last={i === nodes.length - 1}
+            selected={selectedId === n.task.id}
+            spawnable={spawnable}
+          />
+          {n.children.length > 0 && (
+            <Nodes
+              nodes={n.children}
+              depth={depth + 1}
+              selectedId={selectedId}
+              spawnable={spawnable}
+            />
+          )}
         </div>
       ))}
     </>
@@ -191,9 +226,18 @@ function Progress({ group }: { group: TaskGroup }) {
     <Tooltip content={`完了 ${done} · レビュー待ち ${review} · 全 ${total} 件`}>
       <span className="flex items-center gap-2 text-meta text-fg-3 tabular">
         Task {done}/{total}
-        <span className="flex h-1.5 w-16 overflow-hidden rounded-full bg-selected" aria-hidden="true">
-          <span className="h-full bg-st-completed" style={{ width: `${(done / Math.max(1, total)) * 100}%` }} />
-          <span className="h-full bg-st-review" style={{ width: `${(review / Math.max(1, total)) * 100}%` }} />
+        <span
+          className="flex h-1.5 w-16 overflow-hidden rounded-full bg-selected"
+          aria-hidden="true"
+        >
+          <span
+            className="h-full bg-st-completed"
+            style={{ width: `${(done / Math.max(1, total)) * 100}%` }}
+          />
+          <span
+            className="h-full bg-st-review"
+            style={{ width: `${(review / Math.max(1, total)) * 100}%` }}
+          />
         </span>
       </span>
     </Tooltip>
@@ -210,7 +254,15 @@ function GoalText({ group }: { group: TaskGroup }) {
   return <span className="font-medium text-fg">{asked ?? group.goal}</span>;
 }
 
-function GroupCard({ group, selectedId, spawnable }: { group: TaskGroup; selectedId: string | null; spawnable: boolean }) {
+function GroupCard({
+  group,
+  selectedId,
+  spawnable,
+}: {
+  group: TaskGroup;
+  selectedId: string | null;
+  spawnable: boolean;
+}) {
   const rt = useRuntime();
   const openSession = useUi((s) => s.openSession);
   const openIntegration = useUi((s) => s.openIntegration);
@@ -220,9 +272,13 @@ function GroupCard({ group, selectedId, spawnable }: { group: TaskGroup; selecte
   const connected = useConnectionState() === 'open';
   const integ = groupIntegration(group, integrations);
   const ready = integrableTasks(group);
-  const canIntegrate = ready.length > 0 && (!integ || ['rejected', 'cancelled', 'applied'].includes(integ.status));
+  const canIntegrate =
+    ready.length > 0 && (!integ || ['rejected', 'cancelled', 'applied'].includes(integ.status));
   return (
-    <section aria-label={`目標: ${group.goal}`} className="@container rounded-md border border-line-subtle bg-surface">
+    <section
+      aria-label={`目標: ${group.goal}`}
+      className="@container rounded-md border border-line-subtle bg-surface"
+    >
       <div className="flex h-10 items-center gap-2.5 pr-2 pl-3">
         <button
           type="button"
@@ -231,7 +287,11 @@ function GroupCard({ group, selectedId, spawnable }: { group: TaskGroup; selecte
           onClick={() => toggle(`tasks.${group.id}`, group.finished)}
           className="flex size-5 items-center justify-center rounded-xs text-fg-4 hover:text-fg-2"
         >
-          <ChevronRight size={13} strokeWidth={1.75} className={cn('transition-transform duration-[120ms]', !collapsed && 'rotate-90')} />
+          <ChevronRight
+            size={13}
+            strokeWidth={1.75}
+            className={cn('transition-transform duration-[120ms]', !collapsed && 'rotate-90')}
+          />
         </button>
         {group.orchestrator ? <OrchestratorMark size={12} /> : <span className="size-3" />}
         <span className="min-w-0 flex-1 truncate text-ui">
@@ -258,14 +318,20 @@ function GroupCard({ group, selectedId, spawnable }: { group: TaskGroup; selecte
             統合: {INTEGRATION_STATUS_LABEL[integ.status]}
           </Button>
         ) : canIntegrate ? (
-          <Tooltip content={`レビュー待ちの ${ready.length} 件を統合ブランチにマージしてテストします`}>
+          <Tooltip
+            content={`レビュー待ちの ${ready.length} 件を統合ブランチにマージしてテストします`}
+          >
             <Button
               size="sm"
               variant="secondary"
               icon={<GitMerge size={12} strokeWidth={1.75} />}
               disabled={!connected}
               onClick={() =>
-                void startIntegration(rt, group.projectId, ready.map((t) => t.id)).then((i) => i && openIntegration(i.id))
+                void startIntegration(
+                  rt,
+                  group.projectId,
+                  ready.map((t) => t.id),
+                ).then((i) => i && openIntegration(i.id))
               }
             >
               統合する

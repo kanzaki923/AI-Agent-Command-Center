@@ -12,7 +12,7 @@ import { cn } from '../../lib/cn';
 import { headLines } from '../../lib/tools';
 import { describeApproval } from '../../model/approval';
 import { type ChatBlock, buildChatBlocks } from '../../model/chat';
-import { ResolvedLine, useApprovalControls } from '../approval/ApprovalControls';
+import { ResolvedLine, RiskNote, useApprovalControls } from '../approval/ApprovalControls';
 import { GrantLine, OrchestratorIntro, useSessionGrants } from '../grant/Grant';
 import { Button } from '../ui/Button';
 import { Skeleton, TimeStamp } from '../ui/Meta';
@@ -86,9 +86,7 @@ function InlineApproval({ approval }: { approval: Approval }) {
           {view.targetKind === 'command' ? `$ ${view.target}` : view.target}
         </pre>
       )}
-      {pending && view.scope && (
-        <div className={cn('text-meta', view.risk === 'high' ? 'text-st-failed' : 'text-fg-3')}>{view.scope}</div>
-      )}
+      {pending && <RiskNote view={view} />}
       {pending ? controls : <ResolvedLine approval={approval} />}
     </div>
   );

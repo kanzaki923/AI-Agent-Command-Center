@@ -24,7 +24,13 @@ function Hint({ children }: { children: ReactNode }) {
  * Add a local git repository as a project. The daemon validates the path and that it is a
  * repository; the checked-out branch becomes the default branch (editable here or later).
  */
-export function NewProjectForm({ onDone, compact = false }: { onDone: (p: Project | null) => void; compact?: boolean }) {
+export function NewProjectForm({
+  onDone,
+  compact = false,
+}: {
+  onDone: (p: Project | null) => void;
+  compact?: boolean;
+}) {
   const rt = useRuntime();
   const [path, setPath] = useState('');
   const [name, setName] = useState('');
@@ -82,16 +88,33 @@ export function NewProjectForm({ onDone, compact = false }: { onDone: (p: Projec
           spellCheck={false}
           aria-invalid={!!error}
         />
-        {error ? <p className="mt-1 text-meta text-st-failed">{error}</p> : <Hint>リポジトリのルート（.git があるフォルダ）を絶対パスで指定します。</Hint>}
+        {error ? (
+          <p className="mt-1 text-meta text-st-failed">{error}</p>
+        ) : (
+          <Hint>リポジトリのルート（.git があるフォルダ）を絶対パスで指定します。</Hint>
+        )}
       </div>
       <div className={compact ? 'grid grid-cols-1 gap-3' : 'grid grid-cols-2 gap-3'}>
         <div>
           <FieldLabel htmlFor="proj-name">名前</FieldLabel>
-          <input id="proj-name" className={inputClass} value={name} onChange={(e) => setName(e.target.value)} placeholder={folderName(path) || 'my-repo'} />
+          <input
+            id="proj-name"
+            className={inputClass}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={folderName(path) || 'my-repo'}
+          />
         </div>
         <div>
           <FieldLabel htmlFor="proj-branch">既定ブランチ</FieldLabel>
-          <input id="proj-branch" className={inputClass} value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="自動で検出" spellCheck={false} />
+          <input
+            id="proj-branch"
+            className={inputClass}
+            value={branch}
+            onChange={(e) => setBranch(e.target.value)}
+            placeholder="自動で検出"
+            spellCheck={false}
+          />
         </div>
       </div>
       <div>
@@ -136,8 +159,12 @@ function EditProjectForm({ project, onDone }: { project: Project; onDone: () => 
         onDone();
         void updateProject(rt, project, {
           ...(name.trim() !== project.name ? { name: name.trim() } : {}),
-          ...((branch.trim() || null) !== project.defaultBranch ? { defaultBranch: branch.trim() || null } : {}),
-          ...((testCommand.trim() || null) !== project.testCommand ? { testCommand: testCommand.trim() || null } : {}),
+          ...((branch.trim() || null) !== project.defaultBranch
+            ? { defaultBranch: branch.trim() || null }
+            : {}),
+          ...((testCommand.trim() || null) !== project.testCommand
+            ? { testCommand: testCommand.trim() || null }
+            : {}),
         });
       }}
     >
@@ -147,16 +174,35 @@ function EditProjectForm({ project, onDone }: { project: Project; onDone: () => 
       </div>
       <div>
         <FieldLabel htmlFor="edit-name">名前</FieldLabel>
-        <input id="edit-name" className={inputClass} value={name} onChange={(e) => setName(e.target.value)} />
+        <input
+          id="edit-name"
+          className={inputClass}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
       </div>
       <div>
         <FieldLabel htmlFor="edit-branch">既定ブランチ</FieldLabel>
-        <input id="edit-branch" className={`${inputClass} font-mono`} value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" spellCheck={false} />
+        <input
+          id="edit-branch"
+          className={`${inputClass} font-mono`}
+          value={branch}
+          onChange={(e) => setBranch(e.target.value)}
+          placeholder="main"
+          spellCheck={false}
+        />
         <Hint>Worker の worktree はここから作られ、統合はここへ反映されます。</Hint>
       </div>
       <div>
         <FieldLabel htmlFor="edit-test">テストコマンド</FieldLabel>
-        <input id="edit-test" className={`${inputClass} font-mono`} value={testCommand} onChange={(e) => setTestCommand(e.target.value)} placeholder="pnpm test" spellCheck={false} />
+        <input
+          id="edit-test"
+          className={`${inputClass} font-mono`}
+          value={testCommand}
+          onChange={(e) => setTestCommand(e.target.value)}
+          placeholder="pnpm test"
+          spellCheck={false}
+        />
         <Hint>統合のあとに実行します。空なら検証を省略します。</Hint>
       </div>
       <div className="mt-1 flex justify-end gap-2">
@@ -192,7 +238,8 @@ export function ProjectDialog() {
   const dialog = useUi((s) => s.projectDialog);
   const setDialog = useUi((s) => s.setProjectDialog);
   const projects = useProjects().data ?? NONE;
-  const editing = dialog?.kind === 'edit' ? (projects.find((p) => p.id === dialog.projectId) ?? null) : null;
+  const editing =
+    dialog?.kind === 'edit' ? (projects.find((p) => p.id === dialog.projectId) ?? null) : null;
   const close = () => setDialog(null);
   return (
     <Dialog
@@ -200,7 +247,9 @@ export function ProjectDialog() {
       onOpenChange={(o) => !o && close()}
       title={dialog?.kind === 'edit' ? 'プロジェクトの設定' : 'プロジェクトを追加'}
       description={
-        dialog?.kind === 'edit' ? undefined : 'エージェントはこのリポジトリから作った worktree で作業します。'
+        dialog?.kind === 'edit'
+          ? undefined
+          : 'エージェントはこのリポジトリから作った worktree で作業します。'
       }
       className="w-[520px]"
     >

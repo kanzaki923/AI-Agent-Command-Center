@@ -28,8 +28,8 @@ const untyped = (rt: AppRuntime): UntypedCall =>
  * system.info; grant.create (+ budget.allocate) is the contract fallback.
  */
 export const ORCHESTRATOR_GRANT_METHODS = [
+  'session.grantOrchestration',
   'grant.orchestrator',
-  'session.grantOrchestrator',
   'orchestrator.grant',
 ] as const;
 
@@ -87,28 +87,44 @@ export async function grantOrchestrator(
   const temp = optimisticGrant(input, now);
   qc.setQueryData<CapabilityGrant[]>(key, (cur) => [...(cur ?? []), temp]);
 
-  const convenience = pickMethod(methods, ORCHESTRATOR_GRANT_METHODS);
+  // The daemon's own orchestrator preset (when offered) keeps grant + budget in one call;
+  // other presets, and older daemons, use the contract methods.
+  const convenience =
+    input.preset === 'orchestrate' && input.projectId
+      ? pickMethod(methods, ORCHESTRATOR_GRANT_METHODS)
+      : null;
   let grant: CapabilityGrant | null = null;
   try {
     if (convenience) {
       try {
+        const params = grantParams(input, now);
         const res = (await untyped(rt)(convenience, {
           sessionId: input.sessionId,
           ...(input.projectId ? { projectId: input.projectId } : {}),
           maxWorkers: input.maxWorkers,
           ...(input.budgetUsd ? { budgetUsd: input.budgetUsd } : {}),
           lifetime: input.lifetime,
-        })) as { grant?: CapabilityGrant } | CapabilityGrant;
+          ...(params.expiresAt ? { expiresAt: params.expiresAt } : {}),
+        })) as { grant?: CapabilityGrant; budget?: BudgetAllocation | null } | CapabilityGrant;
+        const budget = 'budget' in res ? res.budget : null;
         grant = 'grant' in res && res.grant ? res.grant : (res as CapabilityGrant);
         if (!grant?.id) grant = null;
+        if (budget) {
+          qc.setQueryData<BudgetAllocation[]>(qk.sessionBudgets(input.sessionId), (cur) => [
+            budget,
+            ...(cur ?? []).filter((x) => x.id !== budget.id),
+          ]);
+        }
       } catch (err) {
         // Unknown shape on an older/newer daemon: fall through to the contract methods.
-        if (!(isNotImplemented(err) || (err as { code?: string }).code === 'invalid_params')) throw err;
+        if (!(isNotImplemented(err) || (err as { code?: string }).code === 'invalid_params'))
+          throw err;
       }
     }
     if (!grant) {
       grant = await rt.client.call('grant.create', grantParams(input, now));
-      if (input.budgetUsd && input.budgetUsd > 0) await ensureSessionBudget(rt, input.sessionId, input.budgetUsd);
+      if (input.budgetUsd && input.budgetUsd > 0)
+        await ensureSessionBudget(rt, input.sessionId, input.budgetUsd);
     }
     const real = grant;
     qc.setQueryData<CapabilityGrant[]>(key, (cur) =>
@@ -123,8 +139,13 @@ export async function grantOrchestrator(
 }
 
 /** Reuse the session's active budget when it still has room, else create a root budget. */
-async function ensureSessionBudget(rt: AppRuntime, sessionId: string, limitUsd: number): Promise<void> {
-  const cached = rt.queryClient.getQueryData<BudgetAllocation[]>(qk.sessionBudgets(sessionId)) ?? [];
+async function ensureSessionBudget(
+  rt: AppRuntime,
+  sessionId: string,
+  limitUsd: number,
+): Promise<void> {
+  const cached =
+    rt.queryClient.getQueryData<BudgetAllocation[]>(qk.sessionBudgets(sessionId)) ?? [];
   if (cached.some((b) => b.status === 'active' && remainingUsd(b) >= limitUsd)) return;
   try {
     const b = await rt.client.call('budget.allocate', {
@@ -141,7 +162,11 @@ async function ensureSessionBudget(rt: AppRuntime, sessionId: string, limitUsd: 
   }
 }
 
-export async function revokeGrant(rt: AppRuntime, sessionId: string, grant: CapabilityGrant): Promise<boolean> {
+export async function revokeGrant(
+  rt: AppRuntime,
+  sessionId: string,
+  grant: CapabilityGrant,
+): Promise<boolean> {
   const qc = rt.queryClient;
   const key = qk.grants(sessionId);
   const at = new Date().toISOString();
@@ -177,7 +202,10 @@ export type CreateProjectResult =
  * a folder that is not a repository is archived again and reported inline. The checked-out
  * branch becomes the default branch unless one was given.
  */
-export async function createProject(rt: AppRuntime, input: NewProjectInput): Promise<CreateProjectResult> {
+export async function createProject(
+  rt: AppRuntime,
+  input: NewProjectInput,
+): Promise<CreateProjectResult> {
   const qc = rt.queryClient;
   let project: Project;
   try {
@@ -196,7 +224,9 @@ export async function createProject(rt: AppRuntime, input: NewProjectInput): Pro
     detectedBranch = main.branch;
   } catch (err) {
     if (!isNotImplemented(err)) {
-      await rt.client.call('project.update', { projectId: project.id, archived: true }).catch(() => {});
+      await rt.client
+        .call('project.update', { projectId: project.id, archived: true })
+        .catch(() => {});
       removeFrom(qc, qk.projects, project.id);
       return { ok: false, error: projectError(err) };
     }
@@ -212,10 +242,14 @@ export async function createProject(rt: AppRuntime, input: NewProjectInput): Pro
 
 function projectError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
-  if (/must be an absolute path/.test(msg)) return '絶対パスで指定してください（例: C:\\work\\my-repo）';
-  if (/does not exist|見つかりません/.test(msg)) return 'フォルダが見つかりません。パスを確認してください';
-  if (/git リポジトリではありません/.test(msg)) return 'git リポジトリではありません。リポジトリのルートフォルダを選んでください';
-  if (/detached HEAD/.test(msg)) return 'detached HEAD のため既定ブランチを決められません。既定ブランチを入力してください';
+  if (/must be an absolute path/.test(msg))
+    return '絶対パスで指定してください（例: C:\\work\\my-repo）';
+  if (/does not exist|見つかりません/.test(msg))
+    return 'フォルダが見つかりません。パスを確認してください';
+  if (/git リポジトリではありません/.test(msg))
+    return 'git リポジトリではありません。リポジトリのルートフォルダを選んでください';
+  if (/detached HEAD/.test(msg))
+    return 'detached HEAD のため既定ブランチを決められません。既定ブランチを入力してください';
   return toastError(err, 'プロジェクトを追加できませんでした').title;
 }
 
@@ -245,14 +279,19 @@ export async function updateProject(
  * "このTaskを実行": task.spawnWorker (worktree + worker session + run). The task shows as
  * running at once; the daemon's task.updated confirms it.
  */
-export async function spawnWorker(rt: AppRuntime, task: Task): Promise<{ sessionId: string } | null> {
+export async function spawnWorker(
+  rt: AppRuntime,
+  task: Task,
+): Promise<{ sessionId: string } | null> {
   const qc = rt.queryClient;
   patchIn<Task>(qc, qk.tasks, task.id, (t) => ({ ...t, status: 'running' }));
   try {
     const res = await rt.client.call('task.spawnWorker', { taskId: task.id });
     return { sessionId: res.sessionId };
   } catch (err) {
-    patchIn<Task>(qc, qk.tasks, task.id, (t) => (t.status === 'running' ? { ...t, status: task.status } : t));
+    patchIn<Task>(qc, qk.tasks, task.id, (t) =>
+      t.status === 'running' ? { ...t, status: task.status } : t,
+    );
     if (isNotImplemented(err)) {
       rt.markUnimplemented('task.spawnWorker');
       toast({
@@ -292,7 +331,11 @@ export async function startIntegration(
 
 export async function rerunIntegration(rt: AppRuntime, integ: Integration): Promise<void> {
   const qc = rt.queryClient;
-  patchIn<Integration>(qc, qk.integrations, integ.id, (i) => ({ ...i, status: 'running', error: null }));
+  patchIn<Integration>(qc, qk.integrations, integ.id, (i) => ({
+    ...i,
+    status: 'running',
+    error: null,
+  }));
   try {
     const next = await rt.client.call('integration.run', { integrationId: integ.id });
     upsertIn(qc, qk.integrations, next);
@@ -302,7 +345,10 @@ export async function rerunIntegration(rt: AppRuntime, integ: Integration): Prom
   }
 }
 
-function patchApplyStep(steps: IntegrationStep[], patch: Partial<IntegrationStep>): IntegrationStep[] {
+function patchApplyStep(
+  steps: IntegrationStep[],
+  patch: Partial<IntegrationStep>,
+): IntegrationStep[] {
   return steps.map((s) => (s.kind === 'apply' ? { ...s, ...patch } : s));
 }
 
@@ -310,7 +356,11 @@ function patchApplyStep(steps: IntegrationStep[], patch: Partial<IntegrationStep
  * Approve = fast-forward the target branch (human only). Shown as applied immediately;
  * rolled back with the daemon's reason (e.g. the target moved on) if it refuses.
  */
-export async function approveIntegration(rt: AppRuntime, integ: Integration, note?: string): Promise<boolean> {
+export async function approveIntegration(
+  rt: AppRuntime,
+  integ: Integration,
+  note?: string,
+): Promise<boolean> {
   const qc = rt.queryClient;
   const now = new Date().toISOString();
   const optimistic: Integration = {
@@ -329,7 +379,7 @@ export async function approveIntegration(rt: AppRuntime, integ: Integration, not
       ...(note ? { note } : {}),
     });
     upsertIn(qc, qk.integrations, next);
-    toast({ title: `「${integ.targetRef ?? '反映先'}」に反映しました`, tone: 'success', sticky: false });
+    // No success toast: the review screen the human is looking at already says so (§8.5).
     return true;
   } catch (err) {
     upsertIn(qc, qk.integrations, integ);
@@ -339,7 +389,11 @@ export async function approveIntegration(rt: AppRuntime, integ: Integration, not
   }
 }
 
-export async function rejectIntegration(rt: AppRuntime, integ: Integration, note?: string): Promise<boolean> {
+export async function rejectIntegration(
+  rt: AppRuntime,
+  integ: Integration,
+  note?: string,
+): Promise<boolean> {
   const qc = rt.queryClient;
   const optimistic: Integration = {
     ...integ,

@@ -33,7 +33,11 @@ interface DemoSetupResult {
 }
 
 /** Read ids out of whatever shape the daemon's demo method returns. */
-export function parseDemoResult(raw: unknown): { sessionId: string | null; projectId: string | null; message: string | null } {
+export function parseDemoResult(raw: unknown): {
+  sessionId: string | null;
+  projectId: string | null;
+  message: string | null;
+} {
   const r = (raw && typeof raw === 'object' ? raw : {}) as DemoSetupResult;
   const str = (v: unknown) => (typeof v === 'string' && v ? v : null);
   return {
@@ -63,7 +67,9 @@ export async function startDemo(
   const setup = pickMethod(methods, DEMO_SETUP_METHODS);
   if (setup) {
     try {
-      const res = parseDemoResult(await (rt.client.call.bind(rt.client) as unknown as UntypedCall)(setup, {}));
+      const res = parseDemoResult(
+        await (rt.client.call.bind(rt.client) as unknown as UntypedCall)(setup, {}),
+      );
       sessionId = res.sessionId;
       projectId = res.projectId;
       if (res.message) message = res.message;
@@ -77,10 +83,21 @@ export async function startDemo(
   }
 
   if (!sessionId) {
-    const projects = qc.getQueryData<Project[]>(qk.projects) ?? (await rt.client.call('project.list', {}).then((r) => r.items).catch(() => []));
-    const project = projects.find((p) => p.id === ui.projectId) ?? projects.find((p) => /demo|デモ/i.test(p.name)) ?? projects[0] ?? null;
+    const projects =
+      qc.getQueryData<Project[]>(qk.projects) ??
+      (await rt.client
+        .call('project.list', {})
+        .then((r) => r.items)
+        .catch(() => []));
+    const project =
+      projects.find((p) => p.id === ui.projectId) ??
+      projects.find((p) => /demo|デモ/i.test(p.name)) ??
+      projects[0] ??
+      null;
     projectId = project?.id ?? null;
-    const models = await rt.callOr('models.list', {}, { models: [], source: 'config' }).catch(() => ({ models: [] as ModelInfo[] }));
+    const models = await rt
+      .callOr('models.list', {}, { models: [], source: 'config' })
+      .catch(() => ({ models: [] as ModelInfo[] }));
     const s = await createSession(rt, {
       kind: 'chat',
       title: DEMO_SESSION_TITLE,
@@ -92,7 +109,10 @@ export async function startDemo(
   }
 
   // Make sure the chat holds the orchestrator grant (the demo's point, concept §3.1).
-  const grants = await rt.callOr('grant.list', { sessionId }, { items: [] }).then((r) => r.items).catch(() => []);
+  const grants = await rt
+    .callOr('grant.list', { sessionId }, { items: [] })
+    .then((r) => r.items)
+    .catch(() => []);
   if (!activeGrants(grants, new Date().toISOString()).some(canOrchestrate)) {
     await grantOrchestrator(
       rt,

@@ -12,7 +12,11 @@ export interface ApprovalView {
   /** One-line impact (`worktree 内 · 読み取りと実行のみ`). */
   scope: string | null;
   risk: Risk;
+  /** The daemon's own risk rating (`payload.risk` of tool approvals), when it gave one. */
+  riskLevel: 'low' | 'medium' | 'high' | null;
 }
+
+export const RISK_LABEL = { low: '危険度 低', medium: '危険度 中', high: '危険度 高' } as const;
 
 const HIGH_RISK_COMMAND = [
   /\bgit\s+push\b/,
@@ -36,6 +40,12 @@ function payloadOf(a: Approval): ToolPayload {
 }
 
 export function describeApproval(a: Approval): ApprovalView {
+  const r = payloadOf(a).risk;
+  const riskLevel = r === 'low' || r === 'medium' || r === 'high' ? r : r === 'critical' ? 'high' : null;
+  return { ...describeBase(a), riskLevel };
+}
+
+function describeBase(a: Approval): Omit<ApprovalView, 'riskLevel'> {
   const p = payloadOf(a);
   const input = (p.input && typeof p.input === 'object' ? p.input : {}) as Record<string, unknown>;
   const toolName = typeof p.toolName === 'string' ? p.toolName : null;

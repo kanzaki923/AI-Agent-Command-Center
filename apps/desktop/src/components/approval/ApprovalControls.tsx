@@ -6,8 +6,30 @@ import { approve, reject } from '../../app/commands';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { formatClock } from '../../lib/format';
 import { matchShortcut } from '../../lib/shortcuts';
-import type { ApprovalView } from '../../model/approval';
+import { cn } from '../../lib/cn';
+import { type ApprovalView, RISK_LABEL } from '../../model/approval';
 import { Button } from '../ui/Button';
+
+/**
+ * Impact line under an approval's evidence, led by the daemon's risk rating when it gave
+ * one (`危険度 高` in the failed colour: these need Ctrl+Y).
+ */
+export function RiskNote({ view }: { view: ApprovalView }) {
+  const level = view.riskLevel && view.riskLevel !== 'low' ? view.riskLevel : view.risk === 'high' ? 'high' : null;
+  if (!view.scope && !level) return null;
+  const high = view.risk === 'high' || level === 'high';
+  const color = high ? 'var(--st-failed)' : 'var(--st-awaiting_approval)';
+  return (
+    <p className={cn('flex items-center gap-2 text-meta', high ? 'text-st-failed' : 'text-fg-3')} data-testid="risk-note">
+      {level && (
+        <span className="shrink-0 rounded-xs px-1.5 py-px text-micro" style={{ color, background: `color-mix(in oklch, ${color} 14%, transparent)` }}>
+          {RISK_LABEL[level]}
+        </span>
+      )}
+      {view.scope}
+    </p>
+  );
+}
 
 /** "承認しました · 14:03" — what remains after a decision (§3.2). */
 export function ResolvedLine({ approval }: { approval: Approval }) {

@@ -1,7 +1,8 @@
 // @vitest-environment node
 import type { Artifact, CapabilityGrant, Integration, IntegrationStep } from '@acc/protocol';
 import { describe, expect, it } from 'vitest';
-import { T0, id, integration, iso, message, run, session, task } from '../test/fixtures';
+import { T0, approval, id, integration, iso, message, run, session, task } from '../test/fixtures';
+import { describeApproval } from './approval';
 import { buildBoard, stabilizeItems } from './board';
 import {
   DEFAULT_GRANT_INPUT,
@@ -14,7 +15,15 @@ import {
   presetOf,
 } from './grant';
 import { applyPlan, canApprove, canReject, integrationSummary } from './integration';
-import { buildTaskGroups, canSpawn, flattenTasks, goalFromMessages, integrableTasks, taskState } from './tasks';
+import {
+  buildTaskGroups,
+  canSpawn,
+  flattenTasks,
+  goalFromMessages,
+  integrableTasks,
+  taskState,
+  workerLabel,
+} from './tasks';
 
 function grant(over: Partial<CapabilityGrant> = {}): CapabilityGrant {
   return {
@@ -68,7 +77,14 @@ describe('orchestrator grant presets', () => {
 
   it('expires session grants and lets the plan preset start no workers', () => {
     const p = grantParams(
-      { ...DEFAULT_GRANT_INPUT, preset: 'plan', lifetime: 'session', expiresInMs: 3600_000, sessionId: 's', projectId: null },
+      {
+        ...DEFAULT_GRANT_INPUT,
+        preset: 'plan',
+        lifetime: 'session',
+        expiresInMs: 3600_000,
+        sessionId: 's',
+        projectId: null,
+      },
       T0,
     );
     expect(p.expiresAt).toBe(iso(T0 + 3600_000));
@@ -92,11 +108,15 @@ describe('orchestrator grant presets', () => {
   });
 
   it('names custom grants by what they allow', () => {
-    expect(describeGrant(grant({ permissions: ['task.*', 'session.*'] })).title).toBe('Orchestrator');
+    expect(describeGrant(grant({ permissions: ['task.*', 'session.*'] })).title).toBe(
+      'Orchestrator',
+    );
     expect(describeGrant(grant({ permissions: ['task.create'] })).title).toBe('計画のみ');
     expect(describeGrant(grant({ permissions: ['session.get'] })).title).toBe('カスタム権限');
     expect(describeGrant(grant({ permissions: ['*'] })).title).toBe('すべての操作');
-    expect(describeGrant(grant({ parentGrantId: 'grt_parent', permissions: ['task.get'] })).title).toBe('委譲された権限');
+    expect(
+      describeGrant(grant({ parentGrantId: 'grt_parent', permissions: ['task.get'] })).title,
+    ).toBe('委譲された権限');
   });
 
   it('filters revoked and expired grants', () => {
@@ -116,18 +136,48 @@ describe('task tree', () => {
   const byOrch = { kind: 'agent' as const, sessionId: orch.id, runId: r0.id };
 
   it('groups tasks under the orchestrator that created them, with workers, branches and diffs', () => {
-    const a = task({ title: 'A', status: 'review', createdBy: byOrch, workspaceId: 'wsp_a', createdAt: iso(T0) });
-    const b = task({ title: 'B', status: 'running', createdBy: byOrch, projectId: a.projectId, createdAt: iso(T0 + 1) });
-    const c = task({ title: 'C', status: 'pending', createdBy: byOrch, projectId: a.projectId, dependsOn: [a.id], createdAt: iso(T0 + 2) });
+    const a = task({
+      title: 'A',
+      status: 'review',
+      createdBy: byOrch,
+      workspaceId: 'wsp_a',
+      createdAt: iso(T0),
+    });
+    const b = task({
+      title: 'B',
+      status: 'running',
+      createdBy: byOrch,
+      projectId: a.projectId,
+      createdAt: iso(T0 + 1),
+    });
+    const c = task({
+      title: 'C',
+      status: 'pending',
+      createdBy: byOrch,
+      projectId: a.projectId,
+      dependsOn: [a.id],
+      createdAt: iso(T0 + 2),
+    });
     const mine = task({ title: 'mine', status: 'done', projectId: a.projectId });
-    const worker = session({ kind: 'agent', title: 'Worker B', taskId: b.id, parentSessionId: orch.id });
+    const worker = session({
+      kind: 'agent',
+      title: 'Worker: B',
+      taskId: b.id,
+      parentSessionId: orch.id,
+    });
     const wr = run(worker, { status: 'awaiting_approval' });
     const diff = {
       id: id('art'),
       kind: 'diff',
       taskId: a.id,
       workspaceId: 'wsp_a',
-      data: { patch: '', baseRef: null, headRef: null, stats: { files: 2, additions: 10, deletions: 1 }, files: [] },
+      data: {
+        patch: '',
+        baseRef: null,
+        headRef: null,
+        stats: { files: 2, additions: 10, deletions: 1 },
+        files: [],
+      },
     } as unknown as Artifact;
     const groups = buildTaskGroups({
       tasks: [a, b, c, mine],
@@ -144,6 +194,7 @@ describe('task tree', () => {
     expect(g.counts).toMatchObject({ total: 3, running: 1, review: 1 });
     const [nb, na, nc] = g.roots;
     expect(nb!.worker?.id).toBe(worker.id);
+    expect(workerLabel(nb!)).toBe('B');
     expect(nb!.workerRun?.status).toBe('awaiting_approval');
     expect(na!.workspace?.branch).toBe('acc/docs-1234');
     expect(na!.diff).toEqual({ files: 2, additions: 10, deletions: 1 });
@@ -154,15 +205,35 @@ describe('task tree', () => {
 
   it('nests subtasks and uses a single parent as the goal', () => {
     const parent = task({ title: '認証の整備', createdBy: byOrch });
-    const child = task({ title: 'テスト', parentTaskId: parent.id, projectId: parent.projectId, createdBy: byOrch });
-    const groups = buildTaskGroups({ tasks: [parent, child], sessions: [orch], runs: [], workspaces: [], diffs: [] });
+    const child = task({
+      title: 'テスト',
+      parentTaskId: parent.id,
+      projectId: parent.projectId,
+      createdBy: byOrch,
+    });
+    const groups = buildTaskGroups({
+      tasks: [parent, child],
+      sessions: [orch],
+      runs: [],
+      workspaces: [],
+      diffs: [],
+    });
     expect(groups[0]!.goal).toBe('認証の整備');
     expect(flattenTasks(groups).map((n) => n.task.title)).toEqual(['認証の整備', 'テスト']);
   });
 
   it('filters by project and maps statuses', () => {
     const t = task({ projectId: 'prj_other' });
-    expect(buildTaskGroups({ tasks: [t], sessions: [], runs: [], workspaces: [], diffs: [], projectId: 'prj_mine' })).toEqual([]);
+    expect(
+      buildTaskGroups({
+        tasks: [t],
+        sessions: [],
+        runs: [],
+        workspaces: [],
+        diffs: [],
+        projectId: 'prj_mine',
+      }),
+    ).toEqual([]);
     expect(taskState('blocked')).toBe('queued');
     expect(taskState('review')).toBe('review');
     expect(canSpawn(task({ status: 'ready' }))).toBe(true);
@@ -208,7 +279,10 @@ describe('integration review', () => {
   });
 
   it('warns when tests did not pass or were skipped', () => {
-    const skipped: Integration = { ...base, steps: base.steps.map((s) => (s.kind === 'verify' ? { ...s, status: 'skipped' } : s)) };
+    const skipped: Integration = {
+      ...base,
+      steps: base.steps.map((s) => (s.kind === 'verify' ? { ...s, status: 'skipped' } : s)),
+    };
     expect(applyPlan(skipped).caution).toContain('テスト');
     expect(integrationSummary(base)).toBe('2/3 ステップ · テスト成功');
   });
@@ -219,7 +293,10 @@ describe('integration review', () => {
     expect(canReject({ ...base, status: 'running' })).toBe(false);
     expect(canReject({ ...base, status: 'conflict' })).toBe(true);
     expect(canReject({ ...base, status: 'applied' })).toBe(false);
-    const conflict = { ...base, steps: [step({ status: 'failed', conflictFiles: ['a.ts', 'b.ts'], title: '「A」をマージ' })] };
+    const conflict = {
+      ...base,
+      steps: [step({ status: 'failed', conflictFiles: ['a.ts', 'b.ts'], title: '「A」をマージ' })],
+    };
     expect(integrationSummary(conflict)).toBe('コンフリクト 2 ファイル · 「A」をマージ');
   });
 });
@@ -237,7 +314,10 @@ describe('board', () => {
     const prev = new Map(first.map((i) => [i.id, i]));
     // One run reports usage: only its row changes.
     const changed = { ...runs[3]!, usage: { ...runs[3]!.usage, costUsd: 1 } };
-    const next = stabilizeItems(prev, buildBoard({ ...input, runs: runs.map((r) => (r.id === changed.id ? changed : r)) }));
+    const next = stabilizeItems(
+      prev,
+      buildBoard({ ...input, runs: runs.map((r) => (r.id === changed.id ? changed : r)) }),
+    );
     const same = next.filter((i) => prev.get(i.id) === i);
     expect(same).toHaveLength(9);
     expect(next.find((i) => i.run?.id === changed.id)).not.toBe(prev.get(sessions[3]!.id));
@@ -248,10 +328,43 @@ describe('board', () => {
     const s = session({ taskId: t.id });
     const r = run(s, { status: 'completed', endedAt: iso(T0 + 5) });
     const i = integration({ status: 'awaiting_approval', taskIds: [t.id], projectId: t.projectId });
-    const without = buildBoard({ sessions: [s], runs: [r], approvals: [], tasks: [t], integrations: [] });
+    const without = buildBoard({
+      sessions: [s],
+      runs: [r],
+      approvals: [],
+      tasks: [t],
+      integrations: [],
+    });
     expect(without.find((x) => x.id === s.id)?.state).toBe('review');
-    const withInteg = buildBoard({ sessions: [s], runs: [r], approvals: [], tasks: [t], integrations: [i] });
+    const withInteg = buildBoard({
+      sessions: [s],
+      runs: [r],
+      approvals: [],
+      tasks: [t],
+      integrations: [i],
+    });
     expect(withInteg.find((x) => x.id === s.id)?.state).toBe('completed');
     expect(withInteg.filter((x) => x.zone === 'attention').map((x) => x.id)).toEqual([i.id]);
+  });
+});
+
+describe('approval risk (payload.risk from the daemon)', () => {
+  const r = run(session());
+  it('shows the daemon rating and requires Ctrl+Y only for high', () => {
+    const medium = describeApproval(
+      approval(r, {
+        payload: { toolName: 'Bash', input: { command: 'pnpm test' }, risk: 'medium' },
+      }),
+    );
+    expect(medium).toMatchObject({ riskLevel: 'medium', risk: 'normal', target: 'pnpm test' });
+    const high = describeApproval(
+      approval(r, { payload: { toolName: 'Bash', input: { command: 'pnpm test' }, risk: 'high' } }),
+    );
+    expect(high).toMatchObject({ riskLevel: 'high', risk: 'high' });
+    // Without a rating the client heuristics still catch obvious danger.
+    const push = describeApproval(
+      approval(r, { payload: { toolName: 'Bash', input: { command: 'git push origin main' } } }),
+    );
+    expect(push).toMatchObject({ riskLevel: null, risk: 'high' });
   });
 });

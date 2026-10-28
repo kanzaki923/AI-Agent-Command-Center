@@ -13,7 +13,7 @@ import { headLines } from '../../lib/tools';
 import { describeApproval } from '../../model/approval';
 import { type BoardItem, elapsedRange } from '../../model/board';
 import { useUi } from '../../store/ui';
-import { ResolvedLine, useApprovalControls } from '../approval/ApprovalControls';
+import { ResolvedLine, RiskNote, useApprovalControls } from '../approval/ApprovalControls';
 import { Button } from '../ui/Button';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu';
 import { Cost, ElapsedTime, Monogram } from '../ui/Meta';
@@ -295,9 +295,7 @@ export const AttentionCard = memo(function AttentionCard({ item, selected, onSel
       <div className="flex flex-col gap-2 pl-[26px]">
         <p className="text-ui text-fg-2">{ask}</p>
         {evidence}
-        {view?.scope && item.state === 'awaiting_approval' && !recentDecision && (
-          <p className={cn('text-meta', view.risk === 'high' ? 'text-st-failed' : 'text-fg-3')}>{view.scope}</p>
-        )}
+        {view && item.state === 'awaiting_approval' && !recentDecision && <RiskNote view={view} />}
         <div className="flex flex-wrap items-center gap-2">
           {actions}
           {item.session && (

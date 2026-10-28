@@ -1,4 +1,10 @@
-import type { DiffStats, Integration, IntegrationStatus, IntegrationStep, Task } from '@acc/protocol';
+import type {
+  DiffStats,
+  Integration,
+  IntegrationStatus,
+  IntegrationStep,
+  Task,
+} from '@acc/protocol';
 import type { DisplayState } from '../lib/status';
 
 /**
@@ -89,14 +95,23 @@ export interface ApplyPlan {
 const short = (sha: string | null) => (sha ? sha.slice(0, 7) : null);
 
 /** The confirmation for 承認して反映: target branch, fast-forward, what is included. */
-export function applyPlan(i: Integration, opts: { tasks?: Task[]; stats?: DiffStats | null } = {}): ApplyPlan {
+export function applyPlan(
+  i: Integration,
+  opts: { tasks?: Task[]; stats?: DiffStats | null } = {},
+): ApplyPlan {
   const target = i.targetRef ?? '反映先ブランチ';
   const verify = i.steps.find((s) => s.kind === 'verify');
   const n = i.taskIds.length || i.workspaceIds.length;
-  const titles = (opts.tasks ?? []).filter((t) => i.taskIds.includes(t.id)).map((t) => `「${t.title}」`);
+  const titles = (opts.tasks ?? [])
+    .filter((t) => i.taskIds.includes(t.id))
+    .map((t) => `「${t.title}」`);
   const what =
-    titles.length > 0 && titles.length <= 3 ? `${titles.join('、')}の変更` : `${n} 件の Task の変更`;
-  const size = opts.stats ? `（${opts.stats.files} ファイル、+${opts.stats.additions} −${opts.stats.deletions}）` : '';
+    titles.length > 0 && titles.length <= 3
+      ? `${titles.join('、')}の変更`
+      : `${n} 件の Task の変更`;
+  const size = opts.stats
+    ? `（${opts.stats.files} ファイル、+${opts.stats.additions} −${opts.stats.deletions}）`
+    : '';
   const from = short(i.baseSha);
   const to = short(i.headSha);
   const lines = [
@@ -105,7 +120,8 @@ export function applyPlan(i: Integration, opts: { tasks?: Task[]; stats?: DiffSt
     '各 Task の worktree とブランチはそのまま残ります。',
   ];
   let caution: string | null = null;
-  if (verify?.status === 'skipped') caution = 'テストコマンドが設定されていないため、統合後のテストは実行していません。';
+  if (verify?.status === 'skipped')
+    caution = 'テストコマンドが設定されていないため、統合後のテストは実行していません。';
   else if (verify && verify.status !== 'succeeded') caution = '統合後のテストが成功していません。';
   return { title: `${target} に変更を反映しますか？`, lines, confirmLabel: '反映する', caution };
 }

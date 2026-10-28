@@ -28,9 +28,18 @@ function mount(s: Session, extra: Parameters<typeof createFakeClient>[0] = {}) {
   const fake = createFakeClient({
     'session.list': () => ({ items: [s], nextCursor: null }),
     'project.list': () => ({ items: [project] }),
-    'settings.get': () => ({ litellm: { baseUrl: null, hasApiKey: false, apiKeyMasked: null }, defaultModel: null, defaultRuntime: null, maxConcurrentRuns: 10, maxDelegationDepth: 1 }),
+    'settings.get': () => ({
+      litellm: { baseUrl: null, hasApiKey: false, apiKeyMasked: null },
+      defaultModel: null,
+      defaultRuntime: null,
+      maxConcurrentRuns: 10,
+      maxDelegationDepth: 1,
+    }),
     'models.list': () => ({ models: [], source: 'mock' }),
-    'system.info': () => ({ methods: ['grant.create', 'budget.allocate'], stats: { lastEventSeq: 0 } }),
+    'system.info': () => ({
+      methods: ['grant.create', 'budget.allocate'],
+      stats: { lastEventSeq: 0 },
+    }),
     'grant.list': () => ({ items: [] }),
     'events.list': () => ({ events: [], lastSeq: 0, hasMore: false }),
     'grant.create': (p) => {
@@ -51,7 +60,20 @@ function mount(s: Session, extra: Parameters<typeof createFakeClient>[0] = {}) {
         createdAt: iso(T0 + 1000),
       };
     },
-    'budget.allocate': (p) => ({ id: 'bud_1', parentId: null, subject: p.subject, status: 'active', limitUsd: p.limitUsd, allocatedUsd: 0, reservedUsd: 0, spentUsd: 0, createdAt: iso(T0), updatedAt: iso(T0), releasedAt: null, createdBy: { kind: 'human', client: 'desktop' } }),
+    'budget.allocate': (p) => ({
+      id: 'bud_1',
+      parentId: null,
+      subject: p.subject,
+      status: 'active',
+      limitUsd: p.limitUsd,
+      allocatedUsd: 0,
+      reservedUsd: 0,
+      spentUsd: 0,
+      createdAt: iso(T0),
+      updatedAt: iso(T0),
+      releasedAt: null,
+      createdBy: { kind: 'human', client: 'desktop' },
+    }),
     'grant.revoke': () => ({}),
     ...extra,
   });
@@ -76,10 +98,12 @@ describe('Orchestrator grant (権限を与えるだけで Orchestrator になる
     const s = session({ kind: 'chat', title: '設計チャット', projectId: project.id });
     const { granted } = mount(s);
     fireEvent.click(await screen.findByRole('button', { name: /Orchestrator 権限: なし/ }));
-    const dialog = await screen.findByRole('dialog', { name: 'このチャットを Orchestrator にする' });
+    const dialog = await screen.findByRole('dialog', {
+      name: 'このチャットを Orchestrator にする',
+    });
     // The sentence says exactly what will be allowed.
     expect(within(dialog).getByTestId('grant-sentence')).toHaveTextContent(
-      'このチャットは「acme-web」でTask を分け、Worker を 2 人まで並列に起動できます。Worker に配れる予算は $5.00 です。次の実行が終わると自動で失効します。',
+      'このチャットは「acme-web」で Task を分け、Worker を 2 人まで並列に起動できます。Worker に配れる予算は $5.00 です。次の実行が終わると自動で失効します。',
     );
     fireEvent.click(within(dialog).getByRole('button', { name: '増やす' }));
     fireEvent.click(within(dialog).getByRole('radio', { name: 'このセッション' }));
@@ -140,7 +164,10 @@ describe('Orchestrator grant (権限を与えるだけで Orchestrator になる
     await act(async () => {
       fireEvent.click(await screen.findByTestId('suggestion-chip'));
     });
-    expect(sent).toEqual({ sessionId: s.id, content: '認証まわりのドキュメントとテストを並列で整備して' });
+    expect(sent).toEqual({
+      sessionId: s.id,
+      content: '認証まわりのドキュメントとテストを並列で整備して',
+    });
     expect(useUi.getState().suggestions[s.id]).toBeUndefined();
     expect(screen.queryByTestId('suggestion-chip')).not.toBeInTheDocument();
   });

@@ -47,7 +47,13 @@ const grantFrom = (p: Record<string, unknown>): CapabilityGrant => ({
 
 beforeEach(() => {
   useToasts.setState({ toasts: [] });
-  useUi.setState({ suggestions: {}, onboardingDone: false, projectId: null, focusSessionId: null, mode: 'command' });
+  useUi.setState({
+    suggestions: {},
+    onboardingDone: false,
+    projectId: null,
+    focusSessionId: null,
+    mode: 'command',
+  });
 });
 
 describe('grantOrchestrator', () => {
@@ -61,12 +67,28 @@ describe('grantOrchestrator', () => {
       },
       'budget.allocate': (p) => {
         calls.push('budget.allocate');
-        expect(p).toMatchObject({ parentId: null, subject: { kind: 'session', id: 'ses_1' }, limitUsd: 5 });
-        return { id: 'bud_1', status: 'active', limitUsd: 5, allocatedUsd: 0, reservedUsd: 0, spentUsd: 0, createdAt: iso(T0) };
+        expect(p).toMatchObject({
+          parentId: null,
+          subject: { kind: 'session', id: 'ses_1' },
+          limitUsd: 5,
+        });
+        return {
+          id: 'bud_1',
+          status: 'active',
+          limitUsd: 5,
+          allocatedUsd: 0,
+          reservedUsd: 0,
+          spentUsd: 0,
+          createdAt: iso(T0),
+        };
       },
     });
     const rt = createRuntime(fake.client);
-    const p = grantOrchestrator(rt, { ...DEFAULT_GRANT_INPUT, sessionId: 'ses_1', projectId: 'prj_1' });
+    const p = grantOrchestrator(rt, {
+      ...DEFAULT_GRANT_INPUT,
+      sessionId: 'ses_1',
+      projectId: 'prj_1',
+    });
     // Optimistic: visible before the daemon answers.
     const before = rt.queryClient.getQueryData<CapabilityGrant[]>(qk.grants('ses_1'))!;
     expect(before).toHaveLength(1);
@@ -74,7 +96,9 @@ describe('grantOrchestrator', () => {
     gate.resolve(undefined as never);
     const real = await p;
     expect(real?.id).toBe('grt_00000000000000000000000001');
-    expect(rt.queryClient.getQueryData<CapabilityGrant[]>(qk.grants('ses_1'))!.map((g) => g.id)).toEqual([real!.id]);
+    expect(
+      rt.queryClient.getQueryData<CapabilityGrant[]>(qk.grants('ses_1'))!.map((g) => g.id),
+    ).toEqual([real!.id]);
     expect(calls).toEqual(['grant.create', 'budget.allocate']);
     rt.dispose();
   });
@@ -86,7 +110,9 @@ describe('grantOrchestrator', () => {
       },
     });
     const rt = createRuntime(fake.client);
-    expect(await grantOrchestrator(rt, { ...DEFAULT_GRANT_INPUT, sessionId: 'ses_1', projectId: null })).toBeNull();
+    expect(
+      await grantOrchestrator(rt, { ...DEFAULT_GRANT_INPUT, sessionId: 'ses_1', projectId: null }),
+    ).toBeNull();
     expect(rt.queryClient.getQueryData<CapabilityGrant[]>(qk.grants('ses_1'))).toEqual([]);
     expect(useToasts.getState().toasts[0]?.title).toContain('権限を付与できませんでした');
     rt.dispose();
@@ -94,16 +120,23 @@ describe('grantOrchestrator', () => {
 
   it('uses a daemon convenience method when system.info lists one', async () => {
     const fake = createFakeClient({
-      'grant.orchestrator': (p) => ({ grant: grantFrom({ ...p, subject: { kind: 'session', sessionId: p.sessionId }, permissions: ['task.*'] }) }),
+      'session.grantOrchestration': (p) => ({
+        budget: null,
+        grant: grantFrom({
+          ...p,
+          subject: { kind: 'session', sessionId: p.sessionId },
+          permissions: ['task.*'],
+        }),
+      }),
     });
     const rt = createRuntime(fake.client);
     const g = await grantOrchestrator(
       rt,
       { ...DEFAULT_GRANT_INPUT, sessionId: 'ses_2', projectId: 'prj_1' },
-      new Set(['grant.orchestrator']),
+      new Set(['session.grantOrchestration']),
     );
     expect(g?.subject).toEqual({ kind: 'session', sessionId: 'ses_2' });
-    expect(fake.calls.map((c) => c.method)).toEqual(['grant.orchestrator']);
+    expect(fake.calls.map((c) => c.method)).toEqual(['session.grantOrchestration']);
     expect(pickMethod(null, ['x'])).toBeNull();
     rt.dispose();
   });
@@ -115,12 +148,19 @@ describe('grantOrchestrator', () => {
       },
     });
     const rt = createRuntime(fake.client);
-    const g = grantFrom({ subject: { kind: 'session', sessionId: 'ses_1' }, permissions: ['task.*'] });
+    const g = grantFrom({
+      subject: { kind: 'session', sessionId: 'ses_1' },
+      permissions: ['task.*'],
+    });
     rt.queryClient.setQueryData(qk.grants('ses_1'), [g]);
     const p = revokeGrant(rt, 'ses_1', g);
-    expect(rt.queryClient.getQueryData<CapabilityGrant[]>(qk.grants('ses_1'))![0]!.revokedAt).not.toBeNull();
+    expect(
+      rt.queryClient.getQueryData<CapabilityGrant[]>(qk.grants('ses_1'))![0]!.revokedAt,
+    ).not.toBeNull();
     expect(await p).toBe(false);
-    expect(rt.queryClient.getQueryData<CapabilityGrant[]>(qk.grants('ses_1'))![0]!.revokedAt).toBeNull();
+    expect(
+      rt.queryClient.getQueryData<CapabilityGrant[]>(qk.grants('ses_1'))![0]!.revokedAt,
+    ).toBeNull();
     rt.dispose();
   });
 });
@@ -153,7 +193,11 @@ describe('createProject', () => {
     const rt = createRuntime(fake.client);
     rt.queryClient.setQueryData(qk.projects, []);
     const r = await createProject(rt, { repoPath: 'C:\\work\\repo', name: 'repo' });
-    expect(r).toMatchObject({ ok: true, detectedBranch: 'develop', project: { defaultBranch: 'develop' } });
+    expect(r).toMatchObject({
+      ok: true,
+      detectedBranch: 'develop',
+      project: { defaultBranch: 'develop' },
+    });
     expect(rt.queryClient.getQueryData<Project[]>(qk.projects)).toHaveLength(1);
     rt.dispose();
   });
@@ -172,7 +216,10 @@ describe('createProject', () => {
     });
     const rt = createRuntime(fake.client);
     const r = await createProject(rt, { repoPath: 'C:\\x', name: 'x' });
-    expect(r).toEqual({ ok: false, error: 'git リポジトリではありません。リポジトリのルートフォルダを選んでください' });
+    expect(r).toEqual({
+      ok: false,
+      error: 'git リポジトリではありません。リポジトリのルートフォルダを選んでください',
+    });
     expect(updates).toEqual([{ projectId: 'prj_00000000000000000000000001', archived: true }]);
     rt.dispose();
   });
@@ -208,7 +255,9 @@ describe('spawnWorker', () => {
   });
 
   it('returns the worker session', async () => {
-    const fake = createFakeClient({ 'task.spawnWorker': () => ({ sessionId: 'ses_w', runId: 'run_w', workspaceId: 'wsp_w' }) });
+    const fake = createFakeClient({
+      'task.spawnWorker': () => ({ sessionId: 'ses_w', runId: 'run_w', workspaceId: 'wsp_w' }),
+    });
     const rt = createRuntime(fake.client);
     expect(await spawnWorker(rt, task({ status: 'ready' }))).toEqual({ sessionId: 'ses_w' });
     rt.dispose();
@@ -221,7 +270,20 @@ describe('integration decisions', () => {
       status: 'awaiting_approval',
       targetRef: 'main',
       steps: [
-        { index: 0, kind: 'apply', status: 'pending', title: '「main」へ反映（要承認）', taskId: null, artifactId: null, detail: null, startedAt: null, endedAt: null, workspaceId: null, branch: null, conflictFiles: [] },
+        {
+          index: 0,
+          kind: 'apply',
+          status: 'pending',
+          title: '「main」へ反映（要承認）',
+          taskId: null,
+          artifactId: null,
+          detail: null,
+          startedAt: null,
+          endedAt: null,
+          workspaceId: null,
+          branch: null,
+          conflictFiles: [],
+        },
       ],
     });
 
@@ -235,11 +297,21 @@ describe('integration decisions', () => {
     const now = rt.queryClient.getQueryData<Integration[]>(qk.integrations)![0]!;
     expect(now.status).toBe('applied');
     expect(now.steps[0]!.status).toBe('succeeded');
-    gate.reject(new AccClientError('conflict', '反映先ブランチ「main」が統合の開始後に進んでいるため、早送りで反映できません'));
+    gate.reject(
+      new AccClientError(
+        'conflict',
+        '反映先ブランチ「main」が統合の開始後に進んでいるため、早送りで反映できません',
+      ),
+    );
     expect(await p).toBe(false);
-    expect(rt.queryClient.getQueryData<Integration[]>(qk.integrations)![0]!.status).toBe('awaiting_approval');
+    expect(rt.queryClient.getQueryData<Integration[]>(qk.integrations)![0]!.status).toBe(
+      'awaiting_approval',
+    );
     expect(useToasts.getState().toasts[0]?.title).toContain('反映できませんでした');
-    expect(fake.calls[0]).toEqual({ method: 'integration.approve', params: { integrationId: i.id, note: 'LGTM' } });
+    expect(fake.calls[0]).toEqual({
+      method: 'integration.approve',
+      params: { integrationId: i.id, note: 'LGTM' },
+    });
     rt.dispose();
   });
 
@@ -249,7 +321,9 @@ describe('integration decisions', () => {
     const rt = createRuntime(fake.client);
     rt.queryClient.setQueryData<Integration[]>(qk.integrations, [i]);
     expect(await rejectIntegration(rt, i, 'テストが足りない')).toBe(true);
-    expect(rt.queryClient.getQueryData<Integration[]>(qk.integrations)![0]!.status).toBe('rejected');
+    expect(rt.queryClient.getQueryData<Integration[]>(qk.integrations)![0]!.status).toBe(
+      'rejected',
+    );
     expect(fake.calls[0]!.params).toEqual({ integrationId: i.id, note: 'テストが足りない' });
     rt.dispose();
   });
@@ -257,10 +331,22 @@ describe('integration decisions', () => {
 
 describe('demo', () => {
   it('reads ids from any demo setup result shape', () => {
-    expect(parseDemoResult({ session: { id: 'ses_1' }, project: { id: 'prj_1' } })).toEqual({ sessionId: 'ses_1', projectId: 'prj_1', message: null });
-    expect(parseDemoResult({ sessionId: 'ses_2', suggestedMessage: 'やって' })).toMatchObject({ sessionId: 'ses_2', message: 'やって' });
+    expect(parseDemoResult({ session: { id: 'ses_1' }, project: { id: 'prj_1' } })).toEqual({
+      sessionId: 'ses_1',
+      projectId: 'prj_1',
+      message: null,
+    });
+    expect(parseDemoResult({ sessionId: 'ses_2', suggestedMessage: 'やって' })).toMatchObject({
+      sessionId: 'ses_2',
+      message: 'やって',
+    });
     expect(parseDemoResult(null)).toEqual({ sessionId: null, projectId: null, message: null });
-    expect(pickDemoModel([{ id: 'mock/echo', label: null, provider: null }, { id: 'mock/orchestrator', label: null, provider: null }])).toBe('mock/orchestrator');
+    expect(
+      pickDemoModel([
+        { id: 'mock/echo', label: null, provider: null },
+        { id: 'mock/orchestrator', label: null, provider: null },
+      ]),
+    ).toBe('mock/orchestrator');
     expect(pickDemoModel([{ id: 'gpt-x', label: null, provider: null }])).toBeNull();
   });
 
@@ -268,7 +354,10 @@ describe('demo', () => {
     const created: Session[] = [];
     const fake = createFakeClient({
       'project.list': () => ({ items: [] }),
-      'models.list': () => ({ models: [{ id: 'mock/echo', label: null, provider: null }], source: 'mock' }),
+      'models.list': () => ({
+        models: [{ id: 'mock/echo', label: null, provider: null }],
+        source: 'mock',
+      }),
       'session.create': (p) => {
         const s = session({ kind: 'chat', title: p.title as string, model: p.model as string });
         created.push(s);
@@ -276,7 +365,15 @@ describe('demo', () => {
       },
       'grant.list': () => ({ items: [] }),
       'grant.create': (p) => grantFrom(p),
-      'budget.allocate': () => ({ id: 'bud_1', status: 'active', limitUsd: 5, allocatedUsd: 0, reservedUsd: 0, spentUsd: 0, createdAt: iso(T0) }),
+      'budget.allocate': () => ({
+        id: 'bud_1',
+        status: 'active',
+        limitUsd: 5,
+        allocatedUsd: 0,
+        reservedUsd: 0,
+        spentUsd: 0,
+        createdAt: iso(T0),
+      }),
     });
     const rt = createRuntime(fake.client);
     rt.queryClient.setQueryData<Session[]>(qk.sessions, []);
@@ -289,7 +386,11 @@ describe('demo', () => {
     expect(ui.onboardingDone).toBe(true);
     expect(ui.suggestions[s.id]).toBe(DEMO_MESSAGE);
     const grantCall = fake.calls.find((c) => c.method === 'grant.create')!;
-    expect(grantCall.params).toMatchObject({ subject: { kind: 'session', sessionId: s.id }, lifetime: 'session', limits: { maxWorkers: 2 } });
+    expect(grantCall.params).toMatchObject({
+      subject: { kind: 'session', sessionId: s.id },
+      lifetime: 'session',
+      limits: { maxWorkers: 2 },
+    });
     rt.dispose();
   });
 
@@ -298,7 +399,14 @@ describe('demo', () => {
       'system.setupDemo': () => ({ sessionId: 'ses_demo', projectId: 'prj_demo' }),
       'session.list': () => ({ items: [session({ id: 'ses_demo' })], nextCursor: null }),
       'project.list': () => ({ items: [] }),
-      'grant.list': () => ({ items: [grantFrom({ subject: { kind: 'session', sessionId: 'ses_demo' }, permissions: ['task.*'] })] }),
+      'grant.list': () => ({
+        items: [
+          grantFrom({
+            subject: { kind: 'session', sessionId: 'ses_demo' },
+            permissions: ['task.*'],
+          }),
+        ],
+      }),
     });
     const rt = createRuntime(fake.client);
     await startDemo(rt, new Set(['system.setupDemo']));

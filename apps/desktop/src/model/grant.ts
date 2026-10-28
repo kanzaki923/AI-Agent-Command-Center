@@ -1,4 +1,9 @@
-import { type CapabilityGrant, type ParamsInput, type Project, matchAnyPattern } from '@acc/protocol';
+import {
+  type CapabilityGrant,
+  type ParamsInput,
+  type Project,
+  matchAnyPattern,
+} from '@acc/protocol';
 import { formatClock } from '../lib/format';
 
 /**
@@ -117,13 +122,18 @@ export const DEFAULT_GRANT_INPUT: Omit<OrchestratorGrantInput, 'sessionId' | 'pr
 export const MAX_WORKERS_LIMIT = 8;
 
 /** grant.create params for the dialog's choices. Workers can never delegate further (depth 1). */
-export function grantParams(input: OrchestratorGrantInput, now: number): ParamsInput<'grant.create'> {
+export function grantParams(
+  input: OrchestratorGrantInput,
+  now: number,
+): ParamsInput<'grant.create'> {
   const preset = GRANT_PRESETS[input.preset];
   return {
     subject: { kind: 'session', sessionId: input.sessionId },
     permissions: preset.permissions,
     scope: input.projectId ? { projectIds: [input.projectId] } : {},
-    limits: preset.spawns ? { maxWorkers: input.maxWorkers, maxDepth: 1 } : { maxWorkers: 0, maxDepth: 0 },
+    limits: preset.spawns
+      ? { maxWorkers: input.maxWorkers, maxDepth: 1 }
+      : { maxWorkers: 0, maxDepth: 0 },
     lifetime: input.lifetime,
     ...(input.lifetime === 'session' && input.expiresInMs
       ? { expiresAt: new Date(now + input.expiresInMs).toISOString() }
@@ -136,7 +146,10 @@ export function isGrantActive(g: CapabilityGrant, nowIso: string): boolean {
   return !g.revokedAt && (!g.expiresAt || g.expiresAt > nowIso);
 }
 
-export function activeGrants(grants: readonly CapabilityGrant[], nowIso: string): CapabilityGrant[] {
+export function activeGrants(
+  grants: readonly CapabilityGrant[],
+  nowIso: string,
+): CapabilityGrant[] {
   return grants.filter((g) => isGrantActive(g, nowIso));
 }
 
@@ -151,7 +164,10 @@ export function presetOf(g: CapabilityGrant): GrantPresetId | null {
 
 /** Whether a grant lets its holder act as an orchestrator (create tasks or start workers). */
 export function canOrchestrate(g: CapabilityGrant): boolean {
-  return matchAnyPattern(g.permissions, 'task.create') || matchAnyPattern(g.permissions, 'task.spawnWorker');
+  return (
+    matchAnyPattern(g.permissions, 'task.create') ||
+    matchAnyPattern(g.permissions, 'task.spawnWorker')
+  );
 }
 
 const CAPABILITY_LINES: { method: string; label: string }[] = [
