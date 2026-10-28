@@ -184,6 +184,8 @@ export const Task = z.object({
   description: z.string(),
   acceptanceCriteria: z.array(z.string()),
   status: TaskStatus,
+  /** Why the task is in its status, e.g. "dependency_failed" for an auto-blocked task. */
+  statusReason: z.string().nullable().default(null),
   priority: TaskPriority,
   dependsOn: z.array(TaskId),
   assigneeSessionId: SessionId.nullable(),
