@@ -152,6 +152,7 @@ async function route(
         // The daily limit (spec R10): +$10 for today only. The item closes once today has
         // room (cost module); resolving it here as well is harmless.
         await ctx.call(actor, 'cost.raiseDaily', { addUsd: DAILY_RAISE.addUsd });
+        await continueAfterDailyRaise(ctx, actor);
         return;
       }
       if (id === DAILY_SETTINGS) {
@@ -165,6 +166,7 @@ async function route(
       if (!add) break;
       if (!refs.budgetId) throw conflict('この出番には増やせる予算がありません');
       await ctx.call(actor, 'budget.raise', { budgetId: refs.budgetId, addUsd: Number(add[1]) });
+      await continueAfterRaise(ctx, sessionId, refs.budgetId, actor);
       return;
     }
     case 'stuck': {
@@ -179,6 +181,49 @@ async function route(
       break;
   }
   throw invalidParams(`選択肢「${id}」の扱いが決まっていません`);
+}
+
+/**
+ * "+$N" means "go on": when the session's latest run is the one this budget stopped, retry it
+ * (`run.retry` → `task.retry` for a child's task) as the responder. Raising alone resolved
+ * the item and left the child failed with no item at all, so the work silently never went on
+ * although the item said that raising lets it continue.
+ */
+async function continueAfterRaise(
+  ctx: DaemonContext,
+  sessionId: string,
+  budgetId: string,
+  actor: Actor,
+): Promise<void> {
+  const last = ctx.repos.runs.findOne({ where: { session_id: sessionId } });
+  if (!last || last.status !== 'failed' || last.statusReason !== 'budget_exhausted') return;
+  if (last.budgetId !== budgetId) return;
+  await ctx.call(actor, 'run.retry', { runId: last.id });
+}
+
+/** How far back "+$10 for today" looks for work the daily limit cut off. */
+const DAILY_CUTOFF_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * "今日だけ +$10" also means "go on": every session whose latest run the daily limit stopped
+ * (in the last day, not archived) runs again. Supervisors are left to their inbox, which
+ * wakes them once the item closes (spec §7.11 M7). A retry that is refused (the rights or a
+ * budget no longer allow it) is skipped; the others still go on.
+ */
+async function continueAfterDailyRaise(ctx: DaemonContext, actor: Actor): Promise<void> {
+  const since = new Date(ctx.clock.now() - DAILY_CUTOFF_WINDOW_MS).toISOString();
+  const cut = ctx.repos.runs
+    .find({ where: { status: 'failed' }, sql: { clause: 'updated_at >= ?', params: [since] } })
+    .filter((r) => r.statusReason === 'daily_limit' && r.kind !== 'orchestrator');
+  for (const run of cut) {
+    const last = ctx.repos.runs.findOne({ where: { session_id: run.sessionId } });
+    if (last?.id !== run.id || ctx.repos.sessions.get(run.sessionId)?.archivedAt) continue;
+    try {
+      await ctx.call(actor, 'run.retry', { runId: run.id });
+    } catch (err) {
+      ctx.log.warn('could not continue a run the daily limit stopped', { runId: run.id, err });
+    }
+  }
 }
 
 /** Send the work back with a note: the output's review, else the task, else the integration. */

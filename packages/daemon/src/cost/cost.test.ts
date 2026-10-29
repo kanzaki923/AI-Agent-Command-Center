@@ -456,7 +456,19 @@ describe('the daily limit (§5.7-4)', () => {
     expect(
       await dd(HUMAN, 'attention.respond', { attentionId: item.id, choiceId: 'raise_today_10' }),
     ).toMatchObject({ status: 'resolved', resolution: { choiceId: 'raise_today_10' } });
-    expect(ctx.service('ledger').dailyLeft()).toBeCloseTo(9.9, 6);
+    // "+$10" also continues what the limit cut off: the agent run and the refused chat
+    // message run again (the agent's plan spends its $0.4 once more).
+    const retries = () =>
+      ctx.repos.runs.find({}).filter((r) => r.retryOfRunId && r.status === 'completed');
+    await vi.waitFor(() =>
+      expect(
+        retries()
+          .map((r) => r.sessionId)
+          .sort(),
+      ).toEqual([chat.id, spend.id].sort()),
+    );
+    expect(ctx.service('ledger').dailyLeft()).toBeCloseTo(9.5, 1);
+    expect(ctx.service('ledger').dailyLeft()).toBeLessThanOrEqual(9.5);
 
     // Reached again tomorrow-style: raising the limit in the settings closes the new item.
     await end(ctx, startAgent(ctx, spend, plan([{ type: 'usage', costUsd: 10 }])));

@@ -144,15 +144,20 @@ export const MockPlan = z.strictObject({
 });
 export type MockPlan = z.infer<typeof MockPlan>;
 
-const FENCE = /```acc-mock[^\S\r\n]*\r?\n([\s\S]*?)```/;
+const FENCES = /```acc-mock[^\S\r\n]*\r?\n([\s\S]*?)```/g;
 
 export class MockPlanError extends Error {
   override name = 'MockPlanError';
 }
 
-/** The plan in `prompt`, or null when there is no acc-mock block. Throws MockPlanError if invalid. */
+/**
+ * The plan in `prompt`, or null when there is no acc-mock block. Throws MockPlanError if
+ * invalid. With several blocks the last one wins: an agent's prompt is the task first and the
+ * latest message after it (`## 追加の指示`), so a new plan sent to a working child replaces
+ * the one of its brief.
+ */
 export function parseMockPlan(prompt: string): MockPlan | null {
-  const m = FENCE.exec(prompt);
+  const m = [...prompt.matchAll(FENCES)].at(-1);
   if (!m) return null;
   let raw: unknown;
   try {
@@ -213,7 +218,7 @@ export function resolveConflictMarkers(
   return { text: out.join(''), hunks };
 }
 
-/** The prompt without its acc-mock block (what a human would read). */
+/** The prompt without its acc-mock blocks (what a human would read). */
 export function stripMockPlan(prompt: string): string {
-  return prompt.replace(FENCE, '').trim();
+  return prompt.replace(FENCES, '').trim();
 }

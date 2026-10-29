@@ -65,6 +65,7 @@ interface Parsed {
  * | a wake, all finished         | the final report (output titles), no tools               |
  * | "いま何してる？"              | session.tree → text                                      |
  * | "止めて" / "再開して"          | session.stop / session.resume → text                     |
+ * | "N 人追加して"                 | session.spawn × N (+ recordDecision) → text              |
  *
  * Invariants: never a reply whose only tool call is recordDecision; the final report has no
  * tools; two replies in a row never repeat the same text (they name counts and titles).
@@ -117,6 +118,13 @@ function onUserMessage(p: Parsed, text: string, req: ChatRequest): MockReply {
       text: `${stopped.length} 件の作業を再開します。`,
       toolCalls: stopped.map((c) => call('session.resume', { sessionId: c.id })),
     };
+  }
+  const more = addCount(text);
+  if (more > 0 && p.children.length > 0) {
+    if (!p.tools.has('session.spawn')) {
+      return { text: 'この会話には作業を任せる権限がありません。' };
+    }
+    return addHelpers(p, more);
   }
   const newGoal = /^新しい目標\s*[:：]/.test(text);
   if (p.children.length > 0 && !newGoal && !isFirstRequest(req, text)) {
@@ -360,6 +368,62 @@ export function childPlans(goal: string, codeProjectId: string | null): ChildPla
     };
   }
   return plans;
+}
+
+const KANJI_COUNT: Record<string, number> = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5 };
+/** Helpers one "N 人追加して" may add (the daemon's maxChildren still applies). */
+const MAX_ADDED = 4;
+
+/** "1人追加して" / "テスト担当をもう 2 人追加して" / "もう一人増やして" → N; 0 when not asked. */
+export function addCount(text: string): number {
+  if (!/(追加|増や)/.test(text)) return 0;
+  const m = /([0-9０-９]+|[一二三四五])\s*人/.exec(text);
+  const raw = m?.[1];
+  if (!raw) return 1;
+  const n = KANJI_COUNT[raw] ?? Number(raw.normalize('NFKC'));
+  return Math.max(1, Math.min(MAX_ADDED, Number.isFinite(n) ? n : 1));
+}
+
+/** "もう N 人追加して": N more children on the first request, numbered after the existing ones. */
+function addHelpers(p: Parsed, count: number): MockReply {
+  const goal = p.firstRequest.replace(/^新しい目標\s*[:：]\s*/, '').trim() || '依頼された作業';
+  const short = goal.length > 24 ? `${goal.slice(0, 23)}…` : goal;
+  const say = (text: string) => ({ type: 'say', text });
+  const helpers = Array.from({ length: count }, (_, i) => {
+    const n = p.children.length + i + 1;
+    return {
+      title: `追加の担当 ${n}`,
+      goal: `「${goal}」について、ほかの担当の作業を補う点を洗い出してまとめてください。`,
+      steps: [say('ほかの担当の作業を確認します。'), say('補う点を洗い出しました。')],
+      summary: `「${short}」で補う点を 3 つにまとめました。`,
+    };
+  });
+  return {
+    text: `${count} 人追加して任せます。`,
+    toolCalls: [
+      ...helpers.map((h) =>
+        call('session.spawn', {
+          title: h.title,
+          goal: [
+            h.goal,
+            '',
+            '```acc-mock',
+            JSON.stringify({ steps: h.steps, summary: h.summary }, null, 2),
+            '```',
+          ].join('\n'),
+          mode: 'agent',
+        }),
+      ),
+      ...(p.tools.has('orchestrator.recordDecision')
+        ? [
+            call('orchestrator.recordDecision', {
+              decision: `${count} 人追加: ${helpers.map((h) => `「${h.title}」`).join('、')}`,
+              rationale: '依頼者から担当を増やすよう頼まれたため。',
+            }),
+          ]
+        : []),
+    ],
+  };
 }
 
 function finalReport(children: TreeNode[]): string {

@@ -9,7 +9,7 @@ import { toolNameForMethod } from '../llm/tools';
 import type { ChatMessage, ChatRequest } from '../llm/types';
 import { REPOSITORY_LABEL, PROJECT_ID_LABEL, TREE_HEADING } from './executor';
 import { mockOrchestrator } from './mockModel';
-import { childPlans, mockSupervisor } from './mockSupervisor';
+import { addCount, childPlans, mockSupervisor } from './mockSupervisor';
 
 const SUPERVISOR_TOOLS = [
   'session.spawn',
@@ -191,6 +191,36 @@ describe('mock supervisor', () => {
     );
     expect(methods(stop)).toEqual(['session.stop']);
     expect(stop.toolCalls![0]!.input).toEqual({ sessionId: kid(1, 'x').id });
+  });
+
+  it('"N 人追加して" spawns N more children on the first request', () => {
+    const sys = { role: 'system' as const, content: system([kid(1, 'working'), kid(2, 'done')]) };
+    const one = reply(
+      request([sys, { role: 'user', content: 'goal' }, { role: 'user', content: '1人追加して' }]),
+    );
+    expect(methods(one)).toEqual(['session.spawn', 'orchestrator.recordDecision']);
+    expect(one.toolCalls![0]!.input).toMatchObject({ title: '追加の担当 3', mode: 'agent' });
+    expect(String((one.toolCalls![0]!.input as { goal: string }).goal)).toContain('「goal」');
+    const two = reply(
+      request([
+        sys,
+        { role: 'user', content: 'goal' },
+        { role: 'user', content: 'テスト担当をもう 2 人追加して' },
+      ]),
+    );
+    expect(methods(two).filter((m) => m === 'session.spawn')).toHaveLength(2);
+    expect(addCount('もう一人増やして')).toBe(1);
+    expect(addCount('三人追加して')).toBe(3);
+    expect(addCount('１０人追加して')).toBe(4);
+    expect(addCount('この 3 件は承認するから統合して')).toBe(0);
+    // Before any child exists, it is an ordinary goal (the plan).
+    const first = reply(
+      request([
+        { role: 'system', content: system([]) },
+        { role: 'user', content: '2人追加して' },
+      ]),
+    );
+    expect(methods(first).filter((m) => m === 'session.spawn')).toHaveLength(3);
   });
 
   it('mock/orchestrator picks the supervisor machine only when session.spawn is a tool', async () => {

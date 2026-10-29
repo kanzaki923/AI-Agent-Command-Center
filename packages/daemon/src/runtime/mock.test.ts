@@ -64,6 +64,9 @@ describe('acc-mock plan', () => {
       allowFailure: false,
       onReject: 'stop',
     });
+    // The latest instructions come after the task: the last block wins.
+    const both = `${plan([{ type: 'say', text: 'task' }])}\n\n## 追加の指示\n${plan([{ type: 'say', text: 'new' }])}`;
+    expect(parseMockPlan(both)?.steps).toEqual([{ type: 'say', text: 'new' }]);
     expect(() => parseMockPlan('```acc-mock\n{nope\n```')).toThrow(MockPlanError);
     expect(() => parseMockPlan(plan({ steps: [{ type: 'explode' }] }))).toThrow(
       /acc-mock ブロックの形式が正しくありません/,
