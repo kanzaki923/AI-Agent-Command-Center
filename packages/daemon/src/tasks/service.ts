@@ -121,6 +121,57 @@ export class TaskService {
     });
   }
 
+  /**
+   * The task that records one spawned child's work (session.spawn, spec 20261029 §1.4): no
+   * project needed, dependencies on sibling children's tasks (validated by the spawner, any
+   * project). Starts `pending` until they are done, else `ready`; the spawner moves it on.
+   */
+  createChildTask(input: {
+    projectId: string | null;
+    title: string;
+    description: string;
+    acceptanceCriteria: string[];
+    dependsOn: string[];
+    workspaceId: string | null;
+    autoStart: boolean;
+    actor: Actor;
+  }): Task {
+    const { ctx } = this;
+    return ctx.db.transaction(() => {
+      if (input.projectId) ctx.repos.projects.require(input.projectId);
+      const dependsOn = [...new Set(input.dependsOn)];
+      const deps = dependsOn.map((id) => {
+        const t = ctx.repos.tasks.get(id);
+        if (!t) throw invalidParams(`unknown task in dependsOn: ${id}`, { taskId: id });
+        return t;
+      });
+      const { status, reason } = readinessOf(deps);
+      const now = ctx.clock.iso();
+      const task = ctx.repos.tasks.insert({
+        id: ctx.ids.next('task'),
+        projectId: input.projectId,
+        parentTaskId: null,
+        title: input.title.trim(),
+        description: input.description,
+        acceptanceCriteria: input.acceptanceCriteria,
+        status,
+        statusReason: reason,
+        priority: 'normal',
+        dependsOn,
+        assigneeSessionId: null,
+        workspaceId: input.workspaceId,
+        resultSummary: null,
+        createdBy: input.actor,
+        createdAt: now,
+        updatedAt: now,
+        completedAt: null,
+        autoStart: input.autoStart,
+      });
+      ctx.bus.emit({ type: 'task.created', actor: input.actor, payload: { task } });
+      return task;
+    });
+  }
+
   update(p: Params<'task.update'>, actor: Actor): Task {
     const { ctx } = this;
     return ctx.db.transaction(() => {
@@ -305,10 +356,12 @@ export class TaskService {
     return ordered;
   }
 
-  /** Tasks that list `taskId` in dependsOn. */
+  /**
+   * Tasks that list `taskId` in dependsOn. Not limited to the task's project: spawned
+   * children may wait for siblings of another project (or of none).
+   */
   dependents(task: Pick<Task, 'id' | 'projectId'>): Task[] {
     return this.ctx.repos.tasks.find({
-      where: { project_id: task.projectId },
       sql: {
         clause: "EXISTS (SELECT 1 FROM json_each(data, '$.dependsOn') WHERE value = ?)",
         params: [task.id],

@@ -16,7 +16,7 @@ import { sessionTree } from './methods/tree';
 import { sessionUpdate } from './methods/update';
 import { sessionsMigrations } from './search';
 import { SessionService } from './service';
-import { StubSpawner } from './spawn';
+import { Spawner } from './spawn';
 
 export { SessionService } from './service';
 export {
@@ -29,6 +29,7 @@ export {
 export type { CreateSessionInput } from './service';
 export { searchMessages, makeSnippet } from './search';
 export { sessionBudgetId, sessionScope } from './methods/shared';
+export { Spawner, SPAWNER_SYSTEM, briefContent, spawnProjectId } from './spawn';
 
 /**
  * Sessions and messages. One file per method under `methods/` (each track owns its own
@@ -46,7 +47,8 @@ export const sessionsModule = defineModule({
   migrations: sessionsMigrations,
   register(ctx) {
     ctx.provide('sessions', new SessionService(ctx));
-    ctx.provide('spawner', new StubSpawner());
+    const spawner = new Spawner(ctx);
+    ctx.provide('spawner', spawner);
 
     ctx.methods.register(
       sessionCreate(ctx),
@@ -71,6 +73,8 @@ export const sessionsModule = defineModule({
         // Executors are registered once every module provided its services.
         if (ctx.hasService('runs'))
           ctx.service('runs').registerExecutor('chat', createChatExecutor(ctx));
+        // Children waiting for siblings or a free slot start by themselves (spawn.ts).
+        ctx.onClose(spawner.start());
       },
     };
   },

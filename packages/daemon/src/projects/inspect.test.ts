@@ -35,6 +35,60 @@ function tempDir(files: Record<string, string> = {}): string {
   return dir;
 }
 
+describe('project.inspectFolder (any folder, git optional)', () => {
+  it('accepts a plain folder and names the existing project', async () => {
+    d = await createTestDaemon();
+    const dir = tempDir({ 'notes.md': '# x' });
+    const r = await d.call(HUMAN, 'project.inspectFolder', { path: dir });
+    expect(r).toMatchObject({
+      ok: true,
+      reason: null,
+      path: dir,
+      isGitRepo: false,
+      repoRoot: null,
+      defaultBranch: null,
+      suggestedName: basename(dir),
+      suggestedTestCommand: null,
+      existingProjectId: null,
+    });
+    const p = await d.call(HUMAN, 'project.create', { name: '資料', folderPath: dir });
+    expect((await d.call(HUMAN, 'project.inspectFolder', { path: dir })).existingProjectId).toBe(
+      p.id,
+    );
+  });
+
+  it('names the repository of a folder inside one, with its default branch', async () => {
+    repo = await createTempRepo({
+      'docs/guide.md': '# guide',
+      'package.json': JSON.stringify({ scripts: { test: 'vitest' } }),
+      'pnpm-lock.yaml': '',
+    });
+    d = await createTestDaemon();
+    const sub = join(repo.path, 'docs');
+    const r = await d.call(HUMAN, 'project.inspectFolder', { path: sub });
+    expect(r).toMatchObject({ ok: true, isGitRepo: true, defaultBranch: 'main' });
+    expect(r.repoRoot && basename(r.repoRoot)).toBe(basename(repo.path));
+    expect(r.suggestedTestCommand).toBe('pnpm test');
+    const p = await d.call(HUMAN, 'project.create', { name: 'app', repoPath: repo.path });
+    expect((await d.call(HUMAN, 'project.inspectFolder', { path: sub })).existingProjectId).toBe(
+      p.id,
+    );
+  });
+
+  it('explains what is wrong in Japanese', async () => {
+    d = await createTestDaemon();
+    const dir = tempDir({ 'a.txt': 'x' });
+    const fail = async (path: string) => {
+      const r = await d!.call(HUMAN, 'project.inspectFolder', { path });
+      expect(r.ok).toBe(false);
+      return r.reason;
+    };
+    expect(await fail('relative/dir')).toContain('絶対パス');
+    expect(await fail(join(dir, 'missing'))).toContain('見つかりません');
+    expect(await fail(join(dir, 'a.txt'))).toContain('フォルダを指定');
+  });
+});
+
 describe('project.inspectRepo', () => {
   it('describes a repository root and suggests settings, without creating anything', async () => {
     repo = await createTempRepo({

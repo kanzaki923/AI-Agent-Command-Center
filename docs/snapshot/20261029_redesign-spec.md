@@ -867,3 +867,23 @@ T0 で仕様から足した・変えたもの（各トラックはこれを前�
 | C14 | `SpawnerService.spawn(params, actor, opts?)` の `opts` = `{ scheduleId, scheduledFor, trigger }`。`StartRunInput.trigger` を足した | 定期実行（T6）が spawner を通るため |
 | C15 | `CallScope.sessionIds` は agent すべてに効く（`session.*` の scope が返す）。人間・system は対象外 | §1.8 の「agent は自分か子孫」 |
 | C16 | `session.list` の `rootsOnly` / `parentSessionId`、`session.messages` の `streaming`（streams のスタブ経由）、`Project.folderPath` の保存は Core が配線済み | 引数を受けて黙って無視しないため |
+
+### 7.4 T2（子を起こす・作業場所・完了）で入れた差分（T2 の実装時に追記）
+
+| # | 差分 | 理由 |
+|---|---|---|
+| S1 | `maxChildren` は「同時に動いている子（実行中の Run を持つ子）」の数。越える spawn は子を作って待たせ（`runId: null`）、空いたら daemon が始める。待てるのは 1 つの親につき 16 まで（越えたら `limit_exceeded`）。`maxChildren: 0` は `limit_exceeded` | §3.3-1 の「終わっていない子の数」と受け入れテスト 3「越える spawn は待ち」が食い違うため。待ちに上限を付けて暴走を防ぐ |
+| S2 | 子の基本の権限（`artifact.publish`・`human.ask`・`session.get`・`artifact.list`）は親から委譲せず、daemon（system、reason `child`）が付ける。`permissions` の指定分だけ親から委譲する | §3.9 の指揮役プリセットに `artifact.publish` がなく、部分集合の規則では子が公開できないため |
+| S3 | agent が `folder` に指定できるのはプロジェクトの `folderPath` の中だけ。ACC_HOME とそれを含むフォルダは誰も指定できない | agent が任意のフォルダ（ホームなど）への書き込み権を子に渡せないように |
+| S4 | 委任の深さは親の位置も数える：指揮役が自分の子を親にした spawn も `limit_exceeded` | 「深さ 2」を木の深さとしても守るため |
+| S5 | chat の子の既定の予算の取り分は、1 回の LLM 呼び出しの予約額（`llmCallReserveUsd`）を下回らない（足りなければ `budget_exceeded`）。切り出せないときは worktree・scratch を作る前に断る | 予約額より小さい予算の chat の子は 1 回も呼び出せないため |
+| S6 | 子の終了時の「予算を返す」（§3.4 の表）は T5（§3.8-5）に任せた | 返却は T5 が Task の状態の変化を購読して行う契約のため、二重にしない |
+| S7 | `review` にする条件は `finalize().needsReview` に加え、`brief.reviewBy === 'human'` とこの Run のコードの変更（diff）も T2 が見る | T3 が入る前もコードの変更が確認待ちになるように。T3 の判定と同じなので重なっても害はない |
+| S8 | 確認待ち（review）は、親が `session.spawn` を持つ（指揮役）なら親に `child_update`、そうでなければ子の会話に出番 `review`（親には知らせない） | 表の「親がいなければ」を「親が指揮役でなければ」に広げた（人間が普通の会話の下に起こした子も誰かが確認できるように） |
+| S9 | 指揮役が子に `session.send` / `task.retry` するとき、実行中でないエージェントの子を動かすなら子の枠も数える（足りなければ `limit_exceeded`。待たせるのは T1 の受信箱の判断） | 送信で枠の外に子を増やせないように |
+| S10 | 子の会話で新しい Run が始まると（回答・やり直し・メッセージ・再開）、Task は `pending / ready / blocked（依存以外）/ review / failed / paused` から `running` に戻る | 質問への回答や再開の後の終了を §3.4 の表で扱うため |
+| S11 | chat の子の `task.retry` は断る（`session.send` で伝える） | `task.retry` の結果が `workspaceId` を必須にしているため |
+| S12 | `TaskService.dependents` をプロジェクトで絞らない | 兄弟の子はプロジェクトが違う（またはない）ことがあるため |
+| S13 | `session.create` に `workspace` がないときは従来どおり（エージェントの会話でも作業場所を作らない） | 既存の呼び出しの意味を変えない。UI は `workspace: { kind: 'none' }` を渡す |
+| S14 | Claude ランタイムには `readRoots` を `additionalDirectories` として渡していない（T5 のファイル）。CLI が外と判断した読み取り（`blockedPath`）もゲートが読み取り root の中なら許可する | ファイルの持ち主を守るため。ゲートだけで読める |
+| S15 | `outputs` のスタブ（最後の本文を document に）は本体に入れず、T2 のテストでだけ差し替えた | `outputs/` は T3 のファイルのため |

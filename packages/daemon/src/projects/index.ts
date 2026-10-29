@@ -1,12 +1,12 @@
 import { existsSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import type { Actor, Project } from '@acc/protocol';
-import { defineMethod, stubMethod } from '../api/registry';
+import { defineMethod } from '../api/registry';
 import { forbidden, invalidParams } from '../core/errors';
 import { defineModule } from '../module';
-import { inspectRepo } from './inspect';
+import { inspectFolder, inspectRepo } from './inspect';
 
-export { detectTestCommand, inspectRepo } from './inspect';
+export { detectTestCommand, inspectFolder, inspectRepo } from './inspect';
 
 function checkRepoPath(path: string | null | undefined, field = 'repoPath'): void {
   if (path == null) return;
@@ -34,8 +34,10 @@ export const projectsModule = defineModule({
       defineMethod('project.inspectRepo', {
         handler: (p) => inspectRepo(ctx, p.path),
       }),
-      // T2 (spec 20261029 §2.2): inspect any folder, git or not.
-      stubMethod('project.inspectFolder'),
+      // Any folder, git or not (spec 20261029 §2.2).
+      defineMethod('project.inspectFolder', {
+        handler: (p) => inspectFolder(ctx, p.path),
+      }),
 
       defineMethod('project.create', {
         handler: (p, call) =>

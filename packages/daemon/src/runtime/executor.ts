@@ -1,3 +1,4 @@
+import { existsSync, statSync } from 'node:fs';
 import type {
   Actor,
   ContentPart,
@@ -7,12 +8,15 @@ import type {
   Session,
   Task,
   ToolApprovalPayload,
+  Workspace,
+  WorkspaceKind,
 } from '@acc/protocol';
 import type { AgentEvent, AgentTool, RunController, RunExecutor } from '../contracts';
 import type { DaemonContext } from '../core/context';
 import { apiTools } from '../llm/tools';
 import { abortError } from './async';
 import { ToolGate } from './gate';
+import { isInside } from './policy';
 import { classifyToolRisk } from './risk';
 import { RuntimeSessionStore } from './state';
 import { approvalDetailFor, approvalTitleFor, truncate } from './tools';
@@ -49,6 +53,9 @@ async function executeAgentRun(
   if (!workspaceId) throw new Error('この実行にはワークスペースが割り当てられていません');
   const workspaces = ctx.service('workspaces');
   const workspace = workspaces.get(workspaceId);
+  if (ctx.hasService('workspaceManager'))
+    ctx.service('workspaceManager').ensureScratchDir(workspace);
+  const readRoots = agentReadRoots(ctx, run, workspace);
 
   const runtimes = ctx.service('runtimes');
   const runtimeId = run.runtime || session.runtime || runtimes.defaultId();
@@ -56,14 +63,21 @@ async function executeAgentRun(
   const availability = await runtime.available();
   if (!availability.ok) throw new Error(availability.reason);
 
-  const instructions = triggerText(ctx, run, session);
-  const prompt = buildAgentPrompt({ task, instructions });
+  // A spawned child's first message is its brief, already in the prompt through the task.
+  const instructions = triggerText(ctx, run, session, { skipBrief: !!task && !!session.brief });
+  const prompt = buildAgentPrompt({
+    task,
+    instructions,
+    workspace: workspace.kind,
+    readRoots,
+    brief: !!session.brief,
+  });
   if (!prompt) throw new Error('エージェントに渡す指示がありません');
 
   ctl.setActivity('エージェントを起動中');
   const model = run.model ?? session.model ?? null;
   const resumeSessionId = store.get(session.id, runtimeId);
-  const gate = createToolGate(ctx, ctl, workspace.path, workspace.projectId);
+  const gate = createToolGate(ctx, ctl, workspace.path, workspace.projectId, readRoots);
 
   // Runtime message ids -> our message ids (deltas and the final message share one id).
   const ids = new Map<string, string>();
@@ -80,9 +94,9 @@ async function executeAgentRun(
   const events = runtime.run({
     runId: run.id,
     cwd: workspace.path,
-    // T2 adds the project's folder / repository as read roots; T5 the spend cap.
     writeRoot: workspace.path,
-    readRoots: [],
+    readRoots,
+    // T5 adds the spend cap.
     maxBudgetUsd: null,
     prompt,
     systemPrompt: session.systemPrompt ?? undefined,
@@ -158,6 +172,11 @@ async function executeAgentRun(
     handleEvent(ev);
   }
   if (signal.aborted) throw abortError(signal);
+  // Only git workspaces are committed; a user's folder and a scratch folder have no git.
+  if (!isGitWorkspace(workspace.kind)) {
+    ctl.setActivity(null);
+    return;
+  }
 
   ctl.setActivity('変更をコミット中');
   const title = task?.title ?? firstLine(instructions ?? prompt);
@@ -188,6 +207,7 @@ function createToolGate(
   ctl: RunController,
   cwd: string,
   workspaceProjectId: string | null,
+  readRoots: string[],
 ): ToolGate {
   const settings = ctx.settings.get();
   const { run } = ctl;
@@ -198,7 +218,11 @@ function createToolGate(
     autoMode: settings.autoMode.enabled
       ? { classifierModel: settings.autoMode.classifierModel, judge: settings.autoMode.judge }
       : null,
-    policy: { protectedPaths: [ctx.paths.home], ...(ctx.port ? { daemonPort: ctx.port } : {}) },
+    policy: {
+      protectedPaths: [ctx.paths.home],
+      readRoots,
+      ...(ctx.port ? { daemonPort: ctx.port } : {}),
+    },
     // Remembered approvals are per project; a workspace outside any project has none.
     ...(ctx.hasService('permissionRules') && projectId
       ? {
@@ -227,10 +251,46 @@ function agentTools(ctx: DaemonContext, ctl: RunController): AgentTool[] {
   );
 }
 
+/**
+ * Folders the agent may read besides its workspace (spec 20261029 §3.3): the project's
+ * folder and repository, when they exist and are not the workspace itself (or inside it).
+ */
+export function agentReadRoots(ctx: DaemonContext, run: Run, workspace: Workspace): string[] {
+  const projectId = run.projectId ?? workspace.projectId;
+  const project = projectId ? ctx.repos.projects.get(projectId) : undefined;
+  if (!project) return [];
+  const roots: string[] = [];
+  for (const p of [project.folderPath, project.repoPath]) {
+    if (!p || roots.includes(p)) continue;
+    if (isInside(p, workspace.path)) continue;
+    if (isInside(ctx.paths.home, p)) continue;
+    try {
+      if (!existsSync(p) || !statSync(p).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    roots.push(p);
+  }
+  return roots;
+}
+
+/** Workspaces the daemon commits and diffs (a worktree, or the repository checkout). */
+export function isGitWorkspace(kind: WorkspaceKind): boolean {
+  return kind === 'worktree' || kind === 'main';
+}
+
 /** Text of the message that triggered the run, else the session's latest user message. */
-function triggerText(ctx: DaemonContext, run: Run, session: Session): string | null {
+function triggerText(
+  ctx: DaemonContext,
+  run: Run,
+  session: Session,
+  opts: { skipBrief?: boolean } = {},
+): string | null {
   let msg: Message | undefined;
   if (run.triggerMessageId) msg = ctx.repos.messages.get(run.triggerMessageId);
+  if (msg && opts.skipBrief && (msg.meta?.kind === 'brief' || msg.meta?.kind === 'schedule')) {
+    return null;
+  }
   if (!msg && !run.taskId) {
     msg = ctx.repos.messages.find({
       where: { session_id: session.id },
@@ -251,11 +311,19 @@ function triggerText(ctx: DaemonContext, run: Run, session: Session): string | n
 
 /**
  * The agent's prompt: the task (goal + acceptance criteria) when the run works on one, plus
- * the triggering message as extra instructions. Plain message text otherwise.
+ * the triggering message as extra instructions, then one fragment for where it works (spec
+ * 20261029 §3.3). Only a git workspace (worktree, the default for older callers) mentions
+ * git and commits. Plain message text when there is no task.
  */
 export function buildAgentPrompt(input: {
   task: Pick<Task, 'title' | 'description' | 'acceptanceCriteria'> | null;
   instructions: string | null;
+  /** Kind of the workspace (default: worktree). */
+  workspace?: WorkspaceKind;
+  /** Folders it may read but not write. */
+  readRoots?: readonly string[];
+  /** A spawned child: how to finish (its last answer is kept as its output). */
+  brief?: boolean;
 }): string {
   const { task, instructions } = input;
   if (!task) return instructions?.trim() ?? '';
@@ -265,12 +333,32 @@ export function buildAgentPrompt(input: {
     parts.push('', '## 完了条件', ...task.acceptanceCriteria.map((c) => `- ${c}`));
   }
   if (instructions?.trim()) parts.push('', '## 追加の指示', instructions.trim());
-  parts.push(
-    '',
-    '作業はこのディレクトリ（専用の git worktree）の中で行ってください。完了すると変更は自動でコミットされます。',
-  );
+  parts.push('', WORKPLACE_TEXT[input.workspace ?? 'worktree']);
+  if (input.readRoots && input.readRoots.length > 0) {
+    parts.push(
+      '',
+      '次のフォルダは参照できます（読み取りのみ。変更はできません）:',
+      ...input.readRoots.map((r) => `- ${r}`),
+    );
+  }
+  if (input.brief) parts.push('', FINISH_TEXT);
   return parts.join('\n');
 }
+
+/** Where the agent works, one paragraph per workspace kind (only git kinds mention git). */
+const WORKPLACE_TEXT: Record<WorkspaceKind, string> = {
+  worktree:
+    '作業はこのディレクトリ（専用の git worktree）の中で行ってください。完了すると変更は自動でコミットされます。',
+  main: '作業はこのディレクトリ（git リポジトリ）の中で行ってください。完了すると変更は自動でコミットされます。',
+  directory:
+    '作業はこのフォルダ（ユーザーのフォルダ）の中で行ってください。ファイルはその場で書き換わるので、依頼に必要なものだけを変更してください。',
+  scratch:
+    '作業はこのフォルダ（この依頼のための作業フォルダ）の中で行ってください。作るファイルはすべてこの中に置いてください。',
+};
+
+/** How a spawned child finishes (its outputs settle when the run ends). */
+const FINISH_TEXT =
+  '終わったら、何をしたか・何ができたかを最後に短くまとめてください（その文章は成果物として残ります）。人の判断がないと先に進めないときは、質問を残して作業を区切って終えてください。';
 
 function firstLine(text: string): string {
   return (

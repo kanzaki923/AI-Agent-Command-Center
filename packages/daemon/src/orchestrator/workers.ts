@@ -1,6 +1,7 @@
 import {
   type Actor,
   type Artifact,
+  type AttentionKind,
   type CapabilityGrant,
   type Event,
   type Integration,
@@ -8,17 +9,22 @@ import {
   type Params,
   type Result,
   type Run,
+  type Session,
   type SystemActor,
   type Task,
+  type TaskStatus,
   type Workspace,
   isTerminalRunStatus,
 } from '@acc/protocol';
+import type { FinalizeResult } from '../contracts';
 import type { DaemonContext } from '../core/context';
 import { conflict, invalidParams } from '../core/errors';
 import { textOfParts } from '../llm/messages';
 import { anyPatternContains } from '../policy/patterns';
 import { freeUsd } from '../policy/budget';
 import { truncate } from '../runtime/tools';
+import { sessionBudgetId } from '../sessions/methods/shared';
+import { carveChildBudget } from '../sessions/spawn';
 
 /** Actor of decisions the daemon makes on its own (shown as "system" in the timeline). */
 export const ORCHESTRATION_SYSTEM: SystemActor = { kind: 'system', component: 'orchestrator' };
@@ -48,6 +54,21 @@ export const INTERRUPTED = 'interrupted';
 
 /** statusReason of a task whose worker completed without changing anything. */
 export const NO_CHANGES = 'no_changes';
+
+/**
+ * statusReason of a spawned child's task (spec 20261029 §3.4): `waiting_for_human` (it
+ * finished with a question open), `stopped` (its run was cancelled: paused, resumable),
+ * the run's own stop reasons (`budget_exhausted`, `turn_limit`, `loop_detected`,
+ * `daily_limit`), else `worker_failed`.
+ */
+export const CHILD_REASONS = {
+  waitingForHuman: 'waiting_for_human',
+  stopped: 'stopped',
+} as const;
+
+/** Run stop reasons that ask a human for more budget / to look at a stuck child. */
+const BUDGET_REASONS = new Set(['budget_exhausted']);
+const STUCK_REASONS = new Set(['turn_limit', 'loop_detected']);
 
 const SPAWNABLE: Task['status'][] = ['ready', 'failed', 'blocked'];
 /** Statuses task.retry accepts (plus review: send finished work back). */
@@ -97,7 +118,7 @@ export class WorkerService {
         {
           kind: 'agent',
           projectId: cur.projectId,
-          title: `Worker: ${truncate(cur.title, 120)}`,
+          title: truncate(cur.title, 120),
           model: p.model ?? null,
           runtime,
           workspaceId: workspace.id,
@@ -176,12 +197,16 @@ export class WorkerService {
     const policy = ctx.service('policy');
     const task = ctx.repos.tasks.require(p.taskId);
     this.assertRetryable(task);
-    policy.assertCanSpawnWorker(actor, { projectId: task.projectId });
-    const feedback = this.retryFeedback(task, p.feedback, p.integrationId);
-
     const assignee = task.assigneeSessionId
       ? ctx.repos.sessions.get(task.assigneeSessionId)
       : undefined;
+    // A spawned child (session.spawn) is sent back in its own session and workspace.
+    if (assignee?.brief && assignee.taskId === task.id) {
+      return this.retryChild(p, task, assignee, actor);
+    }
+    policy.assertCanSpawnWorker(actor, { projectId: task.projectId });
+    const feedback = this.retryFeedback(task, p.feedback, p.integrationId);
+
     // Only the task's own worker session (made for this task, in its project, running on
     // nothing but per-run grants) is "the original worker": any other session would lend
     // the retry its project, budget and session grants.
@@ -416,6 +441,95 @@ export class WorkerService {
     return parts.join('\n');
   }
 
+  /**
+   * task.retry of a spawned agent child (spec 20261029 §3.5 redo): a new run in the child's
+   * session and workspace with the feedback, under the same rules as a message to it (the
+   * caller must have spawned it; a child slot). Its budget is kept while active, else carved
+   * again from the caller's.
+   */
+  private async retryChild(
+    p: Params<'task.retry'>,
+    task: Task,
+    child: Session,
+    actor: Actor,
+  ): Promise<Result<'task.retry'>> {
+    const { ctx } = this;
+    if (child.kind !== 'agent') {
+      throw conflict('会話の子にやり直しを伝えるときは session.send を使ってください', {
+        sessionId: child.id,
+      });
+    }
+    ctx.service('policy').assertAgentMayStartRun(actor, child, 'task.retry');
+    const feedback = this.retryFeedback(task, p.feedback, p.integrationId);
+    const ws = child.workspaceId ? ctx.repos.workspaces.get(child.workspaceId) : undefined;
+    if (!ws || ws.status !== 'ready') {
+      throw conflict('この子の作業場所がなくなったため、やり直せません', {
+        sessionId: child.id,
+      });
+    }
+    if (ctx.service('workspaces').isLocked(ws.id)) {
+      throw conflict('この子の作業場所は別の実行が使用中です', { workspaceId: ws.id });
+    }
+    const runtime = p.runtime ?? child.runtime ?? ctx.service('runtimes').defaultId();
+    ctx.service('runtimes').get(runtime);
+
+    return ctx.db.transaction(() => {
+      const cur = ctx.repos.tasks.require(task.id);
+      this.assertRetryable(cur);
+      const callerRun = actor.kind === 'agent' ? ctx.repos.runs.get(actor.runId) : undefined;
+      const prev = ctx.repos.runs.findOne({ where: { session_id: child.id }, direction: 'desc' });
+      const message = ctx.service('sessions').appendMessage({
+        sessionId: child.id,
+        role: 'user',
+        content: [{ type: 'text', text: feedback }],
+        author: actor,
+      });
+      const kept = sessionBudgetId(ctx, child.id);
+      const budgetId =
+        kept ??
+        carveChildBudget(ctx, {
+          budgetUsd: undefined,
+          callerRun,
+          grant: null,
+          childSessionId: child.id,
+          actor,
+        })?.id ??
+        null;
+      const run = ctx.service('runs').start({
+        sessionId: child.id,
+        kind: 'agent',
+        createdBy: actor,
+        taskId: cur.id,
+        projectId: child.projectId,
+        workspaceId: ws.id,
+        parentRunId: callerRun?.id ?? null,
+        retryOfRunId: prev?.id ?? null,
+        model: p.model ?? child.model ?? null,
+        runtime,
+        budgetId,
+        triggerMessageId: message.id,
+        trigger: 'retry',
+      });
+      ctx.service('tasks').setStatus(cur.id, 'running', actor, null, { resultSummary: null });
+      this.decide(
+        {
+          decision: `「${truncate(cur.title, 60)}」にやり直しを頼みました`,
+          rationale: truncate(firstLineOf(p.feedback ?? feedback), 200),
+          taskIds: [cur.id],
+          sessionIds: [child.id],
+          runIds: [run.id],
+        },
+        {
+          projectId: child.projectId,
+          sessionId: child.parentSessionId ?? child.id,
+          runId: callerRun?.id ?? run.id,
+          taskId: cur.id,
+        },
+      );
+      return { sessionId: child.id, runId: run.id, workspaceId: ws.id, budgetId };
+    });
+  }
+
   /** Feedback message of a retry (review notes + the failed integration's test output). */
   private retryFeedback(
     task: Task,
@@ -475,10 +589,19 @@ export class WorkerService {
    */
   onRunEnded(run: Run): void {
     const { ctx } = this;
-    if (run.kind !== 'agent' || !run.taskId || !isTerminalRunStatus(run.status)) return;
+    if (!run.taskId || !isTerminalRunStatus(run.status)) return;
     const task = ctx.repos.tasks.get(run.taskId);
     if (!task || task.status !== 'running' || task.assigneeSessionId !== run.sessionId) return;
     const session = ctx.repos.sessions.get(run.sessionId);
+    if (session?.brief) {
+      const done = this.onChildRunEnded(run, task, session).catch((err: unknown) => {
+        ctx.log.error('failed to settle a finished child', { runId: run.id, err });
+      });
+      this.settling.add(done);
+      void done.finally(() => this.settling.delete(done));
+      return;
+    }
+    if (run.kind !== 'agent') return;
     const refs = {
       projectId: task.projectId,
       sessionId: session?.parentSessionId ?? run.sessionId,
@@ -546,6 +669,202 @@ export class WorkerService {
         refs,
       );
     });
+  }
+
+  /** Children whose end is being settled (outputs.finalize is async). */
+  private readonly settling = new Set<Promise<void>>();
+
+  /** Resolves once every child end seen so far has been settled (tests, shutdown). */
+  async idle(): Promise<void> {
+    while (this.settling.size > 0) await Promise.all([...this.settling]);
+  }
+
+  /**
+   * The end of a spawned child's run (spec 20261029 §3.4): settle its outputs
+   * (`outputs.finalize`), then move its task — done, review, waiting for a human, failed,
+   * paused, or ready again after a restart — open the attention item a person must act on,
+   * and tell the parent (`child_update`), except when the parent stopped it itself.
+   */
+  async onChildRunEnded(run: Run, task: Task, child: Session): Promise<void> {
+    const { ctx } = this;
+    if (run.status === 'cancelled' && run.statusReason === 'superseded') return;
+    let outputs: FinalizeResult = { needsReview: false, artifactIds: [] };
+    if (run.status === 'completed' && ctx.hasService('outputs')) {
+      try {
+        outputs = await ctx.service('outputs').finalize(run);
+      } catch (err) {
+        ctx.log.warn('outputs could not be settled', { runId: run.id, err });
+      }
+    }
+    ctx.db.transaction(() => {
+      const cur = ctx.repos.tasks.get(task.id);
+      if (!cur || cur.status !== 'running' || cur.assigneeSessionId !== child.id) return;
+      // A newer run of the child took over (a message right after): its end decides.
+      const latest = ctx.repos.runs.findOne({ where: { session_id: child.id } });
+      if (latest && latest.id !== run.id) return;
+      const end = this.childEnd(run, cur, child, outputs);
+      const updated = ctx
+        .service('tasks')
+        .setStatus(cur.id, end.status, ORCHESTRATION_SYSTEM, end.reason, {
+          resultSummary: end.summary,
+        });
+      const title = truncate(child.title || updated.title, 40);
+      if (end.attention && ctx.hasService('attention')) {
+        ctx.service('attention').open({
+          kind: end.attention,
+          sessionId: child.id,
+          title: attentionTitle(end.attention, title, run.statusReason),
+          detail: end.detail,
+          refs: {
+            runId: run.id,
+            taskId: cur.id,
+            ...(end.attention === 'budget' && run.budgetId ? { budgetId: run.budgetId } : {}),
+          },
+          actor: ORCHESTRATION_SYSTEM,
+        });
+      }
+      if (end.notifyParent && child.parentSessionId && ctx.hasService('inbox')) {
+        ctx.service('inbox').deliver(child.parentSessionId, {
+          kind: 'child_update',
+          refs: { childSessionId: child.id, runId: run.id },
+          actor: ORCHESTRATION_SYSTEM,
+        });
+      }
+      if (end.decision) {
+        this.decide(
+          {
+            decision: end.decision.replace('{title}', title),
+            rationale: end.detail ?? '',
+            taskIds: [cur.id],
+            sessionIds: [child.id],
+            runIds: [run.id],
+          },
+          {
+            projectId: cur.projectId,
+            sessionId: child.parentSessionId ?? child.id,
+            runId: run.id,
+            taskId: cur.id,
+          },
+        );
+      }
+    });
+  }
+
+  /** The §3.4 table: what a child's run end means for its task, a person and its parent. */
+  private childEnd(
+    run: Run,
+    task: Task,
+    child: Session,
+    outputs: FinalizeResult,
+  ): {
+    status: TaskStatus;
+    reason: string | null;
+    summary: string | null;
+    attention: AttentionKind | null;
+    detail: string | null;
+    notifyParent: boolean;
+    decision: string | null;
+  } {
+    const { ctx } = this;
+    const base = { attention: null, detail: null, notifyParent: true, decision: null };
+    const summary = this.lastAssistantText(run);
+    switch (run.status) {
+      case 'completed': {
+        const asked =
+          ctx.repos.attention.count({
+            where: { session_id: child.id, status: 'open', kind: 'question' },
+          }) > 0;
+        if (asked) {
+          return {
+            ...base,
+            status: 'blocked',
+            reason: CHILD_REASONS.waitingForHuman,
+            summary,
+          };
+        }
+        const review =
+          outputs.needsReview || child.brief?.reviewBy === 'human' || this.changedCode(task, run);
+        if (review) {
+          // A supervisor decides on its children's outputs together; otherwise a person does.
+          const supervised =
+            !!child.parentSessionId &&
+            ctx.service('policy').sessionAllows(child.parentSessionId, 'session.spawn');
+          return {
+            ...base,
+            status: 'review',
+            reason: null,
+            summary,
+            attention: supervised ? null : 'review',
+            notifyParent: supervised,
+            decision: '「{title}」の成果物が確認待ちになりました',
+          };
+        }
+        return {
+          ...base,
+          status: 'done',
+          reason: null,
+          summary,
+          decision: '「{title}」が完了しました',
+        };
+      }
+      case 'failed': {
+        const why = run.error?.message ?? 'Run が失敗しました';
+        const reason = run.statusReason ?? run.error?.code ?? null;
+        const failed = { ...base, status: 'failed' as const, summary: truncate(why, MAX_SUMMARY) };
+        if (reason && BUDGET_REASONS.has(reason)) {
+          return { ...failed, reason, attention: 'budget', detail: why };
+        }
+        if (reason && STUCK_REASONS.has(reason)) {
+          return { ...failed, reason, attention: 'stuck', detail: why };
+        }
+        // The daily limit is one attention item for everything (the cost module opens it).
+        if (reason === 'daily_limit') return { ...failed, reason, detail: why };
+        return {
+          ...failed,
+          reason: WORKER_REASONS.failed,
+          attention: 'failure',
+          detail: why,
+          decision: '「{title}」が失敗しました',
+        };
+      }
+      case 'cancelled':
+        return {
+          ...base,
+          status: 'paused',
+          reason: CHILD_REASONS.stopped,
+          summary,
+          notifyParent: !this.stoppedByParent(run, child),
+        };
+      default:
+        // Interrupted by a daemon stop / restart: ready to resume in the same workspace
+        // (the supervisor track resumes it once, spec §3.10).
+        return { ...base, status: 'ready', reason: INTERRUPTED, summary, notifyParent: false };
+    }
+  }
+
+  /** The child's own run left committed code changes (a non-empty diff of this run). */
+  private changedCode(task: Task, run: Run): boolean {
+    const diff = this.ctx.repos.artifacts.findOne({
+      where: { task_id: task.id, run_id: run.id, kind: 'diff' },
+      direction: 'desc',
+    });
+    return diff?.kind === 'diff' && diff.data.stats.files > 0;
+  }
+
+  /** Whether the parent session itself cancelled this run (then it needs no update). */
+  private stoppedByParent(run: Run, child: Session): boolean {
+    if (!child.parentSessionId) return false;
+    const row = this.ctx.db.get<{ actor: string }>(
+      "SELECT actor FROM events WHERE run_id = ? AND type = 'run.status_changed' ORDER BY seq DESC LIMIT 1",
+      [run.id],
+    );
+    if (!row) return false;
+    try {
+      const actor = JSON.parse(row.actor) as Actor;
+      return actor.kind === 'agent' && actor.sessionId === child.parentSessionId;
+    } catch {
+      return false;
+    }
   }
 
   /** Startup: tasks still `running` whose worker run already ended (e.g. before a restart). */
@@ -765,9 +1084,8 @@ function spawnRationale(i: {
   grant: CapabilityGrant | null;
   active: number | null;
 }): string {
-  const parts = [
-    `専用の worktree（${i.workspace.branch ?? i.workspace.id}）で、ランタイム ${i.runtime} を使って作業します。`,
-  ];
+  // No branch or runtime names (spec 20261029 §4): what matters is where and how much.
+  const parts = ['専用の作業場所で作業します。'];
   if (i.grant?.limits.maxWorkers !== undefined && i.active !== null) {
     parts.push(
       `同時に動かせる Worker は ${i.grant.limits.maxWorkers} 人まで（現在 ${i.active} 人）。`,
@@ -786,6 +1104,36 @@ export function runEndedBy(e: Event): string | null {
 /** Files of the integration's latest fix step (what the integrator resolves). */
 function fixFiles(integ: Integration): string[] {
   return integ.steps.filter((s) => s.kind === 'fix').at(-1)?.conflictFiles ?? [];
+}
+
+/**
+ * One line (<= 80 chars, no ids) for a child's attention item (spec §1.6), e.g.
+ * "「FAQ を書く」が失敗しました".
+ */
+export function attentionTitle(kind: AttentionKind, title: string, reason: string | null): string {
+  switch (kind) {
+    case 'budget':
+      return `「${title}」の予算が尽きました`;
+    case 'stuck':
+      return reason === 'turn_limit'
+        ? `「${title}」が手順の上限に達しました`
+        : `「${title}」が同じ操作を繰り返したため止めました`;
+    case 'review':
+      return `「${title}」の成果物を確認`;
+    case 'failure':
+      return `「${title}」が失敗しました`;
+    default:
+      return `「${title}」`;
+  }
+}
+
+function firstLineOf(text: string): string {
+  return (
+    text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .find(Boolean) ?? ''
+  );
 }
 
 function oneLine(s: string, max: number): string {
