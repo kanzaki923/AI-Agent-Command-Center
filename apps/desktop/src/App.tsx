@@ -67,6 +67,7 @@ export function App() {
             <div className="relative flex min-h-0 flex-1">
               {sidebarOpen && !narrow && <Sidebar />}
               <main
+                // min-w = MAIN_MIN_WIDTH (outputs/model.ts): the panel floats once this would not fit.
                 className="relative flex min-w-[480px] flex-1 flex-col overflow-hidden border-t border-l border-line-subtle bg-canvas"
                 style={{ borderTopLeftRadius: sidebarOpen && !narrow ? 10 : 0 }}
               >

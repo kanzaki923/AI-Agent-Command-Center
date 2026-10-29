@@ -199,3 +199,15 @@ export function cellText(v: unknown): string {
 export function isWebUrl(url: string): boolean {
   return /^https?:\/\//i.test(url);
 }
+
+/** The conversation's minimum width beside the panel (App's `main`). */
+export const MAIN_MIN_WIDTH = 480;
+
+/**
+ * Media query for "the panel fits beside the conversation": the sidebar (when shown), the
+ * conversation at its minimum and the panel at its width, and never under 900px (ui-design
+ * §4.5). Narrower, the panel floats over the conversation instead of running off the window.
+ */
+export function dockedPanelQuery(sidebarWidth: number, panelWidth: number): string {
+  return `(min-width: ${Math.max(900, sidebarWidth + MAIN_MIN_WIDTH + panelWidth)}px)`;
+}

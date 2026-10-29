@@ -15,7 +15,7 @@ import { OutputIcon } from '../ui/SemanticIcons';
 import { StateIcon } from '../ui/StateIcon';
 import { Tooltip } from '../ui/Tooltip';
 import { DiffStatText } from './DiffViewer';
-import { type Output, type ReviewPhase, doneWhenMet, panelOutputs, reviewPhase } from './model';
+import { type Output, type ReviewPhase, dockedPanelQuery, doneWhenMet, panelOutputs, reviewPhase } from './model';
 import { OutputBody } from './OutputViewer';
 import { PhaseMark, ReviewBar } from './ReviewBar';
 
@@ -85,8 +85,9 @@ function Panel({
   const width = useUi((s) => s.panelWidth);
   const setWidth = useUi((s) => s.setPanelWidth);
   const togglePanel = useUi((s) => s.togglePanel);
-  // A narrow window has no room beside the conversation: the panel floats over it (Esc closes).
-  const narrow = !useMediaQuery('(min-width: 900px)');
+  const sidebarWidth = useUi((s) => (s.sidebarOpen ? s.sidebarWidth : 0));
+  // No room beside the conversation: the panel floats over it (Esc closes).
+  const narrow = !useMediaQuery(dockedPanelQuery(sidebarWidth, width));
   const integrations = useIntegrations().data ?? NONE_I;
   const brief = useSessions().data?.find((s) => s.id === sessionId)?.brief ?? null;
   const doneWhen = brief?.doneWhen ?? [];

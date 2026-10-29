@@ -1,6 +1,6 @@
 import type { Artifact, Integration, Session, SessionCard } from '@acc/protocol';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
@@ -124,6 +124,24 @@ describe('<OutputsPanel>', () => {
     const rows = within(await within(p).findByRole('list', { name: '成果物の一覧' })).getAllByRole('listitem');
     expect(rows[0]).toHaveTextContent(/^文書プレスリリース案/);
     expect(rows[0]!.textContent?.match(/プレスリリース案/g)).toHaveLength(1);
+  });
+
+  describe('in a window too narrow for the sidebar, the conversation and the panel', () => {
+    const real = window.matchMedia.bind(window);
+    afterEach(() => {
+      window.matchMedia = real;
+    });
+
+    it('floats the panel over the conversation instead of running off the window', async () => {
+      const width = 1000;
+      window.matchMedia = (q: string) => {
+        const min = /min-width:\s*(\d+)px/.exec(q);
+        return { ...real(q), matches: min ? width >= Number(min[1]) : false };
+      };
+      useUi.setState({ sidebarOpen: true, sidebarWidth: 248 });
+      mount([output('document', { sessionId: CHILD, title: 'プレスリリース（案）' })]);
+      expect(await panel()).toHaveAttribute('data-overlay', 'true');
+    });
   });
 
   it('shows a table with its first 500 rows', async () => {

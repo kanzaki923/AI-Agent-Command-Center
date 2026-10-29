@@ -4,6 +4,7 @@ import { output } from './fixtures';
 import {
   adoptionOf,
   cellText,
+  dockedPanelQuery,
   doneWhenMet,
   formatSize,
   joinPath,
@@ -117,6 +118,14 @@ describe('doneWhenMet', () => {
     expect(
       doneWhenMet('needs_you', [output('document', { review: { ...pending, state: 'accepted' } })]),
     ).toBe(true);
+  });
+});
+
+describe('dockedPanelQuery', () => {
+  it('docks the panel only where the sidebar, the conversation and the panel all fit', () => {
+    expect(dockedPanelQuery(248, 360)).toBe('(min-width: 1088px)');
+    expect(dockedPanelQuery(0, 360)).toBe('(min-width: 900px)');
+    expect(dockedPanelQuery(0, 520)).toBe('(min-width: 1000px)');
   });
 });
 
