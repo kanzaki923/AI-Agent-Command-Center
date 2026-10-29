@@ -106,7 +106,7 @@ describe('acc MCP server for the Claude runtime', () => {
     ).toEqual(['task.get']);
   });
 
-  it('the runtime passes the server and its allowed tool names to query(); no tools, no server', async () => {
+  it('the runtime passes the server to query() and checks its tools registered; no tools, no server', async () => {
     const { tools } = await workerWithGrant();
     const seen: Parameters<QueryFn>[0]['options'][] = [];
     const query: QueryFn = ({ prompt, options }) => {
@@ -116,7 +116,17 @@ describe('acc MCP server for the Claude runtime', () => {
         close() {},
         async *[Symbol.asyncIterator]() {
           await prompt[Symbol.asyncIterator]().next();
-          yield { type: 'system', subtype: 'init', session_id: 's1', model: 'm', tools: [] };
+          // Like the CLI: init lists the MCP tools that registered.
+          const registered = options.mcpServers
+            ? tools.map((t) => qualifiedMcpToolName(t.method))
+            : [];
+          yield {
+            type: 'system',
+            subtype: 'init',
+            session_id: 's1',
+            model: 'm',
+            tools: registered,
+          };
           yield {
             type: 'result',
             subtype: 'success',
@@ -151,12 +161,12 @@ describe('acc MCP server for the Claude runtime', () => {
 
     const [withTools, without] = seen as [(typeof seen)[0], (typeof seen)[0]];
     expect(Object.keys(withTools.mcpServers ?? {})).toEqual([ACC_MCP_SERVER]);
-    expect(withTools.allowedTools?.sort()).toEqual(
+    // Not in allowedTools (that would bypass canUseTool); the policy lets them through.
+    expect(withTools.allowedTools).toBeUndefined();
+    expect(accMcpServer(sdk, tools, new AbortController().signal)?.toolNames.sort()).toEqual(
       tools.map((t) => qualifiedMcpToolName(t.method)).sort(),
     );
-    expect(withTools.allowedTools).toContain('mcp__acc__task_get');
     expect(without.mcpServers).toBeUndefined();
-    expect(without.allowedTools).toBeUndefined();
     expect(accMcpServer(sdk, [], new AbortController().signal)).toBeNull();
     // The daemon's own tool policy lets these through without an approval as well.
     expect(

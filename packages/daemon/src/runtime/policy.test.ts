@@ -114,9 +114,41 @@ describe('decideToolPermission', () => {
     }
   });
 
-  it('always asks for commands', () => {
-    expect(decide('Bash', { command: 'ls' })).toBe('ask');
+  it('asks for commands, except allowlisted read-only Bash inside the workspace', () => {
+    expect(decide('Bash', { command: 'pnpm test' })).toBe('ask');
+    expect(decide('Bash', { command: 'git status && rm -rf /' })).toBe('ask');
+    expect(decide('Bash', {})).toBe('ask');
     expect(decide('PowerShell', { command: 'Get-ChildItem' })).toBe('ask');
+    // Searching and looking around (commands.test.ts has the details).
+    expect(decide('Bash', { command: 'ls' })).toBe('allow');
+    expect(decide('Bash', { command: 'git status' })).toBe('allow');
+    expect(decide('Bash', { command: "grep -rn 'TODO' src" })).toBe('allow');
+    expect(decide('Bash', { command: 'cat ../other/secret' })).toBe('ask');
+    expect(decide('Bash', { command: 'cat /etc/passwd' })).toBe('ask');
+    expect(decide('Bash', { command: 'git -c core.fsmonitor=x status' })).toBe('ask');
+    // Windows paths and case folding apply to command arguments too.
+    expect(decide('Bash', { command: 'cat src/a.ts' }, WIN, 'win32')).toBe('allow');
+    expect(decide('Bash', { command: 'cat C:/Users/me/.ssh/id_rsa' }, WIN, 'win32')).toBe('ask');
+  });
+
+  it('denies tools that do not fit an unattended run and allows the agent bookkeeping', () => {
+    for (const t of [
+      'AskUserQuestion',
+      'EnterPlanMode',
+      'EnterWorktree',
+      'CronCreate',
+      'Monitor',
+    ]) {
+      const r = decideToolPermission({ toolName: t, input: {}, cwd: POSIX, platform: 'linux' });
+      expect(r.decision).toBe('deny');
+      expect(r.reason).toContain('Work autonomously');
+    }
+    for (const t of ['TaskCreate', 'TaskUpdate', 'TaskList', 'ToolSearch', 'Skill']) {
+      expect(decide(t, {})).toBe('allow');
+    }
+    // Messaging other sessions and listing them are not bookkeeping.
+    expect(decide('SendMessage', { to: 'x', message: 'y' })).toBe('ask');
+    expect(decide('ListAgents', {})).toBe('ask');
   });
 
   it('asks for unknown, web and third-party MCP tools; allows control api tools', () => {
@@ -191,6 +223,7 @@ describe('child env', () => {
     const env = buildChildEnv(parent, routing, { clientApp: 'acc/test' });
     expect(env.ANTHROPIC_API_KEY).toBe('sk-ant-user');
     expect(env.CLAUDE_AGENT_SDK_CLIENT_APP).toBe('acc/test');
+    expect(env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe('1');
     expect(env).not.toHaveProperty('AWS_SECRET_ACCESS_KEY');
     expect(env).not.toHaveProperty('GITHUB_TOKEN');
     expect(env).not.toHaveProperty('ACC_LITELLM_API_KEY');

@@ -30,6 +30,49 @@ export const EDIT_TOOLS: ReadonlySet<string> = new Set([
 /** Tools that execute arbitrary commands. */
 export const COMMAND_TOOLS: ReadonlySet<string> = new Set(['Bash', 'PowerShell']);
 
+/**
+ * The agent's own bookkeeping (its task list, deferred-tool search, skill instructions): no
+ * effect outside the agent's context, so no approval. What a skill then does is checked tool
+ * by tool.
+ */
+export const AGENT_INTERNAL_TOOLS: ReadonlySet<string> = new Set([
+  'TaskCreate',
+  'TaskGet',
+  'TaskList',
+  'TaskUpdate',
+  'TaskStop',
+  'ToolSearch',
+  'Skill',
+]);
+
+/**
+ * Claude Code tools that do not fit an unattended run in a worktree the daemon owns, removed
+ * from the model's tool list (`disallowedTools`) and denied by the policy if called anyway.
+ * Observed against the real CLI (docs/snapshot/20261029_agent-sdk-real-cli.md): most of these
+ * run without a permission prompt.
+ * - AskUserQuestion: nobody answers mid-turn (the CLI reports "did not answer").
+ * - EnterPlanMode / ExitPlanMode: plan mode would stop the run waiting for a plan approval.
+ * - EnterWorktree / ExitWorktree: moves the session into its own worktree, out of ours.
+ * - CronCreate / CronDelete / CronList / ScheduleWakeup / RemoteTrigger: scheduling belongs
+ *   to the daemon; the CLI process ends with the run.
+ * - Monitor / PushNotification: background command watches and notifications (Monitor runs a
+ *   shell command without any permission prompt).
+ */
+export const DISALLOWED_AGENT_TOOLS: ReadonlySet<string> = new Set([
+  'AskUserQuestion',
+  'EnterPlanMode',
+  'ExitPlanMode',
+  'EnterWorktree',
+  'ExitWorktree',
+  'CronCreate',
+  'CronDelete',
+  'CronList',
+  'ScheduleWakeup',
+  'RemoteTrigger',
+  'Monitor',
+  'PushNotification',
+]);
+
 /** Tools that reach the network. */
 export const WEB_TOOLS: ReadonlySet<string> = new Set(['WebFetch', 'WebSearch']);
 
@@ -119,6 +162,10 @@ export function describeToolActivity(toolName: string, input: unknown, cwd: stri
       return 'コマンドの出力を確認中';
     case 'TodoWrite':
     case 'TodoRead':
+    case 'TaskCreate':
+    case 'TaskUpdate':
+    case 'TaskGet':
+    case 'TaskList':
       return '作業計画を更新中';
     case 'WebFetch': {
       const url = asString(rec.url);

@@ -1,8 +1,19 @@
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
-import { COMMAND_TOOLS, EDIT_TOOLS, READ_ONLY_TOOLS, SUBAGENT_TOOLS, toolPaths } from './tools';
+import { readOnlyCommandReason } from './commands';
+import {
+  AGENT_INTERNAL_TOOLS,
+  COMMAND_TOOLS,
+  DISALLOWED_AGENT_TOOLS,
+  EDIT_TOOLS,
+  READ_ONLY_TOOLS,
+  SUBAGENT_TOOLS,
+  asRecord,
+  asString,
+  toolPaths,
+} from './tools';
 
-export type ToolDecision = 'allow' | 'ask';
+export type ToolDecision = 'allow' | 'ask' | 'deny';
 
 export interface ToolPolicyInput {
   toolName: string;
@@ -32,10 +43,16 @@ const ACC_TOOL_PREFIX = 'mcp__acc__';
 /**
  * Deterministic tool-use policy for coding agents (no prompt involved).
  *
+ * - Tools that do not fit an unattended run in a daemon-owned worktree (`DISALLOWED_AGENT_TOOLS`:
+ *   asking the user mid-turn, plan mode, scheduling, own worktrees, background monitors):
+ *   denied. Runtimes also remove them from the model's tool list.
  * - Read-only tools inside the workspace: allowed.
+ * - Bookkeeping tools of the agent itself (its task list, tool search): allowed.
  * - File edits inside the workspace: allowed — the worktree is isolated and every change is
  *   reviewed as a diff before it is integrated.
- * - Commands (Bash / PowerShell): always ask, since a command can touch anything.
+ * - Commands (Bash / PowerShell): ask, since a command can touch anything. The one exception
+ *   is a narrow allowlist of read-only Bash commands whose paths stay inside the workspace
+ *   (`git status`, `ls`, `grep -rn`, ...; see `commands.ts`).
  * - Anything that touches a path outside the workspace: ask. Containment is checked on the
  *   real path too, so a symlink committed in the repository cannot lead an auto-allowed
  *   read or edit out of the worktree.
@@ -43,7 +60,8 @@ const ACC_TOOL_PREFIX = 'mcp__acc__';
  *   and the gitdir pointer decide what the daemon's own git calls execute.
  * - Unknown tools (web, third-party MCP, ...): ask.
  *
- * "ask" goes to the run's approval flow (`AgentRunInput.canUseTool`).
+ * "ask" goes to the run's approval flow (`AgentRunInput.canUseTool`); "deny" is refused with
+ * `reason` (English, shown to the model).
  */
 export function decideToolPermission(req: ToolPolicyInput): ToolPolicyResult {
   const { toolName, input, cwd } = req;
@@ -56,14 +74,27 @@ export function decideToolPermission(req: ToolPolicyInput): ToolPolicyResult {
   if (req.blockedPath && !inside(req.blockedPath)) {
     return { decision: 'ask', reason: `path outside workspace: ${req.blockedPath}` };
   }
+  if (DISALLOWED_AGENT_TOOLS.has(toolName)) {
+    return {
+      decision: 'deny',
+      reason: `${toolName} is not available in this environment. Work autonomously: make reasonable assumptions, state them in your final message, and finish the task.`,
+    };
+  }
   if (toolName.startsWith(ACC_TOOL_PREFIX)) {
     return { decision: 'allow', reason: 'control api tool (capabilities enforced by dispatcher)' };
   }
   if (COMMAND_TOOLS.has(toolName)) {
-    return { decision: 'ask', reason: 'commands always need approval' };
+    const command = toolName === 'Bash' ? asString(asRecord(input)?.command) : undefined;
+    const readOnly = command ? readOnlyCommandReason(command, { inside }) : null;
+    if (readOnly) return { decision: 'allow', reason: readOnly };
+    return { decision: 'ask', reason: 'commands need approval' };
   }
   if (SUBAGENT_TOOLS.has(toolName)) {
     return { decision: 'allow', reason: 'sub-agent tool uses are checked individually' };
+  }
+
+  if (AGENT_INTERNAL_TOOLS.has(toolName)) {
+    return { decision: 'allow', reason: 'agent bookkeeping tool' };
   }
 
   const isRead = READ_ONLY_TOOLS.has(toolName);

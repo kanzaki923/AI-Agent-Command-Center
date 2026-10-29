@@ -1,8 +1,10 @@
 import type {
   CanUseTool,
+  HookCallback,
   Options,
   PermissionResult,
   SDKUserMessage,
+  SyncHookJSONOutput,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { Settings } from '@acc/protocol';
 import type { AgentEvent, AgentRunInput, AgentRuntime } from '../../contracts';
@@ -10,6 +12,7 @@ import type { Logger } from '../../core/log';
 import { AsyncQueue, abortError } from '../async';
 import { buildChildEnv, envKeys, resolveModelRouting } from '../env';
 import { decideToolPermission } from '../policy';
+import { DISALLOWED_AGENT_TOOLS } from '../tools';
 import { ACC_MCP_SERVER, type McpSdk, accMcpServer } from './mcp';
 import type { ClaudeCodeLocation } from './locate';
 import { ClaudeMessageNormalizer, type UsageTotals, ZERO_TOTALS } from './normalize';
@@ -67,23 +70,43 @@ export interface ClaudeRuntimeOptions {
   locateExecutable?: () => ClaudeCodeLocation;
   baselines?: UsageBaselineStore;
   log?: Logger;
-  /** How long to wait for the CLI to stop after interrupt() before close(). Default 5s. */
+  /** How long to wait for the CLI to exit after interrupt() / the result before close(). Default 5s. */
   interruptGraceMs?: number;
+  /**
+   * Fail the run when the CLI sends nothing for this long (time spent waiting for a human
+   * approval does not count). Streaming sends events continuously, so silence this long
+   * means a hung CLI or connection. Default 10 minutes.
+   */
+  idleTimeoutMs?: number;
 }
 
 export const CLAUDE_RUNTIME_ID = 'claude-agent-sdk';
 const STDERR_TAIL_LINES = 20;
+const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60_000;
+
+class IdleTimeoutError extends Error {}
+
+/** " 10 分" / " 30 秒" (for Japanese messages). */
+function formatDuration(ms: number): string {
+  return ms >= 60_000 ? ` ${Math.round(ms / 60_000)} 分` : ` ${Math.round(ms / 1000)} 秒`;
+}
 
 /**
  * Coding agent backed by @anthropic-ai/claude-agent-sdk (spawns the bundled Claude Code CLI).
  *
- * Fixed choices (docs/snapshot/20261029_claude-agent-sdk-research.md):
- * - `permissionMode: 'default'` explicitly (omitting it may enable the model-based "auto" mode).
- * - `settingSources: []`: the user's / repository's settings files (hooks, allow rules) never
- *   apply, so every tool permission goes through our policy and approval flow.
- *   Consequence: the repository's CLAUDE.md is not loaded (TODO: opt-in per project).
+ * Fixed choices (verified against the real CLI: docs/snapshot/20261029_agent-sdk-real-cli.md):
+ * - `permissionMode: 'default'` and `settingSources: []`: the user's / repository's settings
+ *   files (hooks, allow rules) never apply. Consequence: the repository's CLAUDE.md is not
+ *   loaded (TODO: opt-in per project).
+ * - Tool permissions are enforced by a `PreToolUse` hook running our policy for EVERY tool
+ *   use: the CLI auto-approves many tools without calling `canUseTool` (read-only Bash such
+ *   as `git status`, Monitor, CronCreate, EnterWorktree, ...), and a hook is the one place
+ *   that sees them all. The hook denies, asks (the CLI then calls `canUseTool`, which runs the
+ *   same policy and our approval flow), or stays out of the way when the policy allows.
+ * - `disallowedTools`: tools that make no sense unattended (AskUserQuestion, plan mode,
+ *   scheduling, own worktrees) are removed from the model's tool list.
  * - `env` replaces the child's whole environment: built from an allowlist (env.ts).
- * - The prompt is an AsyncIterable so `interrupt()` works.
+ * - The prompt is an AsyncIterable so `interrupt()` works; one turn per run.
  */
 export class ClaudeAgentSdkRuntime implements AgentRuntime {
   readonly id = CLAUDE_RUNTIME_ID;
@@ -168,42 +191,64 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
       parent_tool_use_id: null,
     });
 
-    const stderrTail: string[] = [];
-    const canUseTool: CanUseTool = async (toolName, toolInput, options) => {
-      const policy = decideToolPermission({
-        toolName,
-        input: toolInput,
-        cwd: input.cwd,
-        blockedPath: options.blockedPath,
-      });
-      if (policy.decision === 'allow') {
-        return { behavior: 'allow', updatedInput: toolInput } satisfies PermissionResult;
-      }
+    // Approvals the CLI is waiting on (a human may take hours; that is not a hung CLI).
+    let approvalsPending = 0;
+    const askHuman = async (
+      toolName: string,
+      toolInput: Record<string, unknown>,
+      title: string | undefined,
+    ): Promise<PermissionResult> => {
+      approvalsPending += 1;
       try {
         const decision = await input.canUseTool({
           toolName,
           input: toolInput,
-          ...(options.title ? { title: options.title } : {}),
+          ...(title ? { title } : {}),
         });
         if (decision.decision === 'approved') {
-          return { behavior: 'allow', updatedInput: toolInput } satisfies PermissionResult;
+          return { behavior: 'allow', updatedInput: toolInput };
         }
         return {
           behavior: 'deny',
           message: decision.note
             ? `The user rejected this tool use: ${decision.note}`
             : 'The user rejected this tool use.',
-        } satisfies PermissionResult;
+        };
       } catch (_err) {
         // Cancelled while waiting (or the approval flow failed): stop the turn.
-        return {
-          behavior: 'deny',
-          message: 'The run was cancelled.',
-          interrupt: true,
-        } satisfies PermissionResult;
+        return { behavior: 'deny', message: 'The run was cancelled.', interrupt: true };
+      } finally {
+        approvalsPending -= 1;
       }
     };
 
+    const policyFor = (toolName: string, toolInput: unknown, blockedPath?: string) =>
+      decideToolPermission({ toolName, input: toolInput, cwd: input.cwd, blockedPath });
+
+    /** Called by the CLI for tools it does not auto-approve, and for every hook "ask". */
+    const canUseTool: CanUseTool = async (toolName, toolInput, options) => {
+      const policy = policyFor(toolName, toolInput, options.blockedPath);
+      if (policy.decision === 'allow') return { behavior: 'allow', updatedInput: toolInput };
+      if (policy.decision === 'deny') return { behavior: 'deny', message: policy.reason };
+      return askHuman(toolName, toolInput, options.title);
+    };
+
+    /** Runs for every tool use, including the ones the CLI would auto-approve. */
+    const preToolUse: HookCallback = async (hookInput): Promise<SyncHookJSONOutput> => {
+      if (hookInput.hook_event_name !== 'PreToolUse') return {};
+      const policy = policyFor(hookInput.tool_name, hookInput.tool_input);
+      // "allow": leave it to the CLI, which may still ask (canUseTool re-runs the policy).
+      if (policy.decision === 'allow') return {};
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: policy.decision,
+          permissionDecisionReason: policy.reason,
+        },
+      };
+    };
+
+    const stderrTail: string[] = [];
     const options: Options = {
       cwd: input.cwd,
       permissionMode: 'default',
@@ -217,6 +262,8 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
       },
       env,
       canUseTool,
+      hooks: { PreToolUse: [{ hooks: [preToolUse] }] },
+      disallowedTools: [...DISALLOWED_AGENT_TOOLS],
       stderr: (data: string) => {
         stderrTail.push(...data.split(/\r?\n/).filter(Boolean));
         if (stderrTail.length > STDERR_TAIL_LINES) {
@@ -237,55 +284,107 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
             signal,
           )
         : null;
-    if (acc) {
-      options.mcpServers = { [ACC_MCP_SERVER]: acc.server };
-      options.allowedTools = acc.allowedTools;
-    }
+    if (acc) options.mcpServers = { [ACC_MCP_SERVER]: acc.server };
 
     const baseline =
       (input.resumeSessionId && this.baselines.get(input.resumeSessionId)) || ZERO_TOTALS;
-    const norm = new ClaudeMessageNormalizer(input.cwd, baseline);
+    const norm = new ClaudeMessageNormalizer(input.cwd, baseline, {
+      expectedTools: acc?.toolNames ?? [],
+    });
     const q = sdk.query({ prompt, options });
 
     const graceMs = this.opts.interruptGraceMs ?? 5000;
+    const idleMs = this.opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
     let graceTimer: NodeJS.Timeout | undefined;
+    let forcedClose = false;
+    const closeNow = () => {
+      try {
+        q.close();
+      } catch {
+        // already closed
+      }
+    };
     /** Force-close the CLI if it has not exited `graceMs` after we asked it to stop. */
     const closeLater = () => {
       if (graceTimer) return;
       graceTimer = setTimeout(() => {
-        try {
-          q.close();
-        } catch {
-          // already closed
-        }
+        forcedClose = true;
+        closeNow();
       }, graceMs);
     };
-    const onAbort = () => {
-      prompt.close();
+    /**
+     * Stop the turn: interrupt first (the CLI ends the turn, usually with a result, and writes
+     * its transcript), then end the input so it exits, and kill it only after the grace period.
+     */
+    const stop = () => {
       q.interrupt().catch(() => {});
+      prompt.close();
       closeLater();
     };
-    signal.addEventListener('abort', onAbort, { once: true });
+    signal.addEventListener('abort', stop, { once: true });
 
+    const it = q[Symbol.asyncIterator]();
+    /** The next message, or IdleTimeoutError after `idleMs` of silence (approvals excepted). */
+    const next = () =>
+      new Promise<IteratorResult<unknown>>((resolve, reject) => {
+        let timer: NodeJS.Timeout;
+        const arm = () => {
+          timer = setTimeout(() => {
+            if (approvalsPending > 0) arm();
+            else reject(new IdleTimeoutError());
+          }, idleMs);
+        };
+        arm();
+        it.next().then(
+          (r) => {
+            clearTimeout(timer);
+            resolve(r);
+          },
+          (err: unknown) => {
+            clearTimeout(timer);
+            reject(err instanceof Error ? err : new Error(String(err)));
+          },
+        );
+      });
+
+    let failure: Error | null = null;
     try {
-      for await (const msg of q) {
-        if (signal.aborted) break;
-        // After the result we only wait for the CLI to exit (it finishes writing the
-        // session transcript, which resume depends on).
+      for (;;) {
+        const r = await next();
+        if (r.done) break;
+        // After the result we only wait for the CLI to exit (it finishes writing the session
+        // transcript, which resume depends on).
         if (norm.outcome) continue;
-        for (const ev of norm.push(msg)) yield ev;
+        const events = norm.push(r.value);
+        // Once stopping, only the usage of the interrupted turn is still worth reporting.
+        const stopping = signal.aborted || failure !== null;
+        for (const ev of events) if (!stopping || ev.type === 'usage') yield ev;
+        if (norm.fatal && !failure) {
+          failure = new Error(norm.fatal);
+          stop();
+          continue;
+        }
         if (norm.outcome) {
+          // The CLI has saved the session's totals in its transcript by now (observed: a resume
+          // continues from them even when the CLI is killed right after the result).
+          const totals = norm.baselineTotals;
+          if (norm.sessionId && totals) this.baselines.set(norm.sessionId, totals);
           // One turn per run: end the input so the CLI exits after this result.
           prompt.close();
-          if (norm.sessionId) this.baselines.set(norm.sessionId, norm.usageTotals);
           closeLater();
         }
       }
-      for (const ev of norm.finish()) yield ev;
+      if (!signal.aborted) for (const ev of norm.finish()) yield ev;
     } catch (err) {
       if (signal.aborted) throw abortError(signal);
+      if (err instanceof IdleTimeoutError) {
+        stop();
+        throw new Error(`Claude Code から${formatDuration(idleMs)}以上応答がないため停止しました`, {
+          cause: err,
+        });
+      }
       // Errors while draining after a result (e.g. force-closed) do not change the outcome.
-      if (!norm.outcome) {
+      if (!norm.outcome && !failure) {
         const tail = stderrTail.join('\n');
         this.opts.log?.warn('claude agent failed', {
           runId: input.runId,
@@ -297,17 +396,18 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
         );
       }
     } finally {
-      signal.removeEventListener('abort', onAbort);
+      signal.removeEventListener('abort', stop);
       if (graceTimer) clearTimeout(graceTimer);
       prompt.close();
-      try {
-        q.close();
-      } catch {
-        // already closed
-      }
+      closeNow();
+    }
+
+    if (forcedClose) {
+      this.opts.log?.warn('claude agent did not exit in time; closed it', { runId: input.runId });
     }
 
     if (signal.aborted) throw abortError(signal);
+    if (failure) throw failure;
     if (!norm.outcome) throw new Error('Claude Code が結果を返さずに終了しました');
     if (!norm.outcome.ok) throw new Error(norm.outcome.message);
   }

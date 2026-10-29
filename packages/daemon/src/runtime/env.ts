@@ -168,6 +168,10 @@ export function buildChildEnv(
     }
     env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1';
   }
+  // One turn per run: a background sub-agent or command would outlive the turn (killed when
+  // the CLI exits, or reported in a notification turn after our result). Observed against
+  // the real CLI: with this set, the Agent tool waits for the sub-agent.
+  env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = '1';
   if (opts.clientApp) env.CLAUDE_AGENT_SDK_CLIENT_APP = opts.clientApp;
   return env;
 }

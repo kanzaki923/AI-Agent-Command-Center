@@ -187,6 +187,9 @@ packages/cli        @acc/cli       `acc` コマンド
 - 本物の有料 LLM API はテストで呼ばない。llm / runtime の mock を使う。
   - `d.ctx.service('llm').mock.chunkDelayMs = 0` で mock の送信間隔をなくす。台本は `mock.define('mock/x', scripted([{ text, toolCalls }, (req, info) => ({ text })]))`（`scripted` は `src/llm` から）。
   - LiteLLM 経路は `node:http` のローカル偽サーバに `settings.update({ litellm: { baseUrl } })` を向けて試す（例：`llm/llm.test.ts`、Orchestrator は `orchestrator/orchestrator.test.ts`）。Claude Agent SDK は `runtimes.get('claude-agent-sdk')` の `available` / `run` を spy して、選ばれることだけを確かめる。
+- **Claude Agent SDK の契約テスト**（`runtime/claude/sdk-contract.test.ts`）：本物の SDK と SDK 同梱の本物の Claude Code CLI を、ローカルの偽 Anthropic API（`runtime/claude/contract/fakeAnthropic.ts`。SSE を本物と同じ形で返し、台本は受け取ったリクエストの関数）に向けて `ClaudeAgentSdkRuntime` を動かす。費用・ネットワーク・認証情報なし。CLI の HOME / `CLAUDE_CONFIG_DIR` / TEMP は一時ディレクトリで、`~/.claude` には触れない。環境変数は許可リストからだけ作る（開発機の `ANTHROPIC_*` は渡らない）。`HTTPS_PROXY` を「すべて拒否して記録する」プロキシに向け、偽 API 以外への接続がないことも確かめる。通常の `pnpm test` に含まれ（約 20 秒）、CLI のバイナリがなければ自動でスキップ、`ACC_SKIP_SDK_CONTRACT=1` でも飛ばせる。単体で回すときは `pnpm --filter @acc/daemon test:sdk-contract`。
+  - 単体テスト（`runtime/claude.test.ts`）は、この CLI から**記録した**メッセージ列（`runtime/claude/contract/recorded.ts`）を再生する。手で書いた SDK メッセージは使わない。記録は `satisfies RecordedStream`（`contract/recordedTypes.ts`）で SDK の型に照らして型検査されるので、SDK の型が変わると typecheck で気づける。
+  - **SDK を上げたら**：`pnpm --filter @acc/daemon record:sdk-fixtures` で記録し直し（パスは `<REPO>` などに置き換え、ダミーのトークン・ユーザー名・ローカルパスが残っていたら書き出さない）、`pnpm check` を通す。挙動の違いは契約テストが落ちて分かる。
 - Run の Executor は `ctx.service('runs').registerExecutor(kind, fn)` で差し替えられる（後勝ち）。
 
 ## 7. 約束ごと

@@ -1,3 +1,10 @@
+/**
+ * ClaudeMessageNormalizer and ClaudeAgentSdkRuntime against message streams RECORDED from the
+ * real Claude Code CLI (claude/contract/recorded.ts, re-record with
+ * `pnpm --filter @acc/daemon record:sdk-fixtures`). The runtime tests replay them through a
+ * fake `query()`; the real CLI itself is exercised by claude/sdk-contract.test.ts.
+ */
+import type { HookCallback, HookInput, Options } from '@anthropic-ai/claude-agent-sdk';
 import { Settings } from '@acc/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentEvent, AgentRunInput, ApprovalDecision } from '../contracts';
@@ -10,219 +17,243 @@ import {
   type QueryFn,
   type QueryLike,
 } from './claude/runtime';
+import * as R from './claude/contract/recorded';
+import { type RecordedStream, withPaths } from './claude/contract/recordedTypes';
+import { DISALLOWED_AGENT_TOOLS } from './tools';
 
 const CWD = process.cwd();
-const SID = 'sdk-session-1';
+const rec = (s: RecordedStream) => withPaths(s, { repo: CWD });
+const sessionOf = (s: RecordedStream) => (s[0] as { session_id: string }).session_id;
 
-// ---- recorded-style SDK messages -----------------------------------------------------
+function normalize(stream: RecordedStream, n = new ClaudeMessageNormalizer(CWD)) {
+  const events = rec(stream).flatMap((m) => n.push(m));
+  return { n, events: events.concat(n.finish()) };
+}
+const ofType = <T extends AgentEvent['type']>(events: AgentEvent[], type: T) =>
+  events.filter((e): e is Extract<AgentEvent, { type: T }> => e.type === type);
 
-const init = { type: 'system', subtype: 'init', session_id: SID, model: 'claude-x', tools: [] };
-const streamStart = (id: string) => ({
-  type: 'stream_event',
-  parent_tool_use_id: null,
-  session_id: SID,
-  event: { type: 'message_start', message: { id, usage: {} } },
-});
-const streamText = (text: string) => ({
-  type: 'stream_event',
-  parent_tool_use_id: null,
-  session_id: SID,
-  event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },
-});
-const streamStop = {
-  type: 'stream_event',
-  parent_tool_use_id: null,
-  session_id: SID,
-  event: { type: 'message_stop' },
-};
-const assistant = (id: string, content: unknown[], extra: Record<string, unknown> = {}) => ({
-  type: 'assistant',
-  parent_tool_use_id: null,
-  session_id: SID,
-  message: { id, role: 'assistant', content },
-  ...extra,
-});
-const toolResult = (id: string, content: unknown, isError = false) => ({
-  type: 'user',
-  parent_tool_use_id: null,
-  session_id: SID,
-  message: {
-    role: 'user',
-    content: [{ type: 'tool_result', tool_use_id: id, content, is_error: isError }],
-  },
-});
-const result = (extra: Record<string, unknown> = {}) => ({
-  type: 'result',
-  subtype: 'success',
-  is_error: false,
-  session_id: SID,
-  result: 'done',
-  total_cost_usd: 0.012,
-  usage: { input_tokens: 10, output_tokens: 5 },
-  modelUsage: {
-    'claude-x': {
-      inputTokens: 100,
-      outputTokens: 40,
-      cacheReadInputTokens: 900,
-      cacheCreationInputTokens: 0,
-      costUSD: 0.012,
-    },
-  },
-  ...extra,
-});
-
-/** A typical turn: text, a tool use, its result, final text, result. */
-const TURN: unknown[] = [
-  init,
-  streamStart('msg_1'),
-  streamText('ファイルを'),
-  streamText('直します'),
-  assistant('msg_1', [{ type: 'text', text: 'ファイルを直します' }]),
-  assistant('msg_1', [
-    { type: 'tool_use', id: 'tu_1', name: 'Edit', input: { file_path: `${CWD}/src/a.ts` } },
-  ]),
-  streamStop,
-  toolResult('tu_1', [{ type: 'text', text: 'ok' }]),
-  streamStart('msg_2'),
-  streamText('完了'),
-  assistant('msg_2', [{ type: 'text', text: '完了' }]),
-  streamStop,
-  result(),
-];
-
-describe('ClaudeMessageNormalizer', () => {
-  it('maps a turn to agent events', () => {
-    const n = new ClaudeMessageNormalizer(CWD);
-    const events = TURN.flatMap((m) => n.push(m)).concat(n.finish());
-    expect(events).toEqual([
-      { type: 'session', runtimeSessionId: SID },
+describe('ClaudeMessageNormalizer (recorded streams)', () => {
+  it('maps a streamed reply with thinking to deltas, one message and an estimated cost', () => {
+    const { n, events } = normalize(R.TEXT);
+    expect(events.slice(0, 2)).toEqual([
+      { type: 'session', runtimeSessionId: sessionOf(R.TEXT) },
       { type: 'activity', text: 'Claude Code を起動しました' },
-      { type: 'text_delta', messageId: 'msg_1', text: 'ファイルを' },
-      { type: 'text_delta', messageId: 'msg_1', text: '直します' },
-      {
-        type: 'tool_call',
-        toolCallId: 'tu_1',
-        name: 'Edit',
-        input: { file_path: `${CWD}/src/a.ts` },
-      },
-      { type: 'activity', text: 'ファイルを編集中: src/a.ts' },
+    ]);
+    const deltas = ofType(events, 'text_delta');
+    expect(new Set(deltas.map((d) => d.messageId)).size).toBe(1);
+    expect(ofType(events, 'message')).toEqual([
       {
         type: 'message',
-        messageId: 'msg_1',
+        messageId: deltas[0]!.messageId,
         role: 'assistant',
         content: [
-          { type: 'text', text: 'ファイルを直します' },
-          {
-            type: 'tool_call',
-            toolCallId: 'tu_1',
-            name: 'Edit',
-            input: { file_path: `${CWD}/src/a.ts` },
-          },
+          { type: 'reasoning', text: '挨拶を返します。' },
+          { type: 'text', text: deltas.map((d) => d.text).join('') },
         ],
       },
-      { type: 'tool_result', toolCallId: 'tu_1', name: 'Edit', output: 'ok', isError: false },
-      { type: 'text_delta', messageId: 'msg_2', text: '完了' },
-      {
-        type: 'message',
-        messageId: 'msg_2',
-        role: 'assistant',
-        content: [{ type: 'text', text: '完了' }],
-      },
-      {
-        type: 'usage',
-        usage: { inputTokens: 1000, outputTokens: 40, costUsd: 0.012, costSource: 'reported' },
-      },
     ]);
+    // Input counts cache reads too (1200 + 800).
+    expect(events.at(-1)).toEqual({
+      type: 'usage',
+      usage: {
+        inputTokens: 2000,
+        outputTokens: 30,
+        costUsd: expect.closeTo(0.00429, 9),
+        costSource: 'estimated',
+      },
+    });
     expect(n.outcome).toEqual({ ok: true });
-    expect(n.sessionId).toBe(SID);
+    expect(n.baselineTotals).toEqual({
+      inputTokens: 2000,
+      outputTokens: 30,
+      costUsd: expect.closeTo(0.00429, 9),
+    });
   });
 
-  it('reports usage as a delta from the resume baseline', () => {
-    const n = new ClaudeMessageNormalizer(CWD, {
-      inputTokens: 600,
-      outputTokens: 30,
-      costUsd: 0.01,
+  it('marks the cost unknown when the CLI had no price for the model (gateway alias)', () => {
+    const { events } = normalize(R.TEXT_ALIAS);
+    expect(ofType(events, 'usage')[0]?.usage.costSource).toBe('unknown');
+  });
+
+  it('maps tool uses and their results, persisting each message before its tool runs', () => {
+    const { events } = normalize(R.EDIT_INSIDE);
+    const types = events.map((e) => e.type);
+    // Per tool: call → activity → message (flushed at message_stop) → result.
+    expect(types.filter((t) => t !== 'text_delta')).toEqual([
+      'session',
+      'activity',
+      'tool_call',
+      'activity',
+      'message',
+      'tool_result',
+      'tool_call',
+      'activity',
+      'message',
+      'tool_result',
+      'message',
+      'usage',
+    ]);
+    expect(ofType(events, 'activity').map((a) => a.text)).toEqual([
+      'Claude Code を起動しました',
+      'ファイルを読み込み中: README.md',
+      'ファイルを編集中: README.md',
+    ]);
+    expect(ofType(events, 'tool_result')).toEqual([
+      expect.objectContaining({ name: 'Read', isError: false }),
+      expect.objectContaining({ name: 'Edit', isError: false }),
+    ]);
+  });
+
+  it('reads MCP tool results and checks that our tools registered', () => {
+    const ok = normalize(
+      R.MCP,
+      new ClaudeMessageNormalizer(CWD, undefined, {
+        expectedTools: ['mcp__acc__task_get'],
+      }),
+    );
+    expect(ok.n.fatal).toBeNull();
+    expect(ofType(ok.events, 'tool_result')[0]).toMatchObject({
+      name: 'mcp__acc__task_get',
+      output: expect.stringContaining('デモのタスク') as string,
     });
-    n.push(init);
-    const events = n.push(result());
-    expect(events).toEqual([
+
+    const missing = new ClaudeMessageNormalizer(CWD, undefined, {
+      expectedTools: ['mcp__acc__task_get', 'mcp__acc__task_list'],
+    });
+    const mcpInit = rec(R.MCP)[0] as Record<string, unknown>;
+    missing.push(mcpInit);
+    expect(missing.fatal).toBe(
+      'Control API のツールが Claude Code に登録されなかったため停止しました（未登録: mcp__acc__task_list、MCP サーバー: acc: connected）',
+    );
+
+    // A server still connecting is not a failure yet.
+    const pending = new ClaudeMessageNormalizer(CWD, undefined, {
+      expectedTools: ['mcp__acc__task_list'],
+    });
+    pending.push({ ...mcpInit, mcp_servers: [{ name: 'acc', status: 'pending' }] });
+    expect(pending.fatal).toBeNull();
+  });
+
+  it('explains API errors and keeps zeroed error results out of the baseline', () => {
+    const { n, events } = normalize(R.API_ERROR);
+    expect(n.outcome).toEqual({
+      ok: false,
+      message:
+        'モデルの呼び出しでエラーが発生しました: HTTP 400 / API Error: 400 bad request from fake',
+    });
+    expect(ofType(events, 'usage')).toEqual([]);
+    expect(n.baselineTotals).toBeNull();
+  });
+
+  it('treats a rejected credential as fatal at the first retry', () => {
+    const n = new ClaudeMessageNormalizer(CWD);
+    const retry = rec(R.AUTH_ERROR).find(
+      (m) => (m as { subtype?: string }).subtype === 'api_retry',
+    );
+    expect(n.push(retry)).toEqual([
+      { type: 'activity', text: 'モデルの応答を待っています（再試行 1/10、HTTP 401）' },
+    ]);
+    expect(n.fatal).toBe(
+      'Claude の認証に失敗しました。Claude Code へのログイン、または LiteLLM の URL / API キーを確認してください（HTTP 401）',
+    );
+  });
+
+  it('reports the usage of an interrupted turn only when the CLI counted it', () => {
+    // Interrupted while streaming: nothing was counted (zeroed totals).
+    const stream = normalize(R.INTERRUPT_STREAM);
+    expect(stream.n.outcome).toMatchObject({ ok: false });
+    expect(ofType(stream.events, 'usage')).toEqual([]);
+    expect(stream.n.baselineTotals).toBeNull();
+    // Interrupted at an approval: the completed call before it was counted.
+    const pending = normalize(R.ABORT_PENDING_APPROVAL);
+    expect(ofType(pending.events, 'usage')).toEqual([
+      { type: 'usage', usage: expect.objectContaining({ inputTokens: 100, outputTokens: 22 }) },
+    ]);
+  });
+
+  it('reports a resumed run as the delta from the previous totals', () => {
+    const first = normalize(R.RESUME_FIRST);
+    const second = normalize(
+      R.RESUME_SECOND,
+      new ClaudeMessageNormalizer(CWD, first.n.baselineTotals!),
+    );
+    expect(ofType(second.events, 'usage')).toEqual([
       {
         type: 'usage',
         usage: {
-          inputTokens: 400,
+          inputTokens: 2000,
           outputTokens: 10,
-          costUsd: expect.closeTo(0.002, 9),
-          costSource: 'reported',
+          costUsd: expect.closeTo(0.00615, 9),
+          costSource: 'estimated',
         },
       },
     ]);
-    expect(n.usageTotals).toEqual({ inputTokens: 1000, outputTokens: 40, costUsd: 0.012 });
-  });
-
-  it('turns error results into a Japanese failure', () => {
-    const n = new ClaudeMessageNormalizer(CWD);
-    n.push(assistant('m', [{ type: 'text', text: 'x' }], { error: 'authentication_failed' }));
-    n.push(result({ subtype: 'error_during_execution', is_error: true, errors: ['401'] }));
-    expect(n.outcome).toEqual({
-      ok: false,
-      message: expect.stringContaining('Claude の認証に失敗しました'),
+    expect(second.n.baselineTotals).toEqual({
+      inputTokens: 3000,
+      outputTokens: 20,
+      costUsd: expect.closeTo(0.0093, 9),
     });
-
-    const m = new ClaudeMessageNormalizer(CWD);
-    m.push(result({ subtype: 'error_max_turns', is_error: true }));
-    expect(m.outcome).toEqual({ ok: false, message: 'ターン数の上限に達したため停止しました' });
   });
 
+  // Not recorded (needs a real sub-agent run): hand-written, minimal.
   it('keeps sub-agent narration out of the transcript but keeps its tool uses', () => {
     const n = new ClaudeMessageNormalizer(CWD);
+    n.push(rec(R.TEXT)[0]);
     const sub = {
-      ...assistant('sub_1', [
-        { type: 'text', text: 'internal' },
-        { type: 'tool_use', id: 'tu_s', name: 'Grep', input: { pattern: 'x' } },
-      ]),
+      type: 'assistant',
       parent_tool_use_id: 'tu_task',
+      session_id: sessionOf(R.TEXT),
+      message: {
+        id: 'sub_1',
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'internal' },
+          { type: 'tool_use', id: 'tu_s', name: 'Grep', input: { pattern: 'x' } },
+        ],
+      },
     };
-    n.push(init);
     const events = [...n.push(sub), ...n.finish()];
     expect(events.map((e) => e.type)).toEqual(['tool_call', 'activity']);
   });
 
-  it('ignores unknown messages and maps thinking blocks to reasoning', () => {
+  it('ignores unknown messages', () => {
     const n = new ClaudeMessageNormalizer(CWD);
-    expect(n.push({ type: 'rate_limit_event', session_id: SID })).toEqual([
-      { type: 'session', runtimeSessionId: SID },
+    expect(n.push({ type: 'something_new', session_id: 's1' })).toEqual([
+      { type: 'session', runtimeSessionId: 's1' },
     ]);
     expect(n.push(null)).toEqual([]);
-    n.push(assistant('m1', [{ type: 'thinking', thinking: 'hmm' }]));
-    expect(n.finish()).toEqual([
-      {
-        type: 'message',
-        messageId: 'm1',
-        role: 'assistant',
-        content: [{ type: 'reasoning', text: 'hmm' }],
-      },
-    ]);
   });
 });
 
-// ---- runtime with a fake SDK -------------------------------------------------------------
+// ---- runtime with a replaying SDK ----------------------------------------------------------
 
 interface FakeQuery extends QueryLike {
-  options: Parameters<QueryFn>[0]['options'];
+  options: Options;
   prompts: unknown[];
   interrupted: boolean;
   closed: boolean;
 }
 
 /**
- * Fake `query()`: replays `messages`, calling `canUseTool` when it meets a
- * `{ type: '__ask__', tool, input }` marker (like the CLI's permission control request).
+ * Fake `query()` replaying recorded messages. `before` runs before message i is yielded (to
+ * call `canUseTool` like the CLI would); `hangAt` stops yielding at index i until
+ * interrupted / closed. Like the CLI, it exits once the prompt input ends.
  */
-function fakeSdk(messages: unknown[], opts: { hangAfter?: number; exitEarly?: boolean } = {}) {
+function replaySdk(
+  messages: unknown[],
+  opts: {
+    before?: (i: number, options: Options) => Promise<void>;
+    hangAt?: number;
+    /** End without waiting for the input to close (a CLI that exits early). */
+    exitEarly?: boolean;
+    /** Keep yielding after interrupt() (the CLI answers an interrupt with a result). */
+    afterInterrupt?: unknown[];
+  } = {},
+) {
   const queries: FakeQuery[] = [];
   const query: QueryFn = ({ prompt, options }) => {
-    let stop: () => void = () => {};
-    const stopped = new Promise<void>((r) => (stop = r));
+    let wake: () => void = () => {};
+    const woken = new Promise<void>((r) => (wake = r));
     const q: FakeQuery = {
       options,
       prompts: [],
@@ -230,41 +261,32 @@ function fakeSdk(messages: unknown[], opts: { hangAfter?: number; exitEarly?: bo
       closed: false,
       async interrupt() {
         q.interrupted = true;
-        stop();
+        wake();
       },
       close() {
         q.closed = true;
-        stop();
+        wake();
       },
       async *[Symbol.asyncIterator]() {
         const it = prompt[Symbol.asyncIterator]();
         q.prompts.push((await it.next()).value);
         for (const [i, m] of messages.entries()) {
-          if (opts.hangAfter !== undefined && i === opts.hangAfter) {
-            await stopped;
-            return;
+          if (opts.hangAt === i) {
+            await woken;
+            if (q.closed) return;
+            yield* opts.afterInterrupt ?? [];
+            break;
           }
-          const rec = m as { type: string; tool?: string; input?: Record<string, unknown> };
-          if (rec.type === '__ask__') {
-            const r = await options.canUseTool!(rec.tool!, rec.input!, {
-              signal: new AbortController().signal,
-              toolUseID: 'tu_x',
-              requestId: 'req_1',
-            });
-            yield { type: '__decision__', r };
-            continue;
-          }
+          await opts.before?.(i, options);
           yield m;
         }
-        // Like the CLI: exit once the input stream ends (or crash early).
-        if (!opts.exitEarly) await it.next();
+        if (!opts.exitEarly) await Promise.race([it.next(), woken]);
       },
     };
     queries.push(q);
     return q;
   };
-  const module: ClaudeSdkModule = { query };
-  return { module, queries };
+  return { module: { query } satisfies ClaudeSdkModule, queries };
 }
 
 function input(over: Partial<AgentRunInput> = {}): AgentRunInput {
@@ -289,18 +311,48 @@ const settings =
   () =>
     Settings.parse(s);
 
+const runtime = (
+  module: ClaudeSdkModule,
+  over: Partial<ConstructorParameters<typeof ClaudeAgentSdkRuntime>[0]> = {},
+) => new ClaudeAgentSdkRuntime({ settings: settings(), loadSdk: async () => module, ...over });
+
+/** The PreToolUse hook the runtime registered. */
+function preToolUse(options: Options): (toolName: string, toolInput: unknown) => Promise<unknown> {
+  const hook = options.hooks?.PreToolUse?.[0]?.hooks[0] as HookCallback;
+  return (toolName, toolInput) =>
+    hook(
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: toolName,
+        tool_input: toolInput,
+        tool_use_id: 'tu_1',
+        session_id: 's',
+        transcript_path: '',
+        cwd: CWD,
+      } satisfies HookInput,
+      'tu_1',
+      { signal: new AbortController().signal },
+    );
+}
+
+const cut = (options: Options, toolName: string, toolInput: Record<string, unknown>) =>
+  options.canUseTool!(toolName, toolInput, {
+    signal: new AbortController().signal,
+    toolUseID: 'tu_1',
+    requestId: 'req_1',
+  });
+
 describe('ClaudeAgentSdkRuntime', () => {
   it('passes the fixed options and streams normalized events', async () => {
-    const sdk = fakeSdk(TURN);
-    const rt = new ClaudeAgentSdkRuntime({
+    const sdk = replaySdk(rec(R.TEXT));
+    const rt = runtime(sdk.module, {
       settings: settings({ litellm: { baseUrl: 'http://127.0.0.1:4000', apiKey: 'sk-x' } }),
-      loadSdk: async () => sdk.module,
       parentEnv: { PATH: '/bin', SECRET_TOKEN: 'nope' },
       clientApp: 'acc/test',
     });
     expect(await rt.available()).toEqual({ ok: true });
     const events = await collect(rt.run(input({ model: 'team-sonnet', systemPrompt: 'be nice' })));
-    expect(events.filter((e) => e.type === 'message')).toHaveLength(2);
+    expect(ofType(events, 'message')).toHaveLength(1);
     expect(events.at(-1)).toMatchObject({ type: 'usage' });
 
     const q = sdk.queries[0]!;
@@ -313,6 +365,10 @@ describe('ClaudeAgentSdkRuntime', () => {
       model: 'team-sonnet',
       systemPrompt: { type: 'preset', preset: 'claude_code', append: 'be nice' },
     });
+    expect(q.options.disallowedTools).toEqual([...DISALLOWED_AGENT_TOOLS]);
+    expect(q.options.hooks?.PreToolUse).toHaveLength(1);
+    // Nothing bypasses canUseTool / the hook.
+    expect(q.options.allowedTools).toBeUndefined();
     expect(q.options.resume).toBeUndefined();
     expect(q.options.env).toEqual({
       PATH: '/bin',
@@ -322,6 +378,7 @@ describe('ClaudeAgentSdkRuntime', () => {
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'team-sonnet',
       CLAUDE_CODE_SUBAGENT_MODEL: 'team-sonnet',
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
       CLAUDE_AGENT_SDK_CLIENT_APP: 'acc/test',
     });
     expect(q.prompts[0]).toMatchObject({
@@ -331,112 +388,127 @@ describe('ClaudeAgentSdkRuntime', () => {
     expect(q.closed).toBe(true);
   });
 
-  it('routes permissions through the policy and the approval flow', async () => {
-    const sdk = fakeSdk([
-      init,
-      { type: '__ask__', tool: 'Read', input: { file_path: `${CWD}/package.json` } },
-      { type: '__ask__', tool: 'Bash', input: { command: 'pnpm test' } },
-      { type: '__ask__', tool: 'Bash', input: { command: 'rm -rf /' } },
-      result(),
-    ]);
+  it('enforces the policy in the PreToolUse hook for every tool use', async () => {
+    const sdk = replaySdk(rec(R.TEXT));
+    await collect(runtime(sdk.module).run(input()));
+    const hook = preToolUse(sdk.queries[0]!.options);
+    // Allowed: the hook stays out of the way (the CLI may still ask; canUseTool re-checks).
+    expect(await hook('Read', { file_path: `${CWD}/package.json` })).toEqual({});
+    expect(await hook('Bash', { command: 'git status' })).toEqual({});
+    expect(await hook('Grep', { pattern: 'x' })).toEqual({});
+    expect(await hook('mcp__acc__task_get', {})).toEqual({});
+    // Ask: the CLI then calls canUseTool even for tools it would auto-approve.
+    for (const [tool, toolInput] of [
+      ['Bash', { command: 'git -c core.fsmonitor=evil status' }],
+      ['Workflow', { script: 'x' }],
+      ['Edit', { file_path: `${CWD}/.git/config` }],
+      ['Read', { file_path: '/definitely/outside/secret' }],
+    ] as const) {
+      expect(await hook(tool, toolInput)).toMatchObject({
+        hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' },
+      });
+    }
+    // Deny: removed tools that slip through.
+    expect(await hook('Monitor', { command: 'echo hi' })).toMatchObject({
+      hookSpecificOutput: { permissionDecision: 'deny' },
+    });
+    expect(await hook('AskUserQuestion', {})).toMatchObject({
+      hookSpecificOutput: {
+        permissionDecision: 'deny',
+        permissionDecisionReason: expect.stringContaining('Work autonomously') as string,
+      },
+    });
+  });
+
+  it('answers canUseTool from the policy and the approval flow', async () => {
     const asked: string[] = [];
     const decisions: ApprovalDecision[] = [
       { decision: 'approved' },
-      { decision: 'rejected', note: '危険' },
+      { decision: 'rejected', note: 'だめ' },
     ];
-    const rt = new ClaudeAgentSdkRuntime({ settings: settings(), loadSdk: async () => sdk.module });
+    const sdk = replaySdk(rec(R.TEXT));
     await collect(
-      rt.run(
+      runtime(sdk.module).run(
         input({
           canUseTool: async (req) => {
-            asked.push(`${req.toolName}:${(req.input as { command: string }).command}`);
-            return decisions.shift()!;
+            asked.push(req.toolName);
+            const d = decisions.shift();
+            if (!d) throw new Error('cancelled');
+            return d;
           },
         }),
       ),
     );
-    // The in-workspace Read was allowed by policy without asking.
-    expect(asked).toEqual(['Bash:pnpm test', 'Bash:rm -rf /']);
-  });
-
-  it('returns allow/deny results to the SDK', async () => {
-    const results: unknown[] = [];
-    // Drive canUseTool directly and record what goes back to the SDK.
-    const recording: ClaudeSdkModule = {
-      query: (params) => {
-        const cut = params.options.canUseTool!;
-        const opts = {
-          signal: new AbortController().signal,
-          toolUseID: 't',
-          requestId: 'r',
-        } as Parameters<typeof cut>[2];
-        return {
-          interrupt: async () => {},
-          close: () => {},
-          async *[Symbol.asyncIterator]() {
-            results.push(await cut('Write', { file_path: `${CWD}/x.md` }, opts));
-            results.push(await cut('Write', { file_path: '/definitely/outside/x.md' }, opts));
-            results.push(await cut('Bash', { command: 'ls' }, opts));
-            yield result();
-          },
-        };
-      },
-    };
-    const rt2 = new ClaudeAgentSdkRuntime({ settings: settings(), loadSdk: async () => recording });
-    let n = 0;
-    await collect(
-      rt2.run(
-        input({
-          canUseTool: async () => {
-            n += 1;
-            if (n === 1) return { decision: 'rejected', note: 'だめ' };
-            throw new Error('cancelled');
-          },
-        }),
-      ),
-    );
-    expect(results).toEqual([
-      { behavior: 'allow', updatedInput: { file_path: `${CWD}/x.md` } },
-      { behavior: 'deny', message: 'The user rejected this tool use: だめ' },
-      { behavior: 'deny', message: 'The run was cancelled.', interrupt: true },
-    ]);
+    const o = sdk.queries[0]!.options;
+    expect(await cut(o, 'Write', { file_path: `${CWD}/x.md` })).toEqual({
+      behavior: 'allow',
+      updatedInput: { file_path: `${CWD}/x.md` },
+    });
+    expect(await cut(o, 'AskUserQuestion', {})).toMatchObject({ behavior: 'deny' });
+    expect(await cut(o, 'Bash', { command: 'pnpm test' })).toEqual({
+      behavior: 'allow',
+      updatedInput: { command: 'pnpm test' },
+    });
+    expect(await cut(o, 'Bash', { command: 'rm -rf /' })).toEqual({
+      behavior: 'deny',
+      message: 'The user rejected this tool use: だめ',
+    });
+    expect(await cut(o, 'WebFetch', { url: 'https://example.com' })).toEqual({
+      behavior: 'deny',
+      message: 'The run was cancelled.',
+      interrupt: true,
+    });
+    expect(asked).toEqual(['Bash', 'Bash', 'WebFetch']);
   });
 
   it('resumes with the stored session and subtracts the baseline', async () => {
     const baselines = new MemoryBaselineStore();
-    baselines.set(SID, { inputTokens: 900, outputTokens: 30, costUsd: 0.01 });
-    const sdk = fakeSdk([init, result()]);
-    const rt = new ClaudeAgentSdkRuntime({
-      settings: settings(),
-      loadSdk: async () => sdk.module,
-      baselines,
-    });
-    const events = await collect(rt.run(input({ resumeSessionId: SID, model: 'gpt-4o' })));
-    expect(sdk.queries[0]!.options.resume).toBe(SID);
+    const first = normalize(R.RESUME_FIRST).n;
+    const sid = sessionOf(R.RESUME_SECOND);
+    baselines.set(sid, first.baselineTotals!);
+    const sdk = replaySdk(rec(R.RESUME_SECOND));
+    const events = await collect(
+      runtime(sdk.module, { baselines }).run(input({ resumeSessionId: sid, model: 'gpt-4o' })),
+    );
+    expect(sdk.queries[0]!.options.resume).toBe(sid);
     // Not a Claude model and no LiteLLM: let the CLI pick its default.
     expect(sdk.queries[0]!.options.model).toBeUndefined();
-    expect(events.find((e) => e.type === 'usage')).toEqual({
-      type: 'usage',
-      usage: {
-        inputTokens: 100,
-        outputTokens: 10,
-        costUsd: expect.closeTo(0.002, 9),
-        costSource: 'reported',
-      },
+    expect(ofType(events, 'usage')[0]?.usage).toMatchObject({
+      inputTokens: 2000,
+      outputTokens: 10,
     });
-    expect(baselines.get(SID)).toEqual({ inputTokens: 1000, outputTokens: 40, costUsd: 0.012 });
+    expect(baselines.get(sid)).toMatchObject({ inputTokens: 3000, outputTokens: 20 });
   });
 
-  it('fails the run on error results', async () => {
-    const sdk = fakeSdk([init, result({ subtype: 'error_max_budget_usd', is_error: true })]);
-    const rt = new ClaudeAgentSdkRuntime({ settings: settings(), loadSdk: async () => sdk.module });
-    await expect(collect(rt.run(input()))).rejects.toThrow('予算の上限に達したため停止しました');
+  it('fails the run on error results without touching the baseline', async () => {
+    const baselines = new MemoryBaselineStore();
+    const sid = sessionOf(R.API_ERROR);
+    baselines.set(sid, { inputTokens: 5, outputTokens: 5, costUsd: 0.5 });
+    const sdk = replaySdk(rec(R.API_ERROR));
+    await expect(
+      collect(runtime(sdk.module, { baselines }).run(input({ resumeSessionId: sid }))),
+    ).rejects.toThrow('モデルの呼び出しでエラーが発生しました: HTTP 400');
+    expect(baselines.get(sid)).toEqual({ inputTokens: 5, outputTokens: 5, costUsd: 0.5 });
   });
 
-  it('fails when the CLI exits without a result', async () => {
-    const sdk = fakeSdk([init], { exitEarly: true });
-    const rt = new ClaudeAgentSdkRuntime({ settings: settings(), loadSdk: async () => sdk.module });
-    await expect(collect(rt.run(input()))).rejects.toThrow(
+  it('stops the CLI at a fatal retry instead of waiting out the backoff', async () => {
+    const msgs = rec(R.AUTH_ERROR);
+    const retryAt = msgs.findIndex((m) => (m as { subtype?: string }).subtype === 'api_retry');
+    const sdk = replaySdk(msgs.slice(0, retryAt + 1).concat([{ type: 'never' }]), {
+      hangAt: retryAt + 1,
+      afterInterrupt: msgs.slice(retryAt + 1),
+    });
+    await expect(
+      collect(runtime(sdk.module, { interruptGraceMs: 10 }).run(input())),
+    ).rejects.toThrow('Claude の認証に失敗しました');
+    expect(sdk.queries[0]!.interrupted).toBe(true);
+    expect(sdk.queries[0]!.closed).toBe(true);
+  });
+
+  it('fails when the CLI exits without a result, or crashes', async () => {
+    const msgs = rec(R.TEXT);
+    const noResult = replaySdk(msgs.slice(0, 2), { exitEarly: true });
+    await expect(collect(runtime(noResult.module).run(input()))).rejects.toThrow(
       'Claude Code が結果を返さずに終了しました',
     );
 
@@ -450,30 +522,62 @@ describe('ClaudeAgentSdkRuntime', () => {
         },
       }),
     };
-    const rt2 = new ClaudeAgentSdkRuntime({ settings: settings(), loadSdk: async () => crashing });
-    await expect(collect(rt2.run(input()))).rejects.toThrow(
+    await expect(collect(runtime(crashing).run(input()))).rejects.toThrow(
       'Claude Code が異常終了しました: spawn ENOENT',
     );
   });
 
-  it('interrupts on abort and ends with the abort error', async () => {
-    const sdk = fakeSdk([init, streamStart('m'), streamText('x')], { hangAfter: 3 });
-    const rt = new ClaudeAgentSdkRuntime({
-      settings: settings(),
-      loadSdk: async () => sdk.module,
-      interruptGraceMs: 10,
+  it('interrupts on abort, still reports the interrupted turn usage, and ends with the abort error', async () => {
+    // Recorded: abort during a pending approval; the CLI answers the interrupt with a result.
+    const msgs = rec(R.ABORT_PENDING_APPROVAL);
+    const resultAt = msgs.findIndex((m) => (m as { type?: string }).type === 'result');
+    const userAt = msgs.findIndex((m) => (m as { type?: string }).type === 'user');
+    const sdk = replaySdk(msgs.slice(0, userAt).concat([{ type: 'never' }]), {
+      hangAt: userAt,
+      afterInterrupt: msgs.slice(userAt, resultAt + 1),
     });
     const ac = new AbortController();
     const events: AgentEvent[] = [];
     const p = (async () => {
-      for await (const e of rt.run(input({ signal: ac.signal }))) {
+      for await (const e of runtime(sdk.module, { interruptGraceMs: 10 }).run(
+        input({ signal: ac.signal }),
+      )) {
         events.push(e);
-        if (e.type === 'text_delta') ac.abort(new Error('cancelled by test'));
+        if (e.type === 'message') ac.abort(new Error('cancelled by test'));
       }
     })();
     await expect(p).rejects.toThrow('cancelled by test');
     expect(sdk.queries[0]!.interrupted).toBe(true);
     expect(sdk.queries[0]!.closed).toBe(true);
+    // After the abort only usage is passed on (the CLI counted the completed call).
+    expect(
+      events.slice(events.findIndex((e) => e.type === 'message') + 1).map((e) => e.type),
+    ).toEqual(['usage']);
+  });
+
+  it('stops a silent CLI after the idle timeout, but not while an approval is pending', async () => {
+    const msgs = rec(R.TEXT);
+    const silent = replaySdk(msgs, { hangAt: 2 });
+    await expect(
+      collect(runtime(silent.module, { idleTimeoutMs: 30, interruptGraceMs: 10 }).run(input())),
+    ).rejects.toThrow('Claude Code から 0 秒以上応答がないため停止しました');
+    expect(silent.queries[0]!.interrupted).toBe(true);
+    expect(silent.queries[0]!.closed).toBe(true);
+
+    // A human taking longer than the idle timeout to answer is not a hung CLI.
+    const waiting = replaySdk(msgs, {
+      before: async (i, options) => {
+        if (i === 2) await cut(options, 'Bash', { command: 'pnpm test' });
+      },
+    });
+    const slowHuman = async (): Promise<ApprovalDecision> => {
+      await new Promise((r) => setTimeout(r, 120));
+      return { decision: 'approved' };
+    };
+    const events = await collect(
+      runtime(waiting.module, { idleTimeoutMs: 30 }).run(input({ canUseTool: slowHuman })),
+    );
+    expect(events.at(-1)).toMatchObject({ type: 'usage' });
   });
 
   it('reports the SDK as unavailable when it cannot be loaded', async () => {
@@ -492,13 +596,9 @@ describe('ClaudeAgentSdkRuntime', () => {
   });
 
   it('passes the located Claude Code executable, or reports why it is missing', async () => {
-    const sdk = fakeSdk(TURN);
+    const sdk = replaySdk(rec(R.TEXT));
     let location: ClaudeCodeLocation = { ok: true, path: '/opt/claude/claude', source: 'path' };
-    const rt = new ClaudeAgentSdkRuntime({
-      settings: settings(),
-      loadSdk: async () => sdk.module,
-      locateExecutable: () => location,
-    });
+    const rt = runtime(sdk.module, { locateExecutable: () => location });
     expect(await rt.available()).toEqual({ ok: true });
     await collect(rt.run(input()));
     expect(sdk.queries[0]!.options.pathToClaudeCodeExecutable).toBe('/opt/claude/claude');

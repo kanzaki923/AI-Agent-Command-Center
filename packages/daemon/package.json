@@ -12,7 +12,9 @@
     "dev": "tsx watch --clear-screen=false src/main.ts",
     "start": "tsx src/main.ts",
     "typecheck": "tsc -p tsconfig.json",
-    "bundle": "node scripts/bundle.js"
+    "bundle": "node scripts/bundle.js",
+    "test:sdk-contract": "vitest run src/runtime/claude/sdk-contract.test.ts",
+    "record:sdk-fixtures": "tsx src/runtime/claude/contract/record.ts"
   },
   "dependencies": {
     "@acc/protocol": "workspace:*",

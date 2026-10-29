@@ -24,7 +24,7 @@ export function mcpToolName(method: string): string {
   return method.replaceAll('.', '_');
 }
 
-/** Fully qualified name the CLI uses for permission checks and `allowedTools`. */
+/** Fully qualified name the CLI uses for tool calls and permission checks. */
 export function qualifiedMcpToolName(method: string): string {
   return `mcp__${ACC_MCP_SERVER}__${mcpToolName(method)}`;
 }
@@ -63,21 +63,23 @@ export function buildAccMcpTools(
 }
 
 /**
- * The `mcpServers` entry and `allowedTools` for a run, or null when it has no tools (e.g. a
- * worker a human started without a grant). Listing them in `allowedTools` keeps the CLI from
- * asking for each call; the capability check happens in the dispatcher instead.
+ * The `mcpServers` entry and the qualified tool names for a run, or null when it has no tools
+ * (e.g. a worker a human started without a grant). The names are not put in `allowedTools`:
+ * a bare allowedTools entry would bypass `canUseTool` (the SDK warns about it), and our policy
+ * allows `mcp__acc__*` anyway, so every call has one gate. The capability check happens in
+ * the dispatcher.
  */
 export function accMcpServer(
   sdk: McpSdk,
   tools: readonly AgentTool[] | undefined,
   signal: AbortSignal,
   version = '0.1.0',
-): { server: McpSdkServerConfigWithInstance; allowedTools: string[] } | null {
+): { server: McpSdkServerConfigWithInstance; toolNames: string[] } | null {
   if (!tools?.length) return null;
   const server = sdk.createSdkMcpServer({
     name: ACC_MCP_SERVER,
     version,
     tools: buildAccMcpTools(sdk, tools, signal),
   });
-  return { server, allowedTools: tools.map((t) => qualifiedMcpToolName(t.method)) };
+  return { server, toolNames: tools.map((t) => qualifiedMcpToolName(t.method)) };
 }
