@@ -20,10 +20,6 @@ afterEach(async () => {
 /** Methods of the redesign the Core track ships as placeholders. */
 const STUBS = [
   'session.spawn',
-  'session.stop',
-  'session.resume',
-  'session.delegate',
-  'session.undelegate',
   'session.setBudget',
   'session.tree',
   'human.ask',

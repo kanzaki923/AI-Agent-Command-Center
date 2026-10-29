@@ -1,4 +1,3 @@
-import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { type Server, createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -559,18 +558,15 @@ describe('real path (no network)', () => {
 });
 
 describe('system.setupDemo', () => {
-  it('creates a demo repo, project and orchestrator chat once (idempotent)', async () => {
+  it('creates a demo folder, project and a delegated chat once (idempotent, no git)', async () => {
     const d = await createTestDaemon();
     cleanups.push(() => d.cleanup());
     const first = await d.call(HUMAN, 'system.setupDemo', {});
     expect(first.created).toBe(true);
-    expect(first.repoPath).toBe(join(d.home, 'demo', 'auth-demo'));
-    expect(existsSync(join(first.repoPath, '.git'))).toBe(true);
-    expect(first.project).toMatchObject({
-      repoPath: first.repoPath,
-      testCommand: 'node --test',
-      defaultBranch: 'main',
-    });
+    expect(first.repoPath).toBe(join(d.home, 'demo', 'launch-demo'));
+    expect(existsSync(join(first.repoPath, 'brief.md'))).toBe(true);
+    expect(existsSync(join(first.repoPath, '.git'))).toBe(false);
+    expect(first.project).toMatchObject({ folderPath: first.repoPath, repoPath: null });
     expect(first.session).toMatchObject({
       kind: 'chat',
       title: DEMO_SESSION_TITLE,
@@ -580,15 +576,11 @@ describe('system.setupDemo', () => {
     expect(first.grant).toMatchObject({
       lifetime: 'session',
       scope: { projectIds: [first.project.id] },
-      limits: { maxWorkers: 2, maxDepth: 1 },
+      limits: { maxChildren: 4, maxDepth: 1 },
     });
-    // The demo project's own tests pass.
-    const tests = spawnSync(process.execPath, ['--test'], {
-      cwd: first.repoPath,
-      encoding: 'utf8',
-      env: { PATH: process.env.PATH ?? '' },
-    });
-    expect(tests.status).toBe(0);
+    // A folder project: no code permissions in the preset.
+    expect(first.grant.permissions).toContain('session.spawn');
+    expect(first.grant.permissions).not.toContain('integration.create');
 
     const again = await d.call(HUMAN, 'system.setupDemo', {});
     expect(again).toMatchObject({
@@ -599,7 +591,7 @@ describe('system.setupDemo', () => {
       grant: { id: first.grant.id },
     });
     expect((await d.call(HUMAN, 'project.list', {})).items).toHaveLength(1);
-    // The next message to the demo chat runs as an orchestrator.
-    expect(d.ctx.service('policy').sessionAllows(first.session.id, 'task.spawnWorker')).toBe(true);
+    // The next message to the demo chat runs as a supervisor.
+    expect(d.ctx.service('policy').sessionAllows(first.session.id, 'session.spawn')).toBe(true);
   });
 });

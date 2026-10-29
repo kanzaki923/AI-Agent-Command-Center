@@ -43,13 +43,18 @@ function retryChain(ctx: DaemonContext, run: Run): Set<string> {
  * Executor for `chat` runs: streams the assistant reply for the session history through the
  * LLM gateway and persists it. If the session holds capability grants, the methods they
  * allow are offered as tools (a plain chat becomes an operator of the app); without grants
- * the tool list is empty and this is ordinary chat.
+ * the tool list is empty and this is ordinary chat. A message sent while it answers is
+ * taken in right after (the run continues), and the daemon's per-run limits apply.
  */
 export function createChatExecutor(ctx: DaemonContext): RunExecutor {
   return async (ctl) => {
     const run = ctl.run;
     const session = ctx.repos.sessions.require(run.sessionId);
     const model = requireChatModel(ctx, run, session);
+    // Messages that waited for this run are in its history; later ones are injected at the
+    // next step (spec 20261029 §3.2, D9).
+    const inbox = ctx.hasService('supervisorInbox') ? ctx.service('supervisorInbox') : null;
+    inbox?.drain(run.id);
     await runToolLoop({
       ctx,
       ctl,
@@ -58,6 +63,9 @@ export function createChatExecutor(ctx: DaemonContext): RunExecutor {
         systemPrompt: session.systemPrompt,
       }),
       tools: apiTools(ctx, ctl.actor),
+      maxTurns: ctx.settings.get().supervisor.maxModelCallsPerRun,
+      failOnTurnLimit: true,
+      ...(inbox ? { inject: () => inbox.injectedMessages(run.id) } : {}),
     });
   };
 }

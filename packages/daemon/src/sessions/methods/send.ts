@@ -2,12 +2,14 @@ import type { ContentPart } from '@acc/protocol';
 import { defineMethod } from '../../api/registry';
 import type { DaemonContext } from '../../core/context';
 import { conflict, invalidParams } from '../../core/errors';
-import { resolveChatModel } from '../chat';
-import { sessionBudgetId, sessionScope } from './shared';
+import { ACTIVE_RUN_STATUSES } from '../../runs/manager';
+import { sessionScope } from './shared';
 
 /**
- * session.send: append the user message and start a run. T1 turns this into
- * `inbox.deliver` (never refused while busy: injected at the next step or queued).
+ * session.send: store the user message and hand it to the inbox (spec 20261029 §3.2, D9).
+ * Never refused for being busy: an idle session starts a run (`started`), a busy chat or
+ * supervisor takes it at its next step (`injected`), a busy agent after its current run
+ * (`queued`) — or right away with `interrupt` (its current run ends as `superseded`).
  */
 export function sessionSend(ctx: DaemonContext) {
   const { repos, db } = ctx;
@@ -30,37 +32,25 @@ export function sessionSend(ctx: DaemonContext) {
         if (content.some((c) => c.type === 'tool_result' || c.type === 'tool_call')) {
           throw invalidParams('User messages may only contain text parts');
         }
-        // A chat whose grants allow starting workers runs as an orchestrator (concept §3.1:
-        // orchestration is a role given by capabilities, not a session type).
-        const kind =
-          session.kind === 'agent'
-            ? 'agent'
-            : ctx.hasService('policy') &&
-                ctx.service('policy').sessionAllows(session.id, 'task.spawnWorker')
-              ? 'orchestrator'
-              : 'chat';
+        const active = repos.runs.findOne({
+          where: { session_id: session.id, status: [...ACTIVE_RUN_STATUSES] },
+        });
+        const handsOverNow = !active || (p.interrupt === true && active.kind === 'agent');
         const message = ctx.service('sessions').appendMessage({
           sessionId: session.id,
           role: 'user',
           content,
           author: call.actor,
+          delivery: handsOverNow ? 'delivered' : 'queued',
         });
-        // Rolls back the message too if the session is busy (conflict).
-        const run = ctx.service('runs').start({
-          sessionId: session.id,
-          kind,
-          createdBy: call.actor,
-          triggerMessageId: message.id,
-          trigger: 'user',
-          model:
-            kind === 'agent'
-              ? (p.model ?? session.model)
-              : resolveChatModel(ctx, session.model, p.model),
-          runtime: session.runtime,
-          workspaceId: kind === 'agent' ? session.workspaceId : null,
-          budgetId: sessionBudgetId(ctx, session.id),
+        const r = ctx.service('inbox').deliver(session.id, {
+          kind: 'user_message',
+          refs: { messageId: message.id },
+          actor: call.actor,
+          ...(p.interrupt ? { interrupt: true } : {}),
+          ...(p.model ? { model: p.model } : {}),
         });
-        return { messageId: message.id, runId: run.id, delivery: 'started' as const };
+        return { messageId: message.id, runId: r.runId, delivery: r.delivery };
       });
     },
   });

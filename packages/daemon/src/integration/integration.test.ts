@@ -486,11 +486,15 @@ describe('integration', () => {
     process.env.ACC_TEST_LEAK = 'leaked';
     try {
       await s.d.call(agent, 'integration.run', { integrationId: integ.id });
-      const ap = await vi.waitFor(() => {
-        const a = pendingVerify();
-        if (!a) throw new Error('no approval yet');
-        return a;
-      });
+      // The merge runs git first; on a cold, loaded Windows machine that takes over a second.
+      const ap = await vi.waitFor(
+        () => {
+          const a = pendingVerify();
+          if (!a) throw new Error('no approval yet');
+          return a;
+        },
+        { timeout: 15_000 },
+      );
       expect(ap).toMatchObject({
         kind: 'integration',
         payload: { action: 'verify', command: expect.stringContaining('node') as unknown },

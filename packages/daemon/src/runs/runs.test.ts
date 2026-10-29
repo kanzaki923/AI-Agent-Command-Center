@@ -209,9 +209,9 @@ describe('run lifecycle', () => {
 });
 
 describe('concurrency queue', () => {
-  it('runs at most maxConcurrentRuns (10) at once and starts the rest FIFO', async () => {
+  it('runs at most maxConcurrentAgents (10) agent runs at once and starts the rest FIFO', async () => {
     d = await createTestDaemon();
-    expect(d.ctx.settings.get().maxConcurrentRuns).toBe(10);
+    expect(d.ctx.settings.get().maxConcurrentAgents).toBe(10);
     const ex = blockingExecutor(d.ctx.service('runs'));
     const ids: string[] = [];
     for (let i = 0; i < 12; i++) ids.push(startAgentRun(d, (await newSession(d)).id).id);
@@ -232,14 +232,14 @@ describe('concurrency queue', () => {
     expect(status(d, ids[11]!)).toBe('queued');
 
     // Raising the limit starts the waiting run without another run finishing.
-    await d.call(HUMAN, 'settings.update', { maxConcurrentRuns: 11 });
+    await d.call(HUMAN, 'settings.update', { maxConcurrentAgents: 11 });
     await until(() => ex.order.length === 12);
     expect(ex.order[11]).toBe(ids[11]);
   });
 
   it('cancels queued runs without running them', async () => {
     d = await createTestDaemon();
-    await d.call(HUMAN, 'settings.update', { maxConcurrentRuns: 1 });
+    await d.call(HUMAN, 'settings.update', { maxConcurrentAgents: 1 });
     const ex = blockingExecutor(d.ctx.service('runs'));
     const a = startAgentRun(d, (await newSession(d)).id);
     const b = startAgentRun(d, (await newSession(d)).id);
@@ -257,7 +257,7 @@ describe('concurrency queue', () => {
 
   it('aborts running runs on cancel and frees the slot once the executor unwinds', async () => {
     d = await createTestDaemon();
-    await d.call(HUMAN, 'settings.update', { maxConcurrentRuns: 1 });
+    await d.call(HUMAN, 'settings.update', { maxConcurrentAgents: 1 });
     const ex = blockingExecutor(d.ctx.service('runs'));
     const a = startAgentRun(d, (await newSession(d)).id);
     const b = startAgentRun(d, (await newSession(d)).id);
@@ -389,7 +389,7 @@ describe('approvals', () => {
 describe('interruption and recovery', () => {
   it('interrupts running and queued runs on shutdown; they can be retried after restart', async () => {
     d = await createTestDaemon();
-    await d.call(HUMAN, 'settings.update', { maxConcurrentRuns: 1 });
+    await d.call(HUMAN, 'settings.update', { maxConcurrentAgents: 1 });
     const ex = blockingExecutor(d.ctx.service('runs'));
     const a = startAgentRun(d, (await newSession(d)).id);
     const b = startAgentRun(d, (await newSession(d)).id);
@@ -642,7 +642,7 @@ describe('methods', () => {
 describe('liveness', () => {
   it('a run waiting on others lends its slot, so the workers it waits for can start', async () => {
     d = await createTestDaemon();
-    await d.call(HUMAN, 'settings.update', { maxConcurrentRuns: 1 });
+    await d.call(HUMAN, 'settings.update', { maxConcurrentAgents: 1 });
     const ex = blockingExecutor(d.ctx.service('runs'));
     const waiter = startAgentRun(d, (await newSession(d)).id);
     await until(() => ex.started(waiter.id));
@@ -692,7 +692,7 @@ describe('liveness', () => {
     const repo = await createTempRepo();
     try {
       d = await createTestDaemon();
-      await d.call(HUMAN, 'settings.update', { maxConcurrentRuns: 1 });
+      await d.call(HUMAN, 'settings.update', { maxConcurrentAgents: 1 });
       const ex = blockingExecutor(d.ctx.service('runs'));
       const project = await d.call(HUMAN, 'project.create', {
         name: 'p',

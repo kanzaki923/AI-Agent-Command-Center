@@ -83,10 +83,10 @@ UI とデーモンは同じ `ACC_HOME` を見る（Vite の開発ミドルウェ
 
 ### Vertical Slice を試す
 
-- **オフライン（費用なし）**：UI の初回画面で「デモモードで試す」を選ぶ（または `system.setupDemo` を呼ぶ）。`<ACC_HOME>/demo/auth-demo` にサンプルのリポジトリと「デモ: 設計チャット」（`mock/orchestrator` + Orchestrator 権限）ができるので、下書きの目標をそのまま送る。Worker のテスト実行は承認待ちになるので承認し、最後に統合候補を承認する。
+- **オフライン（費用なし）**：UI の初回画面で「デモモードで試す」を選ぶ（または `system.setupDemo` を呼ぶ）。`<ACC_HOME>/demo/launch-demo` に git なしのフォルダと「デモ: 新製品ローンチ準備」（`mock/orchestrator` + `session.delegate`）ができるので、下書きの目標をそのまま送る。指揮役が 3 人に任せ、終わるたびに起こされて進み具合を答え、そろったら最終報告で止まる。コードの縦の流れ（Worker・統合・承認）は旧プリセットの `session.grantOrchestration` と `e2e:slice` で試す。
 - **本物の経路**：設定（または `ACC_LITELLM_BASE_URL` / `ACC_LITELLM_API_KEY`）で LiteLLM Proxy の URL とキーを入れる。
   1. 自分のプロジェクトを追加し（`testCommand` を設定すると統合後に検証される）、チャットを作ってモデルに LiteLLM のモデル名（例 `claude-sonnet-4`）を選ぶ。
-  2. そのチャットに `session.grantOrchestration({ sessionId, maxWorkers: 2, lifetime: 'run' })` で Orchestrator 権限を与える（`budgetUsd` で予算も付けられる）。次の 1 回の送信が Orchestrator として動く。
+  2. そのチャットを `session.delegate({ sessionId })`（既定 4 人・$3）で指揮役にする。コードの Worker と統合の流れなら旧プリセットの `session.grantOrchestration({ sessionId, maxWorkers: 2 })`。
   3. Worker を Claude Code にするには `settings.update({ defaultRuntime: 'claude-agent-sdk' })`（Run ごとなら `task.spawnWorker` の `runtime`）。LiteLLM が設定されていれば SDK もそこを通り、なければ手元の Claude Code のログインを使う。SDK が読み込めないと Worker の Run は理由つきで失敗する。
   4. 費用が発生するのはこの経路だけ。テストでは呼ばない（下記 §6）。
 

@@ -7,6 +7,7 @@ import {
   type RunKind,
   type RunPermission,
   type RunStatus,
+  RunStopReason,
   type Session,
   type SystemActor,
   type ToolDecisionCounts,
@@ -96,12 +97,29 @@ export function toErrorInfo(err: unknown): ErrorInfo {
   return { code: 'internal', message: String(err) };
 }
 
+/** Which execution-slot pool a run kind uses (spec 20261029 D18). */
+export type SlotPool = 'agents' | 'chats';
+
+export function slotPoolOf(kind: RunKind): SlotPool {
+  return kind === 'agent' ? 'agents' : 'chats';
+}
+
+/** Error codes the daemon stops runs with on its own; they become the run's statusReason. */
+function stopReasonOf(error: unknown): RunStopReason | null {
+  const code = toErrorInfo(error).code;
+  const parsed = RunStopReason.safeParse(code);
+  return parsed.success ? parsed.data : null;
+}
+
 /**
  * Run lifecycle (architecture.md §2.6):
  * created → queued → running ⇄ awaiting_approval → completed | failed | cancelled | interrupted.
  *
- * - At most `settings.maxConcurrentRuns` runs hold an execution slot (running or
- *   awaiting_approval); the rest wait in `queued`, started FIFO as slots free up.
+ * - Two execution-slot pools: agent runs (with a workspace) take one of
+ *   `settings.maxConcurrentAgents`, LLM-only runs (chats, supervisors) one of
+ *   `settings.maxConcurrentChats`, so busy agents never keep a supervisor from answering.
+ *   A run holds its slot while running or awaiting_approval; the rest wait in `queued`,
+ *   started FIFO per pool as slots free up.
  * - A run with a workspace starts only once it holds the workspace's write lock; until then
  *   it stays queued while runs behind it may start.
  * - Executors (one per run kind) do the work through a RunController; they never set
@@ -357,9 +375,23 @@ export class RunManager implements RunsService {
     }
   }
 
+  /** Slots in use per pool (runs that lent theirs during a wait do not count). */
+  private slotsInUse(): Record<SlotPool, number> {
+    const used: Record<SlotPool, number> = { agents: 0, chats: 0 };
+    for (const a of this.active.values()) {
+      if (!this.lent.has(a.runId)) used[slotPoolOf(a.run.kind)] += 1;
+    }
+    return used;
+  }
+
   private pumpOnce(): void {
     const { ctx } = this;
-    const max = ctx.settings.get().maxConcurrentRuns;
+    const settings = ctx.settings.get();
+    const max: Record<SlotPool, number> = {
+      agents: settings.maxConcurrentAgents,
+      chats: settings.maxConcurrentChats,
+    };
+    const used = this.slotsInUse();
     const removed = new Set<string>();
     for (const id of [...this.queue]) {
       const run = ctx.repos.runs.get(id);
@@ -367,7 +399,9 @@ export class RunManager implements RunsService {
         removed.add(id);
         continue;
       }
-      if (this.active.size - this.lent.size >= max) break;
+      const pool = slotPoolOf(run.kind);
+      // Full pool: its runs keep their order; the other pool's runs behind may start.
+      if (used[pool] >= max[pool]) continue;
       const lock = this.tryLock(run);
       if (lock.kind === 'busy') {
         this.noteLockWait(run);
@@ -379,6 +413,7 @@ export class RunManager implements RunsService {
         continue;
       }
       this.launch(run, lock.lock);
+      used[pool] += 1;
     }
     if (removed.size > 0) this.queue = this.queue.filter((id) => !removed.has(id));
   }
@@ -495,6 +530,9 @@ export class RunManager implements RunsService {
         } else if (error instanceof ApiError && error.code === 'budget_exceeded') {
           // Refused before an LLM call (nothing left / reservation did not fit).
           a.run = this.terminate(cur, 'failed', 'budget_exhausted', SYSTEM, toErrorInfo(error));
+        } else if (stopReasonOf(error)) {
+          // Stopped by the daemon's own limits (turn_limit, loop_detected, daily_limit).
+          a.run = this.terminate(cur, 'failed', stopReasonOf(error), SYSTEM, toErrorInfo(error));
         } else {
           a.run = this.terminate(cur, 'failed', 'error', SYSTEM, toErrorInfo(error));
         }

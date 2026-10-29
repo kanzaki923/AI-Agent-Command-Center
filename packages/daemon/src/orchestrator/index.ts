@@ -5,18 +5,44 @@ import { setupDemo } from './demo';
 import { createOrchestratorExecutor } from './executor';
 import { grantOrchestration, orchestrationGrants } from './grant';
 import { MOCK_ORCHESTRATOR_MODEL, mockOrchestrator } from './mockModel';
-import { resumeInterruptedOrchestrators } from './resume';
+import { resumeAfterRestart, resumeInterruptedOrchestrators } from './resume';
 import { waitForIntegration, waitForTasks } from './wait';
 import { WorkerService, runEndedBy } from './workers';
 
 export {
   buildOrchestratorPrompt,
+  buildSupervisorPrompt,
   createOrchestratorExecutor,
+  supervisorMessages,
+  treeSnapshot,
   ORCHESTRATOR_MAX_TURNS,
+  ORCHESTRATOR_RESUME_NOTICE,
+  PROJECT_ID_LABEL,
+  REPOSITORY_LABEL,
+  TREE_HEADING,
 } from './executor';
-export { ORCHESTRATOR_PERMISSIONS, grantOrchestration, orchestrationGrants } from './grant';
+export {
+  ORCHESTRATOR_PERMISSIONS,
+  SUPERVISOR_CODE_PERMISSIONS,
+  SUPERVISOR_PERMISSIONS,
+  SUPERVISOR_SCHEDULE_PERMISSIONS,
+  delegateSession,
+  grantOrchestration,
+  orchestrationGrants,
+  supervisorGrantsOf,
+  supervisorPermissions,
+  undelegateSession,
+} from './grant';
+export { RESTART_RESUME_TEXT, resumeAfterRestart, type RestartReport } from './resume';
 export { MOCK_ORCHESTRATOR_MODEL, mockOrchestrator } from './mockModel';
-export { DEMO_FILES, DEMO_SESSION_TITLE, DEMO_GOAL_HINT, setupDemo } from './demo';
+export {
+  DEMO_FILES,
+  DEMO_GOAL_HINT,
+  DEMO_SCHEDULE_TITLE,
+  DEMO_SESSION_TITLE,
+  LAUNCH_DEMO_FILES,
+  setupDemo,
+} from './demo';
 export { taskSnapshot, waitForIntegration, waitForTasks } from './wait';
 export {
   NO_CHANGES,
@@ -37,14 +63,16 @@ declare module '../core/context' {
 /**
  * Orchestrator (concept §2, §3.1): orchestration is a role, not a session type.
  *
- * - `session.grantOrchestration` gives a chat session the orchestrator preset; its next
- *   `session.send` then runs as kind `orchestrator` (system prompt + Control API tools from
- *   the same contract and dispatcher as humans).
- * - `task.spawnWorker` / `task.wait` / `integration.wait` are what an orchestrator (or a
- *   human) uses to delegate and supervise; `orchestrator.recordDecision` puts its judgement
- *   on the timeline. The daemon records its own decisions too (worker started, task → review).
- * - `mock/orchestrator` drives the whole vertical slice offline; `system.setupDemo` prepares
- *   demo mode around it.
+ * - `session.delegate` (sessions/methods/delegate.ts → grant.ts) makes a chat a supervisor:
+ *   its runs are kind `orchestrator`, short and event-driven (executor.ts) — it starts
+ *   children with session.spawn, answers, and is woken by its inbox (src/inbox) when they
+ *   finish. After a restart, supervisors are woken and child agents resume once (resume.ts).
+ * - The older preset (`session.grantOrchestration`: task.create / task.spawnWorker and the
+ *   blocking task.wait / integration.wait, which the executor adds for it only) still runs
+ *   the code vertical slice until that flow moves to session.spawn.
+ * - `orchestrator.recordDecision` puts judgement on the timeline. The daemon records its
+ *   own decisions too (worker started, task → review).
+ * - `mock/orchestrator` drives both offline; `system.setupDemo` prepares demo mode.
  */
 export const orchestratorModule = defineModule({
   name: 'orchestrator',
@@ -184,6 +212,11 @@ export const orchestratorModule = defineModule({
           if (!ctx.hasService('runs')) return;
           const r = resumeInterruptedOrchestrators(ctx, workers);
           if (r.notified.length > 0) ctx.log.info('interrupted orchestrators handled', { ...r });
+          if (!ctx.hasService('supervisorInbox')) return;
+          const restart = resumeAfterRestart(ctx);
+          if (restart.woken.length + restart.resumed.length > 0) {
+            ctx.log.info('interrupted supervisors and children resumed', { ...restart });
+          }
         });
       },
       stop() {

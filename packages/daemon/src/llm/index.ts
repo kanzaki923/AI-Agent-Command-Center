@@ -34,7 +34,14 @@ export {
   type ApiToolsOptions,
   type LoopTool,
 } from './tools';
-export { runToolLoop, addUsage, type ToolLoopOptions, type ToolLoopResult } from './toolLoop';
+export {
+  runToolLoop,
+  addUsage,
+  RunStopError,
+  LOOP_REPEATS,
+  type ToolLoopOptions,
+  type ToolLoopResult,
+} from './toolLoop';
 export * from './types';
 
 declare module '../core/context' {

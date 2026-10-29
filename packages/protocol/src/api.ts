@@ -274,18 +274,18 @@ export const api = defineApi({
       name: z
         .string()
         .regex(/^[a-z0-9][a-z0-9-]{0,39}$/, 'lowercase letters, digits and "-"')
-        .default('auth-demo')
+        .default('launch-demo')
         .describe('Folder name under <ACC_HOME>/demo'),
     }),
     result: z.object({
       project: Project,
       session: Session,
       grant: CapabilityGrant,
-      repoPath: z.string(),
+      repoPath: z.string().describe('The demo folder (no git)'),
       created: z.boolean().describe('False when everything already existed'),
     }),
     description:
-      'Prepare demo mode (idempotent): a small local git repository with tests, a project for it and an orchestrator chat session using the offline mock/orchestrator model.',
+      'Prepare demo mode (idempotent): a demo folder with a product brief, a project for it and a chat that leads agents (session.delegate) on the offline mock/orchestrator model, with a weekly report schedule.',
     tool: false,
     mutates: true,
   },
@@ -682,6 +682,8 @@ export const api = defineApi({
     description:
       'Block until ANY (or, with mode "all", every) listed task is settled (review/done/failed/cancelled/blocked) or the timeout elapses, then return a compact snapshot of all listed tasks. Use this instead of polling. With mode "any", pass only the tasks you are still waiting for.',
     longPoll: true,
+    // Not an LLM tool: supervisors are woken instead of waiting (spec 20261029 D8). CLI only.
+    tool: false,
   },
 
   // ---- workspace ----
@@ -860,6 +862,7 @@ export const api = defineApi({
     description:
       'Block until an integration settles (awaiting_approval, conflict, failed, applied, rejected or cancelled) or the timeout elapses. Call after integration.run instead of polling integration.get.',
     longPoll: true,
+    tool: false,
   },
   'integration.resolveWithAgent': {
     params: params({

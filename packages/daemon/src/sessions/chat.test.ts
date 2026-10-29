@@ -130,19 +130,27 @@ describe('chat over the WebSocket client (mock provider)', () => {
 });
 
 describe('session.send', () => {
-  it('falls back to the offline mock model and refuses a second send while busy', async () => {
+  it('falls back to the offline mock model and takes a second send while busy in the same run', async () => {
     const d = await daemon();
     d.ctx.service('llm').mock.chunkDelayMs = 20;
     const s = await d.call(HUMAN, 'session.create', {});
     expect(s.model).toBeNull();
     const first = await d.call(HUMAN, 'session.send', { sessionId: s.id, content: 'ゆっくり' });
+    expect(first.delivery).toBe('started');
     expect(d.ctx.repos.runs.require(first.runId!).model).toBe('mock/echo');
-    await expect(
-      d.call(HUMAN, 'session.send', { sessionId: s.id, content: '割り込み' }),
-    ).rejects.toMatchObject({ code: 'conflict' });
-    // The refused message was rolled back.
-    expect(d.ctx.repos.messages.count({ where: { session_id: s.id } })).toBe(1);
-    await d.ctx.service('runs').waitForEnd(first.runId!);
+    const second = await d.call(HUMAN, 'session.send', { sessionId: s.id, content: '割り込み' });
+    expect(second).toMatchObject({ delivery: 'injected', runId: first.runId });
+    expect(d.ctx.repos.messages.require(second.messageId).delivery).toBe('queued');
+    const run = await d.ctx.service('runs').waitForEnd(first.runId!);
+    expect(run.status).toBe('completed');
+    // The running answer took it in after its reply: one run, two answers.
+    expect(d.ctx.repos.messages.require(second.messageId).delivery).toBe('delivered');
+    const texts = d.ctx.repos.messages
+      .find({ where: { session_id: s.id }, direction: 'asc' })
+      .filter((m) => m.role === 'assistant')
+      .map((m) => (m.content[0]?.type === 'text' ? m.content[0].text : ''));
+    expect(texts).toEqual(['エコー: ゆっくり', 'エコー: （作業中に届いた発言）\n割り込み']);
+    expect(d.ctx.repos.runs.count({ where: { session_id: s.id } })).toBe(1);
   });
 
   it('keeps the partial reply when cancelled mid-stream', async () => {
