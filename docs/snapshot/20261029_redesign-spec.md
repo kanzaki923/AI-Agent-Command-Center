@@ -901,3 +901,16 @@ T0 で仕様から足した・変えたもの（各トラックはこれを前�
 | A7 | `budget.add_N` は `refs.budgetId` があるときだけ。日次上限の choices（「今日だけ +$10」「設定」）は T5 が `attention/respond.ts` に足す | 日次上限の扱いは T5 |
 | A8 | 子への「答えがないと進めないなら区切って終える」は `human.ask` のツール説明（T0 の protocol）で伝え、プロンプトの断片は足さない | `buildAgentPrompt` は T2 の持ち物 |
 | A9 | 共有ファイルの最小の変更：`runtime/executor.ts` の 1 行（`approvalTitleFor` に input と作業場所を渡す）とその期待値（`executor.test.ts`）、`runtime/policy.test.ts` の題の期待値、`redesign-seams.test.ts` のスタブ一覧から T4 の 4 メソッドを外した。`runtime/mock/{plan,runtime}.ts` と `steps/types.ts` に `ask` の質問と `wait` の分 | 承認の題を名詞句にする（§3.6）・スタブの置き換え・モックの質問 |
+
+### 7.6 T3（成果物とコードの工程）で入れた差分（T3 の実装時に追記）
+
+| # | 差分 | 理由 |
+|---|---|---|
+| T3-1 | `Integration.preApprovedBy`（`Actor`、nullable・optional）を `domain.ts` に足した（共有ファイル、追加のみ） | §3.5 の「`preApprovedBy` を記録」に型がなかった |
+| T3-2 | 自動の反映は「採用が始めた試行」だけ。再実行・Integrator の解消後の試行は承認を待つ | 採用したのはその時点のコード。後から入ったコードを人が見ずに反映しない |
+| T3-3 | `accept` は種類を問わず人間だけ（§2.2 は「コードの accept は人間のみ」） | §3.9 の指揮役プリセットが「redo だけ」。`reviewBy: human` を AI が代わりに採用すると意味がない |
+| T3-4 | finalize は「公開済み」と「worktree のコードの変更」を両方残す（優先順位は並び順と、書き込み・最後の本文を使うかの判断） | 文書を公開してもコードの変更は反映の判断が要る |
+| T3-5 | 統合結果の diff は `role: evidence` | 子の変更と二重に「採用」の対象に見えないように |
+| T3-6 | 早送りできなかった採用は `awaiting_approval` ＋ `error.code: apply_failed` ＋ 出番 review（子の会話） | 人が反映先を片付けてから `integration.approve` で続けられる |
+| T3-7 | `redo` は `task.retry` を依頼者の actor で呼ぶ。agent は `task.spawnWorker` の権限で判定される（`assertCanSpawnWorker`） | T2 が `session.spawn` の子の判定（`assertCanSpawnChild`）に揃えるまでの継ぎ目。T1 の指揮役プリセットで redo するには T2 側の対応が要る |
+| T3-8 | `done` の Task の成果物を redo すると Task を `review` に戻してから再実行する | 既定で人の確認が要らない成果物（`reviewBy: none`）も依頼者がやり直せるように |

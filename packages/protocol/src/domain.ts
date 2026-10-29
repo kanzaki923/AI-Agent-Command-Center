@@ -808,6 +808,11 @@ export const Integration = z.object({
   decidedBy: Actor.nullable().default(null),
   decidedAt: Timestamp.nullable().default(null),
   decisionNote: z.string().nullable().default(null),
+  /**
+   * The human who accepted the code before it was integrated (`artifact.review accept`): the
+   * attempt that acceptance started applies on its own once the tests pass (spec 20261029 §3.5).
+   */
+  preApprovedBy: Actor.nullable().optional(),
   error: ErrorInfo.nullable(),
   createdBy: Actor,
   createdAt: Timestamp,

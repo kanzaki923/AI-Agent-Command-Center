@@ -98,6 +98,24 @@ export const MockStep = z.discriminatedUnion('type', [
     strategy: z.enum(['ours+theirs', 'ours', 'theirs']).default('ours+theirs'),
     paths: z.array(RelPath).optional(),
   }),
+  /**
+   * Leave an output through the `artifact.publish` tool (the run's grant must allow it), with
+   * that method's params: `{ "type": "publish", "kind": "document", "title": "FAQ",
+   * "path": "faq.md" }`. A refused publish comes back as a tool error and the mock carries on.
+   */
+  z.strictObject({
+    type: z.literal('publish'),
+    kind: z.enum(['document', 'data', 'link', 'files']),
+    title: z.string().min(1),
+    summary: z.string().optional(),
+    content: z.string().optional(),
+    format: z.string().optional(),
+    path: z.string().optional(),
+    paths: z.array(z.string()).optional(),
+    columns: z.array(z.string()).optional(),
+    rows: z.array(z.array(z.unknown())).optional(),
+    url: z.string().optional(),
+  }),
 ]);
 export type MockStep = z.infer<typeof MockStep>;
 
