@@ -19,7 +19,7 @@ import {
 import type { ReactNode } from 'react';
 import { cn } from '../../lib/cn';
 import { formatAbsolute } from '../../lib/format';
-import { ATTENTION_META, STATE_META, formatUsd } from '../../lib/states';
+import { ATTENTION_META, OUTPUT_META, STATE_META, formatUsd } from '../../lib/states';
 import {
   type TimelineMoment,
   type TimelineNote,
@@ -121,13 +121,15 @@ export function SessionTag({ id, title }: { id: string; title: string }) {
   );
 }
 
-function Outputs({ outputs }: { outputs: TimelineOutput[] }) {
+/** An output named after its conversation (the chip beside it) reads as its kind: `⇆ 変更`. */
+function Outputs({ outputs, sessionTitle }: { outputs: TimelineOutput[]; sessionTitle: string }) {
   const first = outputs[0];
   if (!first) return null;
+  const name = first.title.trim() === sessionTitle.trim() ? OUTPUT_META[first.kind].label : first.title;
   return (
     <span className="flex min-w-0 items-center gap-1.5 text-fg">
       <OutputIcon kind={first.kind} size={13} className="text-fg-2" />
-      <span className="truncate">{first.title}</span>
+      <span className="truncate">{name}</span>
       {outputs.length > 1 && <span className="shrink-0 text-meta text-fg-3 tabular">+{outputs.length - 1}</span>}
     </span>
   );
@@ -204,9 +206,9 @@ export function MomentRow({
   const color = TONE_COLOR[m.tone] === TONE_COLOR.neutral ? 'var(--text-secondary)' : TONE_COLOR[m.tone];
   const body =
     m.what === 'finished' ? (
-      m.outputs.length ? <Outputs outputs={m.outputs} /> : <span className="text-fg-2">{label}</span>
+      m.outputs.length ? <Outputs outputs={m.outputs} sessionTitle={title} /> : <span className="text-fg-2">{label}</span>
     ) : (m.what === 'accepted' || m.what === 'redo') && m.outputs.length ? (
-      <Outputs outputs={m.outputs} />
+      <Outputs outputs={m.outputs} sessionTitle={title} />
     ) : (
       <span className={cn('min-w-0 truncate', m.what === 'attention' && !m.open && 'text-fg-2')}>{m.text}</span>
     );

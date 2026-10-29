@@ -116,6 +116,16 @@ describe('<OutputsPanel>', () => {
     expect(useUi.getState().focusSessionId).toBe(CHILD);
   });
 
+  it('names an output by its kind when it carries the title of the child beside it', async () => {
+    const doc = output('document', { sessionId: CHILD, title: 'プレスリリース案' });
+    const link = output('link', { sessionId: ROOT, title: '競合の比較', createdAt: iso(T0 - 1000) });
+    mount([doc, link]);
+    const p = await panel();
+    const rows = within(await within(p).findByRole('list', { name: '成果物の一覧' })).getAllByRole('listitem');
+    expect(rows[0]).toHaveTextContent(/^文書プレスリリース案/);
+    expect(rows[0]!.textContent?.match(/プレスリリース案/g)).toHaveLength(1);
+  });
+
   it('shows a table with its first 500 rows', async () => {
     const rows = Array.from({ length: TABLE_ROWS + 20 }, (_, i) => [`行 ${i}`, i]);
     mount([

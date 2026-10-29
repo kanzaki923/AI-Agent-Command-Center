@@ -1,4 +1,4 @@
-import type { Event, Run, Session } from '@acc/protocol';
+import type { Artifact, Event, Run, Session } from '@acc/protocol';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
@@ -6,7 +6,7 @@ import { EMPTY_FILTERS } from '../../model/timeline';
 import { useTimeline } from '../../store/timeline';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
-import { attention, event, homeSnapshot, message, run, session } from '../../test/fixtures';
+import { T0, attention, event, homeSnapshot, iso, message, run, session } from '../../test/fixtures';
 import { TooltipProvider } from '../ui/Tooltip';
 import { TimelineView } from './TimelineView';
 
@@ -69,6 +69,36 @@ describe('<TimelineView>', () => {
     // The child is named by its chip; the root's own rows need none.
     expect(within(launch).getAllByRole('button', { name: 'FAQ 担当' })).toHaveLength(1);
     expect(document.querySelector('[data-tl-row^="r"]')).toBeNull();
+  });
+
+  it('names a finished output by its kind when it carries the chip’s title', async () => {
+    const s = story();
+    const out = {
+      id: 'art_00000000000000000000000001',
+      kind: 'document',
+      data: { format: 'markdown', content: '# FAQ', path: null },
+      projectId: null,
+      sessionId: faq.id,
+      runId: null,
+      taskId: null,
+      workspaceId: null,
+      title: 'FAQ 担当',
+      createdBy: { kind: 'system' },
+      createdAt: iso(T0),
+      summary: null,
+      review: { state: 'none', by: null, at: null, note: null },
+      role: 'output',
+      source: 'published',
+    } as Artifact;
+    const events = [
+      ...s.events,
+      event('artifact.created', { artifact: out }, { sessionId: faq.id }),
+      event('session.state_changed', { sessionId: faq.id, rootSessionId: lead.id, parentSessionId: lead.id, from: 'working', to: 'done', stateSince: iso(T0), now: null }, { sessionId: faq.id }),
+    ];
+    mount(events, [lead, faq, other], s.runs);
+    const launch = await screen.findByRole('region', { name: 'ローンチ準備' });
+    expect(await within(launch).findByText('文書')).toBeInTheDocument();
+    expect(within(launch).queryAllByText('FAQ 担当', { selector: 'span.truncate' })).toHaveLength(0);
   });
 
   it('jumps to the message a row came from', async () => {

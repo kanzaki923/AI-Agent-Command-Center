@@ -6,7 +6,7 @@ import { useIntegrations, useSessions } from '../../daemon/queries';
 import { treeRelations, useSessionTree } from '../../daemon/tree';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { cn } from '../../lib/cn';
-import { sessionTitle } from '../../lib/states';
+import { OUTPUT_META, sessionTitle } from '../../lib/states';
 import { useUi } from '../../store/ui';
 import { IconButton } from '../ui/Button';
 import { CopyButton } from '../ui/CopyButton';
@@ -215,7 +215,8 @@ function OutputRow({
       <OutputIcon kind={output.uiKind} className={selected ? 'text-fg-2' : 'text-fg-3'} />
       <Tooltip content={output.summary}>
         <span className={cn('min-w-0 flex-1 truncate', single && 'font-medium')}>
-          {output.title}
+          {/* Named after the child beside it: say its kind instead of the same title twice. */}
+          {by && output.title.trim() === sessionTitle(by).trim() ? OUTPUT_META[output.uiKind].label : output.title}
         </span>
       </Tooltip>
       {output.kind === 'diff' && !single && (
