@@ -1,34 +1,40 @@
-// End-to-end check of "Integrator に解消を任せる" against a REAL Core Daemon (no paid LLM
-// calls: the mock agent runtime resolves conflicts by keeping both sides).
+// End-to-end check of two code changes that conflict, against a REAL Core Daemon (no paid LLM
+// calls: mock models; the mock agent runtime resolves a conflict by keeping both sides).
 //
 //   pnpm --filter @acc/desktop e2e:conflict [-- --headed] [--keep] [--out <dir>] [--daemon-root <checkout>]
 //
-//   1. A temporary git repository becomes a project; two tasks each get a worktree whose
-//      commit appends a different section to README.md (as the demo orchestrator does when
-//      the goal mentions README), and are put in review.
-//   2. integration.create + integration.run for both: the second merge conflicts on README.md.
-//   3. In the UI (palette → 統合をレビュー): the review shows the conflict and the primary
-//      action "Integrator に解消を任せる"; the confirmation says the target is not touched;
-//      confirming starts the integrator (integration.resolveWithAgent).
-//   4. The fix step runs live; the integration resumes and lands in 反映待ち with the fix step
-//      done; README.md on the integration branch has both sections and no markers; main is
-//      unchanged until a human approves. In the default (autonomous) profile nothing asks
-//      before that: the integration tests after the fix run without an approval.
-//   5. Zero approvals for the project so far; the human applies (Ctrl+Enter → 反映する) and
-//      main fast-forwards to the integration head.
+//   1. A temporary git repository becomes a project. A delegated conversation has two children
+//      on the code (worktrees); each appends its own section to README.md, so whichever is
+//      applied second conflicts. Both wait for review.
+//   2. In the UI: open the first child from its chip on home, 採用 → 反映済み (main moves).
+//   3. Open the second, 採用: the bar says 競合 and offers 解消を任せる; home shows the failure
+//      row for it. main is unchanged by the failed attempt.
+//   4. 解消を任せる: an agent merges both sections; the change then waits for 反映 (the resolution
+//      is code nobody has seen yet), main still unchanged. Nothing asked for an approval.
+//   5. 反映: main fast-forwards; README.md on main has both sections and no conflict markers;
+//      both children are done.
 //
 // Screenshots go to the OS temp dir (never the repo). Exit code 0 = pass.
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium } from 'playwright';
-import { flag, git, log, makeRepo, opt, repoRoot, startStack, waitFor } from './harness.js';
+import { flag, git, log, makeRepo, openPage, opt, repoRoot, startStack, waitFor } from './harness.js';
 
 const headed = flag('headed');
 const keep = flag('keep');
 const out = opt('out', join(tmpdir(), 'acc-e2e-conflict'));
 const daemonRoot = resolve(opt('daemon-root', repoRoot));
 mkdirSync(out, { recursive: true });
+
+const plan = (text, section) =>
+  [
+    text,
+    '',
+    '```acc-mock',
+    JSON.stringify({ steps: [{ type: 'append', path: 'README.md', content: `\n${section}` }], delayScale: 0 }),
+    '```',
+  ].join('\n');
 
 let browser;
 let stack;
@@ -40,157 +46,134 @@ try {
   stack = await startStack({ daemonRoot });
   const { rpc, url } = stack;
   const methods = new Set((await rpc.call('system.info')).methods);
-  if (!methods.has('integration.resolveWithAgent'))
-    throw new Error('this daemon cannot hand conflicts to an integrator (integration.resolveWithAgent)');
+  for (const m of ['session.spawn', 'artifact.review', 'integration.resolveWithAgent']) {
+    if (!methods.has(m)) throw new Error(`this daemon has no ${m}`);
+  }
 
   // ------------------------------------------------------------------ data (real API)
+  await rpc.call('settings.update', { defaultRuntime: 'mock' });
   const project = await rpc.call('project.create', {
     name: 'conflict-e2e',
     repoPath: repo,
     defaultBranch: 'main',
     testCommand: 'node scripts/test.js',
   });
-  await rpc.call('workspace.create', { projectId: project.id, kind: 'main' });
-  const work = async (title, section) => {
-    const t = await rpc.call('task.create', { projectId: project.id, title });
-    const ws = await rpc.call('workspace.create', { projectId: project.id, taskId: t.id, label: title });
-    const readme = join(ws.path, 'README.md');
-    writeFileSync(readme, `${readFileSync(readme, 'utf8')}\n${section}`);
-    git(ws.path, 'add', '-A');
-    git(ws.path, '-c', 'user.name=E2E', '-c', 'user.email=e2e@example.com', 'commit', '-q', '-m', title);
-    await rpc.call('task.update', { taskId: t.id, status: 'review' });
-    return t;
-  };
-  const docs = await work('ドキュメントを書く', '## 使い方\n\n`node scripts/test.js` で確認します。\n');
-  const tests = await work('テストを足す', '## テスト\n\nテストの実行方法を書きます。\n');
-  const created = await rpc.call('integration.create', {
+  const lead = await rpc.call('session.create', {
+    kind: 'chat',
+    title: 'README の整備',
     projectId: project.id,
-    taskIds: [docs.id, tests.id],
-    title: '統合: README の 2 つの節',
+    model: 'mock/fast',
   });
-  await rpc.call('integration.run', { integrationId: created.id });
-  const conflicted = (await rpc.call('integration.wait', { integrationId: created.id, timeoutMs: 60_000 }))
-    .integration;
-  if (conflicted.status !== 'conflict') throw new Error(`expected a conflict, got ${conflicted.status}`);
-  const files = conflicted.steps.flatMap((s) => s.conflictFiles);
-  log(`integration ${conflicted.id} in conflict on ${files.join(', ')}`);
+  await rpc.call('session.delegate', { sessionId: lead.id });
+  const spawn = (title, section) =>
+    rpc.call('session.spawn', {
+      parentSessionId: lead.id,
+      title,
+      goal: plan(`README.md に「${section.split('\n')[0]}」の節を足してください。`, section),
+      workspace: { kind: 'worktree', projectId: project.id },
+      projectId: project.id,
+    });
+  const first = (await spawn('使い方の節', '## 使い方\n\n`node scripts/test.js` で確認します。\n')).session;
+  const second = (await spawn('テストの節', '## テスト\n\nテストの実行方法を書きます。\n')).session;
+  const stateOf = async (id) =>
+    (await rpc.call('session.tree', { sessionId: lead.id })).nodes.find((n) => n.id === id)?.state;
+  for (const s of [first, second]) {
+    await waitFor(async () => (await stateOf(s.id)) === 'review', `「${s.title}」 to wait for review`, 60_000);
+  }
   const mainBefore = git(repo, 'rev-parse', 'main');
+  log('two code changes wait for review');
 
   // ------------------------------------------------------------------ browser
   browser = await chromium.launch({ headless: !headed });
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
-  await context.addInitScript(() => {
-    localStorage.setItem('acc.ui', JSON.stringify({ state: { onboardingDone: true }, version: 1 }));
-  });
-  const page = await context.newPage();
-  const pageErrors = [];
-  page.on('pageerror', (e) => pageErrors.push(String(e)));
-  let n = 0;
-  const shot = async (name) => {
-    n++;
-    const path = join(out, `${String(n).padStart(2, '0')}-${name}.png`);
-    await page.screenshot({ path });
-    log(`screenshot ${path}`);
+  const { page, errors, shot } = await openPage(browser, { url, out });
+  const panel = page.locator('aside[data-region="panel"]');
+  const bar = panel.locator('[data-review-bar]');
+  const openChild = async (s) => {
+    await page.keyboard.press('Control+1');
+    await page.locator(`[data-session-chip="${s.id}"]`).click();
+    await page.getByRole('heading', { name: s.title }).or(page.locator('h1', { hasText: s.title })).first().waitFor();
+    await panel.locator('[data-output-body="code"]').waitFor({ timeout: 15_000 });
   };
 
-  await page.goto(url);
-  await page.getByRole('heading', { name: '司令室' }).waitFor({ timeout: 30_000 });
+  // 2. the first change: 採用 → 反映済み
+  await page.locator(`[data-session-chip="${first.id}"]`).waitFor({ timeout: 30_000 });
+  await openChild(first);
+  await panel.locator('[data-action="adopt"]').click();
+  await panel.locator('[data-review-bar][data-phase="adopted"]').waitFor({ timeout: 60_000 });
+  const mainAfterFirst = git(repo, 'rev-parse', 'main');
+  if (mainAfterFirst === mainBefore) throw new Error('main did not move for the first change');
+  log(`first change applied: main ${mainBefore.slice(0, 7)} → ${mainAfterFirst.slice(0, 7)}`);
 
-  // 3. open the review from the palette
-  await page.keyboard.press('Control+k');
-  await page.keyboard.type('README の 2 つの節');
-  await page.getByText('統合をレビュー: README の 2 つの節').first().click();
-  const view = page.getByTestId('integration-view');
-  await view.waitFor();
-  await view.getByText('README.md').first().waitFor({ timeout: 15_000 });
-  const resolveButton = page.getByTestId('resolve-with-agent');
+  // 3. the second change: 採用 → 競合, with 解消を任せる
+  await openChild(second);
+  await panel.getByText('README.md').first().waitFor();
+  await panel.locator('[data-action="adopt"]').click();
+  await panel.locator('[data-review-bar][data-phase="apply_failed"]').waitFor({ timeout: 60_000 });
+  const failedText = await bar.innerText();
+  if (!failedText.includes('競合')) throw new Error(`the bar says "${failedText}" on a conflict`);
+  const resolveButton = panel.locator('[data-action="resolve"]');
   await resolveButton.waitFor();
-  await shot('conflict-review');
-  log('review shows the conflict and offers the Integrator');
+  await shot('conflict-in-panel');
+  if (git(repo, 'rev-parse', 'main') !== mainAfterFirst) throw new Error('main moved on a conflict');
+  // Home shows it where the human looks first.
+  await page.keyboard.press('Control+1');
+  const failureRow = page.locator('[data-attention-row]').filter({ hasText: '競合' });
+  await failureRow.waitFor({ timeout: 15_000 });
+  const rowLabel = await failureRow.getAttribute('aria-label');
+  if (!rowLabel?.startsWith('失敗: ')) throw new Error(`the conflict row is "${rowLabel}"`);
+  await page.locator(`[data-session-chip="${second.id}"][data-state="failed"]`).waitFor({ timeout: 15_000 });
+  await shot('conflict-on-home');
+  log(`conflict shown: bar "${failedText.replace(/\s+/g, ' ')}", home "${rowLabel}"`);
 
+  // 4. 解消を任せる → the resolution waits for 反映
+  await openChild(second);
   await resolveButton.click();
-  const dialog = page.getByTestId('resolve-dialog');
-  await dialog.waitFor();
-  const wording = await dialog.innerText();
-  if (!wording.includes('README.md') || !/main はまだ変更しません/.test(wording))
-    throw new Error(`confirmation does not say what happens: ${wording}`);
-  await dialog.getByLabel('Integrator への補足').fill('両方の節を残してください');
-  await shot('resolve-confirm');
-  await dialog.getByRole('button', { name: /Integrator に任せる/ }).click();
-
-  // 4. live progress, then the result
-  const started = await waitFor(
-    async () => {
-      const i = await rpc.call('integration.get', { integrationId: created.id });
-      return i.resolverRunId ? i : null;
-    },
-    'the integrator run to start',
-    30_000,
+  await panel.locator('[data-review-bar][data-phase="apply_wait"]').waitFor({ timeout: 120_000 });
+  const applyButton = panel.locator('[data-action="apply"]');
+  await applyButton.waitFor();
+  // The conflict is gone: its failure row goes, and the agent that resolved it is named by
+  // what it did (no role names).
+  await failureRow.waitFor({ state: 'detached', timeout: 15_000 });
+  const machine = /Integrator|Integration|Task|Worker/.exec(await page.locator('body').innerText());
+  if (machine) throw new Error(`"${machine[0]}" on screen after the resolution`);
+  await shot('resolved-waiting');
+  if (git(repo, 'rev-parse', 'main') !== mainAfterFirst) throw new Error('main moved before 反映');
+  const integ = (await rpc.call('integration.list', {})).items.find(
+    (i) => i.status === 'awaiting_approval' && i.workspaceIds.includes(second.workspaceId),
   );
-  log(`integrator run ${started.resolverRunId}`);
-  await page.locator('[data-step="fix"]').first().waitFor({ timeout: 15_000 });
-  if (await page.getByTestId('resolving').isVisible().catch(() => false)) await shot('resolving');
-
-  // 5. back to the review (the tests after the fix need no approval in the autonomous profile)
-  await page.keyboard.press('Control+k');
-  await page.keyboard.type('README の 2 つの節');
-  await page.getByText('統合をレビュー: README の 2 つの節').first().click();
-  await view.waitFor();
-
-  const settled = (await rpc.call('integration.wait', { integrationId: created.id, timeoutMs: 120_000 }))
-    .integration;
-  if (settled.status !== 'awaiting_approval')
-    throw new Error(`integration ended in ${settled.status}: ${settled.error?.message ?? ''}`);
-  await page.getByTestId('approve-integration').waitFor({ timeout: 30_000 });
-  await page.locator('[data-step="fix"][data-status="succeeded"]').waitFor({ timeout: 15_000 });
-  await page.getByTestId('integration-tests').waitFor({ timeout: 30_000 });
-  await shot('resolved-awaiting-approval');
-
-  // The resolution is real: both sections, no markers, and the target has not moved.
-  const ws = await rpc.call('workspace.get', { workspaceId: settled.workspaceId });
-  const merged = readFileSync(join(ws.path, 'README.md'), 'utf8');
-  if (!merged.includes('## 使い方') || !merged.includes('## テスト') || /^(<{7}|={7}|>{7})/m.test(merged))
-    throw new Error(`README.md was not resolved:\n${merged}`);
-  if (git(repo, 'rev-parse', 'main') !== mainBefore) throw new Error('main moved without approval');
-  const integrator = (await rpc.call('run.get', { runId: settled.resolverRunId })).sessionId;
-  const message = (await rpc.call('session.messages', { sessionId: integrator, limit: 50 })).items;
-  if (!JSON.stringify(message).includes('両方の節を残してください'))
-    throw new Error('the guidance did not reach the integrator');
-  log('resolved by the integrator: both sections kept, tests ran, main unchanged');
-
-  // 6. Nothing asked a human on the way (おまかせ): the Integrator's tool uses and the tests
-  //    after the fix ran without an approval. The one human decision is the apply.
+  if (!integ) throw new Error('no resolved integration waits for 反映');
+  if (!integ.steps.some((s) => s.kind === 'fix' && s.status === 'succeeded')) throw new Error('no resolution step');
   const asked = (
     await rpc.call('approval.list', {
       status: ['pending', 'approved', 'rejected', 'expired', 'cancelled'],
       projectId: project.id,
     })
   ).items;
-  if (asked.length > 0) throw new Error(`approvals before the apply: ${asked.map((a) => a.title).join(', ')}`);
-  const integratorDecisions = (await rpc.call('events.list', { sessionId: integrator, types: ['tool.decided'] })).events;
-  log(`zero approvals; the integrator's recorded decisions: ${integratorDecisions.length}`);
-  await page.keyboard.press('Control+Enter');
-  const apply = page.getByTestId('apply-dialog');
-  await apply.waitFor();
-  await page.getByRole('button', { name: '反映する' }).click();
-  const applied = await waitFor(
-    async () => {
-      const i = await rpc.call('integration.get', { integrationId: created.id });
-      return i.status === 'applied' ? i : null;
-    },
-    'the human apply to land',
-    30_000,
-  );
-  if (git(repo, 'rev-parse', 'main') !== applied.headSha) throw new Error('main did not move to the integration head');
-  await page.getByText(/に反映しました/).first().waitFor({ timeout: 15_000 });
-  await shot('applied');
-  log('applied by the human: main fast-forwarded to the resolved integration');
+  if (asked.length > 0) throw new Error(`approvals on the way: ${asked.map((a) => a.title).join(', ')}`);
 
-  if (pageErrors.length) throw new Error(`page errors:\n${pageErrors.join('\n')}`);
+  // 5. 反映 → main has both sections
+  await applyButton.click();
+  await panel.locator('[data-review-bar][data-phase="adopted"]').waitFor({ timeout: 60_000 });
+  const readme = git(repo, 'show', 'main:README.md');
+  if (!readme.includes('## 使い方') || !readme.includes('## テスト') || /^(<{7}|={7}|>{7})/m.test(readme))
+    throw new Error(`README.md on main was not resolved:\n${readme}`);
+  for (const s of [first, second]) {
+    await waitFor(async () => (await stateOf(s.id)) === 'done', `「${s.title}」 to be done`, 30_000);
+  }
+  await shot('applied');
+  log('resolved by an agent and applied by the human: README.md has both sections');
+
+  if (errors.length) throw new Error(`page errors:\n  ${errors.join('\n  ')}`);
   log('PASS');
 } catch (err) {
   failed = true;
   console.error(err);
+  try {
+    const items = (await stack.rpc.call('integration.list', {})).items;
+    log(`integrations: ${JSON.stringify(items.map((i) => [i.status, i.error?.message, i.steps.map((s) => `${s.kind}:${s.status}`)]))}`);
+  } catch {
+    /* the daemon is gone */
+  }
 } finally {
   await browser?.close().catch(() => {});
   if (repo) {
@@ -201,5 +184,5 @@ try {
     }
   }
   await stack?.stop({ keep, extraDirs: repo ? [repo] : [] });
-  process.exitCode = failed ? 1 : 0;
+  process.exit(failed ? 1 : 0);
 }

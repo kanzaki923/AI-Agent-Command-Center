@@ -92,6 +92,24 @@ describe('reviewPhase', () => {
         }),
       ]).kind,
     ).toBe('apply_wait');
+    // An agent resolved a conflict: the resolution is new code, so applying waits for 反映.
+    const fix = {
+      index: 3,
+      kind: 'fix' as const,
+      status: 'succeeded' as const,
+      title: '競合を解消',
+      taskId: null,
+      artifactId: null,
+      detail: null,
+      startedAt: iso(T0 + 20),
+      endedAt: iso(T0 + 30),
+      workspaceId: null,
+      branch: null,
+      conflictFiles: [],
+    };
+    expect(reviewPhase(c, [adopted({ status: 'awaiting_approval', steps: [fix] })]).kind).toBe(
+      'apply_wait',
+    );
     expect(reviewPhase(c, [adopted({ status: 'failed' })]).kind).toBe('apply_failed');
     expect(reviewPhase(c, [adopted({ status: 'conflict' })]).kind).toBe('apply_failed');
     expect(reviewPhase(c, [adopted({ status: 'applied' })]).kind).toBe('adopted');

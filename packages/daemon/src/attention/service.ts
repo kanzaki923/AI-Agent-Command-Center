@@ -84,8 +84,12 @@ export class AttentionManager implements AttentionService {
     });
   }
 
-  resolveWhere(refs: AttentionRefs, resolution: AttentionResolutionInput): Attention[] {
-    return this.resolveMatching(refs, resolution);
+  resolveWhere(
+    refs: AttentionRefs,
+    resolution: AttentionResolutionInput,
+    kinds?: readonly AttentionKind[],
+  ): Attention[] {
+    return this.resolveMatching(refs, resolution, kinds);
   }
 
   /** Resolve the open items whose refs include all of `refs` (optionally of some kinds only). */

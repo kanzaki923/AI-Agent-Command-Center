@@ -341,7 +341,8 @@ export class WorkerService {
           {
             kind: 'agent',
             projectId: integ.projectId,
-            title: `Integrator: ${truncate(integ.title, 120)}`,
+            // What a person reads in the sidebar and on home: what it does, no role names.
+            title: `競合の解消: ${truncate(integ.title, 120)}`,
             model: p.model ?? null,
             runtime,
             workspaceId: integ.workspaceId,
@@ -375,8 +376,8 @@ export class WorkerService {
         const integration = integrations.attachResolver(integ.id, actor, run.id);
         this.decide(
           {
-            decision: `Integrator にコンフリクトの解消を任せました: ${truncate(integ.title, 80)}`,
-            rationale: `「${prepared.step.branch}」のマージが ${fixFiles(integration).join(', ')} でコンフリクトしました。両方の Task の目標を渡して統合ブランチ上で解消させ、終わったら統合を再開してテストで確かめます。`,
+            decision: `競合の解消を任せました: ${truncate(integ.title, 80)}`,
+            rationale: `${fixFiles(integration).join('、')} が競合しました。両方の変更の目的を渡して解消させ、終わったらテストで確かめてから反映を待ちます。`,
             taskIds: integ.taskIds,
             sessionIds: [session.id],
             runIds: [run.id],
@@ -393,7 +394,7 @@ export class WorkerService {
       await integrations.abandonResolution(
         integ.id,
         actor,
-        `Integrator を起動できませんでした: ${err instanceof Error ? err.message : String(err)}`,
+        `競合の解消を始められませんでした: ${err instanceof Error ? err.message : String(err)}`,
       );
       throw err;
     }

@@ -82,6 +82,16 @@ describe('mock supervisor', () => {
   it('a code project gets one worktree child; the others work without git', () => {
     const plans = childPlans('ログイン画面を直して', PRJ);
     expect(plans.filter((p) => p.code)).toHaveLength(1);
+    // Each title leads with the role (a chip beside its siblings shows only the start).
+    expect(plans.map((p) => p.title)).toEqual([
+      '下調べ（ログイン画面を直して）',
+      'コード変更（ログイン画面を直して）',
+      'まとめ（ログイン画面を直して）',
+    ]);
+    // It runs the tests before handing over (what the careful profile asks a human about).
+    expect(plans.find((p) => p.code)!.steps).toContainEqual(
+      expect.objectContaining({ type: 'run', command: 'node', args: ['--test'], onReject: 'continue' }),
+    );
     const r = reply(
       request([
         { role: 'system', content: system([], true) },

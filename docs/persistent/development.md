@@ -70,26 +70,25 @@ pnpm --filter @acc/desktop tauri build --no-bundle  # exe だけ（インスト�
 Desktop UI（`apps/desktop`）：
 
 ```sh
-pnpm --filter @acc/desktop scene        # 本物のデーモン + 本物の API で作る確認用の場面（一時 git リポジトリ、Worker、承認待ち、統合候補。ACC_PORT 既定 47899。--empty / --load 10）
-pnpm --filter @acc/desktop tauri:dev    # Tauri アプリだけ（デーモンが無ければ tsx で detach 起動。普段は pnpm dev:desktop）
-pnpm --filter @acc/desktop screenshots  # Playwright で主要画面を撮る（scene に対して。出力は OS の一時ディレクトリ。--theme light、--size 1100x720、--prefix、--only a,b）
-pnpm --filter @acc/desktop e2e:slice    # 本物のデーモン + Vite を一時 ACC_HOME で起動し、オンボーディング → デモ → 送信 → 承認 → 統合の反映まで通す（--daemon-root で別チェックアウトのデーモンも使える）
-pnpm --filter @acc/desktop e2e:board    # 本物のデーモンで Task ボード（T → j → R で Worker を起動）とパレットのメッセージ検索（session.search → 該当メッセージへ移動）を通す
-pnpm --filter @acc/desktop e2e:conflict # 本物のデーモンで README.md がコンフリクトする統合を作り、レビュー画面の「Integrator に解消を任せる」→ 解消 → 反映待ちまで通す（main は動かないことも確かめる）
-pnpm --filter @acc/desktop e2e:perf     # 本番ビルドで 10 本同時ストリーミングのフレーム間隔と長いタスクを測る（--profile で内訳、--dev で開発サーバ）
+pnpm --filter @acc/desktop tauri:dev      # Tauri アプリだけ（デーモンが無ければ tsx で detach 起動。普段は pnpm dev:desktop）
+pnpm --filter @acc/desktop e2e:slice      # ホームの入力欄で「任せる」→ 内蔵のモック指揮役が子 3 人（1 人はコードの worktree）→ ホームの承認の行を J・Y → 確認待ち → 成果物パネルの diff → 採用 → 反映（main が動く）（--daemon-root で別チェックアウトのデーモンも使える）
+pnpm --filter @acc/desktop e2e:home       # 監査の場面で「5 秒テスト」を DOM で確かめる：出番の行（優先順）・木ごとのレーン・状態アイコンと now つきのチップ・状態の帯・今日の費用・出番の数・スクロールなし・機械の語なし（home.get と突き合わせる）
+pnpm --filter @acc/desktop e2e:conflict   # 2 人のコードの変更が README.md で競合：1 つ目を採用 → 反映、2 つ目を採用 → 競合（パネルとホームの失敗の行）→ 解消を任せる → 反映待ち → 反映（承認は 0）
+pnpm --filter @acc/desktop e2e:perf       # 本番ビルドで 10 本同時ストリーミングのフレーム間隔と長いタスクを測る（ホームと会話。--profile で内訳、--dev で開発サーバ）
+pnpm --filter @acc/desktop e2e:reconnect  # デーモンを止める → 再接続の帯とホームの維持 → 同じポートで起動し直す → 帯が消え、止まっている間の変化がホームに出る
 pnpm --filter @acc/desktop e2e:audit -- --out <dir>  # 画面の監査：scripts/audit-scene.ts の場面（任せた木 3 本・定期実行・普通の会話。10 人以上が同時に動く）を一時 ACC_HOME で作り、e2e/audit-shots.js の一覧どおりに撮る（--theme light、--serve で撮らずに起動したまま、--keep）
 ```
 
-`e2e:slice` / `e2e:board` / `e2e:conflict` / `e2e:perf` / `e2e:reconnect` / `screenshots` は作り直し前の画面（司令室・Task ボード）を前提にしていて、画面の作り直しのあとで新しい画面に合わせて直す（それまでは通らない）。
+e2e はすべて `e2e/harness.js` で一時 `ACC_HOME`・空きポートにデーモンと Vite を起動し、`ANTHROPIC_*` と LiteLLM の設定を子プロセスに渡さない（モックのモデルとランタイムだけ）。確かめる e2e（audit 以外）が待つのは UI とデーモンの状態で、時間では待たない。
 
-UI とデーモンは同じ `ACC_HOME` を見る（Vite の開発ミドルウェアが `daemon.json` を `/__acc/connection` で渡す）。scene は代役を使わず、すべて Control API を通して作るので、実際の挙動を隠さない。
+UI とデーモンは同じ `ACC_HOME` を見る（Vite の開発ミドルウェアが `daemon.json` を `/__acc/connection` で渡す）。監査の場面は代役を使わず、すべて Control API を通して作るので、実際の挙動を隠さない。
 
 ### Vertical Slice を試す
 
-- **オフライン（費用なし）**：UI の初回画面で「デモモードで試す」を選ぶ（または `system.setupDemo` を呼ぶ）。`<ACC_HOME>/demo/launch-demo` に git なしのフォルダと「デモ: 新製品ローンチ準備」（`mock/orchestrator` + `session.delegate`）ができるので、下書きの目標をそのまま送る。指揮役が 3 人に任せ、終わるたびに起こされて進み具合を答え、そろったら最終報告で止まる。コードの縦の流れ（Worker・統合・承認）は旧プリセットの `session.grantOrchestration` と `e2e:slice` で試す。
+- **オフライン（費用なし）**：UI の初回画面で「デモモードで試す」を選ぶ（または `system.setupDemo` を呼ぶ）。`<ACC_HOME>/demo/launch-demo` に git なしのフォルダと「デモ: 新製品ローンチ準備」（`mock/orchestrator` + `session.delegate`）ができるので、下書きの目標をそのまま送る。指揮役が 3 人に任せ、終わるたびに起こされて進み具合を答え、そろったら最終報告で止まる。コードの流れは git のプロジェクトで任せると試せる：`mock/orchestrator` の指揮役は 1 人をコードの子（worktree。テストの実行は慎重のプロファイルなら承認）にし、その成果物を採用すると反映される（`e2e:slice`）。
 - **本物の経路**：設定（または `ACC_LITELLM_BASE_URL` / `ACC_LITELLM_API_KEY`）で LiteLLM Proxy の URL とキーを入れる。
   1. 自分のプロジェクトを追加し（`testCommand` を設定すると統合後に検証される）、チャットを作ってモデルに LiteLLM のモデル名（例 `claude-sonnet-4`）を選ぶ。
-  2. そのチャットを `session.delegate({ sessionId })`（既定 4 人・$3）で指揮役にする。コードの Worker と統合の流れなら旧プリセットの `session.grantOrchestration({ sessionId, maxWorkers: 2 })`。
+  2. そのチャットを `session.delegate({ sessionId })`（既定 4 人・$3）で指揮役にする（UI ではホームや会話の「任せる」）。git のプロジェクトなら、コードの子は worktree で動き、その成果物を採用すると反映される。
   3. Worker を Claude Code にするには `settings.update({ defaultRuntime: 'claude-agent-sdk' })`（Run ごとなら `task.spawnWorker` の `runtime`）。LiteLLM が設定されていれば SDK もそこを通り、なければ手元の Claude Code のログインを使う。SDK が読み込めないと Worker の Run は理由つきで失敗する。
   4. 費用が発生するのはこの経路だけ。テストでは呼ばない（下記 §6）。
 

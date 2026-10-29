@@ -248,6 +248,78 @@ describe('<OutputsPanel>', () => {
     expect(within(p).getByRole('button', { name: 'やり直す' })).toBeEnabled();
   });
 
+  it('a conflict on adoption: 解消を任せる starts the agent, then 反映 applies its resolution', async () => {
+    const code = output('diff', {
+      sessionId: CHILD,
+      workspaceId: 'wsp_1',
+      review: pending,
+      title: 'README に節を足す',
+    });
+    const base = {
+      id: 'int_00000000000000000000000078',
+      workspaceIds: ['wsp_1'],
+      preApprovedBy: { kind: 'human' as const, client: 'test' },
+      createdAt: iso(T0 + 60_000),
+    };
+    const step = {
+      taskId: null,
+      artifactId: null,
+      detail: null,
+      startedAt: iso(T0 + 60_000),
+      endedAt: iso(T0 + 61_000),
+      workspaceId: 'wsp_1',
+      branch: 'acc/readme',
+    };
+    const merge = { ...step, index: 0, kind: 'merge' as const, title: 'マージ', conflictFiles: ['README.md'] };
+    const conflicted = integration({
+      ...base,
+      status: 'conflict',
+      steps: [{ ...merge, status: 'failed' }],
+      error: { code: 'conflict', message: 'README.md が競合しました' },
+    });
+    const { fake } = mount([code], {
+      nodes: [rootCard, { ...childCard, state: 'review' } satisfies SessionCard],
+      integrations: [conflicted],
+      handlers: {
+        'integration.resolveWithAgent': () => ({
+          integration: { ...conflicted, status: 'running', error: null },
+          sessionId: null,
+        }),
+        'integration.approve': () => ({ ...conflicted, status: 'applied', error: null }),
+      },
+    });
+    const p = await panel();
+    expect(await within(p).findByText('競合')).toBeInTheDocument();
+    fireEvent.click(within(p).getByRole('button', { name: '解消を任せる' }));
+    expect(fake.calls.find((c) => c.method === 'integration.resolveWithAgent')?.params).toEqual({
+      integrationId: conflicted.id,
+    });
+    expect(await within(p).findByText('反映中')).toBeInTheDocument();
+
+    // Resolved and verified: the resolution is new code, so it waits for 反映.
+    const resolved = integration({
+      ...base,
+      status: 'awaiting_approval',
+      steps: [
+        { ...merge, status: 'failed' },
+        { ...step, index: 1, kind: 'fix', status: 'succeeded', title: '競合を解消', conflictFiles: [] },
+      ],
+      updatedAt: iso(T0 + 120_000),
+    });
+    act(() =>
+      fake.emit({
+        seq: 1,
+        type: 'integration.updated',
+        at: iso(T0 + 120_000),
+        payload: { integration: resolved, changes: ['status'] },
+      } as never),
+    );
+    fireEvent.click(await within(p).findByRole('button', { name: '反映' }));
+    expect(fake.calls.find((c) => c.method === 'integration.approve')?.params).toEqual({
+      integrationId: conflicted.id,
+    });
+  });
+
   it('sends work back with a note: やり直す opens the note, Enter sends it', async () => {
     const doc = output('document', { sessionId: ROOT, review: pending });
     const { fake } = mount([doc], {

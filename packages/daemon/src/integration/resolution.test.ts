@@ -115,7 +115,7 @@ describe('integration.resolveWithAgent', () => {
     ]);
     const run = s.d.ctx.repos.runs.require(r.runId!);
     expect(run).toMatchObject({ kind: 'agent', workspaceId: integ.workspaceId, taskId: null });
-    expect(s.d.ctx.repos.sessions.require(r.sessionId!).title).toContain('Integrator');
+    expect(s.d.ctx.repos.sessions.require(r.sessionId!).title).toMatch(/^競合の解消: /);
 
     const done = await waitSettled(s, integ.id);
     expect(done.status).toBe('awaiting_approval');

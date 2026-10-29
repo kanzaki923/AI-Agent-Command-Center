@@ -6,13 +6,16 @@
 // Starts a real daemon + a production build of the UI (vite build + preview; --dev uses the
 // dev server, whose React development checks cost ~5x), opens the app at 1440x900, starts
 // N chat sessions on the offline mock/echo model with long replies, then measures frame
-// pacing (requestAnimationFrame intervals) and long tasks: while all N start at once (rows
-// move zones), while they stream on the Command board, and in Focus on one streaming chat
-// (Markdown). --profile prints where the start burst's main-thread time went.
+// pacing (requestAnimationFrame intervals) and long tasks: while all N start at once (their
+// lanes on home leave the folded "settled" shape and move), while they stream on home, and in
+// one streaming conversation (Markdown). --profile prints where the start burst's
+// main-thread time went.
 // Prints the numbers and fails only on clear jank (thresholds below), since headless
 // timing varies by machine.
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { chromium } from 'playwright';
-import { flag, log, opt, startStack, waitFor } from './harness.js';
+import { flag, log, openPage, opt, startStack, waitFor } from './harness.js';
 
 const STREAMS = Number(opt('streams', '10'));
 const SECONDS = Number(opt('seconds', '6'));
@@ -83,23 +86,15 @@ try {
   }
 
   browser = await chromium.launch({ headless: !flag('headed') });
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-  await context.addInitScript(() => {
-    localStorage.setItem('acc.ui', JSON.stringify({ state: { onboardingDone: true }, version: 1 }));
-  });
-  const page = await context.newPage();
-  await page.goto(url);
-  await page.getByRole('heading', { name: '司令室' }).waitFor({ timeout: 30_000 });
-  // Everything visible so the board has the most work to do.
-  await page
-    .getByRole('button', { name: /^未実行/ })
-    .click()
-    .catch(() => {});
+  const { context, page } = await openPage(browser, { url, out: join(tmpdir(), 'acc-e2e-perf') });
+  // Every conversation has its lane on home (folded while it waits).
+  await waitFor(async () => (await page.locator('[data-lane]').count()) >= STREAMS, 'the lanes on home');
+  await page.mouse.move(1436, 450);
 
   const idle = await measure(page, 2);
-  log(`idle board        ${fmt(idle)}`);
+  log(`idle home         ${fmt(idle)}`);
 
-  // The burst: N rows leave 未実行 and enter 実行中 at once (layout moves + first deltas).
+  // The burst: N lanes start working at once (layout moves + first deltas).
   const cdp = flag('profile') ? await context.newCDPSession(page) : null;
   if (cdp) {
     await cdp.send('Profiler.enable');
@@ -133,17 +128,18 @@ try {
     const runs = (await rpc.call('run.list', { status: ['running'] })).items;
     return runs.length >= Math.min(STREAMS, 10);
   }, 'runs to stream');
+  // Home shows them working: wait for the lanes to say so before measuring.
+  await waitFor(
+    async () => (await page.locator('[data-lane] [role="img"][data-state="working"]').count()) >= Math.min(STREAMS, 10),
+    'the lanes to show the work',
+  );
   const board = await measure(page, SECONDS);
-  log(`${STREAMS} streams, board ${fmt(board)}`);
+  log(`${STREAMS} streams, home  ${fmt(board)}`);
 
-  await page.getByRole('button', { name: `並列 1 を開く` }).first().click();
-  await page
-    .locator('.md-streaming')
-    .first()
-    .waitFor({ timeout: 10_000 })
-    .catch(() => {});
+  await page.locator(`[data-lane-root="${sessions[0].id}"]`).click();
+  await page.locator('.md-streaming').first().waitFor({ timeout: 10_000 });
   const focus = await measure(page, SECONDS);
-  log(`${STREAMS} streams, focus ${fmt(focus)}`);
+  log(`${STREAMS} streams, conversation ${fmt(focus)}`);
 
   const still = (await rpc.call('run.list', { status: ['running'] })).items.length;
   log(`runs still streaming at the end: ${still}/${STREAMS}`);
@@ -151,8 +147,8 @@ try {
   // The start burst is held to the same bar only on a production build.
   for (const [name, r] of [
     ...(flag('dev') ? [] : [['burst', burst]]),
-    ['board', board],
-    ['focus', focus],
+    ['home', board],
+    ['conversation', focus],
   ]) {
     if (r.p95 > LIMITS.p95Ms || r.longTaskMax > LIMITS.longTaskMaxMs) {
       failed = true;

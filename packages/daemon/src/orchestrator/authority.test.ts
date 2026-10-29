@@ -7,7 +7,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import type { RunController } from '../contracts';
 import { ApiError } from '../core/errors';
 import { MockAgentRuntime } from '../runtime/mock/runtime';
-import { HUMAN, type TestDaemonNoServer, agentActor, createTestDaemon } from '../testing';
+import {
+  HUMAN,
+  type TestDaemonNoServer,
+  agentActor,
+  createTestDaemon,
+  grantOlderPreset,
+} from '../testing';
 import { type TempRepo, createTempRepo, isolateGitConfig } from '../workspace/git-fixture';
 
 vi.setConfig({ testTimeout: 90_000, hookTimeout: 60_000 });
@@ -76,7 +82,7 @@ async function orchestrator(
   opts: { maxWorkers?: number; budgetUsd?: number } = {},
 ) {
   const session = await d.call(HUMAN, 'session.create', { projectId, title: 'orch' });
-  const granted = await d.call(HUMAN, 'session.grantOrchestration', {
+  const granted = await grantOlderPreset(d.ctx, {
     sessionId: session.id,
     lifetime: 'session',
     ...opts,
@@ -190,7 +196,7 @@ describe('agent authority', () => {
 
     // Someone else's orchestrator chat (session grant) and a plain chat the agent did not make.
     const strong = await d.call(HUMAN, 'session.create', { projectId: p.id, title: 'other orch' });
-    await d.call(HUMAN, 'session.grantOrchestration', {
+    await grantOlderPreset(d.ctx, {
       sessionId: strong.id,
       lifetime: 'session',
     });
@@ -317,7 +323,7 @@ describe('agent authority', () => {
     const d1 = await setup();
     const p = await project(d1, 'a');
     const session = await d1.call(HUMAN, 'session.create', { projectId: p.id, title: 'orch' });
-    const { grant } = await d1.call(HUMAN, 'session.grantOrchestration', {
+    const { grant } = await grantOlderPreset(d1.ctx, {
       sessionId: session.id,
       lifetime: 'run',
     });

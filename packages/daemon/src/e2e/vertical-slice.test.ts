@@ -3,6 +3,10 @@
  * a real daemon (HTTP + WebSocket) driven through @acc/client, a temp git repository with a
  * test command, the `mock/orchestrator` model and the `mock` agent runtime.
  *
+ * This is the older orchestrator preset (tasks, task.spawnWorker; granted with
+ * grantOlderPreset now that session.grantOrchestration delegates). The code flow through
+ * session.spawn is in sessions/spawn.test.ts and apps/desktop/e2e/slice.js.
+ *
  *   human: chat + orchestrator grant + goal
  *   → orchestrator: 2 tasks → 2 workers in parallel worktrees (the test worker runs its
  *     tests without asking and its push is denied by the daemon's hard rules)
@@ -22,6 +26,7 @@ import {
   agentActor,
   approveIntegrationTests,
   connectTestClient,
+  grantOlderPreset,
   startTestDaemon,
 } from '../testing';
 import { type TempRepo, createTempRepo, isolateGitConfig } from '../workspace/git-fixture';
@@ -185,7 +190,7 @@ describe('vertical slice (concept §12.1)', () => {
     const { d, client, repo } = s;
 
     // A normal chat becomes an orchestrator by capability (concept §3.1).
-    const { grant } = await client.call('session.grantOrchestration', {
+    const { grant } = await grantOlderPreset(d.ctx, {
       sessionId: s.sessionId,
       lifetime: 'session',
     });
@@ -376,7 +381,7 @@ describe('vertical slice (concept §12.1)', () => {
   it('when both tasks touch the same file, an integrator agent resolves the merge conflict and the integration resumes', async () => {
     const s = await setup();
     const { d, client, repo } = s;
-    await client.call('session.grantOrchestration', {
+    await grantOlderPreset(d.ctx, {
       sessionId: s.sessionId,
       lifetime: 'session',
     });
@@ -453,7 +458,7 @@ describe('vertical slice (concept §12.1)', () => {
   it('in the careful profile a human refuses the test command: the task fails and the orchestrator reports instead of integrating', async () => {
     const s = await setup({ profile: 'careful' });
     const { d, client } = s;
-    await client.call('session.grantOrchestration', { sessionId: s.sessionId });
+    await grantOlderPreset(d.ctx, { sessionId: s.sessionId });
     const { runId } = await client.call('session.send', { sessionId: s.sessionId, content: GOAL });
 
     // The human refuses the test worker's command; its plan treats that as a failure.

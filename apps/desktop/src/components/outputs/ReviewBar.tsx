@@ -1,13 +1,14 @@
 import type { Artifact, Integration } from '@acc/protocol';
-import { Check, CircleCheck, GitMerge, RotateCcw, TriangleAlert, X } from 'lucide-react';
+import { Bot, Check, CircleCheck, GitMerge, RotateCcw, TriangleAlert, X } from 'lucide-react';
 import { useState } from 'react';
-import { approveIntegration } from '../../daemon/orchestration';
+import { approveIntegration, resolveWithAgent } from '../../daemon/orchestration';
 import { reviewOutput } from '../../daemon/outputs';
 import { useIntegrations } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { useWindowKeydown } from '../../hooks/useWindowKeydown';
 import { cn } from '../../lib/cn';
 import { overlayOpen } from '../../lib/overlay';
+import { canResolveWithAgent, isResolving } from '../../model/integration';
 import { Button } from '../ui/Button';
 import { StateIcon } from '../ui/StateIcon';
 import { Tooltip } from '../ui/Tooltip';
@@ -80,7 +81,7 @@ function PhaseStatus({
       return (
         <span className="flex items-center gap-1.5 text-ui text-fg-2" data-phase="applying">
           <StateIcon state="working" size={14} />
-          反映中
+          {isResolving(phase.integration) ? '競合を解消中' : '反映中'}
         </span>
       );
     case 'apply_wait':
@@ -130,8 +131,10 @@ function PhaseStatus({
 
 /**
  * The decision on one output (ui-redesign spec §6): 採用 / やり直す while it waits; for code,
- * adopting applies it (反映) and the bar follows that. やり直す takes an optional note (Enter
- * sends, Esc cancels). Nothing is shown for an output nobody has to decide on.
+ * adopting applies it (反映) and the bar follows that. A change that conflicts with what was
+ * applied meanwhile offers 解消を任せる (an agent merges both; then 反映 again). やり直す takes
+ * an optional note (Enter sends, Esc cancels). Nothing is shown for an output nobody has to
+ * decide on.
  */
 export function ReviewBar({
   output,
@@ -173,6 +176,10 @@ export function ReviewBar({
     });
   };
   const apply = (integ: Integration) => void approveIntegration(rt, integ);
+  /** A conflict an agent can resolve (the merge that conflicted is recorded). */
+  const conflict =
+    phase.kind === 'apply_failed' && canResolveWithAgent(phase.integration) ? phase.integration : null;
+  const resolve = (integ: Integration) => void resolveWithAgent(rt, integ);
   const canRedo =
     phase.kind === 'waiting' || phase.kind === 'apply_failed' || phase.kind === 'apply_wait';
 
@@ -186,6 +193,9 @@ export function ReviewBar({
     } else if (phase.kind === 'apply_wait') {
       e.preventDefault();
       apply(phase.integration);
+    } else if (conflict) {
+      e.preventDefault();
+      resolve(conflict);
     }
   });
 
@@ -256,6 +266,20 @@ export function ReviewBar({
             data-action="adopt"
           >
             採用
+          </Button>
+        )}
+        {conflict && !redoOpen && (
+          <Button
+            variant="primary"
+            size={full ? 'lg' : 'md'}
+            icon={<Bot size={14} strokeWidth={1.75} />}
+            shortcutKeys={full ? 'Mod+Enter' : undefined}
+            hint="エージェントに競合の解消を任せる"
+            disabled={!connected}
+            onClick={() => resolve(conflict)}
+            data-action="resolve"
+          >
+            解消を任せる
           </Button>
         )}
         {phase.kind === 'apply_wait' && !redoOpen && (

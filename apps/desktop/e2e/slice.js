@@ -1,62 +1,36 @@
-// End-to-end check of the human side of the Vertical Slice against a REAL Core Daemon.
+// End-to-end check of the human side of the vertical slice against a REAL Core Daemon.
 //
-//   pnpm --filter @acc/desktop e2e:slice [-- --headed] [--keep] [--out <dir>] [--timeout-ms 240000]
+//   pnpm --filter @acc/desktop e2e:slice [-- --headed] [--keep] [--out <dir>]
 //                                        [--daemon-root <checkout with the daemon to run>]
 //
-// What it does (no paid LLM calls: mock models and the mock agent runtime only):
-//   1. Starts the daemon (`packages/daemon/src/main.ts` via tsx) and the Vite dev server on
-//      free ports with a fresh temporary ACC_HOME (e2e/harness.js).
-//   2. In Chromium (Playwright, 1440x900): onboarding → 「デモモードで試す」 → lands in the
-//      demo design chat holding the orchestrator grant (chip + chat line) with the suggested
-//      first message → sends it with one click → the reply streams in.
-//   3. Zero approvals (the default おまかせ profile): the orchestrator splits the goal, two
-//      mock workers run in parallel (the test worker's `git push` is blocked by the daemon's
-//      hard rules and it carries on), the integration merges and tests — and nothing asks a
-//      human until the integration waits for 承認して反映. Fails if any approval appears.
-//      On the way: the worker's chat shows the block (ブロック + reason + ルール), the
-//      Focus header's decision chip and its popover, and the Timeline's decision rows.
-//   4. The human applies the integration (confirmation wording checked) and the target branch
-//      really moves (git, not just the UI).
-//   5. Careful profile + remember: a project in 慎重 asks before a worker's test command;
-//      Ctrl+J lands on the card, A opens the scope choice, 3 approves for the project. The
-//      same command later in the run runs without asking (記憶した許可), the rule is listed in
-//      the project settings and can be taken back there.
+// No paid LLM calls: the conversation runs on the daemon's built-in mock supervisor
+// (`mock/orchestrator`), its children on the mock agent runtime.
+//   1. A temporary git repository becomes a project in the careful profile (a child's test
+//      command asks first). The home is empty: only 何を頼みますか.
+//   2. On the home composer: code as the workspace, 任せる on, the request, Enter. The
+//      conversation is created delegated in that project and stays on home (no navigation).
+//   3. The mock supervisor spawns three children (session.spawn); the code one works in a
+//      worktree. Their chips appear in the conversation's lane.
+//   4. The code child's test command waits for a human: an approval row on home (with the
+//      count in the title bar). J selects it, Y allows it — no mouse, no chat opened.
+//   5. The code child reaches review (its chip says so). Opening it shows the outputs panel
+//      with the diff; 採用 applies the change (反映): the target branch really moves (git, not
+//      just the UI) and the child is done.
 //
 // Screenshots of every step go to the OS temp dir (never the repo). Exit code 0 = pass.
 import { mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium } from 'playwright';
-import { flag, git, log, makeRepo, opt, repoRoot, startStack, waitFor } from './harness.js';
+import { flag, git, log, makeRepo, openPage, opt, repoRoot, startStack, waitFor } from './harness.js';
 
 const headed = flag('headed');
 const keep = flag('keep');
 const out = opt('out', join(tmpdir(), 'acc-e2e-slice'));
-const sliceTimeout = Number(opt('timeout-ms', '240000'));
-// Run the daemon from another checkout (e.g. a branch with newer daemon modules) against
-// this UI. Default: this repository.
 const daemonRoot = resolve(opt('daemon-root', repoRoot));
 mkdirSync(out, { recursive: true });
 
-/** A careful-profile worker: the test command asks once, then is remembered. */
-const CAREFUL_PLAN = [
-  'ドキュメントを書いて、テストで確かめます。',
-  '',
-  '```acc-mock',
-  JSON.stringify({
-    steps: [
-      { type: 'write', path: 'docs/careful.md', content: '# 慎重\n\nWorker が書きました。\n' },
-      { type: 'run', command: 'node', args: ['scripts/test.js'], title: 'テストを実行する' },
-      { type: 'say', text: '念のためもう一度確かめます。' },
-      { type: 'run', command: 'node', args: ['scripts/test.js'], title: 'テストをもう一度実行する' },
-    ],
-    summary: 'docs/careful.md を追加し、テストが通ることを確認しました',
-    delayScale: 0.2,
-  }),
-  '```',
-].join('\n');
-
-const ALL_STATUSES = ['pending', 'approved', 'rejected', 'expired', 'cancelled'];
+const GOAL = 'ログイン画面のエラーメッセージを直して';
 
 let browser;
 let stack;
@@ -67,286 +41,162 @@ try {
   repo = makeRepo();
   stack = await startStack({ daemonRoot });
   const { rpc, url } = stack;
-  const sysInfo = await rpc.call('system.info');
-  const methods = new Set(sysInfo.methods);
-  if (!methods.has('task.spawnWorker')) throw new Error('this daemon cannot start workers (task.spawnWorker)');
-  if (!methods.has('permissionRule.list')) throw new Error('this daemon has no permission rules (permissionRule.list)');
-  log(`daemon ${sysInfo.version}: ${sysInfo.methods.length} methods`);
-
-  // ------------------------------------------------------------------ browser
-  browser = await chromium.launch({ headless: !headed });
-  const context = await browser.newContext({
-    viewport: { width: 1440, height: 900 },
-    deviceScaleFactor: 1,
-  });
-  const page = await context.newPage();
-  const pageErrors = [];
-  page.on('pageerror', (e) => pageErrors.push(String(e)));
-  let n = 0;
-  const shot = async (name) => {
-    n++;
-    const path = join(out, `${String(n).padStart(2, '0')}-${name}.png`);
-    await page.screenshot({ path });
-    log(`screenshot ${path}`);
-  };
-  const openFromPalette = async (text, option) => {
-    await page.keyboard.press('Control+k');
-    await page.keyboard.type(text);
-    await page.getByRole('option', { name: option }).first().click();
-  };
-
-  // 1. onboarding → demo
-  await page.goto(url);
-  await page.getByText('AI エージェントのチームを始めましょう').waitFor({ timeout: 30_000 });
-  await shot('onboarding');
-  await page.getByRole('button', { name: /デモモードで試す/ }).click();
-  log('demo chosen');
-
-  // 2. landed in the design chat as an orchestrator
-  const chip = page.getByTestId('grant-chip');
-  await chip.waitFor({ timeout: 20_000 });
-  await page.getByTestId('grant-line-given').waitFor();
-  const chipText = await chip.innerText();
-  if (!/Orchestrator/.test(chipText)) throw new Error(`grant chip says "${chipText}"`);
-  const suggestion = page.getByTestId('suggestion-chip');
-  await suggestion.waitFor();
-  log(`grant chip "${chipText.replace(/\s+/g, ' ')}"`);
-  await shot('demo-chat-granted');
-
-  const sessions = (await rpc.call('session.list', {})).items;
-  const design = sessions.find((s) => s.kind === 'chat');
-  const grants = (await rpc.call('grant.list', { sessionId: design.id })).items;
-  if (grants.length === 0) throw new Error('no grant on the demo chat in the daemon');
-  const demoProject = await rpc.call('project.get', { projectId: design.projectId });
-  const settings = await rpc.call('settings.get');
-  const profile = demoProject.permissionProfile ?? settings.defaultPermissionProfile;
-  if (profile !== 'autonomous') throw new Error(`the demo project runs in ${profile}, expected autonomous`);
-  log(`demo project ${demoProject.name}: profile ${profile}`);
-
-  // 3. send the suggested message → the orchestrator works; nothing may ask a human
-  await suggestion.click();
-  await page.locator('.md').first().waitFor({ timeout: 60_000 });
-  await shot('demo-message-streaming');
-
-  log('driving the orchestrator slice; it must not ask anything before the final apply');
-  const end = Date.now() + sliceTimeout;
-  let integrationId;
-  let blockShown = false;
-  while (Date.now() < end && !integrationId) {
-    const asked = (await rpc.call('approval.list', { status: ALL_STATUSES, projectId: demoProject.id })).items;
-    if (asked.length > 0) {
-      await shot('unexpected-approval');
-      throw new Error(`the autonomous profile asked a human: ${asked.map((a) => a.title).join(', ')}`);
-    }
-    // The test worker's push is blocked by the hard rules: show it where the human would look.
-    if (!blockShown) {
-      const decided = (await rpc.call('events.list', { types: ['tool.decided'], limit: 200 })).events;
-      const block = decided.find((e) => e.payload.decision === 'denied' && /push/.test(e.payload.summary ?? ''));
-      if (block?.sessionId) {
-        blockShown = true;
-        const worker = await rpc.call('session.get', { sessionId: block.sessionId });
-        log(`blocked: ${block.payload.summary} (${block.payload.decidedBy}: ${block.payload.reason})`);
-        await openFromPalette(worker.title, new RegExp(worker.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-        // The blocked call is its own line, or folded into "ツール実行 N 件 … ブロック 1".
-        const line = page.getByTestId('blocked-chip').first();
-        const group = page.getByRole('button', { name: /ツール実行 \d+ 件.*ブロック 1/ }).first();
-        await line.or(group).first().waitFor({ timeout: 15_000 });
-        if (!(await line.isVisible().catch(() => false))) await group.click();
-        await line.waitFor();
-        await page.waitForTimeout(300);
-        await shot('worker-blocked-push');
-        const decisions = page.getByTestId('decisions-chip');
-        await decisions.waitFor({ timeout: 10_000 });
-        const chipLabel = await decisions.innerText();
-        if (!/自動判断 \d+ 件/.test(chipLabel)) throw new Error(`decision chip says "${chipLabel}"`);
-        await decisions.click();
-        await page.getByTestId('decisions-popover').waitFor();
-        await shot('worker-decisions-popover');
-        log(`decision chip "${chipLabel}"`);
-        // "タイムラインで見る": this run's permission decisions, the block with who decided.
-        await page.getByRole('button', { name: 'タイムラインで見る' }).click();
-        await page.getByTestId('decider-badge').first().waitFor({ timeout: 15_000 });
-        await shot('timeline-run-decisions');
-        await page.getByRole('button', { name: 'クリア' }).click();
-      }
-    }
-    const integ = (await rpc.call('integration.list', {})).items.find((i) => i.status === 'awaiting_approval');
-    if (integ) integrationId = integ.id;
-    else await page.waitForTimeout(1000);
+  const methods = new Set((await rpc.call('system.info')).methods);
+  for (const m of ['session.spawn', 'session.delegate', 'home.get', 'attention.respond', 'artifact.review']) {
+    if (!methods.has(m)) throw new Error(`this daemon has no ${m}`);
   }
-  if (!integrationId) throw new Error('the orchestrator did not produce an integration candidate in time');
-  if (!blockShown) throw new Error('the test worker\'s push was never blocked');
 
-  await page.keyboard.press('Control+1');
-  await page.getByTestId('task-tree').waitFor();
-  await shot('orchestrator-task-tree');
-  const beforeApply = (await rpc.call('approval.list', { status: ALL_STATUSES, projectId: demoProject.id })).items;
-  if (beforeApply.length > 0) throw new Error(`approvals before the apply: ${beforeApply.map((a) => a.title).join(', ')}`);
-  log('zero approvals from the goal to the integration candidate');
-
-  // 4. review: steps, tests, diff; apply with the exact confirmation; the branch really moves
-  await page
-    .getByRole('button', { name: /統合: 反映待ち|レビューを開始/ })
-    .first()
-    .click();
-  await page.getByTestId('integration-view').waitFor();
-  await page.getByTestId('approve-integration').waitFor({ timeout: 30_000 });
-  await page.getByTestId('integration-tests').waitFor({ timeout: 30_000 });
-  await shot('integration-review');
-  const pendingInteg = await rpc.call('integration.get', { integrationId });
-  const targetRepo = (await rpc.call('project.get', { projectId: pendingInteg.projectId })).repoPath;
-  const targetRef = pendingInteg.targetRef ?? 'main';
-  const before = git(targetRepo, 'rev-parse', targetRef);
-  await page.getByTestId('approve-integration').click();
-  const dialog = page.getByTestId('apply-dialog');
-  await dialog.waitFor();
-  const wording = await dialog.innerText();
-  if (!/早送り（fast-forward）/.test(wording) || !wording.includes(targetRef))
-    throw new Error(`confirmation does not say what happens: ${wording}`);
-  await shot('integration-confirm');
-  await page.getByRole('button', { name: '反映する' }).click();
-  await page
-    .getByText(/に反映しました/)
-    .first()
-    .waitFor({ timeout: 30_000 });
-  const integ = await waitFor(
-    async () => {
-      const i = await rpc.call('integration.get', { integrationId });
-      return i.status !== 'awaiting_approval' ? i : null;
-    },
-    'the daemon to apply the integration',
-    30_000,
-  );
-  const after = git(targetRepo, 'rev-parse', targetRef);
-  if (integ.status !== 'applied' || before === after || after !== integ.headSha) {
-    throw new Error(
-      `integration not applied (status ${integ.status}, ${targetRef} ${before} → ${after}, head ${integ.headSha})`,
-    );
-  }
-  log(`applied: ${targetRef} ${before.slice(0, 7)} → ${after.slice(0, 7)} (the only human decision)`);
-  await shot('integration-applied');
-  await page.keyboard.press('Escape');
-
-  // 5. careful profile: one approval, remembered for the project
-  const careful = await rpc.call('project.create', {
-    name: 'careful-e2e',
+  // ------------------------------------------------------------------ data (real API)
+  // Offline: the built-in mock supervisor answers conversations, the mock runtime runs agents.
+  await rpc.call('settings.update', { defaultRuntime: 'mock', defaultModel: 'mock/orchestrator' });
+  const project = await rpc.call('project.create', {
+    name: 'slice-e2e',
     repoPath: repo,
     defaultBranch: 'main',
     testCommand: 'node scripts/test.js',
     permissionProfile: 'careful',
   });
-  const task = await rpc.call('task.create', { projectId: careful.id, title: '慎重にドキュメントを書く' });
-  const ws = await rpc.call('workspace.create', { projectId: careful.id, taskId: task.id, label: 'careful-worker' });
-  const worker = await rpc.call('session.create', {
-    kind: 'agent',
-    projectId: careful.id,
-    workspaceId: ws.id,
-    taskId: task.id,
-    title: '慎重な Worker',
-    runtime: 'mock',
-  });
-  // The board follows the selected project: switch to the careful one.
-  await page.keyboard.press('Control+1');
-  await openFromPalette('careful-e2e', /careful-e2e に切り替え/);
-  await rpc.call('session.send', { sessionId: worker.id, content: CAREFUL_PLAN });
-  const ask = await waitFor(
-    async () => (await rpc.call('approval.list', { status: ['pending'], sessionId: worker.id })).items[0],
-    'the careful worker to ask',
-    30_000,
+  const mainBefore = git(repo, 'rev-parse', 'main');
+
+  // ------------------------------------------------------------------ browser
+  browser = await chromium.launch({ headless: !headed });
+  const { page, errors, shot } = await openPage(browser, { url, out });
+
+  // 1. the empty home: the request field alone
+  const field = page.getByRole('textbox', { name: '何を頼みますか' });
+  await field.waitFor({ timeout: 30_000 });
+  if ((await page.locator('[data-lane]').count()) > 0) throw new Error('the home is not empty');
+  await shot('home-empty');
+
+  // 2. code + 任せる + the request, Enter (stays on home)
+  await page.locator('[data-workspace="worktree"]').click();
+  await page.locator('[data-workspace="worktree"][aria-checked="true"]').waitFor();
+  const toggle = page.locator('[data-delegate-toggle]');
+  await toggle.click();
+  await page.locator('[data-delegate-toggle][aria-pressed="true"]').waitFor();
+  await field.fill(GOAL);
+  await shot('home-request-delegated');
+  await field.press('Enter');
+
+  const lead = await waitFor(
+    async () => (await rpc.call('session.list', {})).items.find((s) => s.kind === 'chat' && s.parentId == null),
+    'the conversation to be created',
   );
-  log(`careful profile asked: ${ask.title} (${ask.payload?.reason ?? 'no reason'})`);
-  await page.getByRole('heading', { name: '司令室' }).waitFor();
-  // The RPC can see the approval before the UI does: jump only once the card is on the board.
-  const card = page.getByRole('option', { name: /慎重な Worker · 承認待ち/ });
-  await card.waitFor();
-  await page.keyboard.press('Control+j');
-  await page.getByTestId('approve-always').first().waitFor();
-  // Keys act on the selected card: wait for the board to select it, not just render it.
-  await page.locator('[role="option"][aria-selected="true"]', { hasText: '慎重な Worker' }).waitFor();
-  await shot('careful-approval-card');
-  await page.keyboard.press('a');
-  await page.getByTestId('remember-chooser').waitFor();
-  // The card says what will be remembered before a scope is picked.
-  await page.getByText('覚える内容：コマンド「node scripts/test.js」を許可').waitFor();
-  await page.waitForTimeout(250); // the buttons cross-fade (120ms)
-  await shot('careful-remember-chooser');
-  await page.keyboard.press('3');
-  const rule = await waitFor(
-    async () => (await rpc.call('permissionRule.list', { projectId: careful.id })).items[0],
-    'the approval to be remembered',
-    15_000,
-  );
-  if (rule.scope !== 'project') throw new Error(`remembered for ${rule.scope}, expected project`);
-  log(`remembered: ${rule.description} (${rule.scope})`);
+  if (lead.projectId !== project.id) throw new Error(`the conversation is in ${lead.projectId}, not the code project`);
+  // create → delegate → send: the grant lands right after the session.
   await waitFor(
+    async () =>
+      (await rpc.call('grant.list', { sessionId: lead.id })).items.some((g) => g.permissions.includes('session.spawn')),
+    'the conversation to be delegated (a session.spawn grant)',
+  );
+  const lane = page.locator(`[data-lane="${lead.id}"]`);
+  await lane.waitFor({ timeout: 15_000 });
+  // The lane is named by what was asked (not 「新しい会話」).
+  const laneTitle = (await lane.locator(`[data-lane-root="${lead.id}"]`).innerText()).trim();
+  if (laneTitle !== GOAL) throw new Error(`the lane is titled "${laneTitle}"`);
+  log(`delegated conversation ${lead.id} in ${project.name}`);
+
+  // 3. three children, one of them on the code (a worktree)
+  const children = await waitFor(
     async () => {
-      const r = (await rpc.call('run.list', { sessionId: worker.id })).items[0];
-      return r && r.status === 'completed' ? r : null;
+      const nodes = (await rpc.call('session.tree', { sessionId: lead.id })).nodes.filter((n) => n.depth > 0);
+      return nodes.length >= 3 ? nodes : null;
     },
-    'the careful worker to finish',
+    'the supervisor to spawn its children',
     60_000,
   );
-  const workerApprovals = (await rpc.call('approval.list', { status: ALL_STATUSES, sessionId: worker.id })).items;
-  if (workerApprovals.length !== 1)
-    throw new Error(`the remembered command asked again (${workerApprovals.length} approvals)`);
-  const remembered = (await rpc.call('events.list', { sessionId: worker.id, types: ['tool.decided'] })).events.find(
-    (e) => e.payload.decidedBy === 'remembered',
+  const sessions = await Promise.all(children.map((c) => rpc.call('session.get', { sessionId: c.id })));
+  const kinds = await Promise.all(
+    sessions.map(async (s) =>
+      s.workspaceId ? (await rpc.call('workspace.get', { workspaceId: s.workspaceId })).kind : 'none',
+    ),
   );
-  if (!remembered) throw new Error('the second test run was not allowed by the remembered approval');
-  log('the second test run was allowed by the remembered approval (no second ask)');
+  if (kinds.filter((k) => k === 'worktree').length !== 1)
+    throw new Error(`expected one child on the code, got workspaces ${kinds.join(', ')}`);
+  const codeChild = sessions[kinds.indexOf('worktree')];
+  await waitFor(async () => (await lane.locator('[data-session-chip]').count()) >= 3, 'three chips in the lane', 15_000);
+  log(`children: ${children.map((c) => c.title).join(' / ')}; code: ${codeChild.title}`);
 
-  await openFromPalette('慎重な Worker', /慎重な Worker/);
-  await page.getByTestId('remembered-scope').first().waitFor({ timeout: 15_000 });
-  const note = page.getByTestId('decision-note').filter({ hasText: '記憶した許可' }).first();
-  const folded = page.getByRole('button', { name: /ツール実行 \d+ 件/ }).last();
-  await note.or(folded).first().waitFor({ timeout: 10_000 });
-  if (!(await note.isVisible().catch(() => false))) await folded.click();
-  await note.waitFor({ timeout: 10_000 });
-  await shot('careful-worker-remembered');
+  // 4. the approval row on home, answered with J then Y
+  const row = page.locator('[data-attention-row]').filter({ hasText: 'node --test' });
+  await row.waitFor({ timeout: 60_000 });
+  const label = await row.getAttribute('aria-label');
+  if (!label?.startsWith('確認: ')) throw new Error(`the row is not an approval: ${label}`);
+  const count = await page.getByTestId('attention-count').innerText();
+  if (count.trim() !== '1') throw new Error(`the title bar counts ${count} attention items`);
+  const codeChip = page.locator(`[data-session-chip="${codeChild.id}"]`);
+  await page.locator(`[data-session-chip="${codeChild.id}"][data-state="needs_you"]`).waitFor({ timeout: 15_000 });
+  await shot('home-approval');
+  const approval = await waitFor(
+    async () => (await rpc.call('approval.list', { status: ['pending'], sessionId: codeChild.id })).items[0],
+    'the pending approval',
+  );
+  await page.keyboard.press('j');
+  await page.locator('[data-attention-row][data-selected]').filter({ hasText: 'node --test' }).waitFor();
+  await shot('home-approval-selected');
+  await page.keyboard.press('y');
+  await row.waitFor({ state: 'detached', timeout: 15_000 });
+  const answered = await waitFor(
+    async () => {
+      const a = (
+        await rpc.call('approval.list', {
+          status: ['pending', 'approved', 'rejected', 'expired', 'cancelled'],
+          sessionId: codeChild.id,
+        })
+      ).items.find((x) => x.id === approval.id);
+      return a && a.status !== 'pending' ? a : null;
+    },
+    'the approval to be answered',
+  );
+  if (answered.status !== 'approved') throw new Error(`Y answered the approval with ${answered.status}`);
+  log('approved from home with the keyboard (J, Y)');
 
-  // The project settings list the rule; taking it back works from there.
-  await openFromPalette('プロジェクトの設定', /プロジェクトの設定（権限・記憶した許可）/);
-  const rules = page.getByTestId('remembered-rules');
-  await rules.waitFor({ timeout: 10_000 });
-  await rules.scrollIntoViewIfNeeded();
-  await shot('project-settings-permissions');
-  await rules.getByRole('button', { name: /取り消す/ }).first().click();
+  // 5. review → open the child → the diff in the outputs panel → 採用 → 反映
+  await page.locator(`[data-session-chip="${codeChild.id}"][data-state="review"]`).waitFor({ timeout: 60_000 });
+  await shot('home-code-review');
+  await codeChip.click();
+  const panel = page.locator('aside[data-region="panel"]');
+  await panel.waitFor({ timeout: 15_000 });
+  await panel.locator('[data-output-body="code"]').waitFor({ timeout: 15_000 });
+  await panel.getByText('docs/notes.md').first().waitFor({ timeout: 15_000 });
+  await shot('child-outputs-diff');
+  await panel.locator('[data-action="adopt"]').click();
+  await panel.locator('[data-review-bar][data-phase="adopted"]').waitFor({ timeout: 60_000 });
+  const adopted = await panel.locator('[data-review-bar]').innerText();
+  if (!adopted.includes('反映済み')) throw new Error(`the bar says "${adopted}" after the change was applied`);
+  const mainAfter = git(repo, 'rev-parse', 'main');
+  if (mainAfter === mainBefore) throw new Error('main did not move');
+  const notes = git(repo, 'show', 'main:docs/notes.md');
+  if (!notes.includes(GOAL)) throw new Error(`docs/notes.md on main: ${notes}`);
   await waitFor(
-    async () => (await rpc.call('permissionRule.list', { projectId: careful.id })).items.length === 0,
-    'the rule to be revoked',
-    10_000,
+    async () =>
+      (await rpc.call('session.tree', { sessionId: lead.id })).nodes.find((n) => n.id === codeChild.id)?.state === 'done',
+    'the code child to be done',
+    30_000,
   );
-  await page.getByTestId('no-remembered-rules').waitFor();
-  log('the remembered approval was taken back from the project settings');
-  await page.keyboard.press('Escape');
+  await shot('child-applied');
+  log(`applied: main ${mainBefore.slice(0, 7)} → ${mainAfter.slice(0, 7)}; the code child is done`);
 
-  // The global default and auto mode live in the settings.
-  await page.keyboard.press('Control+,');
-  const defaults = page.getByRole('radiogroup', { name: '既定のプロファイル' });
-  await defaults.waitFor({ timeout: 10_000 });
-  await defaults.scrollIntoViewIfNeeded();
-  await shot('settings-agent-permissions');
-  await page.keyboard.press('Escape');
+  // Back on home: the chip says done.
+  await page.keyboard.press('Control+1');
+  await page.locator(`[data-session-chip="${codeChild.id}"][data-state="done"]`).waitFor({ timeout: 15_000 });
+  await shot('home-after');
 
-  // Timeline: the 表示 menu adds routine automatic allows without the plumbing.
-  await page.keyboard.press('Control+3');
-  await page.getByTestId('timeline-view-menu').click();
-  await page.getByTestId('show-auto-allowed').click();
-  await page.keyboard.press('Escape');
-  const runHeader = page.getByRole('button', { name: /Run #.*慎重な Worker/ }).last();
-  await runHeader.waitFor({ timeout: 10_000 });
-  if (!(await page.getByText('記憶した許可').first().isVisible().catch(() => false))) await runHeader.click();
-  await page.getByText('記憶した許可').first().waitFor({ timeout: 10_000 });
-  await shot('timeline-auto-allowed');
-
-  if (pageErrors.length) {
-    log(`page errors:\n  ${pageErrors.join('\n  ')}`);
-    throw new Error('the page reported errors');
-  }
-  log('PASS (zero-approval slice; careful approval remembered and revoked)');
+  if (errors.length) throw new Error(`page errors:\n  ${errors.join('\n  ')}`);
+  log('PASS (request with 任せる → children → approval by keyboard → review → 採用 → 反映)');
 } catch (err) {
   failed = true;
   console.error(err);
+  // What the daemon saw, to tell a UI miss from a daemon one.
+  try {
+    const home = await stack.rpc.call('home.get', {});
+    log(`attention: ${JSON.stringify(home.attention.map((a) => [a.kind, a.title]))}`);
+    for (const t of home.trees) log(`tree ${t.root.title}: ${t.nodes.map((n) => `${n.state} ${n.now ?? ''}`).join(' / ')}`);
+    const approvals = await stack.rpc.call('approval.list', { status: ['pending', 'approved', 'rejected', 'expired', 'cancelled'] });
+    log(`approvals: ${JSON.stringify(approvals.items.map((a) => [a.status, a.title]))}`);
+  } catch {
+    /* the daemon is gone */
+  }
 } finally {
   await browser?.close().catch(() => {});
   if (repo) {

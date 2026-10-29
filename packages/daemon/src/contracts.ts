@@ -476,8 +476,15 @@ export interface AttentionResolutionInput {
 export interface AttentionService {
   /** Open an item; an open item with the same refs is returned instead of a duplicate. */
   open(input: OpenAttentionInput): Attention | null;
-  /** Resolve every open item whose refs match all given refs (the cause went away). */
-  resolveWhere(refs: AttentionRefs, resolution: AttentionResolutionInput): Attention[];
+  /**
+   * Resolve every open item whose refs match all given refs (the cause went away), or only
+   * those of the given kinds.
+   */
+  resolveWhere(
+    refs: AttentionRefs,
+    resolution: AttentionResolutionInput,
+    kinds?: readonly AttentionKind[],
+  ): Attention[];
   /**
    * Close one open item by id (for causes no ref names, e.g. the daily limit). Throws
    * conflict when it is no longer open.

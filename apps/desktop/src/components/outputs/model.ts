@@ -1,5 +1,6 @@
 import type { Artifact, Integration, OutputKind, SessionState } from '@acc/protocol';
 import { outputKind } from '../../daemon/outputs';
+import { fixStep } from '../../model/integration';
 
 /** An output as the panel shows it: its UI kind is known (evidence is left out). */
 export type Output = Artifact & { uiKind: OutputKind };
@@ -42,8 +43,8 @@ export function panelOutputs(all: readonly Artifact[], subtree: ReadonlySet<stri
  * - `none`: nothing to decide;
  * - `waiting`: 採用 or やり直す;
  * - `applying`: code adopted, being applied (tests, then 反映);
- * - `apply_wait`: code adopted and verified, but applying needs the human again (e.g. the
- *   target moved on): 反映;
+ * - `apply_wait`: code adopted and verified, but applying needs the human again (the target
+ *   moved on, or an agent resolved a conflict: code the human has not seen yet): 反映;
  * - `apply_failed`: code adopted, but the tests failed or it could not be merged;
  * - `adopted`: 採用済み (code: 反映済み);
  * - `sent_back`: sent back for a redo.
@@ -93,8 +94,9 @@ export function reviewPhase(a: Artifact, integrations: readonly Integration[]): 
     case 'verifying':
       return { kind: 'applying', integration: integ };
     case 'awaiting_approval':
-      // An adopted attempt applies itself once verified; it only waits when applying failed.
-      return integ.error
+      // An adopted attempt applies itself once verified. It waits when applying failed, and
+      // after an agent resolved a conflict (the daemon resumes it without applying).
+      return integ.error || fixStep(integ)
         ? { kind: 'apply_wait', integration: integ }
         : { kind: 'applying', integration: integ };
     case 'applied':

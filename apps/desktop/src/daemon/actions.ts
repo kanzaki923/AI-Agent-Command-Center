@@ -216,6 +216,20 @@ export async function createSession(
  * it to the AI to lead when asked (`delegate`), then send. The session is created only here,
  * at the first send (spec §5.3). Returns the session (null when creating failed).
  */
+/** Longest title taken from a request (the rest is in the conversation). */
+const REQUEST_TITLE_MAX = 40;
+
+/**
+ * A new conversation is named by what was asked: the request's first line, cut at
+ * REQUEST_TITLE_MAX characters. Without it every conversation started from home read as
+ * 「新しい会話」 in its lane and the sidebar.
+ */
+export function titleFromRequest(text: string): string {
+  const line = text.trim().split(/\r?\n/)[0]!.trim();
+  const chars = [...line];
+  return chars.length > REQUEST_TITLE_MAX ? `${chars.slice(0, REQUEST_TITLE_MAX - 1).join('')}…` : line;
+}
+
 export async function startConversation(
   rt: AppRuntime,
   input: {
@@ -228,10 +242,16 @@ export async function startConversation(
     model?: string | null;
   },
 ): Promise<Session | null> {
-  const workspace = input.workspace && input.workspace.kind !== 'none' ? input.workspace : undefined;
+  const chosen = input.workspace && input.workspace.kind !== 'none' ? input.workspace : undefined;
+  // Only a conversation leads others: delegated, it stays a conversation in the chosen
+  // project, and its children get the workspaces (code → worktrees) instead.
+  const workspace = input.delegate ? undefined : chosen;
+  const projectId =
+    input.delegate && chosen?.kind === 'worktree' ? chosen.projectId : (input.projectId ?? null);
   const s = await createSession(rt, {
     kind: workspace ? 'agent' : 'chat',
-    projectId: input.projectId ?? null,
+    title: titleFromRequest(input.text),
+    projectId,
     model: input.model ?? null,
     ...(workspace ? { workspace } : {}),
   });

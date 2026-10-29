@@ -7,7 +7,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import type { AgentEvent, AgentRunInput, RunController } from '../contracts';
 import { ApiError } from '../core/errors';
 import { MockAgentRuntime } from '../runtime/mock/runtime';
-import { HUMAN, type TestDaemonNoServer, agentActor, createTestDaemon } from '../testing';
+import {
+  HUMAN,
+  type TestDaemonNoServer,
+  agentActor,
+  createTestDaemon,
+  grantOlderPreset,
+} from '../testing';
 import { type TempRepo, createTempRepo, isolateGitConfig } from '../workspace/git-fixture';
 import { DEMO_SESSION_TITLE } from './demo';
 import { buildOrchestratorPrompt } from './executor';
@@ -69,7 +75,7 @@ async function setup(opts: { fastMock?: boolean } = {}) {
 /** A chat session with the orchestrator grant and a live orchestrator run that blocks. */
 async function orchestrator(d: TestDaemonNoServer, projectId: string, budgetUsd?: number) {
   const session = await d.call(HUMAN, 'session.create', { projectId, title: 'orch' });
-  const granted = await d.call(HUMAN, 'session.grantOrchestration', {
+  const granted = await grantOlderPreset(d.ctx, {
     sessionId: session.id,
     lifetime: 'session',
     ...(budgetUsd ? { budgetUsd } : {}),
@@ -223,7 +229,7 @@ describe('task.spawnWorker', () => {
     );
     const w1 = await d.call(orch.actor, 'task.spawnWorker', { taskId: tasks[0]!.id });
     const w2 = await d.call(orch.actor, 'task.spawnWorker', { taskId: tasks[1]!.id, budgetUsd: 1 });
-    // maxWorkers 2 (default of grantOrchestration).
+    // maxWorkers 2 (default of the older preset).
     expect(await codeOf(d.call(orch.actor, 'task.spawnWorker', { taskId: tasks[2]!.id }))).toBe(
       'limit_exceeded',
     );
@@ -372,10 +378,10 @@ describe('task.wait / integration.wait', () => {
 });
 
 describe('orchestrator role', () => {
-  it('grantOrchestration: preset for one project, humans only, chat sessions only', async () => {
+  it('the older preset: one project, humans only, chat sessions only', async () => {
     const { d, project } = await setup();
     const chat = await d.call(HUMAN, 'session.create', { projectId: project.id });
-    const { grant, budget } = await d.call(HUMAN, 'session.grantOrchestration', {
+    const { grant, budget } = await grantOlderPreset(d.ctx, {
       sessionId: chat.id,
       budgetUsd: 3,
     });
@@ -405,17 +411,53 @@ describe('orchestrator role', () => {
       kind: 'agent',
     });
     expect(
-      await codeOf(d.call(HUMAN, 'session.grantOrchestration', { sessionId: agentSession.id })),
+      await codeOf(grantOlderPreset(d.ctx, { sessionId: agentSession.id })),
     ).toBe('invalid_params');
     const noProject = await d.call(HUMAN, 'session.create', {});
     expect(
-      await codeOf(d.call(HUMAN, 'session.grantOrchestration', { sessionId: noProject.id })),
+      await codeOf(grantOlderPreset(d.ctx, { sessionId: noProject.id })),
     ).toBe('invalid_params');
     const orch = await orchestrator(d, project.id);
+    expect(await codeOf(grantOlderPreset(d.ctx, { sessionId: chat.id }, orch.actor))).toBe(
+      'forbidden',
+    );
     expect(
       await codeOf(d.call(orch.actor, 'session.grantOrchestration', { sessionId: chat.id })),
     ).toBe('forbidden');
     orch.release();
+  });
+
+  it('session.grantOrchestration is an alias of session.delegate (the supervisor preset)', async () => {
+    const { d, project } = await setup();
+    const chat = await d.call(HUMAN, 'session.create', { projectId: project.id });
+    const { grant, budget } = await d.call(HUMAN, 'session.grantOrchestration', {
+      sessionId: chat.id,
+      maxWorkers: 3,
+      lifetime: 'run',
+    });
+    expect(grant.permissions).toContain('session.spawn');
+    expect(grant.permissions).not.toContain('task.spawnWorker');
+    expect(grant.permissions).not.toContain('integration.approve');
+    // The project has a repository: combining code changes comes with it.
+    expect(grant.permissions).toContain('integration.create');
+    expect(grant).toMatchObject({
+      scope: { projectIds: [project.id] },
+      limits: { maxChildren: 3, maxDepth: 1 },
+      lifetime: 'work',
+      reason: 'supervisor',
+    });
+    // session.delegate's default budget when none is given.
+    expect(budget).toMatchObject({ limitUsd: 3, subject: { kind: 'session', id: chat.id } });
+
+    // Without options: session.delegate's defaults (4 children, until taken back).
+    const other = await d.call(HUMAN, 'session.create', { projectId: project.id });
+    const plain = await d.call(HUMAN, 'session.grantOrchestration', { sessionId: other.id });
+    expect(plain.grant).toMatchObject({ limits: { maxChildren: 4 }, lifetime: 'session' });
+
+    // Its next message runs as a supervisor (the same executor as session.delegate).
+    const { runId } = await d.call(HUMAN, 'session.send', { sessionId: chat.id, content: 'hi' });
+    expect(d.ctx.repos.runs.require(runId!).kind).toBe('orchestrator');
+    await d.ctx.service('runs').waitForEnd(runId!);
   });
 
   it('the orchestrator prompt names the project, the limits and the rules', () => {
@@ -491,7 +533,7 @@ describe('real path (no network)', () => {
       litellm: { baseUrl: `http://127.0.0.1:${port}`, apiKey: 'sk-fake-0000000000' },
     });
     const s = await d.call(HUMAN, 'session.create', { projectId: project.id, model: 'gpt-real' });
-    await d.call(HUMAN, 'session.grantOrchestration', { sessionId: s.id });
+    await grantOlderPreset(d.ctx, { sessionId: s.id });
     const { runId } = await d.call(HUMAN, 'session.send', { sessionId: s.id, content: '進めて' });
     const run = await d.ctx.service('runs').waitForEnd(runId!);
     expect(run).toMatchObject({ status: 'completed', kind: 'orchestrator', model: 'gpt-real' });

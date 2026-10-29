@@ -36,7 +36,7 @@ import { type ScenarioResult, loadRealSdk, runScenario } from '../runtime/claude
 import { taskGetTool } from '../runtime/claude/contract/scenarios';
 import type { ClaudeSdkModule } from '../runtime/claude/runtime';
 import { ToolGate } from '../runtime/gate';
-import { HUMAN, type TestDaemonNoServer, createTestDaemon } from '../testing';
+import { HUMAN, type TestDaemonNoServer, createTestDaemon, grantOlderPreset } from '../testing';
 import { type TempRepo, createTempRepo, isolateGitConfig } from '../workspace/git-fixture';
 import { LlmGateway } from './gateway';
 import { OpenAiCompatibleProvider } from './openai';
@@ -242,7 +242,7 @@ describe.skipIf(!bin)('LLM gateway through a real LiteLLM (fake Anthropic upstre
           : { content: [...withThinking, { type: 'text', text: '確認しました。' }] };
       });
       const s = await d.call(HUMAN, 'session.create', { projectId: project.id, model });
-      const { budget } = await d.call(HUMAN, 'session.grantOrchestration', {
+      const { budget } = await grantOlderPreset(d.ctx, {
         sessionId: s.id,
         budgetUsd: 5,
       });

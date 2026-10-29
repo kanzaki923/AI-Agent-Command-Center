@@ -2,7 +2,15 @@ import { AccClientError } from '@acc/client';
 import { describe, expect, it } from 'vitest';
 import { createFakeClient } from '../test/fakeClient';
 import { id, run, session } from '../test/fixtures';
-import { delegateSession, retryRun, sendMessage, setSessionModel, startConversation, stopTree } from './actions';
+import {
+  delegateSession,
+  retryRun,
+  sendMessage,
+  setSessionModel,
+  startConversation,
+  stopTree,
+  titleFromRequest,
+} from './actions';
 import { qk } from './keys';
 import { createRuntime } from './runtime';
 
@@ -87,8 +95,34 @@ describe('session tree actions', () => {
     const rt = createRuntime(fake.client);
     expect(await startConversation(rt, { text: '調べて', delegate: true })).toEqual(s);
     expect(fake.calls.map((c) => c.method)).toEqual(['session.create', 'session.delegate', 'session.send']);
-    expect(fake.calls[0]!.params).toEqual({ kind: 'chat' });
+    expect(fake.calls[0]!.params).toEqual({ kind: 'chat', title: '調べて' });
     expect(fake.calls[2]!.params).toMatchObject({ sessionId: s.id, content: '調べて' });
+  });
+
+  it('delegated with code chosen, it is a conversation in that project (its children get the code)', async () => {
+    const s = session({ kind: 'chat' });
+    const projectId = id('prj');
+    const fake = createFakeClient({
+      'session.create': () => s,
+      'session.delegate': () => ({ grant: {}, budget: null }),
+      'session.messages': () => ({ items: [], hasMore: false, streaming: null }),
+      'session.send': () => ({ messageId: id('msg'), runId: id('run'), delivery: 'started' }),
+    });
+    const rt = createRuntime(fake.client);
+    await startConversation(rt, {
+      text: '直して',
+      delegate: true,
+      workspace: { kind: 'worktree', projectId },
+    });
+    expect(fake.calls.map((c) => c.method)).toEqual(['session.create', 'session.delegate', 'session.send']);
+    expect(fake.calls[0]!.params).toEqual({ kind: 'chat', title: '直して', projectId });
+  });
+
+  it('names a conversation by the first line of what was asked, cut to 40 characters', () => {
+    expect(titleFromRequest('  競合の価格を調べて\n詳しくは添付を見て ')).toBe('競合の価格を調べて');
+    const long = 'あ'.repeat(60);
+    expect(titleFromRequest(long)).toBe(`${'あ'.repeat(39)}…`);
+    expect([...titleFromRequest(long)]).toHaveLength(40);
   });
 
   it('creates an agent with a workspace when one is chosen', async () => {
@@ -100,7 +134,11 @@ describe('session tree actions', () => {
     const rt = createRuntime(fake.client);
     rt.queryClient.setQueryData(qk.messages(s.id), []);
     await startConversation(rt, { text: '直して', workspace: { kind: 'folder', path: '/tmp/x' } });
-    expect(fake.calls[0]!.params).toEqual({ kind: 'agent', workspace: { kind: 'folder', path: '/tmp/x' } });
+    expect(fake.calls[0]!.params).toEqual({
+      kind: 'agent',
+      title: '直して',
+      workspace: { kind: 'folder', path: '/tmp/x' },
+    });
   });
 
   it('marks a message sent to a busy agent as queued and passes interrupt on', async () => {

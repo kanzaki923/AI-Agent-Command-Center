@@ -213,7 +213,9 @@ async function redo(
  *   → attention `review` on the session that created it (accepting = integration.approve);
  * - an accepted change whose integration failed or conflicted → attention `failure` on the
  *   child (choices: redo, stop);
- * - `rejected` / `cancelled`: its attention items resolve.
+ * - `rejected` / `cancelled`: its attention items resolve;
+ * - running again (an agent resolving its conflict, a re-run): the failure item it opened
+ *   resolves, since the work moved on.
  */
 export function onIntegrationUpdated(
   ctx: DaemonContext,
@@ -240,6 +242,17 @@ export function onIntegrationUpdated(
     case 'rejected':
     case 'cancelled':
       if (statusChanged) resolveAttention(ctx, { integrationId: integ.id }, OUTPUTS_SYSTEM, null);
+      return;
+    case 'pending':
+    case 'running':
+    case 'verifying':
+      if (statusChanged) {
+        attention(ctx)?.resolveWhere(
+          { integrationId: integ.id },
+          { choiceId: null, text: null, by: OUTPUTS_SYSTEM },
+          ['failure'],
+        );
+      }
       return;
     default:
       return;

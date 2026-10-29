@@ -43,14 +43,28 @@ export const ORCHESTRATOR_PERMISSIONS = [
 /** Delegation depth below an orchestrator: it may start workers, workers may not. */
 export const ORCHESTRATOR_MAX_DEPTH = 1;
 
+/** What the older orchestrator preset is granted with (defaults: 2 workers, the next run). */
+export interface OrchestratorPresetInput {
+  sessionId: string;
+  /** Project to orchestrate; defaults to the session's. */
+  projectId?: string;
+  maxWorkers?: number;
+  lifetime?: 'run' | 'session';
+  /** Root budget for the session's runs; workers get slices of it. */
+  budgetUsd?: number;
+  expiresAt?: string;
+}
+
 /**
- * session.grantOrchestration: give a chat session the orchestrator preset for one project
- * (optionally with a root budget its runs spend from and slice for workers). Humans only —
- * agents delegate with grant.create, under the subset rules.
+ * The older orchestrator preset (tasks, task.spawnWorker, the blocking waits) for one project,
+ * optionally with a root budget. Humans only. No method grants it any more —
+ * `session.grantOrchestration` is an alias of `session.delegate` (spec 20261029 §7.11 M12) —
+ * but the executor still runs sessions that hold it (an existing grant, or one a human made
+ * with grant.create), so tests of that path call this directly.
  */
-export function grantOrchestration(
+export function grantOrchestratorPreset(
   ctx: DaemonContext,
-  p: Params<'session.grantOrchestration'>,
+  p: OrchestratorPresetInput,
   actor: Actor,
 ): { grant: CapabilityGrant; budget: BudgetAllocation | null } {
   if (actor.kind === 'agent') {
@@ -71,8 +85,8 @@ export function grantOrchestration(
         subject: { kind: 'session', sessionId: session.id },
         permissions: [...ORCHESTRATOR_PERMISSIONS],
         scope: { projectIds: [project.id] },
-        limits: { maxWorkers: p.maxWorkers, maxDepth: ORCHESTRATOR_MAX_DEPTH },
-        lifetime: p.lifetime,
+        limits: { maxWorkers: p.maxWorkers ?? 2, maxDepth: ORCHESTRATOR_MAX_DEPTH },
+        lifetime: p.lifetime ?? 'run',
         expiresAt: p.expiresAt ?? null,
         reason: `orchestrator: ${project.name}`,
       },

@@ -12,7 +12,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import type { AgentRunInput } from '../contracts';
 import { textOfParts } from '../llm/messages';
 import { MockAgentRuntime } from '../runtime/mock/runtime';
-import { HUMAN, type TestDaemon, approveIntegrationTests, startTestDaemon } from '../testing';
+import {
+  HUMAN,
+  type TestDaemon,
+  approveIntegrationTests,
+  grantOlderPreset,
+  startTestDaemon,
+} from '../testing';
 import { type TempRepo, createTempRepo, isolateGitConfig } from '../workspace/git-fixture';
 import { ORCHESTRATOR_RESUME_NOTICE } from './executor';
 
@@ -84,7 +90,7 @@ async function interruptedOrchestration(opts: { autoResume?: boolean } = {}) {
     projectId: project.id,
     model: 'mock/orchestrator',
   });
-  await d1.call(HUMAN, 'session.grantOrchestration', { sessionId: chat.id, lifetime: 'session' });
+  await grantOlderPreset(d1.ctx, { sessionId: chat.id, lifetime: 'session' });
   if (opts.autoResume === false) {
     await d1.call(HUMAN, 'settings.update', { autoResumeOrchestrators: false });
   }

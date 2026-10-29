@@ -333,21 +333,21 @@ export function childPlans(goal: string, codeProjectId: string | null): ChildPla
       ]
     : [
         {
-          title: `${short}の下調べ`,
+          title: `下調べ（${short}）`,
           goal: `「${goal}」について、参考になる情報源を調べてリンクつきでまとめてください。`,
           doneWhen: ['情報源のリンクが 3 つ以上ある'],
           steps: [say('関係する情報源を探します。'), say('参考になるリンクをまとめました。')],
           summary: `「${short}」の参考情報を 3 件、リンクつきでまとめました。`,
         },
         {
-          title: `${short}のデータ整理`,
+          title: `データ整理（${short}）`,
           goal: `「${goal}」に関係するデータを集めて表に整理してください。`,
           doneWhen: ['表に整理されている'],
           steps: [say('必要な項目を決めます。'), say('データを表に整理しました。')],
           summary: `「${short}」のデータを表に整理しました。`,
         },
         {
-          title: `${short}のまとめ`,
+          title: `まとめ（${short}）`,
           goal: `「${goal}」の要点を 1 ページの文書にまとめてください。`,
           doneWhen: ['要点が 1 ページにまとまっている'],
           steps: [say('要点を洗い出します。'), say('1 ページにまとめました。')],
@@ -356,14 +356,24 @@ export function childPlans(goal: string, codeProjectId: string | null): ChildPla
       ];
   if (codeProjectId) {
     plans[1] = {
-      title: `${short}のコード変更`,
+      title: `コード変更（${short}）`,
       goal: `「${goal}」に必要なコードの変更をしてください。`,
       doneWhen: ['変更がコミットされている'],
       steps: [
         say('変更する箇所を確認します。'),
         { type: 'write', path: 'docs/notes.md', content: `# メモ\n\n${goal}\n` },
+        // Like a coding agent: run the tests before handing the change over. Only the
+        // careful profile asks first (an approval on home); a failing run does not stop it.
+        {
+          type: 'run',
+          command: 'node',
+          args: ['--test'],
+          title: 'テストを実行する',
+          allowFailure: true,
+          onReject: 'continue',
+        },
       ],
-      summary: 'docs/notes.md に変更の要点を書きました。',
+      summary: 'docs/notes.md に変更の要点を書き、テストを実行しました。',
       code: true,
     };
   }

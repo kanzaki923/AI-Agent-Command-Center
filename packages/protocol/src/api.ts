@@ -937,21 +937,27 @@ export const api = defineApi({
   'session.grantOrchestration': {
     params: params({
       sessionId: SessionId,
-      projectId: ProjectId.optional().describe("Project to orchestrate; defaults to the session's"),
-      maxWorkers: z.int().min(1).max(16).default(2),
-      lifetime: GrantLifetime.default('run').describe(
-        'run: only the next run of the session; session: until revoked or expiresAt',
+      projectId: ProjectId.optional().describe("Project to lead in; defaults to the session's"),
+      maxWorkers: z
+        .int()
+        .min(1)
+        .max(16)
+        .optional()
+        .describe('Unfinished children at once (session.delegate maxChildren)'),
+      lifetime: GrantLifetime.optional().describe(
+        'run / work: this piece of work (session.delegate work); session: until revoked or expiresAt',
       ),
       budgetUsd: z
         .number()
         .positive()
+        .max(10_000)
         .optional()
-        .describe("Root budget for the session's runs; workers get slices of it"),
+        .describe("Root budget for the session's runs and its children"),
       expiresAt: Timestamp.optional(),
     }),
     result: z.object({ grant: CapabilityGrant, budget: BudgetAllocation.nullable() }),
     description:
-      'Turn a chat session into an orchestrator for a project: grants the orchestrator preset (tasks, workers, supervision, integration without approve) limited to that project, maxWorkers and depth 1. Humans only.',
+      'Older name of session.delegate: the same supervisor preset (spawn children, talk to them, review their outputs), with session.delegate defaults for what is left out. Humans only.',
     tool: false,
     mutates: true,
   },

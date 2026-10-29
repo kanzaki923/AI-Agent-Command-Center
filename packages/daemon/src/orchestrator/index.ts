@@ -1,9 +1,9 @@
-import type { Actor } from '@acc/protocol';
+import { type Actor, api } from '@acc/protocol';
 import { defineMethod } from '../api/registry';
 import { defineModule } from '../module';
 import { setupDemo } from './demo';
 import { createOrchestratorExecutor } from './executor';
-import { grantOrchestration, orchestrationGrants } from './grant';
+import { delegateSession, orchestrationGrants } from './grant';
 import { MOCK_ORCHESTRATOR_MODEL, mockOrchestrator } from './mockModel';
 import { resumeAfterRestart, resumeInterruptedOrchestrators } from './resume';
 import { waitForIntegration, waitForTasks } from './wait';
@@ -23,11 +23,12 @@ export {
 } from './executor';
 export {
   ORCHESTRATOR_PERMISSIONS,
+  type OrchestratorPresetInput,
   SUPERVISOR_CODE_PERMISSIONS,
   SUPERVISOR_PERMISSIONS,
   SUPERVISOR_SCHEDULE_PERMISSIONS,
   delegateSession,
-  grantOrchestration,
+  grantOrchestratorPreset,
   orchestrationGrants,
   supervisorGrantsOf,
   supervisorPermissions,
@@ -67,9 +68,11 @@ declare module '../core/context' {
  *   its runs are kind `orchestrator`, short and event-driven (executor.ts) — it starts
  *   children with session.spawn, answers, and is woken by its inbox (src/inbox) when they
  *   finish. After a restart, supervisors are woken and child agents resume once (resume.ts).
- * - The older preset (`session.grantOrchestration`: task.create / task.spawnWorker and the
- *   blocking task.wait / integration.wait, which the executor adds for it only) still runs
- *   the code vertical slice until that flow moves to session.spawn.
+ * - `session.grantOrchestration` is an alias of `session.delegate` (spec 20261029 §7.11 M12):
+ *   code, too, goes through session.spawn (a worktree child, its output adopted = applied).
+ *   The older preset (task.create / task.spawnWorker and the blocking task.wait /
+ *   integration.wait, which the executor adds for it only) still runs for sessions that hold
+ *   it (grantOrchestratorPreset).
  * - `orchestrator.recordDecision` puts judgement on the timeline. The daemon records its
  *   own decisions too (worker started, task → review).
  * - `mock/orchestrator` drives both offline; `system.setupDemo` prepares demo mode.
@@ -166,13 +169,28 @@ export const orchestratorModule = defineModule({
         },
       }),
 
+      // The older name of 任せる: the same supervisor preset as session.delegate (M12).
       defineMethod('session.grantOrchestration', {
         scope: (p) => {
           const s = ctx.repos.sessions.get(p.sessionId);
           const projectId = p.projectId ?? s?.projectId;
-          return { projectIds: projectId ? [projectId] : [] };
+          return { projectIds: projectId ? [projectId] : [], sessionIds: [p.sessionId] };
         },
-        handler: (p, call) => grantOrchestration(ctx, p, call.actor),
+        handler: (p, call) =>
+          delegateSession(
+            ctx,
+            // session.delegate's own defaults for what the caller left out.
+            api['session.delegate'].params.parse({
+              sessionId: p.sessionId,
+              ...(p.maxWorkers !== undefined ? { maxChildren: p.maxWorkers } : {}),
+              ...(p.budgetUsd !== undefined ? { budgetUsd: p.budgetUsd } : {}),
+              ...(p.projectId ? { projectId: p.projectId } : {}),
+              // "the next run" of the older preset is "this piece of work" here.
+              ...(p.lifetime ? { lifetime: p.lifetime === 'session' ? 'session' : 'work' } : {}),
+              ...(p.expiresAt ? { expiresAt: p.expiresAt } : {}),
+            }),
+            call.actor,
+          ),
       }),
 
       defineMethod('system.setupDemo', {

@@ -19,6 +19,7 @@ import { ApiError } from '../core/errors';
 import { MockAgentRuntime } from '../runtime/mock/runtime';
 import { HUMAN, SYSTEM, type TestDaemonNoServer, agentActor, createTestDaemon } from '../testing';
 import { type TempRepo, createTempRepo, isolateGitConfig } from '../workspace/git-fixture';
+import { onIntegrationUpdated } from './review';
 
 // Real git, worktrees and test commands; Windows is slow under parallel load.
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 60_000 });
@@ -294,6 +295,31 @@ describe('accepting code', () => {
     expect(
       await codeOf(s.d.call(HUMAN, 'artifact.review', { artifactId: diff.id, decision: 'accept' })),
     ).toBe('conflict');
+  });
+
+  it('the failure item goes once that integration runs again (an agent resolving it, a re-run)', async () => {
+    const s = await setup(FAIL);
+    const c = await child(s, '料金表', [{ type: 'write', path: 'fees.md', content: '# 料金\n' }]);
+    await s.d.ctx.service('outputs').finalize(c.run);
+    const res = await s.d.call(HUMAN, 'artifact.review', {
+      artifactId: diffOf(s, c).id,
+      decision: 'accept',
+    });
+    const integ = await settled(s, res.integrationId!);
+    expect(s.opened.map((o) => o.kind)).toEqual(['failure']);
+    // Already a spy (setup): the same one, without detaching the method.
+    const resolveWhere = vi.spyOn(s.d.ctx.service('attention'), 'resolveWhere');
+    resolveWhere.mockClear();
+    onIntegrationUpdated(s.d.ctx, { ...integ, status: 'running', error: null }, ['status']);
+    expect(resolveWhere).toHaveBeenCalledWith(
+      { integrationId: integ.id },
+      expect.objectContaining({ choiceId: null }),
+      ['failure'],
+    );
+    // Without a status change (progress of the same attempt) nothing more is resolved.
+    resolveWhere.mockClear();
+    onIntegrationUpdated(s.d.ctx, { ...integ, status: 'running', error: null }, ['steps']);
+    expect(resolveWhere).not.toHaveBeenCalled();
   });
 
   it('a failing test opens attention failure on the child; redo sends it back with the output', async () => {

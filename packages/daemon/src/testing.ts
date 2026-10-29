@@ -12,7 +12,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type AccClient, type ClientOptions, createClient } from '@acc/client';
-import type { AgentActor, HumanActor, SystemActor, Task } from '@acc/protocol';
+import type {
+  Actor,
+  AgentActor,
+  BudgetAllocation,
+  CapabilityGrant,
+  HumanActor,
+  SystemActor,
+  Task,
+} from '@acc/protocol';
 import type { DaemonContext } from './core/context';
 import {
   type CreateDaemonOptions,
@@ -23,6 +31,7 @@ import {
   startDaemon,
 } from './daemon';
 import { silentLogger } from './core/log';
+import { type OrchestratorPresetInput, grantOrchestratorPreset } from './orchestrator/grant';
 
 export const HUMAN: HumanActor = { kind: 'human', client: 'test' };
 export const SYSTEM: SystemActor = { kind: 'system', component: 'test' };
@@ -132,4 +141,17 @@ export function approveIntegrationTests(ctx: DaemonContext): () => void {
       .call(HUMAN, 'approval.respond', { approvalId: a.id, decision: 'approve' })
       .catch(() => undefined);
   });
+}
+
+/**
+ * Give a chat the older orchestrator preset (tasks, task.spawnWorker, the blocking waits) as
+ * a human. `session.grantOrchestration` now delegates (the supervisor preset), so tests of the
+ * older path grant it here. Async like the method it stands in for.
+ */
+export async function grantOlderPreset(
+  ctx: DaemonContext,
+  p: OrchestratorPresetInput,
+  actor: Actor = HUMAN,
+): Promise<{ grant: CapabilityGrant; budget: BudgetAllocation | null }> {
+  return grantOrchestratorPreset(ctx, p, actor);
 }
