@@ -3,16 +3,19 @@ import { GitBranch, MoreHorizontal, Pin, RotateCcw, Square } from 'lucide-react'
 import { motion } from 'motion/react';
 import { useState } from 'react';
 import { newChat, retry, stop } from '../../app/commands';
-import { archiveSession, renameSession, setPinned } from '../../daemon/actions';
+import { archiveSession, renameSession, setPinned, startConversation } from '../../daemon/actions';
 import { useRun, useRuns, useSessionBudgets, useSessions, useWorkspace } from '../../daemon/queries';
-import { RoleBadge } from '../grant/Grant';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
+import { treeRelations, useSessionTree } from '../../daemon/tree';
 import { useStickToBottom } from '../../hooks/useStickToBottom';
 import { sumUsage } from '../../lib/format';
 import { shortModel } from '../../lib/models';
 import { runStatusToState } from '../../lib/status';
-import { roleOf, untitled } from '../../model/board';
+import { sessionTitle as untitled } from '../../lib/states';
 import { useUi } from '../../store/ui';
+import { DelegateButton } from '../delegate/DelegateButton';
+import { RepeatButton } from '../schedule/RepeatButton';
+import { RoleIcon } from '../ui/SemanticIcons';
 import { Button, IconButton } from '../ui/Button';
 import { Kbd } from '../ui/Kbd';
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '../ui/Menu';
@@ -84,8 +87,7 @@ function FocusHeader({ session, run, runs }: { session: Session; run: Run | null
   return (
     <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line-subtle px-4">
       <StatusIcon state={latest && !live ? runStatusToState(latest.status) : state} size={14} />
-      <RoleBadge session={session} fallback={roleOf(session, run ?? latest)} />
-      <span className="text-fg-4">·</span>
+      <SessionRole session={session} />
       <TitleEditor session={session} />
       {session.pinned && <Pin size={12} strokeWidth={1.75} className="shrink-0 text-fg-3" />}
       <span className="flex-1" />
@@ -113,6 +115,8 @@ function FocusHeader({ session, run, runs }: { session: Session; run: Run | null
           </Tooltip>
         )}
       </span>
+      <DelegateButton sessionId={session.id} />
+      <RepeatButton sessionId={session.id} />
       {live && run ? (
         <Button
           size="sm"
@@ -147,8 +151,8 @@ function FocusHeader({ session, run, runs }: { session: Session; run: Run | null
           <MenuItem onSelect={() => void setPinned(rt, session, !session.pinned)}>
             {session.pinned ? 'ピン留めを外す' : 'ピン留め'}
           </MenuItem>
-          <MenuItem shortcut="newChat" onSelect={() => void newChat(rt)}>
-            新しいチャット
+          <MenuItem shortcut="newChat" onSelect={() => newChat(rt)}>
+            新しい会話
           </MenuItem>
           <MenuSeparator />
           <MenuItem shortcut="archive" onSelect={() => void archiveSession(rt, session)}>
@@ -170,16 +174,57 @@ export function FocusView() {
   const activeRunQ = useRun(activeFromList ? null : session?.activeRunId);
   const activeRun = activeFromList ?? activeRunQ.data ?? null;
 
-  if (!focusSessionId || (!session && !sessions.isPending)) {
+  if (!focusSessionId) return <Draft />;
+  if (!session && !sessions.isPending) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
-        <div className="text-title text-fg-2">フォーカスするセッションがありません</div>
-        <div className="text-ui text-fg-3">サイドバーかコマンドパレット（Ctrl K）からセッションを選んでください。</div>
-      </div>
+      <div className="flex h-full items-center justify-center text-ui text-fg-3">この会話は見つかりません。</div>
     );
   }
   if (!session) return null;
   return <FocusSession key={session.id} session={session} activeRun={activeRun} runs={runs} />;
+}
+
+/** The role of the open conversation as an icon (its card in the session tree). */
+function SessionRole({ session }: { session: Session }) {
+  const self = treeRelations(useSessionTree(session.id).data, session.id).self;
+  const role = self?.role ?? (session.kind === 'agent' ? 'agent' : 'chat');
+  return <RoleIcon role={role} scheduled={!!session.scheduleId} className="text-fg-3" />;
+}
+
+/**
+ * A new conversation before its first message (Ctrl+N): nothing exists yet; the first send
+ * creates it and opens it. Track U3 builds the full draft screen (project chip, workspace).
+ */
+function Draft() {
+  const rt = useRuntime();
+  const [text, setText] = useState('');
+  const send = async () => {
+    const t = text.trim();
+    if (!t) return;
+    const s = await startConversation(rt, { text: t, projectId: useUi.getState().projectId });
+    if (s) useUi.getState().openSession(s.id);
+  };
+  return (
+    <div className="flex h-full items-center justify-center px-8">
+      <textarea
+        autoFocus
+        data-composer-input
+        value={text}
+        rows={3}
+        placeholder="何を頼みますか"
+        aria-label="何を頼みますか"
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            void send();
+          }
+        }}
+        className="w-full max-w-2xl resize-none rounded-md border border-line bg-surface px-3 py-2 text-chat text-fg placeholder:text-fg-4 focus:border-[var(--focus-ring)]"
+      />
+    </div>
+  );
 }
 
 /** Keyed by session: scroll-follow state starts fresh for every session. */

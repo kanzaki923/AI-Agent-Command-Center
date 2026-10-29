@@ -34,4 +34,20 @@ export const qk = {
   permissionRules: (projectId: string) => ['permissionRule.list', projectId] as const,
   /** tool.decided history of a session, loaded into the event log (value: last seq). */
   toolDecisions: (sessionId: string) => ['events.toolDecisions', sessionId] as const,
+
+  // ---- session tree screens (ui-redesign spec): kept current by daemon/live.ts
+  /** home.get snapshot (patched by events through applyHomeEvent). */
+  home: ['home.get'] as const,
+  /** session.tree of any session of the tree (keyed by the session asked about). */
+  tree: (sessionId: string) => ['session.tree', sessionId] as const,
+  /** Outputs (artifact.list role output) of one session or of a whole tree. */
+  outputs: (scope: 'session' | 'tree', id: string) => ['outputs', scope, id] as const,
+  /** artifact.read of one output (or one file of a files output). */
+  outputContent: (artifactId: string, path: string | null) => ['artifact.read', artifactId, path ?? ''] as const,
+  /** cost.summary for one set of params. */
+  cost: (params: unknown) => ['cost.summary', params] as const,
+  /** schedule.list of one owner session, or of every session (`''`). */
+  schedules: (sessionId: string) => ['schedule.list', sessionId] as const,
+  /** schedule.preview of one trigger. */
+  schedulePreview: (trigger: unknown) => ['schedule.preview', trigger] as const,
 };

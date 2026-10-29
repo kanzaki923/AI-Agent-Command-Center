@@ -75,6 +75,35 @@ export function createDeltaStore(schedule: Schedule = defaultSchedule) {
     },
     /** Apply buffered deltas now (tests, and before removing a finished message). */
     flush,
+    /**
+     * What the daemon says was already written (`session.messages` `streaming`), for a chat
+     * opened mid-answer. Deltas received before the snapshot overlap its end; the merge keeps
+     * every character once. A stream already followed from its first delta is left alone.
+     */
+    seed(sessionId: string, snap: { messageId: string; runId: string; text: string; reasoning: string }) {
+      flush();
+      const cur = store.getState().byMessage[snap.messageId];
+      if (cur && !cur.partial) return;
+      const next: StreamingMessage = cur
+        ? {
+            ...cur,
+            text: mergeOverlap(snap.text, cur.text),
+            reasoning: mergeOverlap(snap.reasoning, cur.reasoning),
+            partial: false,
+          }
+        : {
+            messageId: snap.messageId,
+            sessionId,
+            runId: snap.runId,
+            text: snap.text,
+            reasoning: snap.reasoning,
+            // Deltas continue from the snapshot; their index is unknown, so accept any.
+            lastIndex: -1,
+            startedAt: Date.now(),
+            partial: false,
+          };
+      store.setState({ byMessage: { ...store.getState().byMessage, [snap.messageId]: next } });
+    },
     finishMessage(messageId: string) {
       flush();
       const cur = store.getState().byMessage;
@@ -98,6 +127,23 @@ export function createDeltaStore(schedule: Schedule = defaultSchedule) {
 }
 
 export type DeltaStore = ReturnType<typeof createDeltaStore>;
+
+/**
+ * `head` (everything up to some point) joined with `tail` (received from some later-or-earlier
+ * point on): the longest end of `head` that starts `tail` is counted once.
+ */
+export function mergeOverlap(head: string, tail: string): string {
+  if (!tail) return head;
+  if (!head) return tail;
+  const max = Math.min(head.length, tail.length, 20_000);
+  // A short match ("。") is more likely chance than overlap: below 6 characters only a
+  // tail that is wholly inside the head counts.
+  const min = Math.min(6, tail.length);
+  for (let k = max; k >= min && k > 0; k--) {
+    if (head.endsWith(tail.slice(0, k))) return head + tail.slice(k);
+  }
+  return head + tail;
+}
 
 export function streamingForSession(state: DeltaState, sessionId: string): StreamingMessage[] {
   return Object.values(state.byMessage)

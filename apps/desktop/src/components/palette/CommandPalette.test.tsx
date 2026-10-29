@@ -4,7 +4,7 @@ import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
 import { highlightTerms } from '../../lib/highlight';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
-import { approval, integration, run, session } from '../../test/fixtures';
+import { attention, card, homeSnapshot, homeTree, session } from '../../test/fixtures';
 import { TooltipProvider } from '../ui/Tooltip';
 import { CommandPalette, messageQuery } from './CommandPalette';
 
@@ -38,7 +38,7 @@ describe('palette helpers', () => {
 
 describe('<CommandPalette>', () => {
   beforeEach(() => {
-    useUi.setState({ paletteOpen: false, paletteQuery: '', palettePages: [], selectedId: null, focusSessionId: null, mode: 'command', jumpTo: null });
+    useUi.setState({ paletteOpen: false, paletteQuery: '', palettePages: [], selectedId: null, focusSessionId: null, mode: 'home', jumpTo: null });
   });
 
   it('finds messages with session.search, highlights the words and jumps to the message', async () => {
@@ -93,30 +93,32 @@ describe('<CommandPalette>', () => {
     expect(screen.getByText(/AI に頼む/)).toBeInTheDocument();
   });
 
-  it('reaches every action: approve next, open integration, task board, theme toggle', async () => {
-    const s = session({ title: 'API のリファクタリング' });
-    const r = run(s, { status: 'awaiting_approval' });
-    s.activeRunId = r.id;
-    const a = approval(r, { payload: { toolName: 'Bash', input: { command: 'pnpm test' } } });
-    const i = integration({ status: 'awaiting_approval', title: '統合: 2 Task → main' });
-    let responded: unknown = null;
+  it('reaches every action in the new words: next attention, stop, delegate, screens, theme', async () => {
+    const s = session({ kind: 'chat', title: 'ローンチ準備', state: 'supervising' });
+    const root = card({ id: s.id, title: s.title, role: 'supervisor', state: 'supervising' });
+    const kid = card({ parentId: s.id, depth: 1, state: 'needs_you' });
+    const ask = attention({ id: kid.id, rootSessionId: s.id });
+    let stopped: unknown = null;
     mount({
       'session.list': () => ({ items: [s], nextCursor: null }),
-      'run.list': () => ({ items: [r], nextCursor: null }),
-      'approval.list': (p) => ({ items: (p.status as string[]).includes('pending') ? [a] : [], nextCursor: null }),
-      'integration.list': () => ({ items: [i], nextCursor: null }),
-      'approval.respond': (p) => {
-        responded = p;
-        return { ...a, status: 'approved' };
+      'home.get': () => homeSnapshot({ attention: [ask], trees: [homeTree(root, [kid])] }),
+      'session.tree': () => ({ rootSessionId: s.id, nodes: [root, kid] }),
+      'session.stop': (p) => {
+        stopped = p;
+        return { stoppedSessionIds: [s.id], cancelledRunIds: [] };
       },
     });
+    useUi.setState({ mode: 'session', focusSessionId: s.id });
     act(() => useUi.getState().openPalette());
-    const approveNext = await screen.findByRole('option', { name: /承認: API のリファクタリング/ });
-    expect(approveNext).toHaveTextContent('$ pnpm test');
-    expect(screen.getByRole('option', { name: /統合をレビュー: 2 Task → main/ })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: /Task ボードを開く/ })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: /ライトテーマに切り替え|ダークテーマに切り替え/ })).toBeInTheDocument();
-    fireEvent.click(approveNext);
-    await waitFor(() => expect(responded).toMatchObject({ approvalId: a.id, decision: 'approve' }));
+    expect(await screen.findByRole('option', { name: /次の出番へ/ })).toBeInTheDocument();
+    expect(await screen.findByRole('option', { name: /任せるのをやめる/ })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /ホーム/ })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'タイムライン' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /ライトテーマ|ダークテーマ/ })).toBeInTheDocument();
+    for (const word of ['Task', 'Orchestrator', 'Worker', '司令室', 'フォーカス']) {
+      expect(screen.queryByText(new RegExp(word))).toBeNull();
+    }
+    fireEvent.click(screen.getByRole('option', { name: /^止める/ }));
+    await waitFor(() => expect(stopped).toMatchObject({ sessionId: s.id }));
   });
 });

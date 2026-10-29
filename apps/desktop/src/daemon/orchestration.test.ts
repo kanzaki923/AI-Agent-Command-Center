@@ -52,7 +52,7 @@ beforeEach(() => {
     onboardingDone: false,
     projectId: null,
     focusSessionId: null,
-    mode: 'command',
+    mode: 'home',
   });
 });
 
@@ -388,7 +388,7 @@ describe('demo', () => {
     expect(s).toMatchObject({ title: '設計チャット', model: 'mock/echo' });
     const ui = useUi.getState();
     expect(ui.focusSessionId).toBe(s.id);
-    expect(ui.mode).toBe('focus');
+    expect(ui.mode).toBe('session');
     expect(ui.onboardingDone).toBe(true);
     expect(ui.suggestions[s.id]).toBe(DEMO_MESSAGE);
     const grantCall = fake.calls.find((c) => c.method === 'grant.create')!;

@@ -44,7 +44,7 @@ import {
   stepState,
 } from '../../model/integration';
 import { InlineApproval } from '../approval/ApprovalControls';
-import { ActivityLine } from '../command/ActivityLine';
+import { ActivityLine } from '../ui/ActivityLine';
 import { useUi } from '../../store/ui';
 import { DiffStatText } from '../panel/DiffViewer';
 import { Button } from '../ui/Button';
@@ -174,7 +174,7 @@ function StepRow({
           <button
             type="button"
             className="mt-1 flex items-center gap-1 text-meta text-accent hover:underline"
-            onClick={() => openSession(resolverSessionId, { from: 'command' })}
+            onClick={() => openSession(resolverSessionId)}
           >
             <Bot size={12} strokeWidth={1.75} />
             Integrator の作業を開く
@@ -575,7 +575,7 @@ function DecisionBar({
       {isResolving(integ) && resolverSession && (
         <Button
           icon={<Bot size={12} strokeWidth={1.75} />}
-          onClick={() => openSession(resolverSession, { from: 'command' })}
+          onClick={() => openSession(resolverSession)}
         >
           Integrator を開く
         </Button>

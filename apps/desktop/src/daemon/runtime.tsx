@@ -8,6 +8,7 @@ import { createActivityStore } from './activity';
 import { createDeltaStore } from './deltas';
 import { isNotImplemented } from './errors';
 import { createEventLog } from './eventLog';
+import { type LiveViews, createLiveViews } from './live';
 import { createRecentStore } from './recent';
 import { type Streams, startSync } from './sync';
 
@@ -16,6 +17,8 @@ export interface AppRuntime {
   client: AccClient;
   queryClient: QueryClient;
   streams: Streams;
+  /** Live home snapshot / session trees (patched from events, debounced refetches). */
+  live: LiveViews;
   /** Methods that answered not_implemented (shown in settings, never as errors). */
   unimplemented: ReturnType<typeof createUnimplementedStore>;
   markUnimplemented(method: string): void;
@@ -69,6 +72,7 @@ export function createRuntime(
     recent: createRecentStore(),
   };
   const unimplemented = createUnimplementedStore();
+  const live = createLiveViews(queryClient);
   const observers = new Set<(e: Event) => void>();
   const stopSync = startSync(
     client,
@@ -77,8 +81,7 @@ export function createRuntime(
     (count) =>
       toast({
         key: 'interrupted',
-        title: `中断した Run が ${count} 件あります`,
-        detail: 'Core Daemon の再起動などで止まりました。再開または再試行できます',
+        title: `中断した作業が ${count} 件あります`,
         tone: 'info',
         sticky: false,
       }),
@@ -86,6 +89,7 @@ export function createRuntime(
     (e) => {
       for (const fn of observers) fn(e);
     },
+    live,
   );
   const markOpen = () => {
     if (client.state === 'open') status.setState({ everConnected: true, lastError: null });
@@ -105,6 +109,7 @@ export function createRuntime(
     client,
     queryClient,
     streams,
+    live,
     unimplemented,
     markUnimplemented,
     status,

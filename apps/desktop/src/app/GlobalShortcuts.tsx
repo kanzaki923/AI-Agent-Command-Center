@@ -7,7 +7,7 @@ import { overlayOpen } from '../lib/overlay';
 import { isTypingTarget, matchShortcut } from '../lib/shortcuts';
 import { undoLatest } from '../store/toast';
 import { useUi } from '../store/ui';
-import { focusComposerSoon, goToAttention, newChat, retry, stop, switchMode } from './commands';
+import { focusComposerSoon, goToAttention, goUp, newChat, retry, stop } from './commands';
 
 const REGIONS = ['sidebar', 'main', 'panel', 'composer'] as const;
 
@@ -36,8 +36,12 @@ function focusRegion(dir: 1 | -1) {
   target.focus();
 }
 
-
-/** Global keyboard map (ui-design §7.2). Single-key shortcuts never fire while typing. */
+/**
+ * Global keyboard map (ui-redesign spec §2): Ctrl+K search, Ctrl+N new conversation, Ctrl+1
+ * home, Ctrl+2 timeline, Alt+← / → back and forward, Esc closes what is open, then goes up
+ * (parent conversation, then home). Single-key shortcuts never fire while typing; keys of the
+ * home screen itself (J / K, 1–4, Y / N) belong to the home view.
+ */
 export function GlobalShortcuts() {
   const rt = useRuntime();
 
@@ -53,15 +57,12 @@ export function GlobalShortcuts() {
     }
     if (ui.paletteOpen) return; // the palette owns the keyboard while open
 
-    if (matchShortcut(e, 'modeCommand')) {
+    if (matchShortcut(e, 'modeHome')) {
       e.preventDefault();
-      switchMode(rt, 'command');
-    } else if (matchShortcut(e, 'modeFocus')) {
-      e.preventDefault();
-      switchMode(rt, 'focus');
+      ui.goHome();
     } else if (matchShortcut(e, 'modeTimeline')) {
       e.preventDefault();
-      switchMode(rt, 'timeline');
+      ui.openTimeline();
     } else if (matchShortcut(e, 'nextAttention')) {
       e.preventDefault();
       goToAttention(rt, 1);
@@ -70,10 +71,7 @@ export function GlobalShortcuts() {
       goToAttention(rt, -1);
     } else if (matchShortcut(e, 'newChat')) {
       e.preventDefault();
-      void newChat(rt);
-    } else if (matchShortcut(e, 'newAgentTask')) {
-      e.preventDefault();
-      void newChat(rt, { kind: 'agent' });
+      newChat(rt);
     } else if (matchShortcut(e, 'toggleSidebar')) {
       e.preventDefault();
       ui.toggleSidebar();
@@ -82,23 +80,20 @@ export function GlobalShortcuts() {
       ui.togglePanel();
     } else if (matchShortcut(e, 'focusComposer')) {
       e.preventDefault();
-      if (ui.mode !== 'focus') switchMode(rt, 'focus');
       focusComposerSoon();
     } else if (matchShortcut(e, 'modelPicker')) {
-      if (ui.mode !== 'focus') return;
+      if (ui.mode !== 'session') return;
       e.preventDefault();
       ui.setModelPickerOpen(true);
     } else if (matchShortcut(e, 'globalSearch')) {
       e.preventDefault();
       ui.openPalette('#');
     } else if (matchShortcut(e, 'stopRun')) {
-      // On the task board the same chord cancels the selected task (TaskBoard handles it).
-      if (ui.mode === 'command' && ui.selectedId?.startsWith('tsk_')) return;
+      if (ui.mode !== 'session') return;
       e.preventDefault();
       const sessions = rt.queryClient.getQueryData<Session[]>(qk.sessions) ?? [];
       const runs = rt.queryClient.getQueryData<Run[]>(qk.runs) ?? [];
-      const sid = ui.mode === 'focus' ? ui.focusSessionId : ui.selectedId;
-      const s = sessions.find((x) => x.id === sid);
+      const s = sessions.find((x) => x.id === ui.focusSessionId);
       const run = s?.activeRunId ? runs.find((r) => r.id === s.activeRunId) : undefined;
       if (run) void stop(rt, run);
     } else if (matchShortcut(e, 'back')) {
@@ -114,11 +109,11 @@ export function GlobalShortcuts() {
       e.preventDefault();
       ui.setSettingsOpen(true);
     } else if (matchShortcut(e, 'undo')) {
-      // In a text field Ctrl+Z is the field's own undo (§7.2).
+      // In a text field Ctrl+Z is the field's own undo.
       if (typing || overlayOpen()) return;
       if (undoLatest()) e.preventDefault();
     } else if (matchShortcut(e, 'filter') && ui.mode !== 'timeline') {
-      // Views without their own filter field search the conversations instead.
+      // Screens without their own filter field search the conversations instead.
       e.preventDefault();
       ui.openPalette('#');
     } else if (matchShortcut(e, 'regionNext')) {
@@ -131,7 +126,7 @@ export function GlobalShortcuts() {
       if (e.defaultPrevented) return;
       const active = document.activeElement as HTMLElement | null;
       if (ui.reviewIntegrationId && !overlayOpen() && !isTypingTarget(active)) {
-        // The review screen is entered from the board: Esc returns there (ladder step 7).
+        // The full-screen review closes back to where it was opened.
         ui.closeIntegration();
         return;
       }
@@ -148,22 +143,16 @@ export function GlobalShortcuts() {
         active?.blur();
         document.querySelector<HTMLElement>('[data-region="main"]')?.focus({ preventScroll: true });
       } else if (action === 'close-panel') {
-        ui.setPanelOpen(ui.mode, false);
-      } else if (action === 'leave-focus') {
-        ui.leaveFocus();
+        ui.setPanelOpen(false);
+      } else if (action === 'go-up') {
+        goUp(rt);
       }
     } else if (!typing && !overlayOpen()) {
       if (matchShortcut(e, 'help')) {
         e.preventDefault();
         ui.setShortcutsOpen(true);
-      } else if (ui.mode === 'focus' && matchShortcut(e, 'prevTab')) {
-        e.preventDefault();
-        ui.cyclePanelTab(-1);
-      } else if (ui.mode === 'focus' && matchShortcut(e, 'nextTab')) {
-        e.preventDefault();
-        ui.cyclePanelTab(1);
-      } else if (ui.mode === 'focus' && matchShortcut(e, 'retry')) {
-        // The chat's 再試行 button shows R: the focused session's latest run, if it failed.
+      } else if (ui.mode === 'session' && matchShortcut(e, 'retry')) {
+        // The chat's 再試行 button shows R: the open conversation's latest run, if it failed.
         const runs = rt.queryClient.getQueryData<Run[]>(qk.runs) ?? [];
         const latest = runs
           .filter((r) => r.sessionId === ui.focusSessionId)

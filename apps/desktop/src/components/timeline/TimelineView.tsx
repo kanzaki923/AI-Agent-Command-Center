@@ -45,7 +45,7 @@ import { overlayOpen } from '../../lib/overlay';
 import { formatAbsolute, formatClockSeconds } from '../../lib/format';
 import { isTypingTarget, matchShortcut } from '../../lib/shortcuts';
 import { runStatusToState } from '../../lib/status';
-import { untitled } from '../../model/board';
+import { sessionTitle as untitled } from '../../lib/states';
 import {
   ACTOR_LABEL,
   type ActorKind,
@@ -142,9 +142,9 @@ export function openEventContext(e: Event): boolean {
   const ctx = eventContext(e);
   if (!ctx) return false;
   const ui = useUi.getState();
-  if (ctx.kind === 'message') ui.openMessage(ctx.sessionId, ctx.messageId, { from: 'timeline' });
-  else if (ctx.kind === 'session') ui.openSession(ctx.sessionId, { from: 'timeline' });
-  else if (ctx.kind === 'task') ui.openTask(ctx.taskId);
+  if (ctx.kind === 'message') ui.openMessage(ctx.sessionId, ctx.messageId);
+  else if (ctx.kind === 'session') ui.openSession(ctx.sessionId);
+  else if (ctx.kind === 'task') return false;
   else ui.openIntegration(ctx.integrationId);
   return true;
 }
@@ -478,7 +478,6 @@ export function TimelineView() {
   const setShowAutoAllowed = useTimeline((s) => s.setShowAutoAllowed);
   const selectedKey = useUi((s) => s.timelineSelected);
   const setSelected = useUi((s) => s.setTimelineSelected);
-  const setPanelOpen = useUi((s) => s.setPanelOpen);
   const stick = useStickToBottom();
   const searchRef = useRef<HTMLInputElement | null>(null);
   const names = useTimelineNames();
@@ -519,7 +518,6 @@ export function TimelineView() {
   };
   const selectRow = (key: string) => {
     setSelected(key);
-    setPanelOpen('timeline', true);
   };
 
   useWindowKeydown((e) => {
@@ -554,9 +552,6 @@ export function TimelineView() {
       e.preventDefault();
       if (r.kind === 'run') toggleRun(r.runId, r.collapsed);
       else open(r.event);
-    } else if (matchShortcut(e, 'peek') && idx !== -1) {
-      e.preventDefault();
-      useUi.getState().togglePanel('timeline');
     }
   });
 

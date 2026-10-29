@@ -1,20 +1,21 @@
-import type {
-  Approval,
-  Artifact,
-  ArtifactKind,
-  BudgetAllocation,
-  CapabilityGrant,
-  Integration,
-  ModelInfo,
-  PermissionRule,
-  Project,
-  Run,
-  Session,
-  SettingsView,
-  SystemInfo,
-  Task,
-  Workspace,
-  WorkspaceDiff,
+import {
+  type Approval,
+  type Artifact,
+  type ArtifactKind,
+  type BudgetAllocation,
+  type CapabilityGrant,
+  type Integration,
+  type ModelInfo,
+  type PermissionRule,
+  type Project,
+  type Run,
+  type Session,
+  type SettingsView,
+  type SystemInfo,
+  type Task,
+  type Workspace,
+  type WorkspaceDiff,
+  isTerminalRunStatus,
 } from '@acc/protocol';
 import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
@@ -335,8 +336,17 @@ export function useMethods(): ReadonlySet<string> | null {
 export function messagesQuery(rt: AppRuntime, sessionId: string) {
   return {
     queryKey: qk.messages(sessionId),
-    queryFn: () =>
-      rt.client.call('session.messages', { sessionId, limit: 500 }).then((r): ChatMessage[] => r.items),
+    queryFn: async (): Promise<ChatMessage[]> => {
+      const r = await rt.client.call('session.messages', { sessionId, limit: 500 });
+      // Opened mid-answer: show what was already written right away (not only what streams
+      // from now on). Skipped when the answer has been saved or its run ended meanwhile.
+      const st = r.streaming;
+      if (st && !r.items.some((m) => m.id === st.messageId)) {
+        const run = rt.queryClient.getQueryData<Run[]>(qk.runs)?.find((x) => x.id === st.runId);
+        if (!run || !isTerminalRunStatus(run.status)) rt.streams.deltas.seed(sessionId, st);
+      }
+      return r.items;
+    },
   };
 }
 

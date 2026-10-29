@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useUi } from './ui';
+import { migrateUi, normalizeMode, useUi } from './ui';
 
 describe('editing a sent message (編集して送り直す)', () => {
   beforeEach(() => useUi.setState({ editing: null, drafts: {} }));
@@ -37,5 +37,66 @@ describe('jumping to a message', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('screens and navigation', () => {
+  beforeEach(() =>
+    useUi.setState({ mode: 'home', focusSessionId: null, back: [], forward: [], selectedId: null, reviewIntegrationId: null }),
+  );
+
+  it('opens a conversation, goes home, back and forward', () => {
+    const ui = useUi.getState();
+    ui.openSession('s1');
+    expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: 's1' });
+    useUi.getState().goHome();
+    // Coming back home selects the conversation that was open.
+    expect(useUi.getState()).toMatchObject({ mode: 'home', selectedId: 's1' });
+    useUi.getState().goBack();
+    expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: 's1' });
+    useUi.getState().goForward();
+    expect(useUi.getState().mode).toBe('home');
+  });
+
+  it('opens a draft (no session yet) and comes back to it', () => {
+    useUi.getState().openSession('s1');
+    useUi.getState().openDraft();
+    expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: null });
+    useUi.getState().goBack();
+    expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: 's1' });
+    useUi.getState().goForward();
+    expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: null });
+  });
+
+  it('records the same conversation only once', () => {
+    useUi.getState().openSession('s1');
+    useUi.getState().openSession('s1');
+    expect(useUi.getState().back).toHaveLength(1);
+  });
+});
+
+describe('persisted state of the old layout', () => {
+  it('reads 司令室 / フォーカス as home / session and the Focus panel flag as the outputs panel', () => {
+    expect(normalizeMode('command')).toBe('home');
+    expect(normalizeMode('focus')).toBe('session');
+    expect(normalizeMode('timeline')).toBe('timeline');
+    expect(normalizeMode(undefined)).toBe('home');
+    const v1 = {
+      theme: 'light',
+      mode: 'command',
+      panelOpen: { command: true, focus: false, timeline: true },
+      panelTab: 'changes',
+      commandView: 'tasks',
+      taskGoal: 'human',
+      back: [{ mode: 'focus', sessionId: 's1' }],
+    };
+    expect(migrateUi(v1, 1)).toEqual({
+      theme: 'light',
+      mode: 'home',
+      panelOpen: false,
+      back: [{ mode: 'session', sessionId: 's1' }],
+    });
+    expect(migrateUi({ panelOpen: { focus: true } }, 1)).toEqual({ panelOpen: true });
+    expect(migrateUi(null, 0)).toEqual({ panelOpen: true });
   });
 });

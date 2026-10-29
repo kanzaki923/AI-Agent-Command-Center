@@ -1,9 +1,8 @@
 // @vitest-environment node
-import type { Artifact, CapabilityGrant, Integration, IntegrationStep } from '@acc/protocol';
+import type { CapabilityGrant, Integration, IntegrationStep } from '@acc/protocol';
 import { describe, expect, it } from 'vitest';
-import { T0, approval, id, integration, iso, message, run, session, task } from '../test/fixtures';
+import { T0, approval, id, integration, iso, run, session, task } from '../test/fixtures';
 import { describeApproval } from './approval';
-import { buildBoard, stabilizeItems } from './board';
 import {
   DEFAULT_GRANT_INPUT,
   GRANT_PRESETS,
@@ -24,20 +23,6 @@ import {
   resolutionFailed,
   resolvePlan,
 } from './integration';
-import {
-  boardSectionOf,
-  buildTaskGroups,
-  canResume,
-  canRun,
-  canSpawn,
-  flattenTasks,
-  goalFromMessages,
-  integrableTasks,
-  statusReasonText,
-  taskDisplay,
-  taskState,
-  workerLabel,
-} from './tasks';
 
 function grant(over: Partial<CapabilityGrant> = {}): CapabilityGrant {
   return {
@@ -144,143 +129,6 @@ describe('orchestrator grant presets', () => {
   });
 });
 
-describe('task tree', () => {
-  const orch = session({ kind: 'chat', title: '設計チャット' });
-  const r0 = run(orch, { kind: 'chat' });
-  const byOrch = { kind: 'agent' as const, sessionId: orch.id, runId: r0.id };
-
-  it('groups tasks under the orchestrator that created them, with workers, branches and diffs', () => {
-    const a = task({
-      title: 'A',
-      status: 'review',
-      createdBy: byOrch,
-      workspaceId: 'wsp_a',
-      createdAt: iso(T0),
-    });
-    const b = task({
-      title: 'B',
-      status: 'running',
-      createdBy: byOrch,
-      projectId: a.projectId,
-      createdAt: iso(T0 + 1),
-    });
-    const c = task({
-      title: 'C',
-      status: 'pending',
-      createdBy: byOrch,
-      projectId: a.projectId,
-      dependsOn: [a.id],
-      createdAt: iso(T0 + 2),
-    });
-    const mine = task({ title: 'mine', status: 'done', projectId: a.projectId });
-    const worker = session({
-      kind: 'agent',
-      title: 'Worker: B',
-      taskId: b.id,
-      parentSessionId: orch.id,
-    });
-    const wr = run(worker, { status: 'awaiting_approval' });
-    const diff = {
-      id: id('art'),
-      kind: 'diff',
-      taskId: a.id,
-      workspaceId: 'wsp_a',
-      data: {
-        patch: '',
-        baseRef: null,
-        headRef: null,
-        stats: { files: 2, additions: 10, deletions: 1 },
-        files: [],
-      },
-    } as unknown as Artifact;
-    const groups = buildTaskGroups({
-      tasks: [a, b, c, mine],
-      sessions: [orch, worker],
-      runs: [r0, wr],
-      workspaces: [{ id: 'wsp_a', branch: 'acc/docs-1234' } as never],
-      diffs: [diff],
-    });
-    expect(groups.map((g) => g.id)).toEqual([orch.id, 'human']);
-    const g = groups[0]!;
-    expect(g.goal).toBe('設計チャット');
-    // running first, then review, then pending
-    expect(g.roots.map((n) => n.task.title)).toEqual(['B', 'A', 'C']);
-    expect(g.counts).toMatchObject({ total: 3, running: 1, review: 1 });
-    const [nb, na, nc] = g.roots;
-    expect(nb!.worker?.id).toBe(worker.id);
-    expect(workerLabel(nb!)).toBe('B');
-    expect(nb!.workerRun?.status).toBe('awaiting_approval');
-    expect(na!.workspace?.branch).toBe('acc/docs-1234');
-    expect(na!.diff).toEqual({ files: 2, additions: 10, deletions: 1 });
-    expect(nc!.waitsFor.map((t) => t.title)).toEqual(['A']);
-    expect(integrableTasks(g).map((t) => t.title)).toEqual(['A']);
-    expect(groups[1]!.finished).toBe(true);
-  });
-
-  it('nests subtasks and uses a single parent as the goal', () => {
-    const parent = task({ title: '認証の整備', createdBy: byOrch });
-    const child = task({
-      title: 'テスト',
-      parentTaskId: parent.id,
-      projectId: parent.projectId,
-      createdBy: byOrch,
-    });
-    const groups = buildTaskGroups({
-      tasks: [parent, child],
-      sessions: [orch],
-      runs: [],
-      workspaces: [],
-      diffs: [],
-    });
-    expect(groups[0]!.goal).toBe('認証の整備');
-    expect(flattenTasks(groups).map((n) => n.task.title)).toEqual(['認証の整備', 'テスト']);
-  });
-
-  it('filters by project and maps statuses', () => {
-    const t = task({ projectId: 'prj_other' });
-    expect(
-      buildTaskGroups({
-        tasks: [t],
-        sessions: [],
-        runs: [],
-        workspaces: [],
-        diffs: [],
-        projectId: 'prj_mine',
-      }),
-    ).toEqual([]);
-    expect(taskState('blocked')).toBe('queued');
-    expect(taskState('review')).toBe('review');
-    expect(canSpawn(task({ status: 'ready' }))).toBe(true);
-    expect(canSpawn(task({ status: 'pending', dependsOn: ['tsk_x'] }))).toBe(false);
-    expect(canSpawn(task({ status: 'running' }))).toBe(false);
-  });
-
-  it('tells a task interrupted by a daemon restart apart: resume, never a fresh worker', () => {
-    const t = task({ status: 'ready', statusReason: 'interrupted' });
-    expect(canResume(t)).toBe(true);
-    expect(canRun(t)).toBe(false);
-    expect(boardSectionOf(t)).toBe('interrupted');
-    expect(statusReasonText(t)).toContain('再開できます');
-    const node = { task: t, children: [], worker: null, workerRun: null, workspace: null, diff: null, waitsFor: [] };
-    expect(taskDisplay(node)).toEqual({ state: 'interrupted', label: '中断' });
-    // A plain ready task is started, not resumed.
-    const ready = task({ status: 'ready' });
-    expect(canResume(ready)).toBe(false);
-    expect(canRun(ready)).toBe(true);
-    expect(boardSectionOf(ready)).toBe('ready');
-  });
-
-  it('takes the goal from the first thing the human asked', () => {
-    const s = session({ kind: 'chat' });
-    const msgs = [
-      message(s, { role: 'assistant', content: [{ type: 'text', text: 'こんにちは' }] }),
-      message(s, { content: [{ type: 'text', text: '認証まわりを整備して\n詳細は…' }] }),
-    ];
-    expect(goalFromMessages(msgs)).toBe('認証まわりを整備して');
-    expect(goalFromMessages([])).toBeNull();
-  });
-});
-
 describe('integration review', () => {
   const base = integration({
     status: 'awaiting_approval',
@@ -355,53 +203,6 @@ describe('integration review', () => {
     const plan = resolvePlan({ ...failed, branch: 'acc/integration-1', targetRef: 'main' });
     expect(plan.lines.join('\n')).toContain('「B」をマージするときに README.md がコンフリクトしました。');
     expect(plan.lines.join('\n')).toContain('main はまだ変更しません');
-  });
-});
-
-describe('board', () => {
-  it('keeps unchanged items by identity across rebuilds (memoized rows skip work)', () => {
-    const sessions = Array.from({ length: 10 }, (_, i) => session({ title: `S${i}` }));
-    const runs = sessions.map((s) => {
-      const r = run(s, { status: 'running' });
-      s.activeRunId = r.id;
-      return r;
-    });
-    const input = { sessions, runs, approvals: [], tasks: [], integrations: [] };
-    const first = buildBoard(input);
-    const prev = new Map(first.map((i) => [i.id, i]));
-    // One run reports usage: only its row changes.
-    const changed = { ...runs[3]!, usage: { ...runs[3]!.usage, costUsd: 1 } };
-    const next = stabilizeItems(
-      prev,
-      buildBoard({ ...input, runs: runs.map((r) => (r.id === changed.id ? changed : r)) }),
-    );
-    const same = next.filter((i) => prev.get(i.id) === i);
-    expect(same).toHaveLength(9);
-    expect(next.find((i) => i.run?.id === changed.id)).not.toBe(prev.get(sessions[3]!.id));
-  });
-
-  it('does not ask for review twice when an integration already covers the task', () => {
-    const t = task({ status: 'review' });
-    const s = session({ taskId: t.id });
-    const r = run(s, { status: 'completed', endedAt: iso(T0 + 5) });
-    const i = integration({ status: 'awaiting_approval', taskIds: [t.id], projectId: t.projectId! });
-    const without = buildBoard({
-      sessions: [s],
-      runs: [r],
-      approvals: [],
-      tasks: [t],
-      integrations: [],
-    });
-    expect(without.find((x) => x.id === s.id)?.state).toBe('review');
-    const withInteg = buildBoard({
-      sessions: [s],
-      runs: [r],
-      approvals: [],
-      tasks: [t],
-      integrations: [i],
-    });
-    expect(withInteg.find((x) => x.id === s.id)?.state).toBe('completed');
-    expect(withInteg.filter((x) => x.zone === 'attention').map((x) => x.id)).toEqual([i.id]);
   });
 });
 

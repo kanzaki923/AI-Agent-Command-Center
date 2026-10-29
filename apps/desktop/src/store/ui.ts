@@ -1,9 +1,8 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
-export type Mode = 'command' | 'focus' | 'timeline';
-export type PanelTab = 'overview' | 'changes' | 'tests' | 'logs';
-export const PANEL_TABS: PanelTab[] = ['overview', 'changes', 'tests', 'logs'];
+/** The three screens (ui-redesign spec §2): home (the app's face), one conversation, the timeline. */
+export type Mode = 'home' | 'session' | 'timeline';
 export type ThemePref = 'dark' | 'light' | 'system';
 export type MotionPref = 'system' | 'on' | 'off';
 
@@ -14,20 +13,23 @@ interface View {
 
 export interface UiState {
   mode: Mode;
-  /** Session shown in Focus Mode. */
+  /**
+   * Conversation shown in mode 'session' (kept when leaving, for back / forward). null in
+   * mode 'session' is the draft of a new conversation (openDraft).
+   */
   focusSessionId: string | null;
-  /** Where Esc from Focus returns to (§7.2 ladder step 7). */
-  focusOrigin: 'command' | 'timeline';
-  /** Keyboard selection in Command Mode (board item id). */
+  /** Keyboard selection on the home screen (an attention id or a session id). */
   selectedId: string | null;
   /** Keyboard selection in Timeline Mode (event seq or run header key). */
   timelineSelected: string | null;
+  /** Project a new conversation starts in (the draft's project chip). */
   projectId: string | null;
   sidebarOpen: boolean;
   sidebarWidth: number;
+  /** Width of the outputs panel beside a conversation. */
   panelWidth: number;
-  panelOpen: Record<Mode, boolean>;
-  panelTab: PanelTab;
+  /** The outputs panel is shown (when the conversation has outputs). */
+  panelOpen: boolean;
   paletteOpen: boolean;
   /** Prefix the palette opens with (`#` session search, `>` commands). */
   paletteSeed: string;
@@ -45,7 +47,7 @@ export interface UiState {
   recentCommands: string[];
   back: View[];
   forward: View[];
-  /** Last time the Command list selection moved by keyboard (reorder hold, §3.2). */
+  /** Last time the home selection moved by keyboard (reorder hold, §3.2). */
   keyboardSelectAt: number;
   /** Integration under review: replaces the main area until closed (Esc). */
   reviewIntegrationId: string | null;
@@ -55,10 +57,6 @@ export interface UiState {
   grantDialogSessionId: string | null;
   /** Suggested first message per session (demo: a one-click chip above the composer). */
   suggestions: Record<string, string>;
-  /** Command Mode lists agents (sessions) or tasks (the task board). */
-  commandView: CommandView;
-  /** Task board scope: one goal (orchestrator session id / `human`) or every goal. */
-  taskGoal: string | null;
   /**
    * A message to scroll to and flash once (palette search hit, Timeline "会話を開く").
    * `nonce` makes a repeated jump to the same message run again.
@@ -77,22 +75,27 @@ export interface UiState {
   editing: { sessionId: string; messageId: string; prevDraft: string } | null;
 }
 
-export type CommandView = 'agents' | 'tasks';
-
 interface UiActions {
   setMode: (mode: Mode) => void;
-  openSession: (sessionId: string, opts?: { from?: 'command' | 'timeline' }) => void;
-  leaveFocus: () => void;
+  /** Open a conversation (recorded in back / forward). */
+  openSession: (sessionId: string) => void;
+  /**
+   * A new conversation that does not exist yet (Ctrl+N): mode 'session' without a session.
+   * The first send creates it (spec §5.3) and then opens it.
+   */
+  openDraft: () => void;
+  /** The home screen (Ctrl+1). */
+  goHome: () => void;
+  /** The timeline (Ctrl+2). */
+  openTimeline: () => void;
   select: (id: string | null, viaKeyboard?: boolean) => void;
   setTimelineSelected: (key: string | null) => void;
   setProject: (projectId: string | null) => void;
   toggleSidebar: () => void;
   setSidebarWidth: (px: number) => void;
   setPanelWidth: (px: number) => void;
-  togglePanel: (mode?: Mode) => void;
-  setPanelOpen: (mode: Mode, open: boolean) => void;
-  setPanelTab: (tab: PanelTab) => void;
-  cyclePanelTab: (dir: 1 | -1) => void;
+  togglePanel: () => void;
+  setPanelOpen: (open: boolean) => void;
   openPalette: (seed?: string) => void;
   closePalette: () => void;
   setPaletteQuery: (q: string) => void;
@@ -115,12 +118,8 @@ interface UiActions {
   setProjectDialog: (d: UiState['projectDialog']) => void;
   setGrantDialog: (sessionId: string | null) => void;
   setSuggestion: (sessionId: string, text: string | null) => void;
-  setCommandView: (v: CommandView) => void;
-  setTaskGoal: (goal: string | null) => void;
-  /** Command Mode → task board with this task selected and its detail open. */
-  openTask: (taskId: string) => void;
-  /** Focus the session and scroll to one message. */
-  openMessage: (sessionId: string, messageId: string, opts?: { from?: 'command' | 'timeline' }) => void;
+  /** Open the conversation and scroll to one message. */
+  openMessage: (sessionId: string, messageId: string) => void;
   clearJump: () => void;
   /**
    * The chat has scrolled to `jumpTo`: drop the request at once (so reopening the session
@@ -139,17 +138,15 @@ interface UiActions {
 export type UiStore = UiState & UiActions;
 
 const initial: UiState = {
-  mode: 'command',
+  mode: 'home',
   focusSessionId: null,
-  focusOrigin: 'command',
   selectedId: null,
   timelineSelected: null,
   projectId: null,
   sidebarOpen: true,
   sidebarWidth: 248,
   panelWidth: 360,
-  panelOpen: { command: false, focus: true, timeline: false },
-  panelTab: 'overview',
+  panelOpen: true,
   paletteOpen: false,
   paletteSeed: '',
   paletteQuery: '',
@@ -171,8 +168,6 @@ const initial: UiState = {
   projectDialog: null,
   grantDialogSessionId: null,
   suggestions: {},
-  commandView: 'agents',
-  taskGoal: null,
   jumpTo: null,
   flash: null,
   notifyOs: true,
@@ -186,6 +181,36 @@ let jumpNonce = 0;
 const FLASH_MS = 1700;
 
 const view = (s: UiState): View => ({ mode: s.mode, sessionId: s.focusSessionId });
+
+/** Screens of the old layout read as the new ones: 司令室 (command) is home, フォーカス (focus) a conversation. */
+export function normalizeMode(mode: unknown): Mode {
+  if (mode === 'session' || mode === 'focus') return 'session';
+  if (mode === 'timeline') return 'timeline';
+  return 'home';
+}
+
+/**
+ * Persisted state of an older version, read into the current shape: the per-mode panel
+ * flags of v1 become the outputs panel flag (it was the Focus detail panel); state of
+ * screens that no longer exist (task board, panel tabs) is dropped.
+ */
+export function migrateUi(persisted: unknown, version: number): Partial<UiState> {
+  const p = { ...((persisted && typeof persisted === 'object' ? persisted : {}) as Record<string, unknown>) };
+  if (version < 2) {
+    const panel = p.panelOpen;
+    p.panelOpen =
+      panel && typeof panel === 'object' ? (panel as Record<string, unknown>).focus !== false : panel !== false;
+    delete p.panelTab;
+    delete p.commandView;
+    delete p.taskGoal;
+    if ('mode' in p) p.mode = normalizeMode(p.mode);
+    for (const k of ['back', 'forward'] as const) {
+      const list = p[k];
+      if (Array.isArray(list)) p[k] = (list as View[]).map((v) => ({ ...v, mode: normalizeMode(v.mode) }));
+    }
+  }
+  return p;
+}
 
 /** Leaving or entering a session counts as having read it (sidebar unread dots). */
 function touchViewed(s: UiState, ...ids: (string | null)[]): Record<string, string> {
@@ -225,33 +250,36 @@ export const createUiStore = () =>
               ? s.reviewIntegrationId
                 ? { reviewIntegrationId: null }
                 : s
-              : {
-                  mode,
-                  reviewIntegrationId: null,
-                  back: pushBack(s),
-                  forward: [],
-                  focusOrigin: mode === 'focus' ? s.focusOrigin : mode === 'timeline' ? 'timeline' : 'command',
-                },
+              : { mode, reviewIntegrationId: null, back: pushBack(s), forward: [] },
           ),
-        openSession: (sessionId, opts) =>
-          set((s) => ({
-            viewedAt: touchViewed(s, s.focusSessionId, sessionId),
-            mode: 'focus',
-            reviewIntegrationId: null,
-            focusSessionId: sessionId,
-            focusOrigin: opts?.from ?? (s.mode === 'timeline' ? 'timeline' : s.mode === 'command' ? 'command' : s.focusOrigin),
-            selectedId: s.mode === 'command' ? s.selectedId : sessionId,
-            back: s.mode === 'focus' && s.focusSessionId === sessionId ? s.back : pushBack(s),
-            forward: [],
-          })),
-        leaveFocus: () =>
+        openSession: (sessionId) =>
+          set((s) => {
+            const same = s.mode === 'session' && s.focusSessionId === sessionId;
+            return {
+              viewedAt: touchViewed(s, s.focusSessionId, sessionId),
+              mode: 'session',
+              reviewIntegrationId: null,
+              focusSessionId: sessionId,
+              back: same ? s.back : pushBack(s),
+              forward: same ? s.forward : [],
+            };
+          }),
+        openDraft: () =>
           set((s) => ({
             viewedAt: touchViewed(s, s.focusSessionId),
-            mode: s.focusOrigin,
-            selectedId: s.focusSessionId ?? s.selectedId,
-            back: pushBack(s),
+            mode: 'session',
+            reviewIntegrationId: null,
+            focusSessionId: null,
+            back: s.mode === 'session' && !s.focusSessionId ? s.back : pushBack(s),
             forward: [],
           })),
+        goHome: () => {
+          const s = get();
+          // Coming back from a conversation selects it on the home screen.
+          if (s.mode === 'session') set({ selectedId: s.focusSessionId, viewedAt: touchViewed(s, s.focusSessionId) });
+          get().setMode('home');
+        },
+        openTimeline: () => get().setMode('timeline'),
         select: (id, viaKeyboard = false) =>
           set(viaKeyboard ? { selectedId: id, keyboardSelectAt: Date.now() } : { selectedId: id }),
         setTimelineSelected: (key) => set({ timelineSelected: key }),
@@ -259,20 +287,8 @@ export const createUiStore = () =>
         toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
         setSidebarWidth: (px) => set({ sidebarWidth: Math.round(Math.min(360, Math.max(200, px))) }),
         setPanelWidth: (px) => set({ panelWidth: Math.round(Math.min(560, Math.max(320, px))) }),
-        togglePanel: (mode) =>
-          set((s) => {
-            const m = mode ?? s.mode;
-            return { panelOpen: { ...s.panelOpen, [m]: !s.panelOpen[m] } };
-          }),
-        setPanelOpen: (mode, open) =>
-          set((s) => (s.panelOpen[mode] === open ? s : { panelOpen: { ...s.panelOpen, [mode]: open } })),
-        setPanelTab: (panelTab) => set({ panelTab }),
-        cyclePanelTab: (dir) =>
-          set((s) => {
-            const tabs: PanelTab[] = ['overview', 'changes', 'tests', 'logs'];
-            const i = tabs.indexOf(s.panelTab);
-            return { panelTab: tabs[(i + dir + tabs.length) % tabs.length]! };
-          }),
+        togglePanel: () => set((s) => ({ panelOpen: !s.panelOpen })),
+        setPanelOpen: (open) => set((s) => (s.panelOpen === open ? s : { panelOpen: open })),
         openPalette: (seed = '') =>
           set({ paletteOpen: true, paletteSeed: seed, paletteQuery: seed, palettePages: [] }),
         closePalette: () => set({ paletteOpen: false }),
@@ -307,7 +323,8 @@ export const createUiStore = () =>
           if (!prev) return;
           set({
             mode: prev.mode,
-            focusSessionId: prev.sessionId ?? s.focusSessionId,
+            reviewIntegrationId: null,
+            focusSessionId: prev.mode === 'session' ? prev.sessionId : s.focusSessionId,
             back: s.back.slice(0, -1),
             forward: [...s.forward, view(s)],
           });
@@ -318,35 +335,19 @@ export const createUiStore = () =>
           if (!next) return;
           set({
             mode: next.mode,
-            focusSessionId: next.sessionId ?? s.focusSessionId,
+            reviewIntegrationId: null,
+            focusSessionId: next.mode === 'session' ? next.sessionId : s.focusSessionId,
             forward: s.forward.slice(0, -1),
             back: [...s.back, view(s)],
           });
         },
-        openIntegration: (reviewIntegrationId) =>
-          set((s) => ({
-            reviewIntegrationId,
-            // The review lives in the Command board's place; selection follows it back.
-            mode: s.mode === 'focus' ? 'command' : s.mode,
-            selectedId: reviewIntegrationId,
-          })),
+        // The full-screen review of a code output replaces the main area until closed (Esc).
+        openIntegration: (reviewIntegrationId) => set({ reviewIntegrationId }),
         closeIntegration: () => set({ reviewIntegrationId: null }),
         setProjectDialog: (projectDialog) => set({ projectDialog }),
         setGrantDialog: (grantDialogSessionId) => set({ grantDialogSessionId }),
-        setCommandView: (commandView) => set({ commandView }),
-        setTaskGoal: (taskGoal) => set({ taskGoal }),
-        openTask: (taskId) =>
-          set((s) => ({
-            mode: 'command',
-            reviewIntegrationId: null,
-            commandView: 'tasks',
-            selectedId: taskId,
-            panelOpen: { ...s.panelOpen, command: true },
-            back: s.mode === 'command' ? s.back : pushBack(s),
-            forward: s.mode === 'command' ? s.forward : [],
-          })),
-        openMessage: (sessionId, messageId, opts) => {
-          get().openSession(sessionId, opts);
+        openMessage: (sessionId, messageId) => {
+          get().openSession(sessionId);
           set({ jumpTo: { sessionId, messageId, nonce: ++jumpNonce } });
         },
         clearJump: () => set((s) => (s.jumpTo ? { jumpTo: null } : s)),
@@ -387,8 +388,9 @@ export const createUiStore = () =>
       }),
       {
         name: 'acc.ui',
-        version: 1,
+        version: 2,
         storage: safeStorage,
+        migrate: (persisted, version) => migrateUi(persisted, version) as UiStore,
         partialize: (s) => ({
           theme: s.theme,
           reduceMotion: s.reduceMotion,
@@ -396,7 +398,6 @@ export const createUiStore = () =>
           sidebarWidth: s.sidebarWidth,
           panelWidth: s.panelWidth,
           panelOpen: s.panelOpen,
-          panelTab: s.panelTab,
           projectId: s.projectId,
           drafts: s.drafts,
           viewedAt: s.viewedAt,
@@ -404,8 +405,6 @@ export const createUiStore = () =>
           onboardingDone: s.onboardingDone,
           recentCommands: s.recentCommands,
           suggestions: s.suggestions,
-          commandView: s.commandView,
-          taskGoal: s.taskGoal,
           notifyOs: s.notifyOs,
           notifyInApp: s.notifyInApp,
         }),

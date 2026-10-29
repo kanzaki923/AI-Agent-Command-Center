@@ -35,8 +35,8 @@ export function ShortcutsDialog() {
             <li>名前の変更などを取り消す</li>
             <li>生成中のチャットを停止する</li>
             <li>入力欄から一覧に戻る</li>
-            <li>オーバーレイの詳細パネルを閉じる</li>
-            <li>フォーカスから元の画面に戻る</li>
+            <li>重なったパネルを閉じる</li>
+            <li>親の会話・ホームに戻る</li>
           </ol>
         </section>
       </div>

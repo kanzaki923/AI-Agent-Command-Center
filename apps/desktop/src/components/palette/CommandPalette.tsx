@@ -3,7 +3,6 @@ import { useQuery } from '@tanstack/react-query';
 import { Command, useCommandState } from 'cmdk';
 import {
   Archive,
-  ArrowRight,
   Bell,
   BellOff,
   Check,
@@ -11,74 +10,52 @@ import {
   Cpu,
   CornerDownLeft,
   Diamond,
-  Folder,
-  FolderGit2,
+  FolderPlus,
+  Hand,
   History,
+  House,
   Keyboard,
-  LayoutGrid,
-  ListTodo,
+  LoaderCircle,
   MessageSquarePlus,
   MessageSquareText,
   Moon,
-  Network,
   PanelLeft,
   PanelRight,
   Pin,
   Play,
-  RotateCcw,
+  Rows3,
   Settings,
-  ShieldCheck,
-  ShieldQuestion,
   Sparkles,
   Square,
-  SquareActivity,
   Sun,
-  Target,
-  ThumbsDown,
-  ThumbsUp,
   Wand2,
-  Wrench,
 } from 'lucide-react';
 import { type ReactNode, useRef, useState } from 'react';
-import {
-  approve,
-  askAi,
-  confirmCancelTask,
-  goToAttention,
-  newChat,
-  reject,
-  retry,
-  stop,
-  switchMode,
-} from '../../app/commands';
-import { archiveSession, setPinned, setSessionModel } from '../../daemon/actions';
+import { askAi, goToAttention, newChat } from '../../app/commands';
 import { startDemo } from '../../app/demo';
-import { resumeTask, revokeGrant, spawnWorker } from '../../daemon/orchestration';
 import {
-  useIntegrations,
-  useMethods,
-  useModels,
-  useProjects,
-  useSessions,
-  useTasks,
-} from '../../daemon/queries';
+  archiveSession,
+  delegateSession,
+  resumeTree,
+  setPinned,
+  setSessionModel,
+  stopTree,
+  undelegateSession,
+} from '../../daemon/actions';
+import { useHomeSelect } from '../../daemon/home';
+import { useMethods, useModels, useSessions } from '../../daemon/queries';
 import { useRuntime } from '../../daemon/runtime';
+import { treeRelations, useSessionTree } from '../../daemon/tree';
 import { cn } from '../../lib/cn';
 import { highlightTerms } from '../../lib/highlight';
 import { relativeCost } from '../../lib/models';
 import type { ShortcutId } from '../../lib/shortcuts';
-import { STATE_LABEL } from '../../lib/status';
-import { describeApproval } from '../../model/approval';
-import { attentionCounts, untitled } from '../../model/board';
-import { INTEGRATION_STATUS_LABEL, integrationState } from '../../model/integration';
-import { canCancel, canResume, canRun } from '../../model/tasks';
-import { useBoard } from '../../model/useBoard';
+import { sessionTitle } from '../../lib/states';
 import { useTimeline } from '../../store/timeline';
 import { useUi } from '../../store/ui';
-import { useSessionGrants } from '../grant/Grant';
 import { Kbd } from '../ui/Kbd';
 import { TimeStamp } from '../ui/Meta';
-import { StatusIcon } from '../ui/StatusIcon';
+import { StateIcon } from '../ui/StateIcon';
 
 const NONE: never[] = [];
 
@@ -94,7 +71,7 @@ interface PaletteItem {
   run: () => void;
 }
 
-const I = (C: typeof Target) => <C size={15} strokeWidth={1.5} />;
+const I = (C: typeof House) => <C size={15} strokeWidth={1.5} />;
 
 function Row({ item, onRun }: { item: PaletteItem; onRun: (i: PaletteItem) => void }) {
   return (
@@ -184,7 +161,7 @@ function MessageHits({
             </span>
           </span>
           <span className="flex w-full items-center gap-1.5 pl-7 text-meta text-fg-3">
-            <span className="truncate">{h.sessionTitle || '無題のセッション'}</span>
+            <span className="truncate">{h.sessionTitle || '新しい会話'}</span>
             <span className="text-fg-4">·</span>
             <TimeStamp iso={h.createdAt} className="text-meta text-fg-3" />
           </span>
@@ -230,31 +207,24 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
   const rt = useRuntime();
   const query = useUi((s) => s.paletteQuery);
   const pages = useUi((s) => s.palettePages);
-  const selectedId = useUi((s) => s.selectedId);
   const focusSessionId = useUi((s) => s.focusSessionId);
+  const mode = useUi((s) => s.mode);
   const canGoBack = useUi((s) => s.back.length > 0);
   const recentCommands = useUi((s) => s.recentCommands);
-  const projectId = useUi((s) => s.projectId);
   const theme = useUi((s) => s.theme);
   const reduceMotion = useUi((s) => s.reduceMotion);
-  const commandView = useUi((s) => s.commandView);
   const notifyOs = useUi((s) => s.notifyOs);
   const showAllEvents = useTimeline((s) => s.showAll);
-  const showAutoAllowed = useTimeline((s) => s.showAutoAllowed);
   // Actions only: read at call time so typing elsewhere never re-renders the palette.
   const ui = useUi.getState();
-  const sessions = useSessions().data ?? [];
-  const projects = useProjects().data ?? [];
-  const tasks = useTasks().data ?? NONE;
-  const integrations = useIntegrations().data ?? NONE;
+  const sessions = useSessions().data ?? NONE;
   const models = useModels().data?.models ?? [];
   const methods = useMethods();
-  const { items: board } = useBoard();
+  const needsYou = useHomeSelect((s) => s.totals.needsYou) ?? 0;
+  const tree = useSessionTree(mode === 'session' ? focusSessionId : null).data;
   const inputRef = useRef<HTMLInputElement | null>(null);
   const page = pages[pages.length - 1] ?? null;
   const resolvedTheme = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
-  const focusedForGrant = sessions.find((s) => s.id === focusSessionId && s.kind === 'chat') ?? null;
-  const orchestratorGrant = useSessionGrants(focusedForGrant?.id ?? null).orchestrator;
 
   // Message search (session.search), debounced off the typing: the palette never waits on it.
   const [searchTerm, setSearchTerm] = useState(() => messageQuery(query));
@@ -265,11 +235,8 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
     searchTimer.current = setTimeout(() => setSearchTerm(messageQuery(v)), 180);
   };
   const hits = useQuery({
-    queryKey: ['session.search', searchTerm, projectId],
-    queryFn: () =>
-      rt
-        .callOr('session.search', { query: searchTerm, limit: 8, ...(projectId ? { projectId } : {}) }, { items: [] })
-        .then((r) => r.items),
+    queryKey: ['session.search', searchTerm],
+    queryFn: () => rt.callOr('session.search', { query: searchTerm, limit: 8 }, { items: [] }).then((r) => r.items),
     enabled: searchTerm.length >= 2 && !page,
     staleTime: 15_000,
   });
@@ -284,203 +251,58 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
     item.run();
   };
 
-  const selected = board.find((b) => b.id === selectedId) ?? null;
-  const focused = sessions.find((s) => s.id === focusSessionId) ?? null;
-  const counts = attentionCounts(board);
+  const focused = mode === 'session' ? (sessions.find((s) => s.id === focusSessionId) ?? null) : null;
+  const self = treeRelations(tree, focused?.id).self;
   const prefix = query.startsWith('>') ? '>' : query.startsWith('#') ? '#' : query.startsWith('?') ? '?' : '';
   const search = prefix ? query.slice(1).trimStart() : query;
 
   const suggest: PaletteItem[] = [];
-  if (counts.total > 0) {
+  if (needsYou > 0) {
     suggest.push({
       id: 'attention.next',
-      label: '次の要対応へ',
-      hint: `${counts.total} 件`,
-      icon: I(ArrowRight),
-      keywords: ['next attention tsugi youtaiou'],
+      label: '次の出番へ',
+      hint: `${needsYou}`,
+      icon: I(Hand),
+      keywords: ['next attention tsugi deban'],
       shortcut: 'nextAttention',
       run: () => goToAttention(rt),
     });
   }
-  if (selected?.approval) {
-    const a = selected.approval;
+  if (focused && self) {
+    const s = focused;
+    const moving = self.state === 'working' || self.state === 'supervising' || self.state === 'queued' || self.state === 'needs_you';
+    if (self.state === 'stopped') {
+      suggest.push({ id: 'session.resume', label: '再開', hint: sessionTitle(s), icon: I(Play), keywords: ['resume saikai'], run: () => void resumeTree(rt, s.id) });
+    } else if (moving) {
+      suggest.push({ id: 'session.stop', label: '止める', hint: sessionTitle(s), icon: I(Square), keywords: ['stop tomeru teishi'], shortcut: 'stopRun', run: () => void stopTree(rt, s.id) });
+    }
     suggest.push(
-      {
-        id: 'approval.approve',
-        label: '承認',
-        hint: selected.title,
-        icon: I(ThumbsUp),
-        keywords: ['approve shounin yes'],
-        shortcut: 'approve',
-        run: () => void approve(rt, a),
-      },
-      {
-        id: 'approval.reject',
-        label: '拒否',
-        hint: selected.title,
-        icon: I(ThumbsDown),
-        keywords: ['reject kyohi no deny'],
-        shortcut: 'reject',
-        run: () => void reject(rt, a),
-      },
+      self.role === 'supervisor'
+        ? { id: 'session.undelegate', label: '任せるのをやめる', hint: sessionTitle(s), icon: I(Diamond), keywords: ['undelegate makaseru yameru'], run: () => void undelegateSession(rt, s.id) }
+        : { id: 'session.delegate', label: '任せる', hint: sessionTitle(s), icon: I(Diamond), keywords: ['delegate makaseru orchestrate'], run: () => void delegateSession(rt, s.id) },
     );
   }
-  if (selected?.run && (selected.state === 'failed' || selected.state === 'interrupted')) {
-    const r = selected.run;
-    suggest.push({ id: 'run.retry', label: '再試行', hint: selected.title, icon: I(RotateCcw), keywords: ['retry saishikou'], shortcut: 'retry', run: () => void retry(rt, r) });
-  }
-  const liveRun = selected?.run && (selected.state === 'running' || selected.state === 'queued') ? selected.run : null;
-  if (liveRun) {
-    suggest.push({ id: 'run.stop', label: '停止', hint: selected?.title, icon: I(Square), keywords: ['stop teishi cancel'], shortcut: 'stopRun', run: () => void stop(rt, liveRun) });
-  }
-  // The oldest approval, approvable from here when it is not high risk (its target is in the
-  // hint, so nothing is approved unseen). High-risk ones go to the card (Ctrl+Y there).
-  const nextApproval = board
-    .filter((b) => b.approval)
-    .sort((a, b) => a.since.localeCompare(b.since))[0];
-  if (nextApproval?.approval) {
-    const a = nextApproval.approval;
-    const view = describeApproval(a);
-    suggest.push({
-      id: 'approval.goto',
-      label: '次の承認待ちへ',
-      hint: `${counts.awaiting_approval} 件`,
-      icon: I(ShieldQuestion),
-      keywords: ['approval next shounin machi tsugi'],
-      run: () => goToAttention(rt, 1, 'awaiting_approval'),
-    });
-    if (view.risk !== 'high' && selected?.approval?.id !== a.id) {
-      suggest.push({
-        id: 'approval.approveNext',
-        label: `承認: ${nextApproval.title}`,
-        hint: view.target ? (view.targetKind === 'command' ? `$ ${view.target}` : view.target) : view.question,
-        icon: I(ThumbsUp),
-        keywords: ['approve next shounin tsugi yes'],
-        run: () => void approve(rt, a),
-      });
-    }
-  }
-  const selectedTask = selectedId?.startsWith('tsk_') ? tasks.find((t) => t.id === selectedId) : undefined;
-  if (selectedTask && canResume(selectedTask)) {
-    const t = selectedTask;
-    suggest.push({ id: 'task.resume', label: '中断した Task を再開', hint: t.title, icon: I(RotateCcw), keywords: ['task resume saikai retry interrupted'], shortcut: 'runTask', run: () => void resumeTask(rt, t) });
-  }
-  if (selectedTask && canRun(selectedTask)) {
-    const t = selectedTask;
-    suggest.push({ id: 'task.run', label: 'このTaskを実行', hint: t.title, icon: I(Play), keywords: ['task run jikkou spawn worker'], shortcut: 'runTask', run: () => void spawnWorker(rt, t) });
-  }
-  if (selectedTask && canCancel(selectedTask)) {
-    const t = selectedTask;
-    suggest.push({ id: 'task.cancel', label: 'Task を中止…', hint: t.title, icon: I(Square), keywords: ['task cancel chuushi stop'], shortcut: 'cancelTask', run: () => confirmCancelTask(rt, t) });
-  }
   if (canGoBack) {
-    suggest.push({ id: 'nav.back', label: '直前の画面に戻る', icon: I(History), keywords: ['back modoru'], shortcut: 'back', run: () => ui.goBack() });
+    suggest.push({ id: 'nav.back', label: '戻る', icon: I(History), keywords: ['back modoru'], shortcut: 'back', run: () => ui.goBack() });
   }
 
   const navigate: PaletteItem[] = [
-    { id: 'mode.command', label: '司令室', hint: 'モード', icon: I(LayoutGrid), keywords: ['command shireishitsu mode board'], shortcut: 'modeCommand', run: () => switchMode(rt, 'command') },
-    { id: 'mode.focus', label: 'フォーカス', hint: 'モード', icon: I(Target), keywords: ['focus fookasu mode chat'], shortcut: 'modeFocus', run: () => switchMode(rt, 'focus') },
-    { id: 'mode.timeline', label: 'タイムライン', hint: 'モード', icon: I(SquareActivity), keywords: ['timeline taimurain events log'], shortcut: 'modeTimeline', run: () => switchMode(rt, 'timeline') },
-    { id: 'project.switch', label: 'プロジェクトを切替', icon: I(Folder), keywords: ['project purojekuto switch'], nested: true, run: () => ui.pushPalettePage('project') },
-    commandView === 'tasks'
-      ? { id: 'view.agents', label: 'エージェントの一覧を表示', hint: '司令室', icon: I(LayoutGrid), keywords: ['agents eejento ichiran board'], shortcut: 'toggleTaskBoard', run: () => { ui.setCommandView('agents'); switchMode(rt, 'command'); } }
-      : { id: 'view.tasks', label: 'Task ボードを開く', hint: '司令室', icon: I(ListTodo), keywords: ['task board tasuku ichiran kanban'], shortcut: 'toggleTaskBoard', run: () => { ui.setCommandView('tasks'); switchMode(rt, 'command'); } },
-    ...integrations
-      .filter((i) => !['applied', 'rejected', 'cancelled'].includes(i.status))
-      .map<PaletteItem>((i) => ({
-        id: `integration:${i.id}`,
-        label: `統合をレビュー: ${i.title.replace(/^統合[:：]\s*/, '')}`,
-        hint: INTEGRATION_STATUS_LABEL[i.status],
-        icon: <StatusIcon state={integrationState(i.status)} size={13} />,
-        keywords: ['integration tougou review rebyuu merge'],
-        run: () => ui.openIntegration(i.id),
-      })),
+    { id: 'mode.home', label: 'ホーム', icon: I(House), keywords: ['home hoomu'], shortcut: 'modeHome', run: () => ui.goHome() },
+    { id: 'mode.timeline', label: 'タイムライン', icon: I(Rows3), keywords: ['timeline taimurain events log'], shortcut: 'modeTimeline', run: () => ui.openTimeline() },
   ];
-  // While searching, projects are one keystroke away (no nested page needed).
-  const projectItems: PaletteItem[] = projects.map((p) => ({
-    id: `goto-project:${p.id}`,
-    label: `${p.name} に切り替え`,
-    hint: 'プロジェクト',
-    icon: p.id === projectId ? <Check size={15} className="text-accent" /> : I(Folder),
-    keywords: [p.name, 'project purojekuto'],
-    run: () => ui.setProject(p.id),
-  }));
 
   const create: PaletteItem[] = [
-    { id: 'create.chat', label: '新しいチャット', icon: I(MessageSquarePlus), keywords: ['new chat atarashii chatto'], shortcut: 'newChat', run: () => void newChat(rt) },
-    { id: 'create.agent', label: '新しいエージェントタスク', icon: I(Wrench), keywords: ['new agent task eejento worker'], shortcut: 'newAgentTask', run: () => void newChat(rt, { kind: 'agent' }) },
-    {
-      id: 'create.orchestrate',
-      label: 'Orchestrator に依頼…',
-      icon: I(Network),
-      keywords: ['orchestrator orchestrate irai bunntan'],
-      run: () => {
-        // A new chat that is offered the orchestrator grant right away (concept §3.1).
-        void newChat(rt).then((s) => {
-          if (s) useUi.getState().setGrantDialog(s.id);
-        });
-      },
-    },
+    { id: 'create.chat', label: '新しい会話', icon: I(MessageSquarePlus), keywords: ['new chat atarashii kaiwa'], shortcut: 'newChat', run: () => newChat(rt) },
+    { id: 'project.add', label: 'プロジェクトを追加…', icon: I(FolderPlus), keywords: ['project add purojekuto tsuika folder git'], run: () => ui.setProjectDialog({ kind: 'new' }) },
+    { id: 'demo.start', label: 'デモを始める', icon: I(Play), keywords: ['demo hajimeru try mock'], run: () => void startDemo(rt, methods) },
   ];
-
-  create.push({
-    id: 'project.add',
-    label: 'プロジェクトを追加…',
-    icon: I(FolderGit2),
-    keywords: ['project add purojekuto tsuika repository git'],
-    run: () => ui.setProjectDialog({ kind: 'new' }),
-  });
-  const currentProject = projects.find((p) => p.id === ui.projectId);
-  if (currentProject) {
-    create.push({
-      id: 'project.settings',
-      label: 'プロジェクトの設定（権限・記憶した許可）…',
-      hint: currentProject.name,
-      icon: I(ShieldCheck),
-      keywords: ['project settings purojekuto settei permission kengen profile omakase shincho remembered kioku'],
-      run: () => ui.setProjectDialog({ kind: 'edit', projectId: currentProject.id }),
-    });
-  }
-  // The chat in front (Focus) or selected on the board can be given the orchestrator grant.
-  const grantTarget =
-    focused?.kind === 'chat' ? focused : selected?.session?.kind === 'chat' ? selected.session : null;
-  if (grantTarget) {
-    create.push({
-      id: 'grant.orchestrator',
-      label: 'Orchestrator 権限を与える…',
-      hint: untitled(grantTarget),
-      icon: I(Diamond),
-      keywords: ['orchestrator grant kengen ataeru capability permission /orchestrate'],
-      run: () => ui.setGrantDialog(grantTarget.id),
-    });
-  }
-  if (focused && orchestratorGrant) {
-    const g = orchestratorGrant;
-    const s = focused;
-    create.push({
-      id: 'grant.revoke',
-      label: 'Orchestrator 権限を取り消す',
-      hint: untitled(s),
-      icon: I(Diamond),
-      keywords: ['orchestrator revoke torikesu kengen'],
-      run: () => void revokeGrant(rt, s.id, g),
-    });
-  }
-  create.push({
-    id: 'demo.start',
-    label: 'デモを始める',
-    hint: '設計チャット + Orchestrator 権限',
-    icon: I(Play),
-    keywords: ['demo demo-mode hajimeru try'],
-    run: () => void startDemo(rt, methods),
-  });
 
   const view: PaletteItem[] = [
     { id: 'view.sidebar', label: 'サイドバーを切替', icon: I(PanelLeft), keywords: ['sidebar saidobaa toggle'], shortcut: 'toggleSidebar', run: () => ui.toggleSidebar() },
-    { id: 'view.panel', label: '詳細パネルを切替', icon: I(PanelRight), keywords: ['panel detail shousai'], shortcut: 'togglePanel', run: () => ui.togglePanel() },
+    { id: 'view.panel', label: '成果物を切替', icon: I(PanelRight), keywords: ['outputs seikabutsu panel'], shortcut: 'togglePanel', run: () => ui.togglePanel() },
     {
       id: 'view.themeToggle',
-      label: resolvedTheme === 'dark' ? 'ライトテーマに切り替え' : 'ダークテーマに切り替え',
+      label: resolvedTheme === 'dark' ? 'ライトテーマ' : 'ダークテーマ',
       icon: resolvedTheme === 'dark' ? I(Sun) : I(Moon),
       keywords: ['theme teema toggle dark light raito daaku kirikae'],
       run: () => ui.setTheme(resolvedTheme === 'dark' ? 'light' : 'dark'),
@@ -493,32 +315,22 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
       keywords: ['reduce motion ugoki animation'],
       run: () => ui.setReduceMotion(reduceMotion === 'on' ? 'system' : 'on'),
     },
-    { id: 'view.settings', label: '設定を開く', icon: I(Settings), keywords: ['settings settei preferences litellm model'], shortcut: 'settings', run: () => ui.setSettingsOpen(true) },
+    { id: 'view.settings', label: '設定', icon: I(Settings), keywords: ['settings settei preferences litellm model'], shortcut: 'settings', run: () => ui.setSettingsOpen(true) },
     {
       id: 'view.notify',
-      label: notifyOs ? 'OS の通知をオフにする' : 'OS の通知をオンにする',
+      label: notifyOs ? 'OS の通知をオフ' : 'OS の通知をオン',
       icon: notifyOs ? I(BellOff) : I(Bell),
       keywords: ['notification tsuuchi notify os'],
       run: () => ui.setNotify({ os: !notifyOs }),
     },
     {
       id: 'view.timelineDetail',
-      label: showAllEvents ? 'タイムライン: 詳細なイベントを隠す' : 'タイムライン: 詳細なイベントも表示',
-      icon: I(SquareActivity),
+      label: showAllEvents ? 'タイムライン: 詳細を隠す' : 'タイムライン: 詳細も表示',
+      icon: I(Rows3),
       keywords: ['timeline taimurain detail shousai events all'],
       run: () => {
         useTimeline.getState().setShowAll(!showAllEvents);
-        switchMode(rt, 'timeline');
-      },
-    },
-    {
-      id: 'view.timelineAutoAllowed',
-      label: showAutoAllowed ? 'タイムライン: 自動許可を隠す' : 'タイムライン: 自動許可も表示',
-      icon: I(ShieldCheck),
-      keywords: ['timeline taimurain auto allowed jidou kyoka permission kengen'],
-      run: () => {
-        useTimeline.getState().setShowAutoAllowed(!showAutoAllowed);
-        switchMode(rt, 'timeline');
+        ui.openTimeline();
       },
     },
     { id: 'view.shortcuts', label: 'ショートカット一覧', icon: I(Keyboard), keywords: ['shortcuts keyboard help shootokatto'], shortcut: 'help', run: () => ui.setShortcutsOpen(true) },
@@ -526,24 +338,28 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
   if (focused) {
     const s = focused;
     view.push(
-      { id: 'session.model', label: 'モデルを変更', hint: untitled(s), icon: I(Cpu), keywords: ['model moderu change'], shortcut: 'modelPicker', nested: true, run: () => ui.pushPalettePage('model') },
-      { id: 'session.pin', label: s.pinned ? 'ピン留めを外す' : 'ピン留め', hint: untitled(s), icon: I(Pin), keywords: ['pin pindome'], run: () => void setPinned(rt, s, !s.pinned) },
-      { id: 'session.archive', label: 'このセッションをアーカイブ', hint: untitled(s), icon: I(Archive), keywords: ['archive aakaibu hide'], shortcut: 'archive', run: () => void archiveSession(rt, s) },
+      { id: 'session.model', label: 'モデルを変更', hint: sessionTitle(s), icon: I(Cpu), keywords: ['model moderu change'], shortcut: 'modelPicker', nested: true, run: () => ui.pushPalettePage('model') },
+      { id: 'session.pin', label: s.pinned ? 'ピン留めを外す' : 'ピン留め', hint: sessionTitle(s), icon: I(Pin), keywords: ['pin pindome'], run: () => void setPinned(rt, s, !s.pinned) },
+      { id: 'session.archive', label: 'アーカイブ', hint: sessionTitle(s), icon: I(Archive), keywords: ['archive aakaibu hide'], shortcut: 'archive', run: () => void archiveSession(rt, s) },
     );
   }
 
-  const boardById = new Map(board.map((b) => [b.id, b]));
-  const sessionItems: PaletteItem[] = sessions.slice(0, 60).map((s) => {
-    const b = boardById.get(s.id);
-    return {
-      id: `session:${s.id}`,
-      label: untitled(s),
-      hint: b ? STATE_LABEL[b.state] : undefined,
-      icon: b ? <StatusIcon state={b.state} size={13} /> : I(Target),
-      keywords: [s.kind, s.model ?? ''],
-      run: () => ui.openSession(s.id),
-    };
-  });
+  // Conversations; a child is named with its parent (the tree says where it is).
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  const sessionItems: PaletteItem[] = sessions
+    .filter((s) => !s.archivedAt)
+    .slice(0, 80)
+    .map((s) => {
+      const parent = s.parentSessionId ? byId.get(s.parentSessionId) : undefined;
+      return {
+        id: `session:${s.id}`,
+        label: sessionTitle(s),
+        hint: parent ? sessionTitle(parent) : undefined,
+        icon: <StateIcon state={s.state} size={13} />,
+        keywords: [parent ? sessionTitle(parent) : '', s.model ?? ''],
+        run: () => ui.openSession(s.id),
+      };
+    });
 
   const allCommands = [...suggest, ...navigate, ...create, ...view];
   const recent = recentCommands
@@ -552,20 +368,7 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
     .slice(0, 3);
 
   let body: ReactNode;
-  if (page === 'project') {
-    const items: PaletteItem[] = [
-      { id: 'project:all', label: 'すべてのプロジェクト', icon: projectId ? I(Folder) : <Check size={15} className="text-accent" />, keywords: ['all subete'], run: () => ui.setProject(null) },
-      ...projects.map((p) => ({
-        id: `project:${p.id}`,
-        label: p.name,
-        hint: p.repoPath ?? undefined,
-        icon: p.id === projectId ? <Check size={15} className="text-accent" /> : I(Folder),
-        keywords: [p.name],
-        run: () => ui.setProject(p.id),
-      })),
-    ];
-    body = <Group heading="プロジェクトを切替" items={items} onRun={runItem} />;
-  } else if (page === 'theme') {
+  if (page === 'theme') {
     const items: PaletteItem[] = (
       [
         ['dark', 'ダーク'],
@@ -595,7 +398,7 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
   } else if (prefix === '#') {
     body = (
       <>
-        <Group heading="セッション" items={sessionItems} onRun={runItem} />
+        <Group heading="会話" items={sessionItems} onRun={runItem} />
         <MessageHits hits={messageHits} terms={searchTerm} onOpen={(h) => { close(); ui.openMessage(h.sessionId, h.messageId); }} />
       </>
     );
@@ -613,8 +416,7 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
     body = (
       <>
         <Group heading="コマンド" items={[...suggest, ...navigate, ...create, ...view]} onRun={runItem} />
-        {prefix !== '>' && <Group heading="プロジェクト" items={projectItems} onRun={runItem} />}
-        {prefix !== '>' && <Group heading="セッション" items={sessionItems} onRun={runItem} />}
+        {prefix !== '>' && <Group heading="会話" items={sessionItems} onRun={runItem} />}
         {prefix !== '>' && (
           <MessageHits hits={messageHits} terms={searchTerm} onOpen={(h) => { close(); ui.openMessage(h.sessionId, h.messageId); }} />
         )}
@@ -676,18 +478,18 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
           <div className="flex h-12 items-center gap-2 border-b border-line-subtle px-4">
             {page && (
               <span className="rounded-xs bg-selected px-1.5 text-micro text-fg-2">
-                {page === 'project' ? 'プロジェクト' : page === 'theme' ? 'テーマ' : 'モデル'}
+                {page === 'theme' ? 'テーマ' : 'モデル'}
               </span>
             )}
             <Command.Input
               ref={inputRef}
               value={query}
               onValueChange={onQuery}
-              placeholder={page ? '絞り込み…' : 'コマンド、セッション、メッセージを検索…  （> コマンド  # 会話  ? ヘルプ）'}
+              placeholder={page ? '絞り込み' : '会話・メッセージ・コマンドを検索'}
               className="h-full min-w-0 flex-1 bg-transparent text-[15px] text-fg placeholder:text-fg-4"
             />
             {hits.isFetching && searchTerm.length >= 2 && (
-              <span className="shrink-0 text-meta text-fg-3">メッセージを検索中…</span>
+              <LoaderCircle size={14} strokeWidth={1.75} className="acc-spin shrink-0 text-fg-3" aria-label="検索中" />
             )}
           </div>
           <Command.List className="max-h-[336px] overflow-y-auto scroll-py-1 p-1">
@@ -736,7 +538,12 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
               <Kbd keys="Esc" /> 閉じる
             </span>
             <span className="flex-1" />
-            {counts.total > 0 && <span>要対応 {counts.total}</span>}
+            {needsYou > 0 && (
+              <span className="flex items-center gap-1 text-st-needs_you">
+                <Hand size={12} strokeWidth={2} aria-hidden />
+                {needsYou}
+              </span>
+            )}
           </div>
         </Command>
       </div>

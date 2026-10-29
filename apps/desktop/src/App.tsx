@@ -2,14 +2,14 @@ import { MotionConfig, motion } from 'motion/react';
 import { useState } from 'react';
 import { useStore } from 'zustand';
 import { GlobalShortcuts } from './app/GlobalShortcuts';
-import { CommandView } from './components/command/CommandView';
 import { FocusView } from './components/focus/FocusView';
 import { GrantDialog } from './components/grant/Grant';
+import { HomeView } from './components/home/HomeView';
 import { IntegrationView } from './components/integration/IntegrationView';
 import { ProjectDialog } from './components/project/ProjectDialog';
 import { Onboarding } from './components/onboarding/Onboarding';
 import { CommandPalette } from './components/palette/CommandPalette';
-import { DetailPanel } from './components/panel/DetailPanel';
+import { OutputsPanel } from './components/outputs/OutputsPanel';
 import { SettingsDialog } from './components/settings/SettingsDialog';
 import { ShortcutsDialog } from './components/settings/ShortcutsDialog';
 import { ConfirmDialog } from './components/shell/ConfirmDialog';
@@ -34,7 +34,7 @@ function ModeView() {
       </div>
     );
   }
-  // Mode switch: a 120ms cross-fade only, no slide (§3.2). Keyed remount = fresh fade-in.
+  // Screen switch: a 120ms cross-fade only, no slide. Keyed remount = fresh fade-in.
   return (
     <motion.div
       key={mode}
@@ -43,7 +43,7 @@ function ModeView() {
       transition={{ duration: 0.12, ease: 'linear' }}
       className="min-h-0 flex-1"
     >
-      {mode === 'command' ? <CommandView /> : mode === 'focus' ? <FocusView /> : <TimelineView />}
+      {mode === 'home' ? <HomeView /> : mode === 'session' ? <FocusView /> : <TimelineView />}
     </motion.div>
   );
 }
@@ -52,6 +52,9 @@ export function App() {
   const rt = useRuntime();
   const everConnected = useStore(rt.status, (s) => s.everConnected);
   const sidebarOpen = useUi((s) => s.sidebarOpen);
+  const mode = useUi((s) => s.mode);
+  const focusSessionId = useUi((s) => s.focusSessionId);
+  const reviewing = useUi((s) => s.reviewIntegrationId);
   const reduceMotion = useUi((s) => s.reduceMotion);
   const narrow = !useMediaQuery('(min-width: 900px)');
   const [startedAt] = useState(() => Date.now());
@@ -71,7 +74,7 @@ export function App() {
                 <ReconnectBanner />
                 <ModeView />
               </main>
-              <DetailPanel />
+              {mode === 'session' && focusSessionId && !reviewing && <OutputsPanel sessionId={focusSessionId} />}
             </div>
           ) : (
             <StartupScreen startedAt={startedAt} />

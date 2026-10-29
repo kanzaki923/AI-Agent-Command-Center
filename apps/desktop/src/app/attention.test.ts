@@ -9,7 +9,7 @@ vi.mock('@tauri-apps/api/core', () => ({
   isTauri: () => tauri.inside,
   invoke: (...args: unknown[]) => tauri.invoke(...args) as Promise<unknown>,
 }));
-import { approval, event, integration, iso, message, run, session } from '../test/fixtures';
+import { attention, event, iso, session } from '../test/fixtures';
 import { type AttentionView, createAttentionNotifier, isVisible } from './attention';
 
 const NOW = Date.parse('2026-10-29T05:10:00.000Z');
@@ -52,25 +52,25 @@ function setup(view: Partial<AttentionView> = {}, focused = false) {
   return { n, s, os, toast, flush, v, focus: (f: boolean) => (isFocused = f) };
 }
 
+const opened = (a: ReturnType<typeof attention>, ms = 0) => event('attention.opened', { attention: a }, at(ms));
+
 describe('attention notifications', () => {
-  it('sends an OS notification for an approval while the window is in the background', () => {
+  it('sends an OS notification for a new item while the window is in the background', () => {
     const { n, s, os, toast } = setup();
-    const r = run(s, { status: 'awaiting_approval' });
-    n.handle(event('approval.requested', { approval: approval(r, { title: 'node scripts/test.js を実行' }) }, at()));
+    n.handle(opened(attention(s, { kind: 'approval', title: 'pnpm add zod を実行' })));
     expect(os).toHaveBeenCalledWith(
-      expect.objectContaining({ title: '承認を求めています', body: '認証のテスト — node scripts/test.js を実行' }),
+      expect.objectContaining({ title: '確認を求めています', body: '認証のテスト — pnpm add zod を実行' }),
     );
     expect(toast).not.toHaveBeenCalled();
   });
 
   it('coalesces a burst into one summary (never spams)', () => {
     const { n, s, os, flush } = setup();
-    const r = run(s, { status: 'awaiting_approval' });
-    for (let i = 0; i < 4; i++) n.handle(event('approval.requested', { approval: approval(r) }, at(i)));
+    for (let i = 0; i < 4; i++) n.handle(opened(attention(s), i));
     expect(os).toHaveBeenCalledTimes(1);
     flush();
     expect(os).toHaveBeenCalledTimes(2);
-    expect(os.mock.calls[1]![0]).toMatchObject({ title: '承認待ちが 3 件あります' });
+    expect(os.mock.calls[1]![0]).toMatchObject({ title: '質問が 3 件あります' });
     // A quiet window after the summary: nothing more.
     flush();
     expect(os).toHaveBeenCalledTimes(2);
@@ -78,51 +78,37 @@ describe('attention notifications', () => {
 
   it('respects the settings toggles', () => {
     const { n, s, os } = setup({ notifyOs: false });
-    n.handle(event('run.failed', { run: run(s, { status: 'failed' }), error: { code: 'x', message: 'boom' } }, at()));
+    n.handle(opened(attention(s, { kind: 'failure', title: 'テストが失敗' })));
     expect(os).not.toHaveBeenCalled();
   });
 
-  it('in front: a toast only for what happens outside the current view', () => {
-    const { n, s, toast, v } = setup({ mode: 'focus' }, true);
+  it('in front: a toast only for what is not on screen', () => {
+    const { n, s, toast, v } = setup({ mode: 'session' }, true);
     v.focusSessionId = s.id;
-    const failed = () => event('run.failed', { run: run(s, { status: 'failed' }), error: { code: 'x', message: 'テストが 3 件失敗\n詳細' } }, at());
-    n.handle(failed());
+    n.handle(opened(attention(s, { kind: 'failure', title: 'テストが 3 件失敗' })));
     expect(toast).not.toHaveBeenCalled(); // looking at it
     v.focusSessionId = null;
-    n.handle(failed());
+    n.handle(opened(attention(s, { kind: 'failure', title: 'テストが 3 件失敗' })));
     expect(toast).toHaveBeenCalledWith(
-      expect.objectContaining({ title: 'Run が失敗しました', detail: '認証のテスト — テストが 3 件失敗', tone: 'error' }),
+      expect.objectContaining({ title: '失敗しました', detail: '認証のテスト — テストが 3 件失敗', tone: 'error' }),
     );
   });
 
-  it('announces an integration ready for approval and an orchestrator report', () => {
+  it('ignores replayed (old) events and other events', () => {
     const { n, s, os } = setup();
-    const i = integration({ status: 'awaiting_approval', title: '統合: 2 Task → main' });
-    n.handle(event('integration.updated', { integration: i, changes: ['steps'] }, at()));
-    expect(os).not.toHaveBeenCalled(); // only the status change counts
-    n.handle(event('integration.updated', { integration: i, changes: ['status'] }, at()));
-    expect(os).toHaveBeenLastCalledWith(expect.objectContaining({ title: '統合候補をレビューできます', body: '統合: 2 Task → main' }));
-
-    const r = run(s, { kind: 'orchestrator', status: 'completed' });
-    n.handle(event('message.created', { message: message(s, { role: 'assistant', runId: r.id, content: [{ type: 'text', text: '2件のTaskが完了しました。\nレビューしてください' }] }) }, at()));
-    n.handle(event('run.completed', { run: r }, at()));
-    expect(os).toHaveBeenLastCalledWith(
-      expect.objectContaining({ title: 'Orchestrator が報告しました', body: '認証のテスト — 2件のTaskが完了しました。 レビューしてください' }),
-    );
-  });
-
-  it('ignores replayed (old) events', () => {
-    const { n, s, os } = setup();
-    n.handle(event('approval.requested', { approval: approval(run(s)) }, { ts: iso(NOW - 10 * 60_000) }));
+    n.handle(event('attention.opened', { attention: attention(s) }, { ts: iso(NOW - 10 * 60_000) }));
+    n.handle(event('attention.resolved', { attention: attention(s) }, at()));
     expect(os).not.toHaveBeenCalled();
   });
 
-  it('knows what is on screen', () => {
-    const item = { kind: 'approval' as const, sessionId: 'ses_1', integrationId: null, title: 't', body: null };
-    const v: AttentionView = { mode: 'command', focusSessionId: null, reviewIntegrationId: null, notifyOs: true, notifyInApp: true };
+  it('knows what is on screen: every item at home, its own conversation', () => {
+    const s = session();
+    const item = attention(s);
+    const v: AttentionView = { mode: 'home', focusSessionId: null, reviewIntegrationId: null, notifyOs: true, notifyInApp: true };
     expect(isVisible(item, v)).toBe(true);
-    expect(isVisible({ ...item, kind: 'report' }, v)).toBe(false);
     expect(isVisible(item, { ...v, mode: 'timeline' })).toBe(false);
+    expect(isVisible(item, { ...v, mode: 'session', focusSessionId: s.id })).toBe(true);
+    expect(isVisible(item, { ...v, mode: 'session', focusSessionId: 'ses_other' })).toBe(false);
   });
 });
 

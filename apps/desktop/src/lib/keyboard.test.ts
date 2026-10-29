@@ -10,30 +10,30 @@ const base: EscapeContext = {
   composerGenerating: false,
   multiSelect: false,
   overlayPanelOpen: false,
-  mode: 'command',
+  mode: 'home',
 };
 
 describe('Esc ladder (§7.2) — exactly one step per press, top first', () => {
   it('closes overlays before anything else', () => {
-    expect(resolveEscape({ ...base, overlayOpen: true, inputFocused: true, mode: 'focus' })).toBe('close-overlay');
+    expect(resolveEscape({ ...base, overlayOpen: true, inputFocused: true, mode: 'session' })).toBe('close-overlay');
   });
   it('cancels inline edits next', () => {
     expect(resolveEscape({ ...base, inlineEditing: true, inputFocused: true })).toBe('cancel-inline-edit');
   });
   it('stops a generating chat when the composer is focused', () => {
-    expect(resolveEscape({ ...base, inputFocused: true, composerGenerating: true, mode: 'focus' })).toBe('stop-generation');
+    expect(resolveEscape({ ...base, inputFocused: true, composerGenerating: true, mode: 'session' })).toBe('stop-generation');
   });
   it('then leaves the input', () => {
-    expect(resolveEscape({ ...base, inputFocused: true, mode: 'focus' })).toBe('blur-input');
+    expect(resolveEscape({ ...base, inputFocused: true, mode: 'session' })).toBe('blur-input');
   });
   it('then clears multi-select, then closes the overlay panel', () => {
     expect(resolveEscape({ ...base, multiSelect: true, overlayPanelOpen: true })).toBe('clear-selection');
-    expect(resolveEscape({ ...base, overlayPanelOpen: true, mode: 'focus' })).toBe('close-panel');
+    expect(resolveEscape({ ...base, overlayPanelOpen: true, mode: 'session' })).toBe('close-panel');
   });
-  it('finally leaves Focus Mode, and does nothing elsewhere', () => {
-    expect(resolveEscape({ ...base, mode: 'focus' })).toBe('leave-focus');
+  it('finally goes up from a conversation or the timeline, and does nothing at home', () => {
+    expect(resolveEscape({ ...base, mode: 'session' })).toBe('go-up');
+    expect(resolveEscape({ ...base, mode: 'timeline' })).toBe('go-up');
     expect(resolveEscape(base)).toBe('none');
-    expect(resolveEscape({ ...base, mode: 'timeline' })).toBe('none');
   });
 });
 

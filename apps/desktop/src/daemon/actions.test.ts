@@ -2,46 +2,9 @@ import { AccClientError } from '@acc/client';
 import { describe, expect, it } from 'vitest';
 import { createFakeClient } from '../test/fakeClient';
 import { id, run, session } from '../test/fixtures';
-import { makeOrchestrator, retryRun, runTask, sendMessage, setSessionModel } from './actions';
+import { delegateSession, retryRun, sendMessage, setSessionModel, startConversation, stopTree } from './actions';
 import { qk } from './keys';
 import { createRuntime } from './runtime';
-
-describe('makeOrchestrator ("Orchestrator にする")', () => {
-  it('grants the orchestrator preset for the next run of the chat', async () => {
-    const fake = createFakeClient({ 'session.grantOrchestration': () => ({ grant: {}, budget: null }) });
-    const s = session({ kind: 'chat', projectId: id('prj') });
-    expect(await makeOrchestrator(createRuntime(fake.client), s)).toBe(true);
-    expect(fake.calls).toEqual([
-      { method: 'session.grantOrchestration', params: { sessionId: s.id, lifetime: 'run' } },
-    ]);
-  });
-});
-
-describe('runTask ("このTaskを実行")', () => {
-  it('starts a worker through task.spawnWorker and returns its session', async () => {
-    const sessionId = id('ses');
-    const fake = createFakeClient({
-      'task.spawnWorker': () => ({
-        sessionId,
-        runId: id('run'),
-        workspaceId: id('wsp'),
-        budgetId: null,
-      }),
-    });
-    const taskId = id('tsk');
-    expect(await runTask(createRuntime(fake.client), taskId)).toBe(sessionId);
-    expect(fake.calls).toEqual([{ method: 'task.spawnWorker', params: { taskId } }]);
-  });
-
-  it('returns null (and toasts) when the daemon refuses', async () => {
-    const fake = createFakeClient({
-      'task.spawnWorker': () => {
-        throw new AccClientError('conflict', 'すでに実行中です');
-      },
-    });
-    expect(await runTask(createRuntime(fake.client), id('tsk'))).toBeNull();
-  });
-});
 
 describe('retryRun ("再試行" / "再開")', () => {
   const ok = { sessionId: id('ses'), runId: id('run'), workspaceId: id('wsp'), budgetId: null };
@@ -109,5 +72,65 @@ describe('setSessionModel', () => {
     expect(rt.queryClient.getQueryData<{ model: string }[]>(qk.sessions)?.[0]?.model).toBe('gpt-new');
     await pending;
     expect(rt.queryClient.getQueryData<{ model: string }[]>(qk.sessions)?.[0]?.model).toBe('gpt-old');
+  });
+});
+
+describe('session tree actions', () => {
+  it('starts a conversation from its first message, delegated when asked', async () => {
+    const s = session({ kind: 'chat' });
+    const fake = createFakeClient({
+      'session.create': () => s,
+      'session.delegate': () => ({ grant: {}, budget: null }),
+      'session.messages': () => ({ items: [], hasMore: false, streaming: null }),
+      'session.send': () => ({ messageId: id('msg'), runId: id('run'), delivery: 'started' }),
+    });
+    const rt = createRuntime(fake.client);
+    expect(await startConversation(rt, { text: '調べて', delegate: true })).toEqual(s);
+    expect(fake.calls.map((c) => c.method)).toEqual(['session.create', 'session.delegate', 'session.send']);
+    expect(fake.calls[0]!.params).toEqual({ kind: 'chat' });
+    expect(fake.calls[2]!.params).toMatchObject({ sessionId: s.id, content: '調べて' });
+  });
+
+  it('creates an agent with a workspace when one is chosen', async () => {
+    const s = session({ kind: 'agent' });
+    const fake = createFakeClient({
+      'session.create': () => s,
+      'session.send': () => ({ messageId: id('msg'), runId: id('run'), delivery: 'started' }),
+    });
+    const rt = createRuntime(fake.client);
+    rt.queryClient.setQueryData(qk.messages(s.id), []);
+    await startConversation(rt, { text: '直して', workspace: { kind: 'folder', path: '/tmp/x' } });
+    expect(fake.calls[0]!.params).toEqual({ kind: 'agent', workspace: { kind: 'folder', path: '/tmp/x' } });
+  });
+
+  it('marks a message sent to a busy agent as queued and passes interrupt on', async () => {
+    const s = session({ kind: 'agent' });
+    const messageId = id('msg');
+    const fake = createFakeClient({
+      'session.send': () => ({ messageId, runId: null, delivery: 'queued' }),
+    });
+    const rt = createRuntime(fake.client);
+    rt.queryClient.setQueryData(qk.messages(s.id), []);
+    let delivery = '';
+    await sendMessage(rt, s.id, 'あとで', { interrupt: true, onDelivery: (d) => (delivery = d) });
+    expect(fake.calls[0]!.params).toMatchObject({ interrupt: true });
+    expect(delivery).toBe('queued');
+    expect(rt.queryClient.getQueryData<{ id: string; delivery: string }[]>(qk.messages(s.id))).toEqual([
+      expect.objectContaining({ id: messageId, delivery: 'queued' }),
+    ]);
+  });
+
+  it('delegates and stops through the daemon, and reports a refusal', async () => {
+    const fake = createFakeClient({
+      'session.delegate': () => ({ grant: {}, budget: null }),
+      'session.stop': () => {
+        throw new AccClientError('forbidden', 'no');
+      },
+    });
+    const rt = createRuntime(fake.client);
+    const sid = id('ses');
+    expect(await delegateSession(rt, sid, { budgetUsd: 5 })).toBe(true);
+    expect(fake.calls[0]).toEqual({ method: 'session.delegate', params: { sessionId: sid, budgetUsd: 5 } });
+    expect(await stopTree(rt, sid)).toBe(false);
   });
 });

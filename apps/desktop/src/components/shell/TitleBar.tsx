@@ -1,32 +1,25 @@
-import { ChevronDown, ChevronRight, Folder, PanelLeft, Plus, Search, Settings2 } from 'lucide-react';
-import { ProjectFacts } from '../project/ProjectDialog';
-import { useMemo } from 'react';
-import { useConnectionState, useRuntime } from '../../daemon/runtime';
-import { useProjects, useRuns, useSessions } from '../../daemon/queries';
-import { sumUsage } from '../../lib/format';
-import { attentionCounts, untitled } from '../../model/board';
-import { useBoard } from '../../model/useBoard';
-import { useIsDemo } from '../../model/useDemo';
-import { useUi } from '../../store/ui';
+import { ArrowLeft, ArrowRight, Hand, PanelLeft, Search } from 'lucide-react';
 import { goToAttention } from '../../app/commands';
+import { useHomeSelect, useTodaySpend } from '../../daemon/home';
+import { useConnectionState, useRuntime } from '../../daemon/runtime';
+import { useUi } from '../../store/ui';
+import { CostPopover } from '../cost/CostPopover';
 import { IconButton } from '../ui/Button';
+import { CostMeter } from '../ui/CostMeter';
 import { Kbd } from '../ui/Kbd';
-import { Menu, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger } from '../ui/Menu';
-import { Cost, NumberRoll } from '../ui/Meta';
+import { NumberRoll } from '../ui/Meta';
 import { Tooltip } from '../ui/Tooltip';
 import { WindowControls } from './WindowControls';
 
-const MODE_LABEL = { command: '司令室', focus: 'フォーカス', timeline: 'タイムライン' } as const;
-
+/** Connection to the Core Daemon: a dot (green / amber / red), the words in the tooltip. */
 export function ConnectionDot({ withLabel = false }: { withLabel?: boolean }) {
   const state = useConnectionState();
-  const color =
-    state === 'open' ? 'var(--st-completed)' : state === 'closed' ? 'var(--st-failed)' : 'var(--st-awaiting_approval)';
+  const color = state === 'open' ? 'var(--st-done)' : state === 'closed' ? 'var(--st-failed)' : 'var(--st-needs_you)';
   const label =
     state === 'open' ? '接続中' : state === 'closed' ? '切断' : state === 'connecting' ? '接続しています' : '再接続中';
   return (
-    <Tooltip content={`Core Daemon: ${label}`}>
-      <span className="inline-flex items-center gap-1.5" role="status" aria-label={`Core Daemon ${label}`}>
+    <Tooltip content={label}>
+      <span className="inline-flex items-center gap-1.5" role="status" aria-label={label}>
         <span className="size-1.5 rounded-full" style={{ background: color }} />
         {withLabel && <span className="text-meta text-fg-3">{label}</span>}
       </span>
@@ -34,103 +27,37 @@ export function ConnectionDot({ withLabel = false }: { withLabel?: boolean }) {
   );
 }
 
-function todayStart(): string {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d.toISOString();
-}
-
-/** 40px custom title bar (§4.1). Empty space drags the window under Tauri. */
+/**
+ * 40px title bar (ui-redesign spec §2): sidebar toggle, back / forward, search, today's spend
+ * against the daily limit (press for the cost popover), the number of attention items (press
+ * for the first one; nothing at 0) and the connection dot. Empty space drags the window.
+ */
 export function TitleBar() {
   const rt = useRuntime();
-  const mode = useUi((s) => s.mode);
-  const focusSessionId = useUi((s) => s.focusSessionId);
-  const projectId = useUi((s) => s.projectId);
-  const setProject = useUi((s) => s.setProject);
-  const setProjectDialog = useUi((s) => s.setProjectDialog);
   const toggleSidebar = useUi((s) => s.toggleSidebar);
   const openPalette = useUi((s) => s.openPalette);
-  const projects = useProjects().data ?? [];
-  const sessions = useSessions().data;
-  const runs = useRuns().data;
-  const demo = useIsDemo();
-  const { items } = useBoard();
-  const counts = attentionCounts(items);
-  const project = projects.find((p) => p.id === projectId) ?? null;
-  const session = mode === 'focus' ? sessions?.find((s) => s.id === focusSessionId) : undefined;
-
-  const today = useMemo(() => {
-    const since = todayStart();
-    return sumUsage((runs ?? []).filter((r) => r.createdAt >= since).map((r) => r.usage));
-  }, [runs]);
+  const goBack = useUi((s) => s.goBack);
+  const goForward = useUi((s) => s.goForward);
+  const canBack = useUi((s) => s.back.length > 0);
+  const canForward = useUi((s) => s.forward.length > 0);
+  const today = useTodaySpend();
+  const needsYou = useHomeSelect((s) => s.totals.needsYou) ?? 0;
 
   return (
     <header
       data-tauri-drag-region
       className="relative z-30 grid h-10 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center bg-app"
     >
-      <div data-tauri-drag-region className="flex min-w-0 items-center gap-1 pl-2">
-        <IconButton label="サイドバーを切替" shortcut="toggleSidebar" onClick={toggleSidebar}>
+      <div data-tauri-drag-region className="flex min-w-0 items-center gap-0.5 pl-2">
+        <IconButton label="サイドバー" shortcut="toggleSidebar" onClick={toggleSidebar}>
           <PanelLeft size={16} strokeWidth={1.5} />
         </IconButton>
-        <Menu>
-          <MenuTrigger asChild>
-            <button
-              type="button"
-              className="flex h-7 max-w-56 min-w-0 items-center gap-1.5 rounded-sm px-2 text-ui font-medium text-fg hover:bg-hover"
-            >
-              <span className="truncate">{project?.name ?? 'すべてのプロジェクト'}</span>
-              <ChevronDown size={14} strokeWidth={1.5} className="shrink-0 text-fg-3" />
-            </button>
-          </MenuTrigger>
-          <MenuContent className="min-w-72">
-            <MenuLabel>プロジェクト</MenuLabel>
-            <MenuItem checked={!projectId} onSelect={() => setProject(null)}>
-              すべてのプロジェクト
-            </MenuItem>
-            {projects.length > 0 && <MenuSeparator />}
-            {projects.map((p) => (
-              <MenuItem
-                key={p.id}
-                icon={<Folder size={14} strokeWidth={1.5} />}
-                checked={p.id === projectId}
-                onSelect={() => setProject(p.id)}
-              >
-                <span className="flex flex-col py-0.5">
-                  <span className="truncate">{p.name}</span>
-                  <ProjectFacts project={p} />
-                </span>
-              </MenuItem>
-            ))}
-            <MenuSeparator />
-            <MenuItem icon={<Plus size={14} strokeWidth={1.5} />} onSelect={() => setProjectDialog({ kind: 'new' })}>
-              プロジェクトを追加…
-            </MenuItem>
-            {project && (
-              <MenuItem
-                icon={<Settings2 size={14} strokeWidth={1.5} />}
-                onSelect={() => setProjectDialog({ kind: 'edit', projectId: project.id })}
-              >
-                「{project.name}」の設定…
-              </MenuItem>
-            )}
-          </MenuContent>
-        </Menu>
-        {demo && (
-          <Tooltip content="組み込みの模擬モデルで動いています。費用はかかりません">
-            <span className="shrink-0 rounded-xs bg-selected px-1.5 text-micro whitespace-nowrap text-fg-2">デモ</span>
-          </Tooltip>
-        )}
-        <ChevronRight size={14} strokeWidth={1.5} className="shrink-0 text-fg-4" />
-        <span data-tauri-drag-region className="truncate text-ui text-fg-3">
-          {MODE_LABEL[mode]}
-          {session && (
-            <>
-              <span className="px-1.5 text-fg-4">/</span>
-              <span className="text-fg-2">{untitled(session)}</span>
-            </>
-          )}
-        </span>
+        <IconButton label="戻る" shortcut="back" onClick={goBack} disabled={!canBack}>
+          <ArrowLeft size={16} strokeWidth={1.5} />
+        </IconButton>
+        <IconButton label="進む" shortcut="forward" onClick={goForward} disabled={!canForward}>
+          <ArrowRight size={16} strokeWidth={1.5} />
+        </IconButton>
       </div>
 
       <button
@@ -144,28 +71,37 @@ export function TitleBar() {
       </button>
 
       <div data-tauri-drag-region className="flex min-w-0 items-center justify-end gap-3 pl-3">
-        <span data-tauri-drag-region className="flex items-center gap-1.5 text-meta text-fg-3">
-          今日
-          {demo ? (
-            <Tooltip content="デモモードでは費用はかかりません">
-              <span className="tabular text-meta text-fg-2">$0.00（デモ）</span>
-            </Tooltip>
-          ) : (
-            <Cost usd={today.costUsd} source={today.costSource} className="text-fg-2" />
-          )}
-        </span>
-        {counts.total > 0 && (
-          <Tooltip content="次の要対応へ（Ctrl J）">
+        {today && (today.usedUsd > 0 || today.limitUsd != null) && (
+          <CostPopover>
+            <button
+              type="button"
+              aria-label="今日の費用"
+              data-testid="today-cost"
+              className="flex h-7 items-center rounded-sm px-1.5 hover:bg-hover"
+            >
+              <CostMeter usedUsd={today.usedUsd} limitUsd={today.limitUsd} estimated={today.estimated} />
+            </button>
+          </CostPopover>
+        )}
+        {needsYou > 0 && (
+          <Tooltip
+            content={
+              <span className="inline-flex items-center gap-2">
+                次の出番へ <Kbd id="nextAttention" />
+              </span>
+            }
+          >
             <button
               type="button"
               onClick={() => goToAttention(rt)}
               aria-live="polite"
-              aria-label={`要対応 ${counts.total} 件`}
-              className="flex h-5 items-center gap-1 rounded-xs px-1.5 text-micro text-st-awaiting_approval"
-              style={{ background: 'color-mix(in oklch, var(--st-awaiting_approval) 14%, transparent)' }}
+              aria-label={`出番 ${needsYou}`}
+              data-testid="attention-count"
+              className="flex h-6 items-center gap-1 rounded-sm px-1.5 text-meta font-medium text-st-needs_you"
+              style={{ background: 'color-mix(in oklch, var(--st-needs_you) 14%, transparent)' }}
             >
-              要対応
-              <NumberRoll value={counts.total} />
+              <Hand size={13} strokeWidth={2} aria-hidden />
+              <NumberRoll value={needsYou} />
             </button>
           </Tooltip>
         )}

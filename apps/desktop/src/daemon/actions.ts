@@ -1,4 +1,15 @@
-import { type Approval, type ApprovalRemember, type PermissionRule, type Run, type Session, type SessionKind, isTerminalRunStatus } from '@acc/protocol';
+import {
+  type Approval,
+  type ApprovalRemember,
+  type ParamsInput,
+  type PermissionRule,
+  type Run,
+  type SendDelivery,
+  type Session,
+  type SessionKind,
+  type WorkspaceSpec,
+  isTerminalRunStatus,
+} from '@acc/protocol';
 import { toast, toastError } from '../store/toast';
 import { useUi } from '../store/ui';
 import { qk } from './keys';
@@ -85,7 +96,14 @@ export async function sendMessage(
   rt: AppRuntime,
   sessionId: string,
   text: string,
-  opts: { model?: string | null; reuseLocalId?: string } = {},
+  opts: {
+    model?: string | null;
+    reuseLocalId?: string;
+    /** Agent run in progress: stop at the next step and take this message now. */
+    interrupt?: boolean;
+    /** How the daemon handed it over (started / queued after the run / injected at a boundary). */
+    onDelivery?: (delivery: SendDelivery) => void;
+  } = {},
 ): Promise<boolean> {
   const qc = rt.queryClient;
   const key = qk.messages(sessionId);
@@ -110,15 +128,18 @@ export async function sendMessage(
       sessionId,
       content: text,
       ...(opts.model ? { model: opts.model } : {}),
+      ...(opts.interrupt ? { interrupt: true } : {}),
     });
+    const delivery = res.delivery === 'queued' ? 'queued' : 'delivered';
     qc.setQueryData<ChatMessage[]>(key, (cur) => {
       if (!cur) return cur;
       // message.created may already have replaced the optimistic copy.
       if (cur.some((m) => m.id === res.messageId)) return cur.filter((m) => m.id !== msg.id);
       return cur.map((m) =>
-        m.id === msg.id ? { ...m, id: res.messageId, runId: res.runId, local: undefined } : m,
+        m.id === msg.id ? { ...m, id: res.messageId, runId: res.runId, delivery, local: undefined } : m,
       );
     });
+    opts.onDelivery?.(res.delivery);
     return true;
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -165,7 +186,13 @@ export async function resendEdited(
 
 export async function createSession(
   rt: AppRuntime,
-  input: { projectId?: string | null; kind?: SessionKind; title?: string; model?: string | null },
+  input: {
+    projectId?: string | null;
+    kind?: SessionKind;
+    title?: string;
+    model?: string | null;
+    workspace?: WorkspaceSpec;
+  },
 ): Promise<Session | null> {
   try {
     const s = await rt.client.call('session.create', {
@@ -173,42 +200,94 @@ export async function createSession(
       ...(input.projectId ? { projectId: input.projectId } : {}),
       ...(input.title ? { title: input.title } : {}),
       ...(input.model ? { model: input.model } : {}),
+      ...(input.workspace ? { workspace: input.workspace } : {}),
     });
     upsertIn(rt.queryClient, qk.sessions, s, (a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
     rt.queryClient.setQueryData<ChatMessage[]>(qk.messages(s.id), (cur) => cur ?? []);
     return s;
   } catch (err) {
-    toastError(err, 'セッションを作成できませんでした');
+    toastError(err, '会話を作れませんでした');
     return null;
   }
 }
 
 /**
- * "このTaskを実行": start a worker for the task (worktree + agent session + run). The same
- * Control API method an orchestrator uses. Returns the worker session id.
+ * A new conversation from its first message (home input, the Ctrl+N draft): create it, give
+ * it to the AI to lead when asked (`delegate`), then send. The session is created only here,
+ * at the first send (spec §5.3). Returns the session (null when creating failed).
  */
-export async function runTask(rt: AppRuntime, taskId: string): Promise<string | null> {
-  try {
-    const r = await rt.client.call('task.spawnWorker', { taskId });
-    return r.sessionId;
-  } catch (err) {
-    toastError(err, 'Task を実行できませんでした');
-    return null;
-  }
+export async function startConversation(
+  rt: AppRuntime,
+  input: {
+    text: string;
+    projectId?: string | null;
+    /** Where it works: nothing (default), a folder, or the project's code (an agent session). */
+    workspace?: WorkspaceSpec;
+    /** Start delegated (it leads children on its own) with the daemon's defaults. */
+    delegate?: boolean;
+    model?: string | null;
+  },
+): Promise<Session | null> {
+  const workspace = input.workspace && input.workspace.kind !== 'none' ? input.workspace : undefined;
+  const s = await createSession(rt, {
+    kind: workspace ? 'agent' : 'chat',
+    projectId: input.projectId ?? null,
+    model: input.model ?? null,
+    ...(workspace ? { workspace } : {}),
+  });
+  if (!s) return null;
+  if (input.delegate) await delegateSession(rt, s.id);
+  await sendMessage(rt, s.id, input.text, { model: input.model ?? null });
+  void rt.queryClient.invalidateQueries({ queryKey: qk.home });
+  return s;
 }
 
-/**
- * "Orchestrator にする": give this chat the orchestrator preset for its project (concept
- * §3.1). Run lifetime: the next message runs as an orchestrator, then it is a chat again.
- */
-export async function makeOrchestrator(rt: AppRuntime, session: Session): Promise<boolean> {
+/** Let a session lead other agents ("任せる"), with the daemon's defaults unless given. */
+export async function delegateSession(
+  rt: AppRuntime,
+  sessionId: string,
+  opts: Omit<ParamsInput<'session.delegate'>, 'sessionId'> = {},
+): Promise<boolean> {
   try {
-    await rt.client.call('session.grantOrchestration', { sessionId: session.id, lifetime: 'run' });
-    await rt.queryClient.invalidateQueries({ queryKey: qk.grants(session.id) });
-    toast({ title: '次のメッセージは Orchestrator として実行されます', tone: 'success', sticky: false });
+    await rt.client.call('session.delegate', { sessionId, ...opts });
+    void rt.queryClient.invalidateQueries({ queryKey: qk.grants(sessionId) });
     return true;
   } catch (err) {
-    toastError(err, 'Orchestrator にできませんでした');
+    toastError(err, '任せられませんでした');
+    return false;
+  }
+}
+
+/** Take the lead back ("任せるのをやめる"). */
+export async function undelegateSession(rt: AppRuntime, sessionId: string): Promise<boolean> {
+  try {
+    await rt.client.call('session.undelegate', { sessionId });
+    void rt.queryClient.invalidateQueries({ queryKey: qk.grants(sessionId) });
+    return true;
+  } catch (err) {
+    toastError(err, '元に戻せませんでした');
+    return false;
+  }
+}
+
+/** Stop a session and (by default) everything still working under it. Resumable. */
+export async function stopTree(rt: AppRuntime, sessionId: string, tree = true): Promise<boolean> {
+  try {
+    await rt.client.call('session.stop', { sessionId, tree });
+    return true;
+  } catch (err) {
+    toastError(err, '止められませんでした');
+    return false;
+  }
+}
+
+/** Resume a stopped session (and its stopped descendants). */
+export async function resumeTree(rt: AppRuntime, sessionId: string, tree = true): Promise<boolean> {
+  try {
+    await rt.client.call('session.resume', { sessionId, tree });
+    return true;
+  } catch (err) {
+    toastError(err, '再開できませんでした');
     return false;
   }
 }
@@ -279,7 +358,7 @@ export async function archiveSession(rt: AppRuntime, session: Session): Promise<
   try {
     await rt.client.call('session.archive', { sessionId: session.id, archived: true });
     toast({
-      title: `「${session.title || 'セッション'}」をアーカイブしました`,
+      title: `「${session.title || '会話'}」をアーカイブしました`,
       tone: 'info',
       sticky: false,
       action: {

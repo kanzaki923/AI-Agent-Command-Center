@@ -35,6 +35,14 @@
   --st-queued: #8a8f98;
   --st-cancelled: var(--text-tertiary);
 
+  /* Session states (ui-redesign spec §1.1). Shape carries the meaning too, never colour alone. */
+  --st-needs_you: #f0b232;
+  --st-working: #3fa0f2;
+  --st-supervising: #a083f2;
+  --st-done: #43c17a;
+  --st-stopped: #8a8f98;
+  --st-idle: #5d616a;
+
   --shadow-1: none;
   --shadow-2: 0 8px 24px rgb(0 0 0 / 0.45);
   --shadow-3: 0 24px 64px rgb(0 0 0 / 0.6);
@@ -84,6 +92,13 @@
   --st-completed: #17804a;
   --st-queued: #6b7079;
 
+  --st-needs_you: #9a6400;
+  --st-working: #1a6fc0;
+  --st-supervising: #7650d0;
+  --st-done: #17804a;
+  --st-stopped: #6b7079;
+  --st-idle: #a2a5ac;
+
   --shadow-1: 0 1px 2px rgb(0 0 0 / 0.04);
   --shadow-2: 0 8px 24px rgb(0 0 0 / 0.1), 0 0 0 1px rgb(0 0 0 / 0.06);
   --shadow-3: 0 24px 64px rgb(0 0 0 / 0.16);
@@ -119,6 +134,12 @@
   --color-st-completed: var(--st-completed);
   --color-st-queued: var(--st-queued);
   --color-st-cancelled: var(--st-cancelled);
+  --color-st-needs_you: var(--st-needs_you);
+  --color-st-working: var(--st-working);
+  --color-st-supervising: var(--st-supervising);
+  --color-st-done: var(--st-done);
+  --color-st-stopped: var(--st-stopped);
+  --color-st-idle: var(--st-idle);
 
   --font-sans:
     'Inter Variable', 'Noto Sans JP', 'Yu Gothic UI', 'Hiragino Sans', 'Meiryo', system-ui,
@@ -480,6 +501,71 @@
 }
 :root[data-reduce-motion='on'] .acc-grant-glow,
 :root[data-reduce-motion='on'] .acc-progress {
+  animation: none;
+}
+
+/* ---------------------------------------------------------------- session states (§1) */
+
+/* working: a turning ring. Reduced motion shows the still, thick circle instead. */
+@keyframes acc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.acc-spin {
+  animation: acc-spin 1100ms linear infinite;
+}
+/* supervising: the diamond breathes slowly while children work. */
+@keyframes acc-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+.acc-breathe {
+  animation: acc-breathe 2400ms var(--ease-in-out) infinite;
+}
+/* A chip that just became needs_you: one soft amber flash, then quiet. */
+@keyframes acc-alarm-once {
+  from {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--st-needs_you) 55%, transparent);
+  }
+  to {
+    box-shadow: 0 0 0 6px color-mix(in oklch, var(--st-needs_you) 0%, transparent);
+  }
+}
+.acc-alarm-once {
+  animation: acc-alarm-once 900ms var(--ease-out) 1;
+}
+/* Pairs that swap a moving glyph for a still one when motion is reduced. */
+.acc-still-only {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-reduce-motion='off']) .acc-motion-only {
+    display: none;
+  }
+  :root:not([data-reduce-motion='off']) .acc-still-only {
+    display: inline-flex;
+  }
+  :root:not([data-reduce-motion='off']) .acc-breathe,
+  :root:not([data-reduce-motion='off']) .acc-alarm-once,
+  :root:not([data-reduce-motion='off']) .acc-spin {
+    animation: none;
+  }
+}
+:root[data-reduce-motion='on'] .acc-motion-only {
+  display: none;
+}
+:root[data-reduce-motion='on'] .acc-still-only {
+  display: inline-flex;
+}
+:root[data-reduce-motion='on'] .acc-breathe,
+:root[data-reduce-motion='on'] .acc-alarm-once,
+:root[data-reduce-motion='on'] .acc-spin {
   animation: none;
 }
 

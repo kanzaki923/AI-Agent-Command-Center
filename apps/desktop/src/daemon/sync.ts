@@ -20,6 +20,7 @@ import { type ToolLookup, describeTool, shorten } from '../lib/tools';
 import type { ActivityStore } from './activity';
 import type { DeltaStore } from './deltas';
 import type { EventLog } from './eventLog';
+import type { LiveViews } from './live';
 import type { RecentStore } from './recent';
 import { qk } from './keys';
 
@@ -341,22 +342,47 @@ export function applyEvent(qc: QueryClient, streams: Streams, event: Event): voi
       if (event.runId) streams.activity.set(event.runId, event.payload.decision);
       return;
 
-    // Session-tree redesign events: shown by the UI phase (spec 20261029 §6), ignored here.
-    case 'message.updated':
+    case 'message.updated': {
+      // A queued message was handed to a run (delivery queued -> delivered).
+      const m = event.payload.message;
+      qc.setQueryData<ChatMessage[]>(qk.messages(m.sessionId), (cur) =>
+        cur?.some((x) => x.id === m.id) ? cur.map((x) => (x.id === m.id ? m : x)) : cur,
+      );
+      return;
+    }
+
+    // The session list follows state / now / spend (the home snapshot and trees: live.ts).
+    case 'session.state_changed': {
+      const p = event.payload;
+      patchIn<Session>(qc, qk.sessions, p.sessionId, (s) => ({ ...s, state: p.to, stateSince: p.stateSince, now: p.now }));
+      return;
+    }
+    case 'session.now_changed': {
+      const p = event.payload;
+      patchIn<Session>(qc, qk.sessions, p.sessionId, (s) => (s.now === p.now ? s : { ...s, now: p.now }));
+      return;
+    }
+    case 'session.cost_updated': {
+      const p = event.payload;
+      patchIn<Session>(qc, qk.sessions, p.sessionId, (s) => ({
+        ...s,
+        cost: { ownUsd: p.ownUsd, treeUsd: p.treeUsd, source: p.source },
+      }));
+      return;
+    }
+
+    // Followed by live.ts (home snapshot, trees, outputs, schedules, cost summaries).
     case 'inbox.added':
     case 'inbox.consumed':
     case 'artifact.updated':
     case 'attention.opened':
     case 'attention.resolved':
-    case 'session.cost_updated':
     case 'budget.threshold':
     case 'cost.limit_reached':
     case 'schedule.created':
     case 'schedule.updated':
     case 'schedule.deleted':
     case 'schedule.fired':
-    case 'session.state_changed':
-    case 'session.now_changed':
       return;
     default: {
       // A new event type must be handled (or deliberately ignored) above.
@@ -398,6 +424,8 @@ export function startSync(
   schedule: (flush: () => void) => void = scheduleFrame,
   /** Sees every live event after it was applied (attention notifications). */
   observe: (e: Event) => void = () => {},
+  /** Home snapshot, session trees, outputs, schedules and costs (daemon/live.ts). */
+  live?: LiveViews,
 ): () => void {
   const interrupted = createInterruptNotifier(onInterrupted);
   // Events are applied once per frame, in order, inside one query-cache batch: a burst
@@ -412,6 +440,7 @@ export function startSync(
     notifyManager.batch(() => {
       for (const e of batch) {
         applyEvent(qc, streams, e);
+        live?.apply(e);
         interrupted(e);
       }
     });
@@ -451,6 +480,7 @@ export function startSync(
     sub?.unsubscribe();
     sub = null;
     flush();
+    live?.dispose();
   };
 }
 

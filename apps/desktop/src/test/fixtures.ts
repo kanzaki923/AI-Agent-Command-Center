@@ -1,6 +1,10 @@
 import type {
   Actor,
   Approval,
+  Attention,
+  HomeSnapshot,
+  HomeTree,
+  SessionCard,
   Event,
   EventOf,
   EventPayload,
@@ -193,4 +197,74 @@ export function event<T extends EventType>(
     payload,
     ...over,
   } as Event;
+}
+
+/** An open attention item of a session (kind `question` unless given). */
+export function attention(s: Pick<Session, 'id'> & { rootSessionId?: string }, over: Partial<Attention> = {}): Attention {
+  return {
+    id: id('att'),
+    kind: 'question',
+    status: 'open',
+    sessionId: s.id,
+    rootSessionId: s.rootSessionId ?? s.id,
+    title: '価格を FAQ に載せてよいですか？',
+    detail: null,
+    choices: [],
+    allowText: true,
+    priority: 10,
+    refs: {},
+    resolution: null,
+    createdAt: iso(T0),
+    resolvedAt: null,
+    ...over,
+  };
+}
+
+/** A session as a home / tree card. */
+export function card(over: Partial<SessionCard> = {}): SessionCard {
+  return {
+    id: id('ses'),
+    parentId: null,
+    depth: 0,
+    title: 'カード',
+    role: 'agent',
+    state: 'working',
+    stateSince: iso(T0),
+    now: null,
+    costUsd: 0,
+    budget: null,
+    outputs: [],
+    attentionIds: [],
+    startedBy: 'human',
+    scheduleId: null,
+    lastActivityAt: iso(T0),
+    ...over,
+  };
+}
+
+/** One home lane: a root card and its children. */
+export function homeTree(root: SessionCard, nodes: SessionCard[] = [], over: Partial<HomeTree> = {}): HomeTree {
+  return {
+    root,
+    nodes,
+    hiddenNodes: 0,
+    counts: { working: 0, queued: 0, needsYou: 0, failed: 0, review: 0, done: 0, stopped: 0 },
+    spend: { treeUsd: 0, limitUsd: null, estimated: false },
+    nextRunAt: null,
+    projectId: null,
+    ...over,
+  };
+}
+
+/** A home.get snapshot. */
+export function homeSnapshot(over: Partial<HomeSnapshot> = {}): HomeSnapshot {
+  return {
+    now: iso(T0),
+    lastSeq: 0,
+    totals: { working: 0, needsYou: over.attention?.length ?? 0, failed: 0, spendTodayUsd: 0, dailyLimitUsd: 20, estimated: false },
+    attention: [],
+    trees: [],
+    upcoming: [],
+    ...over,
+  };
 }
