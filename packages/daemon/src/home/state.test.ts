@@ -227,15 +227,12 @@ describe('sessionState follows events', () => {
     const { ctl } = await startHeldRun(d.ctx, s.id, 'agent', held);
     ctl.toolCalled({ toolCallId: 't1', name: 'Bash', input: { command: 'pnpm add zod' } });
     const decision = ctl.requestApproval({ kind: 'tool_use', title: 'コマンドの実行' });
-    // Before the attention module turns the approval into an item: the tool in use.
-    expect(d.ctx.repos.sessions.require(s.id)).toMatchObject({
-      state: 'working',
-      now: 'pnpm add zod を実行',
-    });
-    openAttention(d.ctx, s.id, 'approval', 'pnpm add zod を実行して依存を追加する');
+    // The attention module turns the approval into an item at once: its title is shown.
+    const item = d.ctx.repos.attention.findOne({ where: { session_id: s.id, kind: 'approval' } })!;
+    expect(item.status).toBe('open');
     expect(d.ctx.repos.sessions.require(s.id)).toMatchObject({
       state: 'needs_you',
-      now: 'pnpm add zod を実行して依存を追加…',
+      now: item.title,
     });
     const approval = d.ctx.repos.approvals.findOne({ where: { session_id: s.id } })!;
     d.ctx.service('runs').resolveApproval(approval.id, { decision: 'approved' }, HUMAN);
@@ -269,16 +266,14 @@ describe('sessionState follows events', () => {
       kind: 'agent',
       parentSessionId: root.id,
     });
-    const grant = d1.ctx
-      .service('policy')
-      .createGrant(
-        {
-          subject: { kind: 'session', sessionId: root.id },
-          permissions: ['session.get'],
-          lifetime: 'work',
-        },
-        HUMAN,
-      );
+    const grant = d1.ctx.service('policy').createGrant(
+      {
+        subject: { kind: 'session', sessionId: root.id },
+        permissions: ['session.get'],
+        lifetime: 'work',
+      },
+      HUMAN,
+    );
     insertRun(d1.ctx, { sessionId: child.id, status: 'running' });
     d1.ctx.service('sessionState').recompute(child.id);
     expect(stateOf(d1, child.id)).toBe('working');
