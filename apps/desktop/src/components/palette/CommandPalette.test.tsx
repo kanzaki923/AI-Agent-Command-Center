@@ -71,6 +71,16 @@ describe('<CommandPalette>', () => {
     expect(useUi.getState().paletteOpen).toBe(false);
   });
 
+  it('finds a conversation by its title after the # prefix', async () => {
+    const s = session({ kind: 'chat', title: '旅行の相談' });
+    mount({ 'session.list': () => ({ items: [s], nextCursor: null }), 'session.search': () => ({ items: [] }) });
+    act(() => useUi.getState().openPalette('#'));
+    const input = await screen.findByRole('combobox');
+    fireEvent.change(input, { target: { value: '#旅行' } });
+    fireEvent.click(await screen.findByRole('option', { name: /旅行の相談/ }));
+    expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: s.id });
+  });
+
   it('keeps Tab inside the palette (it is a modal)', async () => {
     mount({ 'session.list': () => ({ items: [], nextCursor: null }) });
     act(() => useUi.getState().openPalette());

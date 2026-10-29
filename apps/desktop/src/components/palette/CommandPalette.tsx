@@ -1,6 +1,6 @@
 import type { SessionSearchHit } from '@acc/protocol';
 import { useQuery } from '@tanstack/react-query';
-import { Command, useCommandState } from 'cmdk';
+import { Command, defaultFilter, useCommandState } from 'cmdk';
 import {
   Archive,
   Bell,
@@ -457,6 +457,9 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
       >
         <Command
           loop
+          // The prefix (`#` conversations, `>` commands, `?` help) chooses what to search; it
+          // is not part of what is matched.
+          filter={(value, search, keywords) => defaultFilter(value, search.replace(/^[#>?]\s*/, ''), keywords)}
           label="コマンドパレット"
           onKeyDown={(e) => {
             if (e.key === 'Escape') {
