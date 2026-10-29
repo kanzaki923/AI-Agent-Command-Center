@@ -2,9 +2,9 @@ import { ChevronRight, CircleX, FileSearch, FilePen, Globe, Hourglass, Search, S
 import { AnimatePresence, motion } from 'motion/react';
 import { type ReactNode, useState } from 'react';
 import { cn } from '../../lib/cn';
-import type { ToolCategory } from '../../lib/tools';
-import { outputText } from '../../lib/tools';
-import { type ToolCallView, formatDuration, isBlocked, summarizeTools, toolDurationMs } from '../../model/chat';
+import { TOOL_CATEGORY_LABEL, type ToolCategory, outputText } from '../../lib/tools';
+import { toolMethod } from './conversation';
+import { type ToolCallView, formatDuration, isBlocked, toolDurationMs } from '../../model/chat';
 import { DECIDER, PROFILE_INFO, type ToolDecided, deciderTooltip, describeDecision } from '../../model/permissions';
 import { Tooltip } from '../ui/Tooltip';
 
@@ -65,12 +65,63 @@ function Pane({ label, text, error }: { label: string; text: string; error?: boo
   );
 }
 
-function inputText(input: unknown): string {
+/** One value as a person reads it: strings as they are, lists and objects as indented lines. */
+function readable(value: unknown, indent = ''): string {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return String(value);
+  if (typeof value !== 'object') return '';
+  if (Array.isArray(value)) {
+    return value.map((v) => `${indent}- ${readable(v, `${indent}  `).trimStart()}`).join('\n');
+  }
+  return Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v != null && v !== '')
+    .map(([k, v]) => {
+      const text = readable(v, `${indent}  `);
+      if (typeof v === 'object') return `${indent}${k}:\n${text}`;
+      return text.includes('\n') ? `${indent}${k}:\n${text.replace(/^/gm, `${indent}  `)}` : `${indent}${k}: ${text}`;
+    })
+    .join('\n');
+}
+
+/** A tool's input without braces and quotes (a command reads as `$ command`). */
+export function inputText(input: unknown): string {
   if (input == null) return '';
   if (typeof input === 'string') return input;
   const o = input as Record<string, unknown>;
   if (typeof o.command === 'string') return `$ ${o.command}`;
-  return JSON.stringify(input, null, 2);
+  return readable(input);
+}
+
+/** A tool's output: text as it is, structured results as readable lines. */
+export function outputOf(output: unknown): string {
+  if (output && typeof output === 'object' && !Array.isArray(output) && !('text' in output)) return readable(output);
+  const text = outputText(output);
+  // JSON text (Control API results): readable lines too.
+  if (/^\s*[[{]/.test(text)) {
+    try {
+      return readable(JSON.parse(text));
+    } catch {
+      return text;
+    }
+  }
+  return text;
+}
+
+/** Group header: `2 人に依頼 · 読み取り 4 · 検索 2`. */
+export function summarizeCalls(calls: ToolCallView[]): string {
+  const parts = new Map<string, number>();
+  let spawns = 0;
+  for (const c of calls) {
+    if (toolMethod(c.name) === 'session.spawn') spawns++;
+    else {
+      const label = TOOL_CATEGORY_LABEL[c.desc.category];
+      parts.set(label, (parts.get(label) ?? 0) + 1);
+    }
+  }
+  const out = [...parts.entries()].sort((a, b) => b[1] - a[1]).map(([label, n]) => `${label} ${n}`);
+  if (spawns) out.unshift(`${spawns} 人に依頼`);
+  return out.join(' · ');
 }
 
 /** `ブロック` — the daemon stopped this use. Neutral on purpose: nothing for a human to do. */
@@ -79,23 +130,6 @@ export function BlockedChip() {
     <span className="shrink-0 rounded-xs border border-line px-1 text-micro text-fg-2" data-testid="blocked-chip">
       ブロック
     </span>
-  );
-}
-
-/**
- * How a tool use was decided, at the right end of its line (`自動で許可 · ルール`). Quiet
- * (`text-meta text-fg-3`, no colour): it is there to be found afterwards, not to be read while it runs.
- */
-function DecisionNote({ decision }: { decision: ToolDecided }) {
-  const v = describeDecision(decision);
-  if (v.tone !== 'allowed') return null;
-  const text = v.decider === 'remembered' || v.decider === 'human' ? v.label : `${v.label} · ${DECIDER[v.decider].badge}`;
-  return (
-    <Tooltip content={v.deciderTooltip}>
-      <span className="shrink-0 text-meta text-fg-3" data-testid="decision-note">
-        {text}
-      </span>
-    </Tooltip>
   );
 }
 
@@ -120,7 +154,7 @@ export function ToolLine({ call, nested = false }: { call: ToolCallView; nested?
   const [open, setOpen] = useState(false);
   const d = call.desc;
   const dur = formatDuration(toolDurationMs(call) || null);
-  const out = outputText(call.output);
+  const out = outputOf(call.output);
   const blocked = isBlocked(call);
   // A block is not the agent failing: it reads the reason and carries on.
   const failed = call.isError && !blocked;
@@ -161,7 +195,6 @@ export function ToolLine({ call, nested = false }: { call: ToolCallView; nested?
             <span className="shrink-0 text-meta text-fg-3">{DECIDER[call.decision.decidedBy].badge}</span>
           </Tooltip>
         )}
-        {!blocked && call.decision && <DecisionNote decision={call.decision} />}
         {!call.done && <span className="shrink-0 text-meta text-fg-3">実行中…</span>}
         {dur && <span className="w-10 shrink-0 text-right text-meta text-fg-3 tabular">{dur}</span>}
       </button>
@@ -201,7 +234,7 @@ export function ToolGroup({ calls }: { calls: ToolCallView[] }) {
         <span className="shrink-0 text-fg-3">
           <Wrench size={14} strokeWidth={1.5} />
         </span>
-        <span className="min-w-0 flex-1 truncate">{summarizeTools(calls)}</span>
+        <span className="min-w-0 flex-1 truncate">{summarizeCalls(calls)}</span>
         {blocked.length > 0 && (
           <span className="shrink-0 rounded-xs border border-line px-1 text-micro text-fg-2 tabular">
             ブロック {blocked.length}

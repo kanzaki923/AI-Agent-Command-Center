@@ -1,5 +1,5 @@
 import { type Run, type Session, isTerminalRunStatus } from '@acc/protocol';
-import { ArrowUp, CornerDownLeft, FileText, Pencil, Square, X } from 'lucide-react';
+import { ArrowUp, CornerDownLeft, FileText, Pencil, Square, X, Zap } from 'lucide-react';
 import { motion } from 'motion/react';
 import { type KeyboardEvent, useRef, useState } from 'react';
 import { newChat, stop } from '../../app/commands';
@@ -9,7 +9,6 @@ import { lastUnanswered, messageText } from '../../model/chat';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { cn } from '../../lib/cn';
 import { useUi } from '../../store/ui';
-import { GrantChip, OrchestratorMark } from '../grant/Grant';
 import { Kbd } from '../ui/Kbd';
 import { Tooltip } from '../ui/Tooltip';
 import { ModelPicker } from './ModelPicker';
@@ -32,11 +31,9 @@ function SuggestionChip({ text, onSend, onDismiss }: { text: string; onSend: () 
         data-testid="suggestion-chip"
         className="group flex min-w-0 items-center gap-2 rounded-full border border-line bg-surface py-1 pr-2 pl-3 text-ui text-fg-2 hover:border-[var(--focus-ring)] hover:text-fg"
       >
-        <OrchestratorMark size={11} />
         <span className="min-w-0 truncate">{text}</span>
-        <span className="flex items-center gap-1 text-meta text-fg-3 group-hover:text-fg-2">
-          <CornerDownLeft size={12} strokeWidth={1.75} />
-          送信
+        <span className="flex items-center text-fg-3 group-hover:text-fg-2">
+          <CornerDownLeft size={12} strokeWidth={1.75} aria-label="送信" />
         </span>
       </button>
       <button type="button" onClick={onDismiss} aria-label="提案を閉じる" className="flex size-6 items-center justify-center rounded-full text-fg-3 hover:text-fg-2">
@@ -71,6 +68,23 @@ export function composerKeyAction(e: KeyInfo, composing = false): 'send' | 'none
   return 'send';
 }
 
+/** How a message sent now reaches the conversation (spec §5.3). */
+export type ComposerDelivery = 'now' | 'boundary' | 'after' | 'interrupt';
+
+export function composerDelivery(kind: Session['kind'], busy: boolean, interrupt: boolean): ComposerDelivery {
+  if (!busy) return 'now';
+  // A chat (or a supervisor) takes it at its next step; nothing to choose.
+  if (kind !== 'agent') return 'boundary';
+  return interrupt ? 'interrupt' : 'after';
+}
+
+const PLACEHOLDER: Record<ComposerDelivery, string> = {
+  now: 'メッセージ',
+  boundary: '次の区切りで渡す',
+  after: '終わったら渡す',
+  interrupt: 'すぐに渡す',
+};
+
 interface Attachment {
   id: number;
   text: string;
@@ -91,7 +105,6 @@ export function Composer({
   const draft = useUi((s) => s.drafts[session.id] ?? '');
   const setDraft = useUi((s) => s.setDraft);
   const setModelPickerOpen = useUi((s) => s.setModelPickerOpen);
-  const setGrantDialog = useUi((s) => s.setGrantDialog);
   const suggestion = useUi((s) => s.suggestions[session.id] ?? null);
   const setSuggestion = useUi((s) => s.setSuggestion);
   const editing = useUi((s) => (s.editing?.sessionId === session.id ? s.editing : null));
@@ -99,11 +112,15 @@ export function Composer({
   const messages = useMessages(session.id).data;
   const settings = useSettings().data;
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // Agent at work: the next message waits for the run (default) or interrupts it (Zap).
+  const [interrupt, setInterrupt] = useState(false);
   const composing = useRef(false);
   const textarea = useRef<HTMLTextAreaElement | null>(null);
   const generating =
     !!activeRun && (activeRun.status === 'running' || activeRun.status === 'queued' || activeRun.status === 'created');
   const canStopInline = generating && activeRun?.kind === 'chat';
+  const agentBusy = generating && session.kind === 'agent';
+  const delivery = composerDelivery(session.kind, generating, interrupt);
 
   const send = () => {
     const text = draft.trim();
@@ -124,11 +141,6 @@ export function Composer({
       setModelPickerOpen(true);
       return;
     }
-    if (text === '/orchestrate' && session.kind === 'chat') {
-      setDraft(session.id, '');
-      setGrantDialog(session.id);
-      return;
-    }
     // Optimistic: clear in the same frame the message appears (§6).
     const original = editing ? messages?.find((m) => m.id === editing.messageId) : undefined;
     setDraft(session.id, '');
@@ -137,7 +149,8 @@ export function Composer({
     if (editing) setEditing(null);
     onSent();
     if (original) void resendEdited(rt, session.id, original, body);
-    else void sendMessage(rt, session.id, body);
+    else void sendMessage(rt, session.id, body, delivery === 'interrupt' ? { interrupt: true } : {});
+    setInterrupt(false);
   };
 
   /** ↑ in an empty composer: edit the last message nothing answered yet (§6). */
@@ -209,9 +222,7 @@ export function Composer({
       {editing && (
         <div className="mb-1.5 flex h-6 items-center gap-1.5 px-1 text-meta text-fg-3" data-testid="editing-banner">
           <Pencil size={12} strokeWidth={1.75} className="text-accent" />
-          <span className="text-fg-2">直前のメッセージを編集しています</span>
-          <span className="text-fg-4">·</span>
-          送信すると送り直します
+          <span className="text-fg-2">編集して送り直す</span>
           <span className="flex-1" />
           <button
             type="button"
@@ -276,18 +287,34 @@ export function Composer({
               setAttachments((list) => [...list, { id: Date.now(), text, lines }]);
             }
           }}
-          placeholder={session.kind === 'agent' ? '追加の指示を入力…' : '何でも聞いてください'}
+          placeholder={PLACEHOLDER[delivery]}
           aria-label="メッセージ"
           className="block max-h-[296px] min-h-[44px] w-full resize-none bg-transparent px-3.5 pt-3 pb-1 text-chat text-fg placeholder:text-fg-4 [field-sizing:content]"
         />
         <div className="flex h-8 items-center gap-1 px-2 pb-1">
-          <ModelPicker value={session.model} fallback={settings?.defaultModel ?? null} onChange={setModel} />
-          {session.kind === 'chat' && <GrantChip session={session} />}
+          {agentBusy && (
+            <Tooltip content={interrupt ? 'すぐに渡す（作業を中断）' : '終わったら渡す'}>
+              <button
+                type="button"
+                aria-label="割り込む"
+                aria-pressed={interrupt}
+                data-testid="interrupt-toggle"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setInterrupt((v) => !v);
+                }}
+                className={cn(
+                  'flex size-7 items-center justify-center rounded-sm transition-colors duration-[120ms]',
+                  interrupt ? 'bg-[color-mix(in_oklch,var(--st-needs_you)_18%,transparent)] text-st-needs_you' : 'text-fg-3 hover:bg-hover hover:text-fg',
+                )}
+              >
+                <Zap size={14} strokeWidth={1.75} fill={interrupt ? 'currentColor' : 'none'} />
+              </button>
+            </Tooltip>
+          )}
           <span className="flex-1" />
-          <span className="mr-1 flex items-center gap-1 text-micro text-fg-3">
-            <Kbd keys="Enter" /> 送信
-          </span>
-          {canStopInline ? (
+          <ModelPicker value={session.model} fallback={settings?.defaultModel ?? null} onChange={setModel} />
+          {canStopInline && !draft.trim() && attachments.length === 0 ? (
             <Tooltip content="生成を停止（Esc）">
               <button
                 type="button"
@@ -302,7 +329,7 @@ export function Composer({
               </button>
             </Tooltip>
           ) : (
-            <Tooltip content={connected ? '送信（Enter）' : 'Core Daemon に接続していません'}>
+            <Tooltip content={connected ? '送信（Enter）' : '接続していません'}>
               <span className="inline-flex">
                 <button
                   type="button"

@@ -3,9 +3,69 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
-import { session } from '../../test/fixtures';
+import { run, session } from '../../test/fixtures';
 import { TooltipProvider } from '../ui/Tooltip';
-import { Composer, composerKeyAction } from './Composer';
+import { Composer, composerDelivery, composerKeyAction } from './Composer';
+
+describe('composerDelivery', () => {
+  it('sends now when idle; while busy a chat takes it at its next step, an agent after its run or at once', () => {
+    expect(composerDelivery('chat', false, false)).toBe('now');
+    expect(composerDelivery('chat', true, true)).toBe('boundary');
+    expect(composerDelivery('agent', true, false)).toBe('after');
+    expect(composerDelivery('agent', true, true)).toBe('interrupt');
+  });
+});
+
+describe('<Composer> while an agent works', () => {
+  beforeEach(() => useUi.setState({ drafts: {} }));
+
+  it('queues by default and interrupts with the Zap toggle', async () => {
+    const s = session({ kind: 'agent', title: '調査' });
+    const r = run(s, { status: 'running' });
+    const fake = createFakeClient({
+      'session.send': () => ({ messageId: 'msg_00000000000000000000000009', runId: null, delivery: 'queued' }),
+    });
+    render(
+      <RuntimeProvider runtime={createRuntime(fake.client)}>
+        <TooltipProvider>
+          <Composer session={s} activeRun={r} onSent={() => {}} />
+        </TooltipProvider>
+      </RuntimeProvider>,
+    );
+    const input = screen.getByRole('textbox', { name: 'メッセージ' });
+    expect(input).toHaveAttribute('placeholder', '終わったら渡す');
+    fireEvent.change(input, { target: { value: '表に出典も' } });
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 'Enter' });
+    });
+    const toggle = screen.getByRole('button', { name: '割り込む' });
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(toggle);
+    expect(input).toHaveAttribute('placeholder', 'すぐに渡す');
+    fireEvent.change(input, { target: { value: '今すぐ止めて' } });
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 'Enter' });
+    });
+    const sends = fake.calls.filter((c) => c.method === 'session.send').map((c) => c.params);
+    expect(sends[0]).not.toHaveProperty('interrupt');
+    expect(sends[1]).toMatchObject({ content: '今すぐ止めて', interrupt: true });
+    // One message at a time: the toggle goes back off after sending.
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('has no toggle for a chat (it takes the message at its next step)', () => {
+    const s = session({ kind: 'chat' });
+    render(
+      <RuntimeProvider runtime={createRuntime(createFakeClient().client)}>
+        <TooltipProvider>
+          <Composer session={s} activeRun={run(s, { kind: 'chat', status: 'running' })} onSent={() => {}} />
+        </TooltipProvider>
+      </RuntimeProvider>,
+    );
+    expect(screen.queryByRole('button', { name: '割り込む' })).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'メッセージ' })).toHaveAttribute('placeholder', '次の区切りで渡す');
+  });
+});
 
 const key = (over: Partial<Parameters<typeof composerKeyAction>[0]> = {}) => ({
   key: 'Enter',
