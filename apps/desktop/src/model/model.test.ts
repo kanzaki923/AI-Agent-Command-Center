@@ -79,7 +79,7 @@ describe('tools', () => {
     expect(describeTool('Bash', { command: 'pnpm test' }).activity).toBe('pnpm test を実行中');
     expect(describeTool('Read', { file_path: 'C:\\repo\\src\\auth\\session.ts' }).label).toBe('src/auth/session.ts を読み取り');
     expect(describeTool('Grep', { pattern: 'session' }).activity).toBe('「session」を検索中');
-    expect(describeTool('task.wait', {}).activity).toBe('Worker の完了を待機中');
+    expect(describeTool('task.wait', {}).activity).toBe('終わるのを待つ');
     const edit = describeTool('Edit', { file_path: '/r/src/a.ts', old_string: 'a\nb', new_string: 'a\nb\nc' });
     expect([edit.additions, edit.deletions]).toEqual([3, 2]);
   });

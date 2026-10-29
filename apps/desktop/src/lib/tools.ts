@@ -49,9 +49,9 @@ export function displayPath(p: string): string {
 }
 
 /**
- * The Control API method behind a tool name, if any. Orchestrator tools carry the method
- * name (`task.create`), LLM tool names replace the dot (`task__create`) and the Claude
- * runtime prefixes its MCP server (`mcp__acc__task__create`).
+ * The Control API method behind a tool name, if any: `session.spawn`, the tool-loop form
+ * `session__spawn`, the Claude MCP form `mcp__acc__session__spawn` and the runtime's
+ * single-underscore `mcp__acc__session_spawn`.
  */
 export function controlMethod(name: string): string | null {
   let n = name;
@@ -60,9 +60,67 @@ export function controlMethod(name: string): string | null {
     const i = rest.indexOf('__');
     n = i === -1 ? rest : rest.slice(i + 2);
   }
-  n = n.replaceAll('__', '.');
+  const dotted = n.replaceAll('__', '.');
   // Methods a newer daemon may add (not in this build's contract yet).
-  return isMethodName(n) || n === 'task.retry' ? n : null;
+  if (isMethodName(dotted) || dotted === 'task.retry') return dotted;
+  const first = n.replace('_', '.');
+  return isMethodName(first) ? first : null;
+}
+
+/**
+ * Calls of the session tree in the screen's words, the same as a chip's `now` (ui-redesign
+ * spec §5.2, §8): `「FAQ」に依頼`, `質問「…」`, `「…」を提出`, `状況を確認`. Null when the call
+ * is not one of them (files, commands, or a call with its own phrase below).
+ */
+export function describeControlCall(
+  name: string,
+  input: unknown,
+  titleOf: (sessionId: string) => string | undefined = () => undefined,
+): string | null {
+  const method = controlMethod(name);
+  if (!method) return null;
+  const o = asInput(input);
+  const s = (k: string) => str(o, k);
+  const q = (v: string | null, max = 32) => (v ? `「${shorten(v, max)}」` : '');
+  const sid = s('sessionId');
+  const target = sid ? titleOf(sid) : undefined;
+  switch (method) {
+    case 'session.spawn':
+      return `${q(s('title')) || '1 人'}に依頼`;
+    case 'human.ask':
+      return `質問${q(s('question'), 40)}`;
+    case 'artifact.publish':
+      return `${q(s('title')) || '成果物'}を提出`;
+    case 'session.send':
+      return target ? `「${shorten(target, 32)}」に伝える` : '伝える';
+    case 'session.stop':
+      return target ? `「${shorten(target, 32)}」を止める` : '止める';
+    case 'session.resume':
+      return target ? `「${shorten(target, 32)}」を再開` : '再開';
+    case 'attention.respond':
+      return '質問に回答';
+    case 'artifact.review':
+      return s('decision') === 'accept' ? '成果物を採用' : 'やり直しを依頼';
+    case 'artifact.read':
+    case 'artifact.get':
+    case 'artifact.list':
+      return '成果物を確認';
+    case 'schedule.create':
+    case 'schedule.update':
+      return '繰り返しを設定';
+    case 'schedule.delete':
+      return '繰り返しをやめる';
+    case 'cost.summary':
+    case 'budget.get':
+      return '費用を確認';
+    case 'task.wait':
+    case 'integration.wait':
+      return '終わるのを待つ';
+    default:
+      // Reading the state of the tree, its sessions, runs...: one phrase for all.
+      if (/\.(get|list|tree|messages|summary)$/.test(method) || method === 'home.get') return '状況を確認';
+      return null;
+  }
 }
 
 export function toolCategory(name: string): ToolCategory {
@@ -98,9 +156,10 @@ export interface ToolDescription {
   deletions: number | null;
 }
 
-/** Names the UI already knows (task titles), so a call reads `Worker を起動: 「…」`. */
+/** Names the UI already knows, so a call reads `エージェントを起動: 「…」` / `「FAQ」に伝える`. */
 export interface ToolLookup {
   taskTitle?: (taskId: string) => string | undefined;
+  sessionTitle?: (sessionId: string) => string | undefined;
 }
 
 interface Phrase {
@@ -114,8 +173,9 @@ function quoted(s: string | null | undefined, max = 40): string {
 }
 
 /**
- * Control API calls in words: `Task を作成: 「認証のテスト」`, `Worker を起動: 「…」`.
- * The verb comes first so a column of calls scans by what happened.
+ * The older Control API calls in words: `作業を作成: 「認証のテスト」`, `エージェントを起動: 「…」`.
+ * No Task / Worker / Run / 統合 (ui-redesign spec §0.3). The verb comes first so a column of
+ * calls scans by what happened.
  */
 function describeControl(method: string, input: Input, lookup: ToolLookup | undefined): Phrase {
   const title = str(input, 'title');
@@ -125,63 +185,60 @@ function describeControl(method: string, input: Input, lookup: ToolLookup | unde
   const ids = Array.isArray(input.taskIds) ? input.taskIds.length : 0;
   switch (method) {
     case 'task.create':
-      return { label: `Task を作成${on(quoted(title))}`, activity: `Task を作成中${on(quoted(title))}` };
+      return { label: `作業を作成${on(quoted(title))}`, activity: `作業を作成中${on(quoted(title))}` };
     case 'task.update': {
       const status = str(input, 'status');
       const to =
         status && status in TASK_STATUS_LABEL
           ? ` → ${TASK_STATUS_LABEL[status as keyof typeof TASK_STATUS_LABEL]}`
           : '';
-      return phrase(`Task を更新${on(taskName)}${to}`);
+      return phrase(`作業を更新${on(taskName)}${to}`);
     }
     case 'task.spawnWorker':
-      return { label: `Worker を起動${on(taskName)}`, activity: `Worker を起動中${on(taskName)}` };
+      return { label: `エージェントを起動${on(taskName)}`, activity: `エージェントを起動中${on(taskName)}` };
     case 'task.cancel':
-      return phrase(`Task を中止${on(taskName)}`);
+      return phrase(`作業を中止${on(taskName)}`);
     case 'task.retry':
-      return phrase(`Worker に差し戻し${on(taskName)}`);
+      return phrase(`やり直しを依頼${on(taskName)}`);
     case 'task.wait':
-      return {
-        label: `Worker の完了を待機${ids > 1 ? `（${ids} 件）` : ''}`,
-        activity: 'Worker の完了を待機中',
-      };
+      return phrase(`終わるのを待つ${ids > 1 ? `（${ids} 件）` : ''}`, '終わるのを待つ');
     case 'task.list':
     case 'task.get':
-      return phrase('Task の状態を確認');
+      return phrase('状況を確認', '状況を確認');
     case 'integration.create':
-      return phrase(`統合候補を作成${ids ? `（${ids} 件の Task）` : ''}`);
+      return phrase(`反映の準備${ids ? `（${ids} 件）` : ''}`);
     case 'integration.run':
-      return { label: '統合を実行（マージとテスト）', activity: '統合を実行中（マージとテスト）' };
+      return { label: '反映（取り込みとテスト）', activity: '反映中（取り込みとテスト）' };
     case 'integration.wait':
-      return { label: '統合の完了を待機', activity: '統合の完了を待機中' };
+      return phrase('終わるのを待つ', '終わるのを待つ');
     case 'integration.get':
     case 'integration.list':
-      return phrase('統合の状態を確認');
+      return phrase('状況を確認', '状況を確認');
     case 'orchestrator.recordDecision':
       return phrase(`判断を記録${on(quoted(str(input, 'decision'), 48))}`);
     case 'session.create':
-      return phrase(`セッションを作成${on(quoted(title))}`);
+      return phrase(`会話を作成${on(quoted(title))}`);
     case 'session.send':
       return phrase(`メッセージを送信${on(quoted(typeof input.content === 'string' ? input.content : null))}`);
     case 'session.messages':
       return phrase('会話を読み取り');
     case 'session.list':
     case 'session.get':
-      return phrase('セッションを確認');
+      return phrase('状況を確認', '状況を確認');
     case 'run.get':
     case 'run.list':
-      return phrase('Run の状態を確認');
+      return phrase('状況を確認', '状況を確認');
     case 'run.cancel':
-      return phrase('Run を停止');
+      return phrase('止める', '止める');
     case 'run.retry':
-      return phrase('Run を再試行');
+      return phrase('やり直す', 'やり直す');
     case 'grant.create':
     case 'session.grantOrchestration':
-      return phrase('権限を付与');
+      return phrase('任せる', '任せる');
     case 'grant.revoke':
-      return phrase('権限を取り消し');
+      return phrase('任せるのをやめる', '任せるのをやめる');
     case 'grant.list':
-      return phrase('権限を確認');
+      return phrase('状況を確認', '状況を確認');
     case 'budget.allocate':
       return phrase(
         `予算を配分${typeof input.limitUsd === 'number' ? ` $${input.limitUsd.toFixed(2)}` : ''}`,
@@ -189,12 +246,12 @@ function describeControl(method: string, input: Input, lookup: ToolLookup | unde
     case 'budget.get':
       return phrase('予算を確認');
     case 'workspace.create':
-      return phrase('worktree を作成');
+      return phrase('作業場所を作成');
     case 'workspace.diff':
       return phrase('差分を確認');
     case 'workspace.list':
     case 'workspace.get':
-      return phrase('worktree を確認');
+      return phrase('作業場所を確認');
     case 'artifact.list':
     case 'artifact.get':
       return phrase('成果物を確認');
@@ -202,7 +259,7 @@ function describeControl(method: string, input: Input, lookup: ToolLookup | unde
     case 'project.get':
       return phrase('プロジェクトを確認');
     case 'approval.list':
-      return phrase('承認待ちを確認');
+      return phrase('状況を確認', '状況を確認');
     case 'approval.respond':
       return phrase('承認に回答');
     case 'events.list':
@@ -210,7 +267,7 @@ function describeControl(method: string, input: Input, lookup: ToolLookup | unde
     case 'models.list':
       return phrase('モデルを確認');
     default:
-      return phrase(`${method} を呼び出し`);
+      return phrase('アプリを操作');
   }
 }
 
@@ -245,8 +302,9 @@ export function describeTool(
   const category = toolCategory(name);
   const method = controlMethod(name);
   if (method) {
-    const p = describeControl(method, input, lookup);
-    return { category, ...p, target: method, additions: null, deletions: null };
+    const tree = describeControlCall(name, input, lookup?.sessionTitle);
+    const p = tree ? { label: tree, activity: tree } : describeControl(method, input, lookup);
+    return { category, ...p, target: null, additions: null, deletions: null };
   }
   const path = str(input, 'file_path', 'path', 'filePath', 'notebook_path', 'file');
   const base = { category, additions: null, deletions: null } as const;
@@ -291,12 +349,7 @@ export function describeTool(
       return { ...base, label: `${t} にアクセス`, activity: `${t} にアクセス中`, target: url };
     }
     case 'wait':
-      return {
-        ...base,
-        label: 'Worker の完了を待機',
-        activity: 'Worker の完了を待機中',
-        target: null,
-      };
+      return { ...base, label: '終わるのを待つ', activity: '終わるのを待つ', target: null };
     case 'control': {
       const title = str(input, 'title', 'name');
       const t = title ? `${name}（${shorten(title, 32)}）` : name;

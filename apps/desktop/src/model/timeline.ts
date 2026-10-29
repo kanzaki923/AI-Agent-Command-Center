@@ -12,7 +12,7 @@ import type {
 } from '@acc/protocol';
 import { outputKind } from '../daemon/outputs';
 import { sessionTitle } from '../lib/states';
-import { controlMethod, describeTool, outputText, shorten } from '../lib/tools';
+import { describeTool, outputText, shorten } from '../lib/tools';
 
 /**
  * The timeline (ui-redesign spec §8): what happened, told as the moments a human cares about
@@ -200,35 +200,11 @@ export function runState(run: Run | null): SessionState {
 }
 
 /**
- * A tool use as a noun phrase. The tools of the session tree are named here (spawn, ask,
- * publish, send) so no method name reaches the screen; the rest is the shared wording.
+ * A tool use as a noun phrase, in the same words as the chat and a chip's `now`
+ * (lib/tools.ts): no method name reaches the screen.
  */
 export function stepPhrase(name: string, rawInput: unknown): string {
-  const input = (rawInput && typeof rawInput === 'object' ? rawInput : {}) as Record<string, unknown>;
-  const str = (k: string) => (typeof input[k] === 'string' ? input[k] : null);
-  const method = controlMethod(name) ?? name.replace(/^mcp__[^_]+__/, '').replaceAll('__', '.').replaceAll('_', '.');
-  switch (method) {
-    case 'session.spawn':
-      return str('title') ? `「${shorten(str('title')!, 40)}」に依頼` : '子に依頼';
-    case 'human.ask':
-      return str('question') ? `質問: ${shorten(str('question')!, 60)}` : '質問';
-    case 'artifact.publish':
-      return str('title') ? `成果物「${shorten(str('title')!, 40)}」を残す` : '成果物を残す';
-    case 'session.send':
-      return str('content') ? `指示: ${shorten(str('content')!, 60)}` : '指示';
-    case 'session.stop':
-      return '停止';
-    case 'session.resume':
-      return '再開';
-    case 'artifact.review':
-      return str('decision') === 'redo' ? 'やり直しを依頼' : '採用';
-    case 'schedule.create':
-      return '繰り返しを設定';
-    case 'attention.respond':
-      return '質問に回答';
-    default:
-      return describeTool(name, rawInput).label;
-  }
+  return describeTool(name, rawInput).label;
 }
 
 const INBOX_TEXT: Record<string, string> = {

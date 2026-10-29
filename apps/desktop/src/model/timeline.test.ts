@@ -230,9 +230,9 @@ describe('timeline details', () => {
 
 describe('timeline helpers', () => {
   it('never shows a method name for the tree’s own tools', () => {
-    expect(stepPhrase('mcp__acc__artifact_publish', { title: '今日のまとめ' })).toBe('成果物「今日のまとめ」を残す');
-    expect(stepPhrase('human.ask', { question: '価格は？' })).toBe('質問: 価格は？');
-    expect(stepPhrase('session.spawn', {})).toBe('子に依頼');
+    expect(stepPhrase('mcp__acc__artifact_publish', { title: '今日のまとめ' })).toBe('「今日のまとめ」を提出');
+    expect(stepPhrase('human.ask', { question: '価格は？' })).toBe('質問「価格は？」');
+    expect(stepPhrase('session.spawn', {})).toBe('1 人に依頼');
     expect(stepPhrase('mcp__acc__session_spawn', { title: 'FAQ' })).toBe('「FAQ」に依頼');
     expect(stepPhrase('Write', { file_path: '/w/notes/faq.md' })).toContain('faq.md');
   });

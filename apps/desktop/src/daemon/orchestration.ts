@@ -418,7 +418,7 @@ export async function startIntegration(
     upsertIn(rt.queryClient, qk.integrations, running);
     return running;
   } catch (err) {
-    toastError(err, '統合を開始できませんでした');
+    toastError(err, '反映を始められませんでした');
     return null;
   }
 }
@@ -435,7 +435,7 @@ export async function rerunIntegration(rt: AppRuntime, integ: Integration): Prom
     upsertIn(qc, qk.integrations, next);
   } catch (err) {
     upsertIn(qc, qk.integrations, integ);
-    toastError(err, '統合を再実行できませんでした');
+    toastError(err, 'もう一度反映できませんでした');
   }
 }
 
@@ -471,7 +471,7 @@ export async function resolveWithAgent(
   } catch (err) {
     upsertIn(qc, qk.integrations, integ);
     qc.setQueryData(['integration.get', integ.id], integ);
-    toastError(err, 'Integrator に任せられませんでした');
+    toastError(err, '解消を任せられませんでした');
     return null;
   }
 }
@@ -543,7 +543,7 @@ export async function rejectIntegration(
     return true;
   } catch (err) {
     upsertIn(qc, qk.integrations, integ);
-    toastError(err, '却下できませんでした');
+    toastError(err, 'やめられませんでした');
     return false;
   }
 }

@@ -1,9 +1,9 @@
-import { type Approval, type Attention, type Run, type SessionBrief, type WakeItemView, isMethodName } from '@acc/protocol';
+import { type Approval, type Attention, type Run, type SessionBrief, type WakeItemView } from '@acc/protocol';
 import type { StreamingMessage } from '../../daemon/deltas';
 import type { ChatMessage } from '../../daemon/sync';
 import { type ChatBlock, type ToolCallView, buildChatBlocks } from '../../model/chat';
 import type { ToolDecided } from '../../model/permissions';
-import { controlMethod, shorten } from '../../lib/tools';
+import { controlMethod, describeControlCall } from '../../lib/tools';
 
 /**
  * What the conversation screen shows (ui-redesign spec §5.2), built on the chat blocks of
@@ -27,75 +27,8 @@ export function stripMachineBlocks(text: string): string {
     .trim();
 }
 
-/**
- * The Control API method behind a tool name: `session.spawn`, `session__spawn`,
- * `mcp__acc__session__spawn`, and the runtime's single-underscore `mcp__acc__session_spawn`.
- */
-export function toolMethod(name: string): string | null {
-  const known = controlMethod(name);
-  if (known) return known;
-  let bare = name;
-  if (bare.startsWith('mcp__')) {
-    const rest = bare.slice(5);
-    const i = rest.indexOf('__');
-    bare = i === -1 ? rest : rest.slice(i + 2);
-  }
-  const dotted = bare.replaceAll('__', '.');
-  if (isMethodName(dotted)) return dotted;
-  const first = bare.replace('_', '.');
-  return isMethodName(first) ? first : null;
-}
-
-/** Control API calls in the screen's words (the same as a chip's `now`): no Task / Run / Worker. */
-export function describeControlCall(
-  name: string,
-  input: unknown,
-  titleOf: (sessionId: string) => string | undefined = () => undefined,
-): string | null {
-  const method = toolMethod(name);
-  if (!method) return null;
-  const o = input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
-  const s = (k: string) => (typeof o[k] === 'string' && (o[k]).trim() ? (o[k]).trim() : null);
-  const q = (v: string | null, max = 32) => (v ? `「${shorten(v, max)}」` : '');
-  const target = s('sessionId') ? titleOf(s('sessionId')!) : undefined;
-  switch (method) {
-    case 'session.spawn':
-      return `${q(s('title')) || '1 人'}に依頼`;
-    case 'human.ask':
-      return `質問${q(s('question'), 40)}`;
-    case 'artifact.publish':
-      return `${q(s('title')) || '成果物'}を提出`;
-    case 'session.send':
-      return target ? `「${shorten(target, 32)}」に伝える` : '伝える';
-    case 'session.stop':
-      return target ? `「${shorten(target, 32)}」を止める` : '止める';
-    case 'session.resume':
-      return target ? `「${shorten(target, 32)}」を再開` : '再開';
-    case 'attention.respond':
-      return '質問に回答';
-    case 'artifact.review':
-      return s('decision') === 'accept' ? '成果物を採用' : 'やり直しを依頼';
-    case 'artifact.read':
-    case 'artifact.get':
-    case 'artifact.list':
-      return '成果物を確認';
-    case 'schedule.create':
-    case 'schedule.update':
-      return '繰り返しを設定';
-    case 'schedule.delete':
-      return '繰り返しをやめる';
-    case 'cost.summary':
-    case 'budget.get':
-      return '費用を確認';
-    case 'task.wait':
-    case 'integration.wait':
-      return '終わるのを待つ';
-    default:
-      // Reading the state of the tree, its sessions, runs, tasks...: one phrase for all.
-      if (/\.(get|list|tree|messages|summary)$/.test(method) || method === 'home.get') return '状況を確認';
-      return null;
-  }
-}
+/** The shared wording lives in lib/tools.ts (chat, activity line and timeline say the same). */
+export { controlMethod as toolMethod, describeControlCall };
 
 /** Tool calls with the screen's phrases (identity kept when nothing changes). */
 function rephrase(calls: ToolCallView[], titleOf: (id: string) => string | undefined): ToolCallView[] {

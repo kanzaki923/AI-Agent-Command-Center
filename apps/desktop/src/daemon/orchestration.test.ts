@@ -328,5 +328,21 @@ describe('integration decisions', () => {
     expect(fake.calls[0]!.params).toEqual({ integrationId: i.id, note: 'テストが足りない' });
     rt.dispose();
   });
+
+  it('says what failed in the screen’s words (no 統合 / Integrator / 却下)', async () => {
+    const i = ready();
+    const fake = createFakeClient({
+      'integration.reject': () => {
+        throw new AccClientError('conflict', 'もう反映されています');
+      },
+    });
+    const rt = createRuntime(fake.client);
+    rt.queryClient.setQueryData<Integration[]>(qk.integrations, [i]);
+    expect(await rejectIntegration(rt, i)).toBe(false);
+    const title = useToasts.getState().toasts[0]?.title ?? '';
+    expect(title).toContain('やめられませんでした');
+    expect(title).not.toMatch(/統合|Integrator|却下/);
+    rt.dispose();
+  });
 });
 
