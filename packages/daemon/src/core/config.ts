@@ -1,7 +1,13 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { DEFAULT_PORT, type PermissionProfile, Settings, type SettingsView } from '@acc/protocol';
+import {
+  type AutoModeJudge,
+  DEFAULT_PORT,
+  type PermissionProfile,
+  Settings,
+  type SettingsView,
+} from '@acc/protocol';
 import { z } from 'zod';
 
 export interface DaemonPaths {
@@ -55,7 +61,12 @@ export type SettingsPatch = {
   llmCallReserveUsd?: number | undefined;
   defaultPermissionProfile?: PermissionProfile | undefined;
   autoMode?:
-    { enabled?: boolean | undefined; classifierModel?: string | null | undefined } | undefined;
+    | {
+        enabled?: boolean | undefined;
+        judge?: AutoModeJudge | undefined;
+        classifierModel?: string | null | undefined;
+      }
+    | undefined;
 };
 
 /**
@@ -158,6 +169,9 @@ export class SettingsStore {
       set('autoMode.enabled', next.autoMode.enabled, a.enabled, () => {
         next.autoMode.enabled = a.enabled!;
       });
+      set('autoMode.judge', next.autoMode.judge, a.judge, () => {
+        next.autoMode.judge = a.judge!;
+      });
       set('autoMode.classifierModel', next.autoMode.classifierModel, a.classifierModel, () => {
         next.autoMode.classifierModel = a.classifierModel ?? null;
       });
@@ -191,7 +205,11 @@ export function toSettingsView(s: Settings): SettingsView {
     autoResumeOrchestrators: s.autoResumeOrchestrators,
     llmCallReserveUsd: s.llmCallReserveUsd,
     defaultPermissionProfile: s.defaultPermissionProfile,
-    autoMode: { enabled: s.autoMode.enabled, classifierModel: s.autoMode.classifierModel },
+    autoMode: {
+      enabled: s.autoMode.enabled,
+      judge: s.autoMode.judge,
+      classifierModel: s.autoMode.classifierModel,
+    },
   };
 }
 

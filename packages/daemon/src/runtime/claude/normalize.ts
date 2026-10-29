@@ -92,6 +92,20 @@ function toolResultOutput(content: unknown): unknown {
   return content ?? null;
 }
 
+/**
+ * The auto mode classifier could not answer (its model is not served, an error, garbage): a
+ * refusal for want of a verdict, not a judgement. Wordings seen from CLI 2.1.312: "could not
+ * evaluate this action" (unparsable answer), "<model> is temporarily unavailable, so auto mode
+ * cannot determine the safety of <tool>" with decision_reason "Classifier unavailable" (the
+ * classifier request failed), "Classifier unavailable - blocking for safety" (server review).
+ */
+function isClassifierUnavailable(message: string, reason: string | null | undefined): boolean {
+  return (
+    /could not evaluate|cannot determine the safety/i.test(message) ||
+    /^classifier unavailable/i.test(reason ?? '')
+  );
+}
+
 /** The classifier's reason without the CLI's boilerplate around it. */
 function classifierReason(text: string): string | null {
   const m = /Reason:\s*([^\n]+)/.exec(text);
@@ -106,6 +120,12 @@ export interface NormalizerOptions {
    * the Control API and not say so.
    */
   expectedTools?: readonly string[];
+  /**
+   * The CLI was started with the server-side auto mode review (no CLAUDE_CODE_AUTO_MODE_SERVER=0).
+   * Classifier decisions then name their judge from `safeguard_results`; without it every
+   * classifier decision is the CLI's own classifier.
+   */
+  serverJudge?: boolean;
 }
 
 export class ClaudeMessageNormalizer {
@@ -127,11 +147,18 @@ export class ClaudeMessageNormalizer {
    * startup-error results may carry zeroed usage).
    */
   baselineTotals: UsageTotals | null = null;
+  /**
+   * The server review was requested but the CLI left it for its own classifier (the upstream
+   * answered `unsupported`, or returned no `safeguard_results`): judged locally from now on.
+   */
+  serverJudgeLost = false;
 
   private pending: { id: string; parts: ContentPart[] } | null = null;
   private readonly toolNames = new Map<string, string>();
   private lastAssistantError: string | null = null;
   private totals: UsageTotals;
+  /** Tool uses the server review evaluated (`safeguard_results`, undocumented). */
+  private readonly serverEvaluated = new Set<string>();
 
   constructor(
     private readonly cwd: string,
@@ -164,9 +191,13 @@ export class ClaudeMessageNormalizer {
       case 'system':
         out.push(...this.onSystem(msg));
         break;
-      case 'stream_event':
-        if (!isSubagent) out.push(...this.onStreamEvent(asRecord(msg.event)));
+      case 'stream_event': {
+        const event = asRecord(msg.event);
+        // Sub-agent tool uses are judged too: read their verdicts as well.
+        this.onSafeguardResults(event);
+        if (!isSubagent) out.push(...this.onStreamEvent(event));
         break;
+      }
       case 'assistant':
         out.push(...this.onAssistant(msg, isSubagent));
         break;
@@ -215,17 +246,31 @@ export class ClaudeMessageNormalizer {
         if (!toolCallId || !toolName) return [];
         const kind = asString(msg.decision_reason_type);
         const message = asString(msg.message) ?? '';
+        const reason = asString(msg.decision_reason);
+        const source = kind === 'classifier' ? 'classifier' : kind === 'hook' ? 'hook' : 'runtime';
+        const judge = source === 'classifier' ? this.judgeOf(toolCallId) : undefined;
         return [
           {
             type: 'tool_decision',
             toolCallId,
             toolName,
             decision: 'denied',
-            source: kind === 'classifier' ? 'classifier' : kind === 'hook' ? 'hook' : 'runtime',
-            reason: classifierReason(asString(msg.decision_reason) ?? message),
-            classifierUnavailable: /could not evaluate/i.test(message),
+            source,
+            reason: classifierReason(reason ?? message),
+            classifierUnavailable: isClassifierUnavailable(message, reason),
+            ...(judge ? { judge } : {}),
           },
         ];
+      }
+      case 'informational': {
+        // The CLI's notice that the gateway does not support the server review, so its own
+        // classifier requests are billed (CLI 2.1.312). Wording may change: the
+        // `safeguard_results` statuses are the other signal.
+        const content = asString(msg.content) ?? '';
+        if (this.opts.serverJudge && /classifier requests/i.test(content) && /billed/i.test(content)) {
+          this.serverJudgeLost = true;
+        }
+        return [];
       }
       case 'api_retry': {
         const error = asString(msg.error);
@@ -246,6 +291,38 @@ export class ClaudeMessageNormalizer {
       default:
         return [];
     }
+  }
+
+  /**
+   * `message_delta.delta.safeguard_results` (undocumented; as the bundled CLI 2.1.312 parses it):
+   * `[{type: 'dangerous_tool_use', status: {type: 'available', tool_uses: {<id>: {type:
+   * 'evaluated', outcome}}} | {type: 'unsupported'} | {type: 'unavailable', reason}}]`.
+   */
+  private onSafeguardResults(event: Record<string, unknown> | undefined): void {
+    if (!this.opts.serverJudge || event?.type !== 'message_delta') return;
+    const results = asRecord(event.delta)?.safeguard_results;
+    if (!Array.isArray(results)) return;
+    for (const raw of results) {
+      const r = asRecord(raw);
+      if (r?.type !== 'dangerous_tool_use') continue;
+      const status = asRecord(r.status);
+      const type = asString(status?.type);
+      // The CLI classifies locally for the rest of the session (unavailable: "disabled").
+      if (type === 'unsupported' || (type === 'unavailable' && status?.reason === 'disabled')) {
+        this.serverJudgeLost = true;
+      }
+      const uses = type === 'available' ? asRecord(status?.tool_uses) : undefined;
+      for (const [id, v] of Object.entries(uses ?? {})) {
+        if (asRecord(v)?.type === 'evaluated') this.serverEvaluated.add(id);
+      }
+    }
+  }
+
+  /** Who judged a classifier decision: the server review, the CLI's classifier, or unknown. */
+  private judgeOf(toolCallId: string): 'server' | 'client' | undefined {
+    if (this.serverEvaluated.has(toolCallId)) return 'server';
+    if (!this.opts.serverJudge || this.serverJudgeLost) return 'client';
+    return undefined;
   }
 
   private checkTools(init: Record<string, unknown>): void {
@@ -349,6 +426,7 @@ export class ClaudeMessageNormalizer {
         if (!d || !toolCallId) continue;
         const reasonType = asString(d.reason_type);
         const source = asString(d.source);
+        const judge = reasonType === 'classifier' ? this.judgeOf(toolCallId) : undefined;
         out.push({
           type: 'tool_decision',
           toolCallId,
@@ -362,6 +440,11 @@ export class ClaudeMessageNormalizer {
                 : source === 'user_temporary'
                   ? 'human'
                   : 'runtime',
+          ...(judge ? { judge } : {}),
+          // "automode-unavailable": refused because the classifier could not answer.
+          ...(m?.non_execution_kind === 'automode-unavailable'
+            ? { classifierUnavailable: true }
+            : {}),
         });
       }
     }

@@ -25,6 +25,7 @@ import {
   ApprovalStatus,
   Artifact,
   ArtifactKind,
+  AutoModeJudge,
   BudgetAllocation,
   BudgetSubject,
   CapabilityGrant,
@@ -316,6 +317,7 @@ export const api = defineApi({
       defaultPermissionProfile: PermissionProfile.optional(),
       autoMode: params({
         enabled: z.boolean().optional(),
+        judge: AutoModeJudge.optional(),
         classifierModel: z
           .string()
           .min(1)

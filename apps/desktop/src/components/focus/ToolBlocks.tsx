@@ -5,7 +5,7 @@ import { cn } from '../../lib/cn';
 import type { ToolCategory } from '../../lib/tools';
 import { outputText } from '../../lib/tools';
 import { type ToolCallView, formatDuration, isBlocked, summarizeTools, toolDurationMs } from '../../model/chat';
-import { DECIDER, PROFILE_INFO, type ToolDecided, describeDecision } from '../../model/permissions';
+import { DECIDER, PROFILE_INFO, type ToolDecided, deciderTooltip, describeDecision } from '../../model/permissions';
 import { Tooltip } from '../ui/Tooltip';
 
 const ICON: Record<ToolCategory, ReactNode> = {
@@ -91,7 +91,7 @@ function DecisionNote({ decision }: { decision: ToolDecided }) {
   if (v.tone !== 'allowed') return null;
   const text = v.decider === 'remembered' || v.decider === 'human' ? v.label : `${v.label} · ${DECIDER[v.decider].badge}`;
   return (
-    <Tooltip content={DECIDER[v.decider].tooltip}>
+    <Tooltip content={v.deciderTooltip}>
       <span className="shrink-0 text-meta text-fg-3" data-testid="decision-note">
         {text}
       </span>
@@ -107,7 +107,7 @@ function DecisionPane({ decision }: { decision: ToolDecided }) {
       <div className="text-micro text-fg-3">判断</div>
       <div className="rounded-sm bg-canvas px-2.5 py-2 text-meta text-fg-2">
         <div>
-          {v.label} · {DECIDER[v.decider].tooltip}（{PROFILE_INFO[decision.profile].label}）
+          {v.label} · {v.deciderTooltip}（{PROFILE_INFO[decision.profile].label}）
         </div>
         {v.fullReason && <div className="mt-0.5 whitespace-pre-wrap text-fg-3">{v.fullReason}</div>}
       </div>
@@ -157,7 +157,7 @@ export function ToolLine({ call, nested = false }: { call: ToolCallView; nested?
           </span>
         )}
         {blocked && call.decision && (
-          <Tooltip content={DECIDER[call.decision.decidedBy].tooltip}>
+          <Tooltip content={deciderTooltip(call.decision)}>
             <span className="shrink-0 text-meta text-fg-3">{DECIDER[call.decision.decidedBy].badge}</span>
           </Tooltip>
         )}

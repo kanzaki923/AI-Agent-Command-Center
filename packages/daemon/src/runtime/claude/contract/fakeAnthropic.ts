@@ -115,6 +115,13 @@ export interface FakeAnthropicOptions {
    * assistant turn that ends in tool_use must start with its thinking block, else HTTP 400.
    */
   strictThinking?: boolean;
+  /**
+   * Server-side auto mode review: for a streamed main-loop request that carries `safeguards`
+   * (the CLI asks the API to judge the tool uses of its reply), the `safeguard_results` to put
+   * on `message_delta.delta`, as the real API does. `undefined` sends none, like an upstream
+   * that does not support it (the CLI then classifies locally).
+   */
+  safeguards?: (req: FakeRequest, toolUseIds: string[]) => unknown[] | undefined;
 }
 
 const SECRET_HEADERS = new Set(['authorization', 'x-api-key', 'proxy-authorization', 'cookie']);
@@ -138,12 +145,14 @@ export class FakeAnthropicServer {
   private intercept: FakeAnthropicOptions['intercept'];
   private readonly keepBodies: boolean;
   private strictThinking: boolean;
+  private safeguards: FakeAnthropicOptions['safeguards'];
 
   constructor(opts: FakeAnthropicOptions = {}) {
     this.jsonChunkSize = opts.jsonChunkSize ?? 12;
     this.intercept = opts.intercept;
     this.keepBodies = opts.keepBodies ?? false;
     this.strictThinking = opts.strictThinking ?? false;
+    this.safeguards = opts.safeguards;
     this.turns = [...(opts.turns ?? [])];
     this.aux = opts.aux ?? (() => ({ content: [{ type: 'text', text: 'Fake title' }] }));
     this.fallback = opts.fallback ?? (() => ({ content: [{ type: 'text', text: 'done' }] }));
@@ -165,9 +174,12 @@ export class FakeAnthropicServer {
    * Replace the fallback / intercept between runs (one server shared by several tests, e.g.
    * behind a real LiteLLM that is slow to start). `undefined` leaves a setting as it is.
    */
-  configure(o: Pick<FakeAnthropicOptions, 'fallback' | 'intercept' | 'strictThinking'>): void {
+  configure(
+    o: Pick<FakeAnthropicOptions, 'fallback' | 'intercept' | 'strictThinking' | 'safeguards'>,
+  ): void {
     if (o.fallback) this.fallback = o.fallback;
     if ('intercept' in o) this.intercept = o.intercept;
+    if ('safeguards' in o) this.safeguards = o.safeguards;
     if (o.strictThinking !== undefined) this.strictThinking = o.strictThinking;
   }
 
@@ -272,7 +284,14 @@ export class FakeAnthropicServer {
     }
     const message = buildMessage(body.model ?? 'claude-fake', reply);
     if (body.stream) {
-      await streamMessage(res, message, reply, this.jsonChunkSize);
+      const toolUseIds = message.content
+        .filter((b) => b.type === 'tool_use')
+        .map((b) => String(b.id));
+      const safeguardResults =
+        isMain && !intercepted && body.safeguards !== undefined
+          ? this.safeguards?.(view, toolUseIds)
+          : undefined;
+      await streamMessage(res, message, reply, this.jsonChunkSize, safeguardResults);
     } else {
       sendJson(res, 200, message);
     }
@@ -328,6 +347,7 @@ async function streamMessage(
   message: ApiMessage,
   reply: FakeReply,
   jsonChunkSize: number,
+  safeguardResults?: unknown[],
 ): Promise<void> {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
@@ -415,7 +435,11 @@ async function streamMessage(
   }
   await send('message_delta', {
     type: 'message_delta',
-    delta: { stop_reason: message.stop_reason, stop_sequence: null },
+    delta: {
+      stop_reason: message.stop_reason,
+      stop_sequence: null,
+      ...(safeguardResults ? { safeguard_results: safeguardResults } : {}),
+    },
     usage: {
       input_tokens: message.usage.input_tokens,
       cache_creation_input_tokens: message.usage.cache_creation_input_tokens,

@@ -90,6 +90,12 @@ const STDERR_TAIL_LINES = 20;
  * managed and inline settings, never from the repository). `$defaults` keeps the built-in
  * rules; ours describe the environment and repeat the daemon's hard rules (the PreToolUse
  * hook enforces them first; this is the second line for what the text check cannot see).
+ *
+ * Keep it a constant with no per-run text (no worktree path, task, project or run id): the
+ * CLI's own classifier request starts with this text, and an identical prefix lets every
+ * worker share the provider's prompt cache (measured: ~33k tokens, $0.126 to write cold and
+ * about $0.011 per judgement while warm, shared across CLI sessions; see
+ * docs/snapshot/20261029_auto-mode-cost.md). The CLI adds the cwd itself.
  */
 export const AUTO_MODE_SETTINGS = {
   environment: [
@@ -135,8 +141,9 @@ function formatDuration(ms: number): string {
  *   place that sees them all. The hook denies (hard rules, with the reason), asks (the CLI then
  *   calls `canUseTool`, which gets the same answer and our approval flow), or stays out of
  *   the way when the gate allows.
- * - `permissionMode: 'auto'` when the gate may use Claude Code's auto mode classifier (the
- *   user's Claude login, or a classifier model LiteLLM serves), else `'default'`. In auto mode
+ * - `permissionMode: 'auto'` when the gate may use Claude Code's auto mode (the server review,
+ *   or the CLI's own classifier with the user's Claude login or a classifier model LiteLLM
+ *   serves), else `'default'`. In auto mode
  *   the hook returns nothing for the gray zone so the classifier decides; the run falls back
  *   to the rules when the CLI starts without auto mode or the classifier cannot answer.
  * - `disallowedTools`: tools that make no sense unattended (AskUserQuestion, plan mode,
@@ -206,6 +213,7 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
       decidedBy: ev.source,
       ...(ev.reason !== undefined ? { reason: ev.reason } : {}),
       ...(ev.classifierUnavailable ? { classifierUnavailable: true } : {}),
+      ...(ev.judge ? { judge: ev.judge } : {}),
     });
   }
 
@@ -224,19 +232,33 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
 
     const routing = resolveModelRouting(this.opts.settings(), input.model);
     const gate = input.gate ?? new ToolGate({ cwd: input.cwd, profile: 'careful' });
-    // Auto mode only where its classifier can answer: the user's Claude login, or LiteLLM
-    // with a classifier model it serves (docs/snapshot/20261029_auto-mode.md).
+    // Auto mode only where it can judge (docs/snapshot/20261029_auto-mode.md):
+    // - judge "server": Anthropic's API reviews the tool uses (`safeguards` on the normal
+    //   request, no extra call). Passes through LiteLLM; where the upstream does not answer,
+    //   the CLI falls back to its own classifier, and when that cannot answer either (no
+    //   classifier model served) the run falls back to the rules below.
+    // - judge "client": the CLI's own classifier request, which behind LiteLLM needs a
+    //   classifier model LiteLLM serves.
     if (gate.autoMode) {
-      if (routing.kind === 'claude-login' || gate.autoMode.classifierModel) gate.useClassifier();
-      else gate.useRules(GATE_NOTES.noClassifierModel);
+      if (
+        routing.kind === 'claude-login' ||
+        gate.autoMode.judge === 'server' ||
+        gate.autoMode.classifierModel
+      ) {
+        gate.useClassifier();
+      } else {
+        gate.useRules(GATE_NOTES.noClassifierModel);
+      }
     }
     const auto = gate.mode === 'classifier';
+    const serverJudge = auto && gate.autoMode?.judge === 'server';
     const env = buildChildEnv(this.opts.parentEnv ?? process.env, routing, {
       ...(this.opts.clientApp ? { clientApp: this.opts.clientApp } : {}),
     });
     if (auto) {
-      // The gateway does not return server-side safeguard results: classify in the CLI.
-      env.CLAUDE_CODE_AUTO_MODE_SERVER = '0';
+      // Server review is the CLI's default (the variable unset); "0" classifies in the CLI.
+      if (!serverJudge) env.CLAUDE_CODE_AUTO_MODE_SERVER = '0';
+      // Also for the server judge: the model of the CLI's fallback classifier.
       if (routing.kind === 'litellm' && gate.autoMode?.classifierModel) {
         env.CLAUDE_CODE_AUTO_MODE_MODEL = gate.autoMode.classifierModel;
       }
@@ -247,6 +269,7 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
       model: routing.model,
       resume: !!input.resumeSessionId,
       permissionGate: gate.mode,
+      judge: auto ? gate.judge : null,
       envKeys: envKeys(env),
     });
 
@@ -383,6 +406,7 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
       (input.resumeSessionId && this.baselines.get(input.resumeSessionId)) || ZERO_TOTALS;
     const norm = new ClaudeMessageNormalizer(input.cwd, baseline, {
       expectedTools: acc?.toolNames ?? [],
+      serverJudge,
     });
     const q = sdk.query({ prompt, options });
 
@@ -454,6 +478,8 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
         if (gate.mode === 'classifier' && norm.permissionMode && norm.permissionMode !== 'auto') {
           gate.useRules(GATE_NOTES.unsupportedModel);
         }
+        // The upstream does not do the server review: the CLI's own classifier judges now.
+        if (norm.serverJudgeLost) gate.judgeLocally();
         // Once stopping, only the usage of the interrupted turn is still worth reporting.
         const stopping = signal.aborted || failure !== null;
         for (const ev of events) {

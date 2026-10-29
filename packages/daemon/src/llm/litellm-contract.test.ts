@@ -482,7 +482,8 @@ describe.skipIf(!bin || !cli)(
         const gate = new ToolGate({
           cwd: sb.repo,
           profile: 'autonomous',
-          autoMode: { classifierModel: 'claude-sonnet-4-6' },
+          // The CLI's own classifier request (the server review needs a real Anthropic upstream).
+          autoMode: { classifierModel: 'claude-sonnet-4-6', judge: 'client' },
           record: () => {},
         });
         const { r, bodies } = await play({

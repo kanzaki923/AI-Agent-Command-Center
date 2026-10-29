@@ -40,3 +40,36 @@ export function classifierReply(req: FakeRequest, verdict: ClassifierVerdict): F
       : '<block>no</block>';
   return { content: [{ type: 'text', text }] };
 }
+
+/**
+ * What the server-side review answers (`message_delta.delta.safeguard_results`), as the real
+ * Anthropic API returned it through LiteLLM (docs/snapshot/20261029_auto-mode-cost.md) and as
+ * the bundled CLI 2.1.312 parses it: one `dangerous_tool_use` entry whose status is
+ * `available` with a per-tool-use verdict, or `unsupported` / `unavailable`.
+ */
+export type ServerVerdict = 'not_flagged' | 'flagged' | 'unsupported' | 'unavailable';
+
+/** The server's explanation when the fake flags an action. */
+export const FAKE_SERVER_EXPLANATION = 'The fake server judged this action dangerous';
+
+export function safeguardResults(toolUseIds: string[], verdict: ServerVerdict): unknown[] {
+  const status =
+    verdict === 'unsupported'
+      ? { type: 'unsupported' }
+      : verdict === 'unavailable'
+        ? { type: 'unavailable', reason: 'error' }
+        : {
+            type: 'available',
+            tool_uses: Object.fromEntries(
+              toolUseIds.map((id) => [
+                id,
+                {
+                  type: 'evaluated',
+                  outcome: verdict,
+                  ...(verdict === 'flagged' ? { explanation: FAKE_SERVER_EXPLANATION } : {}),
+                },
+              ]),
+            ),
+          };
+  return [{ type: 'dangerous_tool_use', status }];
+}

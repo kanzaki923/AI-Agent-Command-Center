@@ -252,8 +252,15 @@ describe('tool permissions through the daemon', () => {
     });
     expect(view).toMatchObject({
       defaultPermissionProfile: 'standard',
-      autoMode: { enabled: true, classifierModel: 'team-classifier' },
+      // The server review is the default judge.
+      autoMode: { enabled: true, judge: 'server', classifierModel: 'team-classifier' },
     });
     expect(s.d.ctx.settings.get().autoMode.classifierModel).toBe('team-classifier');
+    const client = await s.d.call(HUMAN, 'settings.update', { autoMode: { judge: 'client' } });
+    expect(client.autoMode).toEqual({
+      enabled: true,
+      judge: 'client',
+      classifierModel: 'team-classifier',
+    });
   });
 });

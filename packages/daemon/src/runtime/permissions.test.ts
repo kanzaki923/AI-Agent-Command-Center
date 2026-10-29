@@ -7,7 +7,7 @@ import path from 'node:path';
 import type { PermissionProfile } from '@acc/protocol';
 import { describe, expect, it } from 'vitest';
 import { analyzeCommand } from './commandPolicy';
-import { type ToolDecisionRecord, ToolGate } from './gate';
+import { GATE_NOTES, type ToolDecisionRecord, ToolGate } from './gate';
 import { decideToolPermission, grayDecision, isInside, touchesGitDir } from './policy';
 import { commandKeys, ruleMatcher, ruleMatches } from './rules';
 import { parseShell } from './shell';
@@ -408,6 +408,47 @@ describe('ToolGate', () => {
     expect(
       g.escalate({ toolName: 'Bash', input: { command: 'make' }, toolUseId: 'd' }).action,
     ).toBe('ask');
+  });
+
+  it('says where auto mode judges and when it falls back from the server', () => {
+    const permissions: unknown[] = [];
+    const { g, records } = gate('autonomous', {
+      autoMode: { classifierModel: null },
+      onPermission: (p) => permissions.push(p),
+    });
+    // The settings' default: the server review.
+    expect(g.autoMode).toEqual({ classifierModel: null, judge: 'server' });
+    expect(g.permission).toEqual({ profile: 'autonomous', gate: 'rules', note: null });
+    g.useClassifier();
+    g.check({ toolName: 'Bash', input: { command: 'make' }, toolUseId: 'a' });
+    g.report({
+      toolCallId: 'a',
+      toolName: 'Bash',
+      decision: 'allowed',
+      decidedBy: 'classifier',
+      judge: 'server',
+    });
+    g.judgeLocally();
+    g.judgeLocally();
+    g.check({ toolName: 'Bash', input: { command: 'make x' }, toolUseId: 'b' });
+    g.report({ toolCallId: 'b', toolName: 'Bash', decision: 'denied', decidedBy: 'classifier' });
+    expect(permissions).toEqual([
+      { profile: 'autonomous', gate: 'classifier', note: null, judge: 'server' },
+      {
+        profile: 'autonomous',
+        gate: 'classifier',
+        note: GATE_NOTES.serverJudgeUnavailable,
+        judge: 'client',
+      },
+    ]);
+    // Only what the runtime could tell is recorded.
+    expect(records.map((r) => [r.toolCallId, r.judge])).toEqual([
+      ['a', 'server'],
+      ['b', undefined],
+    ]);
+    // The rules carry no judge.
+    g.useRules(GATE_NOTES.classifierUnavailable);
+    expect(g.permission).not.toHaveProperty('judge');
   });
 
   it('never uses the classifier in the careful profile', () => {

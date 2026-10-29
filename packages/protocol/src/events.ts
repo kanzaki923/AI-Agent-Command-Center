@@ -16,6 +16,7 @@ import {
 import {
   Approval,
   Artifact,
+  AutoModeJudge,
   BudgetAllocation,
   CapabilityGrant,
   Integration,
@@ -91,6 +92,12 @@ export const eventPayloads = {
     summary: z.string().nullable(),
     decision: ToolDecisionKind,
     decidedBy: ToolDecider,
+    /**
+     * For `decidedBy: classifier`, where auto mode judged when the daemon could tell: `server`
+     * (the API's `safeguard_results` covered this tool use) or `client` (the CLI's own
+     * classifier). Undocumented CLI fields: absent when unknown.
+     */
+    judge: AutoModeJudge.optional(),
     /** Hard rule id when one decided (e.g. "publish_remote"), else null. */
     rule: z.string().nullable(),
     /** Daemon category (e.g. "build_test", "deps_add", "network_read", "outside_read"). */

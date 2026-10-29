@@ -861,6 +861,7 @@ export class RunManager implements RunsService {
               reason: d.reason,
               profile: d.profile,
               notable: d.notable,
+              ...(d.judge ? { judge: d.judge } : {}),
             },
             refs: refs(),
           });
@@ -877,7 +878,15 @@ export class RunManager implements RunsService {
       setPermission: (p: RunPermission) => {
         if (!live() || ended()) return;
         const cur = a.run.permission;
-        if (cur && cur.profile === p.profile && cur.gate === p.gate && cur.note === p.note) return;
+        if (
+          cur &&
+          cur.profile === p.profile &&
+          cur.gate === p.gate &&
+          cur.note === p.note &&
+          (cur.judge ?? null) === (p.judge ?? null)
+        ) {
+          return;
+        }
         const run = ctx.db.transaction(() => {
           const next = ctx.repos.runs.update(a.runId, (r) => ({
             ...r,

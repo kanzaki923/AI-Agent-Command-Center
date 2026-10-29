@@ -240,7 +240,7 @@ export function describeEvent(e: Event, names?: TimelineNames): EventView {
         label: v.label,
         summary: what,
         detail: v.tone === 'allowed' ? null : v.reason,
-        decider: { badge: DECIDER[d.decidedBy].badge, tooltip: `${DECIDER[d.decidedBy].tooltip}（${PROFILE_INFO[d.profile].label}）` },
+        decider: { badge: DECIDER[d.decidedBy].badge, tooltip: `${v.deciderTooltip}（${PROFILE_INFO[d.profile].label}）` },
         blocked: v.tone === 'blocked',
         autoAllowed: v.tone === 'allowed' && !d.notable,
         // An ask is told by its approval.requested row (which carries the same reason).

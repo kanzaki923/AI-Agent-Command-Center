@@ -250,6 +250,8 @@ export type AgentEvent =
       reason?: string | null;
       /** The classifier could not answer at all (not a judgement). */
       classifierUnavailable?: boolean;
+      /** For `source: classifier`: the server review or the CLI's own classifier, when known. */
+      judge?: 'server' | 'client';
     };
 
 export interface AgentRunInput {

@@ -191,7 +191,7 @@ function createToolGate(
     cwd,
     profile: resolvePermissionProfile(ctx, run.projectId ?? projectId),
     autoMode: settings.autoMode.enabled
-      ? { classifierModel: settings.autoMode.classifierModel }
+      ? { classifierModel: settings.autoMode.classifierModel, judge: settings.autoMode.judge }
       : null,
     policy: { protectedPaths: [ctx.paths.home], ...(ctx.port ? { daemonPort: ctx.port } : {}) },
     ...(ctx.hasService('permissionRules')

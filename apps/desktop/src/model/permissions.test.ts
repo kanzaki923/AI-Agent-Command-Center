@@ -8,9 +8,11 @@ import {
   canRemember,
   decisionSummaryText,
   decisionsByToolCall,
+  deciderTooltip,
   describeDecision,
   effectiveProfile,
   firstSentence,
+  gateText,
   recentBlocks,
   rememberHint,
   rememberOptions,
@@ -58,6 +60,19 @@ describe('decisions', () => {
     });
     expect(describeDecision(decided({ decision: 'allowed', decidedBy: 'remembered' })).label).toBe('記憶した許可');
     expect(describeDecision(decided({ decision: 'asked' })).label).toBe('あなたに確認');
+  });
+
+  it('says where auto mode judged when the daemon could tell', () => {
+    expect(deciderTooltip({ decidedBy: 'classifier', judge: 'server' })).toBe(
+      'Claude Code の Auto mode（安全性の分類器）が決めました（Anthropic のサーバーで判定）',
+    );
+    expect(describeDecision(decided({ decidedBy: 'classifier', judge: 'client' })).deciderTooltip).toContain('手元の分類器で判定');
+    expect(deciderTooltip({ decidedBy: 'classifier' })).toBe('Claude Code の Auto mode（安全性の分類器）が決めました');
+    expect(deciderTooltip({ decidedBy: 'rule', judge: 'server' })).toBe('Core Daemon のルールで決めました');
+    expect(gateText({ profile: 'autonomous', gate: 'classifier', note: null, judge: 'server' })).toBe('おまかせ · Auto mode が判断（サーバー判定）');
+    expect(gateText({ profile: 'standard', gate: 'classifier', note: null, judge: 'client' })).toBe('標準 · Auto mode が判断（手元の分類器）');
+    expect(gateText({ profile: 'standard', gate: 'classifier', note: null })).toBe('標準 · Auto mode が判断');
+    expect(gateText({ profile: 'careful', gate: 'rules', note: null })).toBe('慎重 · ルールで判断');
   });
 
   it('summarizes a run as automatic decisions, blocks and (only when any) asks', () => {

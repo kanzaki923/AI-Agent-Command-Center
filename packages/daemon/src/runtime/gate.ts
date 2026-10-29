@@ -1,4 +1,5 @@
 import type {
+  AutoModeJudge,
   PermissionProfile,
   RunPermission,
   ToolDecider,
@@ -30,6 +31,15 @@ export interface ToolDecisionRecord {
   notable: boolean;
   /** Counted only, no event of its own. */
   routine: boolean;
+  /** For classifier decisions: where auto mode judged, when the runtime could tell. */
+  judge?: AutoModeJudge;
+}
+
+/** Auto mode as the settings allow it for a run (see `Settings.autoMode`). */
+export interface GateAutoMode {
+  classifierModel: string | null;
+  /** Default `server` (the settings' default). */
+  judge?: AutoModeJudge;
 }
 
 /** A remembered approval that matched (see rules.ts). */
@@ -45,7 +55,7 @@ export interface ToolGateOptions {
    * Claude Code auto mode may decide the gray zone (profile is not careful, the setting is
    * on). The runtime still decides whether it can: `useClassifier()` / `useRules()`.
    */
-  autoMode?: { classifierModel: string | null } | null;
+  autoMode?: GateAutoMode | null;
   /** Policy inputs beyond the tool use itself (daemon data paths, the API port, test hooks). */
   policy?: Omit<ToolPolicyInput, 'toolName' | 'input' | 'cwd' | 'profile' | 'blockedPath'>;
   /** The remembered approval matching a tool use, if any. */
@@ -82,6 +92,8 @@ export interface ReportedDecision {
   reason?: string | null;
   /** The classifier could not answer (e.g. its model is not served): not a judgement. */
   classifierUnavailable?: boolean;
+  /** Where auto mode judged (server review or the CLI's own classifier), when known. */
+  judge?: AutoModeJudge;
 }
 
 const REPEATED_BLOCK_TEXT = {
@@ -93,7 +105,10 @@ const REPEATED_BLOCK_TEXT = {
 export const GATE_NOTES = {
   unsupportedModel: 'このモデルでは Claude Code の auto mode を使えないため、規則で判断しています',
   classifierUnavailable: '安全判定（auto mode の分類器）を使えないため、規則で判断しています',
-  noClassifierModel: 'LiteLLM 経由で安全判定モデルが設定されていないため、規則で判断しています',
+  noClassifierModel:
+    'LiteLLM 経由で手元の分類器を使う設定ですが、分類器のモデルが未設定のため、規則で判断しています',
+  serverJudgeUnavailable:
+    '上流が Anthropic のサーバー判定に対応していないため、手元の分類器で判定しています',
 } as const;
 
 /**
@@ -110,9 +125,11 @@ export const GATE_NOTES = {
  */
 export class ToolGate {
   readonly profile: PermissionProfile;
-  readonly autoMode: { classifierModel: string | null } | null;
+  readonly autoMode: Required<GateAutoMode> | null;
   private gate: 'classifier' | 'rules' = 'rules';
   private note: string | null = null;
+  /** Where auto mode judges now (the setting, until the runtime sees it fall back). */
+  private judgeNow: AutoModeJudge | null;
   private readonly decided = new Map<string, GateResult>();
   private readonly deferred = new Map<
     string,
@@ -121,15 +138,27 @@ export class ToolGate {
 
   constructor(private readonly opts: ToolGateOptions) {
     this.profile = opts.profile;
-    this.autoMode = opts.profile === 'careful' ? null : (opts.autoMode ?? null);
+    const a = opts.profile === 'careful' ? null : (opts.autoMode ?? null);
+    this.autoMode = a ? { classifierModel: a.classifierModel, judge: a.judge ?? 'server' } : null;
+    this.judgeNow = this.autoMode?.judge ?? null;
   }
 
   get mode(): 'classifier' | 'rules' {
     return this.gate;
   }
 
+  /** Where auto mode judges now (null without auto mode). */
+  get judge(): AutoModeJudge | null {
+    return this.judgeNow;
+  }
+
   get permission(): RunPermission {
-    return { profile: this.profile, gate: this.gate, note: this.note };
+    return {
+      profile: this.profile,
+      gate: this.gate,
+      note: this.note,
+      ...(this.gate === 'classifier' && this.judgeNow ? { judge: this.judgeNow } : {}),
+    };
   }
 
   /** The runtime hands the gray zone to its classifier. */
@@ -137,6 +166,18 @@ export class ToolGate {
     if (!this.autoMode || this.gate === 'classifier') return;
     this.gate = 'classifier';
     this.note = null;
+    this.opts.onPermission?.(this.permission);
+  }
+
+  /**
+   * The runtime saw auto mode leave the server review for the CLI's own classifier (the
+   * upstream does not return `safeguard_results`): still auto mode, judged locally.
+   */
+  judgeLocally(): void {
+    if (this.judgeNow !== 'server') return;
+    this.judgeNow = 'client';
+    if (this.gate !== 'classifier') return;
+    this.note = GATE_NOTES.serverJudgeUnavailable;
     this.opts.onPermission?.(this.permission);
   }
 
@@ -242,6 +283,7 @@ export class ToolGate {
       profile: this.profile,
       notable: d.decision === 'denied' || NOTABLE_CATEGORIES.has(prior.policy.category),
       routine,
+      ...(d.decidedBy === 'classifier' && d.judge ? { judge: d.judge } : {}),
     });
   }
 

@@ -15,8 +15,11 @@ import { DISALLOWED_AGENT_TOOLS } from '../tools';
 import {
   type ClassifierVerdict,
   FAKE_BLOCK_CATEGORY,
+  FAKE_SERVER_EXPLANATION,
+  type ServerVerdict,
   classifierReply,
   isClassifierRequest,
+  safeguardResults,
 } from './contract/autoMode';
 import {
   type CliSandbox,
@@ -32,7 +35,7 @@ import {
   scenarios,
   taskGetTool,
 } from './contract/scenarios';
-import { MemoryBaselineStore, type ClaudeSdkModule } from './runtime';
+import { AUTO_MODE_SETTINGS, MemoryBaselineStore, type ClaudeSdkModule } from './runtime';
 import { GATE_NOTES, type ToolDecisionRecord, ToolGate } from '../gate';
 
 const cli = process.env.ACC_SKIP_SDK_CONTRACT ? null : locateBundledCli();
@@ -379,8 +382,9 @@ describe.skipIf(!cli).concurrent('Claude Agent SDK contract (real CLI, fake API)
 
 /**
  * Auto mode (`permissionMode: 'auto'`) behind our custom ANTHROPIC_BASE_URL, with the fake API
- * answering the CLI's own classifier requests. Not used in production yet: these pin the CLI
- * behaviour the layered policy relies on (docs/snapshot/20261029_auto-mode.md).
+ * answering the CLI's own classifier requests (CLAUDE_CODE_AUTO_MODE_SERVER=0, the "client"
+ * judge). These pin the CLI behaviour the layered policy relies on
+ * (docs/snapshot/20261029_auto-mode.md).
  */
 describe.skipIf(!cli).concurrent('Claude Agent SDK contract: auto mode', () => {
   /** A command the CLI does not auto-approve (not read-only) and that needs no network. */
@@ -502,14 +506,34 @@ describe.skipIf(!cli).concurrent('Claude Agent SDK contract: auto mode', () => {
 });
 
 /**
- * The production auto mode path: our runtime with an autonomous gate whose classifier model
- * is configured (the executor builds the same gate), against the real CLI.
+ * The production auto mode path: our runtime with an autonomous gate as the executor builds it
+ * (the server review by default, or the CLI's own classifier), against the real CLI.
  */
 describe.skipIf(!cli).concurrent('Claude Agent SDK contract: layered permissions', () => {
-  async function production(opts: { verdict: ClassifierVerdict; commands: string[] }) {
+  async function production(opts: {
+    /** The CLI's own classifier (requests without the main loop's tools). */
+    verdict: ClassifierVerdict | 'error';
+    commands: string[];
+    judge: 'server' | 'client';
+    /** What the fake API answers to `safeguards`; omitted: nothing (an upstream without it). */
+    server?: ServerVerdict;
+    classifierModel?: string | null;
+  }) {
+    const classifierRequests: string[] = [];
     const sb = await createCliSandbox({
-      intercept: (req) =>
-        isClassifierRequest(req) ? classifierReply(req, opts.verdict) : undefined,
+      keepBodies: true,
+      intercept: (req) => {
+        if (!isClassifierRequest(req)) return undefined;
+        classifierRequests.push(req.body.model ?? '');
+        // LiteLLM without the classifier's model: a 400 for every classifier request.
+        return opts.verdict === 'error'
+          ? {
+              content: [],
+              error: { status: 400, type: 'invalid_request_error', message: 'Invalid model name' },
+            }
+          : classifierReply(req, opts.verdict);
+      },
+      ...(opts.server ? { safeguards: (_req, ids) => safeguardResults(ids, opts.server!) } : {}),
     });
     sandboxes.push(sb);
     sb.api.script([
@@ -524,7 +548,11 @@ describe.skipIf(!cli).concurrent('Claude Agent SDK contract: layered permissions
     const gate = new ToolGate({
       cwd: sb.repo,
       profile: 'autonomous',
-      autoMode: { classifierModel: 'claude-sonnet-4-6' },
+      autoMode: {
+        classifierModel:
+          opts.classifierModel === undefined ? 'claude-sonnet-4-6' : opts.classifierModel,
+        judge: opts.judge,
+      },
       record: (d) => decisions.push(d),
     });
     const r = await runScenario(sb, cli!.path, real, {
@@ -534,27 +562,177 @@ describe.skipIf(!cli).concurrent('Claude Agent SDK contract: layered permissions
     });
     expect(sb.proxy.attempts).toEqual([]);
     expect(r.error).toBeNull();
-    return { r, gate, decisions };
+    const safeguardsSent = sb.api.mainRequests.map((m) =>
+      (m.summary.bodyKeys ?? []).includes('safeguards'),
+    );
+    return { sb, r, gate, decisions, classifierRequests, safeguardsSent };
   }
+  const env = (r: ScenarioResult) => r.options[0]?.env ?? {};
 
   it(
-    'lets the classifier decide the gray zone and denies hard rules before it',
+    'lets the client classifier decide the gray zone and denies hard rules before it',
     { timeout: TIMEOUT },
     async () => {
-      const { r, gate, decisions } = await production({
+      const { r, gate, decisions, classifierRequests, safeguardsSent } = await production({
         verdict: 'allow',
+        judge: 'client',
         commands: ['node -e "process.exit(0)"', 'git push origin HEAD'],
       });
       expect(r.options[0]).toMatchObject({ permissionMode: 'auto' });
+      expect(env(r)).toMatchObject({
+        CLAUDE_CODE_AUTO_MODE_SERVER: '0',
+        CLAUDE_CODE_AUTO_MODE_MODEL: 'claude-sonnet-4-6',
+      });
       expect(init(r)?.permissionMode).toBe('auto');
-      expect(gate.permission).toEqual({ profile: 'autonomous', gate: 'classifier', note: null });
+      expect(gate.permission).toEqual({
+        profile: 'autonomous',
+        gate: 'classifier',
+        note: null,
+        judge: 'client',
+      });
+      expect(classifierRequests).toEqual(['claude-sonnet-4-6']);
+      expect(safeguardsSent.every((s) => !s)).toBe(true);
       expect(r.asked).toEqual([]);
       expect(toolResults(r).map((t) => t.isError)).toEqual([false, true]);
       expect(toolResults(r)[1]?.text).toContain('push');
-      expect(decisions.map((d) => [d.toolName, d.decision, d.decidedBy, d.rule])).toEqual([
-        ['Bash', 'allowed', 'classifier', null],
-        ['Bash', 'denied', 'rule', 'publish_remote'],
+      expect(decisions.map((d) => [d.toolName, d.decision, d.decidedBy, d.rule, d.judge])).toEqual(
+        [
+          ['Bash', 'allowed', 'classifier', null, 'client'],
+          ['Bash', 'denied', 'rule', 'publish_remote', undefined],
+        ],
+      );
+    },
+  );
+
+  it(
+    'lets the server review decide without a classifier request (the default)',
+    { timeout: TIMEOUT },
+    async () => {
+      const { sb, r, gate, decisions, classifierRequests, safeguardsSent } = await production({
+        verdict: 'block',
+        judge: 'server',
+        server: 'not_flagged',
+        commands: ['node -e "process.exit(0)"', 'git push origin HEAD'],
+      });
+      // The server review is the CLI's default: the variable is not set at all.
+      expect(env(r)).not.toHaveProperty('CLAUDE_CODE_AUTO_MODE_SERVER');
+      expect(env(r)).toMatchObject({ CLAUDE_CODE_AUTO_MODE_MODEL: 'claude-sonnet-4-6' });
+      expect(safeguardsSent.every(Boolean)).toBe(true);
+      expect(classifierRequests).toEqual([]);
+      // The review request carries our inline auto mode rules, not only Anthropic's defaults
+      // (it also carries the cwd, home, OS user name and git state: never log these bodies).
+      const [review] = sb.api.bodies.find((b) => b.kind === 'main')!.body.safeguards as {
+        type: string;
+        classifier_context: Record<string, unknown>;
+      }[];
+      expect(review?.type).toBe('dangerous_tool_use');
+      expect(review?.classifier_context).toMatchObject({
+        permission_mode: 'auto',
+        classify_all_shell: true,
+        auto_mode: {
+          environment: AUTO_MODE_SETTINGS.environment,
+          hard_deny: AUTO_MODE_SETTINGS.hard_deny,
+        },
+      });
+      expect(gate.permission).toEqual({
+        profile: 'autonomous',
+        gate: 'classifier',
+        note: null,
+        judge: 'server',
+      });
+      expect(toolResults(r).map((t) => t.isError)).toEqual([false, true]);
+      expect(decisions.map((d) => [d.decision, d.decidedBy, d.rule, d.judge])).toEqual([
+        ['allowed', 'classifier', null, 'server'],
+        ['denied', 'rule', 'publish_remote', undefined],
       ]);
+    },
+  );
+
+  it(
+    'returns the server review’s block to the agent and records it as the server’s',
+    { timeout: TIMEOUT },
+    async () => {
+      const { r, gate, decisions, classifierRequests } = await production({
+        verdict: 'allow',
+        judge: 'server',
+        server: 'flagged',
+        commands: ['node -e "process.exit(0)"'],
+      });
+      expect(classifierRequests).toEqual([]);
+      expect(gate.permission.gate).toBe('classifier');
+      expect(r.asked).toEqual([]);
+      expect(toolResults(r)[0]).toMatchObject({ isError: true });
+      expect(toolResults(r)[0]?.text).toContain(FAKE_SERVER_EXPLANATION);
+      expect(decisions).toEqual([
+        expect.objectContaining({
+          decision: 'denied',
+          decidedBy: 'classifier',
+          judge: 'server',
+          notable: true,
+          reason: `自動の安全判定が拒否: ${FAKE_SERVER_EXPLANATION}`,
+        }),
+      ]);
+    },
+  );
+
+  it(
+    'falls back to the CLI’s classifier when the upstream does not do the server review',
+    { timeout: TIMEOUT },
+    async () => {
+      for (const server of [undefined, 'unsupported'] as const) {
+        const { gate, decisions, classifierRequests, safeguardsSent } = await production({
+          verdict: 'allow',
+          judge: 'server',
+          ...(server ? { server } : {}),
+          // A gateway name of its own: the fallback classifier uses it.
+          classifierModel: 'team-classifier',
+          commands: ['node -e "process.exit(0)"', 'node -e "process.exit(1)"'],
+        });
+        // Asked once, then the CLI stops sending `safeguards` for the session.
+        expect(safeguardsSent.slice(0, 2)).toEqual([true, false]);
+        expect(classifierRequests).toEqual(['team-classifier', 'team-classifier']);
+        expect(gate.permission).toEqual({
+          profile: 'autonomous',
+          gate: 'classifier',
+          note: GATE_NOTES.serverJudgeUnavailable,
+          judge: 'client',
+        });
+        expect(decisions.map((d) => [d.decision, d.decidedBy, d.judge])).toEqual([
+          ['allowed', 'classifier', 'client'],
+          ['allowed', 'classifier', 'client'],
+        ]);
+      }
+    },
+  );
+
+  it(
+    'falls back to the rules when neither the server nor a classifier model can judge',
+    { timeout: TIMEOUT },
+    async () => {
+      const { r, gate, decisions, classifierRequests } = await production({
+        verdict: 'error',
+        judge: 'server',
+        classifierModel: null,
+        commands: ['node -e "process.exit(0)"', 'node -e "process.exit(0)"'],
+      });
+      // Auto mode was tried (the server judge needs no classifier model) ...
+      expect(r.options[0]).toMatchObject({ permissionMode: 'auto' });
+      expect(env(r)).not.toHaveProperty('CLAUDE_CODE_AUTO_MODE_MODEL');
+      // ... the CLI's fallback classifier got errors (a Sonnet 4.6 session uses Sonnet 4.6) ...
+      expect(classifierRequests.length).toBeGreaterThan(0);
+      // ... and the run went on under the rules, without asking anyone.
+      expect(gate.permission).toEqual({
+        profile: 'autonomous',
+        gate: 'rules',
+        note: GATE_NOTES.classifierUnavailable,
+      });
+      expect(r.asked).toEqual([]);
+      expect(toolResults(r).map((t) => t.isError)).toEqual([true, false]);
+      expect(decisions.map((d) => [d.decision, d.decidedBy, d.judge])).toEqual([
+        ['denied', 'classifier', 'client'],
+        ['allowed', 'rule', undefined],
+      ]);
+      expect(decisions[0]?.reason).toBe('安全判定を実行できなかったため拒否（判定の失敗）');
     },
   );
 
@@ -564,6 +742,7 @@ describe.skipIf(!cli).concurrent('Claude Agent SDK contract: layered permissions
     async () => {
       const { r, gate, decisions } = await production({
         verdict: 'garbage',
+        judge: 'client',
         commands: ['node -e "process.exit(0)"', 'node -e "process.exit(0)"'],
       });
       expect(gate.permission.gate).toBe('rules');

@@ -286,6 +286,14 @@ export type ToolDecider = z.infer<typeof ToolDecider>;
 export const ToolDecisionKind = z.enum(['allowed', 'denied', 'asked']);
 export type ToolDecisionKind = z.infer<typeof ToolDecisionKind>;
 
+/**
+ * Where Claude Code's auto mode judges a tool use: `server` — Anthropic's API reviews the tool
+ * uses of each reply (`safeguards`, no extra request; needs an Anthropic API upstream);
+ * `client` — the CLI sends its own classifier request (a separate, billed model call).
+ */
+export const AutoModeJudge = z.enum(['server', 'client']);
+export type AutoModeJudge = z.infer<typeof AutoModeJudge>;
+
 /** How an agent run decides tool uses (resolved when it starts; `gate` may fall back later). */
 export const RunPermission = z.object({
   profile: PermissionProfile,
@@ -293,6 +301,11 @@ export const RunPermission = z.object({
   gate: z.enum(['classifier', 'rules']),
   /** Japanese note on why this gate (e.g. why auto mode is not used); null when obvious. */
   note: z.string().nullable(),
+  /**
+   * With `gate: classifier`: where auto mode judges (the setting, until the CLI is seen
+   * falling back from the server to its own classifier). Absent on older runs.
+   */
+  judge: AutoModeJudge.nullable().optional(),
 });
 export type RunPermission = z.infer<typeof RunPermission>;
 
@@ -700,17 +713,20 @@ export const Settings = z.object({
   defaultPermissionProfile: PermissionProfile.default('autonomous'),
   /**
    * Claude Code auto mode (its safety classifier decides the gray zone) for the Claude runtime
-   * in the autonomous and standard profiles. Used only where it works: with the user's own
-   * Claude login, or behind LiteLLM when `classifierModel` names a Claude model (Sonnet 4.6 or
-   * later) that LiteLLM serves. Otherwise, and when it fails mid-run, the daemon's rules decide.
+   * in the autonomous and standard profiles. `judge: server` (default): Anthropic's API judges
+   * (used with the user's Claude login and behind LiteLLM; the CLI falls back to its own
+   * classifier when the upstream does not answer). `judge: client`: the CLI's own classifier
+   * request, behind LiteLLM only when `classifierModel` names a Claude model (Sonnet 4.6 or
+   * later) that LiteLLM serves. When auto mode cannot judge, the daemon's rules decide.
    */
   autoMode: z
     .object({
       enabled: z.boolean().default(true),
+      judge: AutoModeJudge.default('server'),
       /** LiteLLM model name for the classifier (passed as CLAUDE_CODE_AUTO_MODE_MODEL). */
       classifierModel: z.string().min(1).nullable().default(null),
     })
-    .default({ enabled: true, classifierModel: null }),
+    .default({ enabled: true, judge: 'server', classifierModel: null }),
 });
 export type Settings = z.infer<typeof Settings>;
 
@@ -729,7 +745,14 @@ export const SettingsView = z.object({
   autoResumeOrchestrators: z.boolean().optional(),
   llmCallReserveUsd: z.number().optional(),
   defaultPermissionProfile: PermissionProfile.optional(),
-  autoMode: z.object({ enabled: z.boolean(), classifierModel: z.string().nullable() }).optional(),
+  autoMode: z
+    .object({
+      enabled: z.boolean(),
+      /** Absent from older daemons (they always used the CLI's own classifier). */
+      judge: AutoModeJudge.optional(),
+      classifierModel: z.string().nullable(),
+    })
+    .optional(),
 });
 export type SettingsView = z.infer<typeof SettingsView>;
 

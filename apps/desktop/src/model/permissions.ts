@@ -1,6 +1,7 @@
 import type {
   Approval,
   ApprovalRemember,
+  AutoModeJudge,
   Event,
   EventPayload,
   PermissionProfile,
@@ -69,6 +70,18 @@ export const DECIDER: Record<ToolDecider, { badge: string; tooltip: string }> = 
   runtime: { badge: 'エージェント', tooltip: 'エージェントの実行環境が自分で決めました' },
 };
 
+/** Where auto mode judged (`tool.decided.judge`, `Run.permission.judge`). */
+const JUDGE_TEXT: Record<AutoModeJudge, string> = {
+  server: 'Anthropic のサーバーで判定',
+  client: '手元の分類器で判定',
+};
+
+/** The decider's tooltip, naming where auto mode judged when the daemon could tell. */
+export function deciderTooltip(d: Pick<ToolDecided, 'decidedBy' | 'judge'>): string {
+  const base = DECIDER[d.decidedBy].tooltip;
+  return d.decidedBy === 'classifier' && d.judge ? `${base}（${JUDGE_TEXT[d.judge]}）` : base;
+}
+
 export type DecisionTone = 'allowed' | 'blocked' | 'asked';
 
 export interface DecisionView {
@@ -76,6 +89,8 @@ export interface DecisionView {
   /** `自動で許可` / `ブロック` / `あなたに確認`. */
   label: string;
   decider: ToolDecider;
+  /** `deciderTooltip()`: who decided, with where auto mode judged. */
+  deciderTooltip: string;
   /** First sentence of the reason (what the agent was told, for blocks). */
   reason: string | null;
   /** The full reason, for the expanded view. */
@@ -94,7 +109,9 @@ export function firstSentence(reason: string | null | undefined, max = 90): stri
   return s ? shorten(s, max) : null;
 }
 
-export function describeDecision(d: Pick<ToolDecided, 'decision' | 'decidedBy' | 'reason'>): DecisionView {
+export function describeDecision(
+  d: Pick<ToolDecided, 'decision' | 'decidedBy' | 'reason' | 'judge'>,
+): DecisionView {
   const tone: DecisionTone = d.decision === 'denied' ? 'blocked' : d.decision === 'asked' ? 'asked' : 'allowed';
   return {
     tone,
@@ -109,6 +126,7 @@ export function describeDecision(d: Pick<ToolDecided, 'decision' | 'decidedBy' |
               ? '記憶した許可'
               : '自動で許可',
     decider: d.decidedBy,
+    deciderTooltip: deciderTooltip(d),
     reason: firstSentence(d.reason),
     fullReason: d.reason,
   };
@@ -138,7 +156,9 @@ export function decisionSummaryText(s: DecisionSummary): string {
 
 /** `おまかせ · Auto mode` / `慎重 · ルール` — how a run decides its tool uses. */
 export function gateText(p: NonNullable<Run['permission']>): string {
-  return `${PROFILE_INFO[p.profile].label} · ${p.gate === 'classifier' ? 'Auto mode が判断' : 'ルールで判断'}`;
+  if (p.gate !== 'classifier') return `${PROFILE_INFO[p.profile].label} · ルールで判断`;
+  const where = p.judge === 'server' ? '（サーバー判定）' : p.judge === 'client' ? '（手元の分類器）' : '';
+  return `${PROFILE_INFO[p.profile].label} · Auto mode が判断${where}`;
 }
 
 /**

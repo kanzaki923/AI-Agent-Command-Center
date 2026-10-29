@@ -11,6 +11,7 @@ import type { AgentEvent, AgentRunInput, ApprovalDecision } from '../contracts';
 import type { ClaudeCodeLocation } from './claude/locate';
 import { ClaudeMessageNormalizer } from './claude/normalize';
 import {
+  AUTO_MODE_SETTINGS,
   ClaudeAgentSdkRuntime,
   type ClaudeSdkModule,
   MemoryBaselineStore,
@@ -20,7 +21,7 @@ import {
 import * as R from './claude/contract/recorded';
 import { type RecordedStream, withPaths } from './claude/contract/recordedTypes';
 import { DISALLOWED_AGENT_TOOLS } from './tools';
-import { GATE_NOTES, type ToolDecisionRecord, ToolGate } from './gate';
+import { GATE_NOTES, type GateAutoMode, type ToolDecisionRecord, ToolGate } from './gate';
 
 const CWD = process.cwd();
 const rec = (s: RecordedStream) => withPaths(s, { repo: CWD });
@@ -264,6 +265,126 @@ describe('ClaudeMessageNormalizer (recorded streams)', () => {
   });
 });
 
+/**
+ * Auto mode's judge, from the shapes the bundled CLI 2.1.312 emitted against the fake API and
+ * the real Anthropic API through LiteLLM (docs/snapshot/20261029_auto-mode-cost.md).
+ */
+describe('ClaudeMessageNormalizer (auto mode judge)', () => {
+  const sid = 's1';
+  const delta = (safeguard_results?: unknown) => ({
+    type: 'stream_event',
+    session_id: sid,
+    parent_tool_use_id: null,
+    event: {
+      type: 'message_delta',
+      delta: {
+        stop_reason: 'tool_use',
+        stop_sequence: null,
+        ...(safeguard_results ? { safeguard_results } : {}),
+      },
+    },
+  });
+  const status = (s: unknown) => [{ type: 'dangerous_tool_use', status: s }];
+  const evaluated = (id: string, outcome: 'flagged' | 'not_flagged') =>
+    status({ type: 'available', tool_uses: { [id]: { type: 'evaluated', outcome } } });
+  const meta = (id: string, decision: 'accept' | 'reject', extra: object = {}) => ({
+    type: 'user',
+    session_id: sid,
+    parent_tool_use_id: null,
+    message: { role: 'user', content: [] },
+    tool_result_meta: [
+      { id, ...extra, permission_decision: { decision, source: 'config', reason_type: 'classifier' } },
+    ],
+  });
+  const denied = (id: string, reason: string, message: string) => ({
+    type: 'system',
+    subtype: 'permission_denied',
+    session_id: sid,
+    tool_name: 'Bash',
+    tool_use_id: id,
+    decision_reason_type: 'classifier',
+    decision_reason: reason,
+    message,
+  });
+  const decisions = (n: ClaudeMessageNormalizer, msgs: unknown[]) =>
+    msgs.flatMap((m) => n.push(m)).filter((e) => e.type === 'tool_decision');
+
+  it('names the server review where safeguard_results covered the tool use', () => {
+    const n = new ClaudeMessageNormalizer(CWD, undefined, { serverJudge: true });
+    const out = decisions(n, [
+      delta(evaluated('tu_1', 'not_flagged')),
+      meta('tu_1', 'accept'),
+      delta(evaluated('tu_2', 'flagged')),
+      denied('tu_2', 'Looks dangerous', 'Permission ... denied by the auto mode classifier.'),
+      // A use the server did not evaluate, before anything says it stopped: unknown.
+      meta('tu_3', 'accept'),
+    ]);
+    expect(out).toEqual([
+      expect.objectContaining({ toolCallId: 'tu_1', source: 'classifier', judge: 'server' }),
+      expect.objectContaining({
+        toolCallId: 'tu_2',
+        decision: 'denied',
+        judge: 'server',
+        reason: 'Looks dangerous',
+        classifierUnavailable: false,
+      }),
+      expect.not.objectContaining({ judge: expect.anything() as unknown }),
+    ]);
+    expect(n.serverJudgeLost).toBe(false);
+  });
+
+  it('notices the CLI leaving the server review for its own classifier', () => {
+    for (const signal of [
+      delta(status({ type: 'unsupported' })),
+      delta(status({ type: 'unavailable', reason: 'disabled' })),
+      {
+        type: 'system',
+        subtype: 'informational',
+        session_id: sid,
+        content:
+          "We're changing auto mode ... Nothing breaks: auto mode keeps working, and its classifier requests are billed as before.",
+      },
+    ]) {
+      const n = new ClaudeMessageNormalizer(CWD, undefined, { serverJudge: true });
+      const out = decisions(n, [signal, delta(), meta('tu_1', 'accept')]);
+      expect(n.serverJudgeLost).toBe(true);
+      expect(out).toEqual([expect.objectContaining({ judge: 'client' })]);
+    }
+    // A transient server error is not a switch (the CLI blocks that one call instead).
+    const n = new ClaudeMessageNormalizer(CWD, undefined, { serverJudge: true });
+    n.push(delta(status({ type: 'unavailable', reason: 'error' })));
+    expect(n.serverJudgeLost).toBe(false);
+  });
+
+  it('calls every classifier decision the client’s without the server review', () => {
+    const n = new ClaudeMessageNormalizer(CWD);
+    const out = decisions(n, [delta(evaluated('tu_1', 'not_flagged')), meta('tu_1', 'accept')]);
+    expect(out).toEqual([expect.objectContaining({ judge: 'client' })]);
+  });
+
+  it('recognizes a classifier that could not answer, in each wording', () => {
+    const n = new ClaudeMessageNormalizer(CWD);
+    const out = decisions(n, [
+      denied('tu_1', 'x', 'Auto mode could not evaluate this action and is blocking it for safety.'),
+      denied(
+        'tu_2',
+        'Classifier unavailable',
+        'claude-sonnet-4-6 is temporarily unavailable, so auto mode cannot determine the safety of Bash right now.',
+      ),
+      denied('tu_3', 'Classifier unavailable - blocking for safety', 'denied'),
+      meta('tu_4', 'reject', { non_execution_kind: 'automode-unavailable' }),
+      denied('tu_5', 'Too risky', 'denied by the auto mode classifier'),
+    ]);
+    expect(out.map((d) => d.type === 'tool_decision' && d.classifierUnavailable === true)).toEqual([
+      true,
+      true,
+      true,
+      true,
+      false,
+    ]);
+  });
+});
+
 // ---- runtime with a replaying SDK ----------------------------------------------------------
 
 interface FakeQuery extends QueryLike {
@@ -395,7 +516,7 @@ const cut = (
 /** A gate like the executor builds, recording into `decisions`. */
 function testGate(
   profile: 'careful' | 'standard' | 'autonomous',
-  autoMode: { classifierModel: string | null } | null = null,
+  autoMode: GateAutoMode | null = null,
 ) {
   const decisions: ToolDecisionRecord[] = [];
   const permissions: unknown[] = [];
@@ -570,9 +691,57 @@ describe('ClaudeAgentSdkRuntime', () => {
     expect(asked).toEqual(['Bash', 'Bash', 'WebFetch']);
   });
 
-  it('hands the gray zone to the auto mode classifier when its model is configured', async () => {
+  it('uses the server review by default, also behind LiteLLM without a classifier model', async () => {
+    const autoInit = rec(R.TEXT).map((m) =>
+      (m as { type?: string; subtype?: string }).type === 'system' &&
+      (m as { subtype?: string }).subtype === 'init'
+        ? { ...(m as object), permissionMode: 'auto' }
+        : m,
+    );
+    for (const classifierModel of [null, 'team-classifier']) {
+      const { gate, permissions } = testGate('autonomous', { classifierModel });
+      const sdk = replaySdk(autoInit);
+      const rt = runtime(sdk.module, {
+        settings: settings({ litellm: { baseUrl: 'http://127.0.0.1:4000', apiKey: 'sk-x' } }),
+        parentEnv: { PATH: '/bin' },
+      });
+      await collect(rt.run(input({ gate, model: 'team-sonnet' })));
+      const o = sdk.queries[0]!.options;
+      expect(o.permissionMode).toBe('auto');
+      // Unset is the CLI's server review; the classifier model is the CLI's fallback.
+      expect(o.env).not.toHaveProperty('CLAUDE_CODE_AUTO_MODE_SERVER');
+      if (classifierModel) {
+        expect(o.env).toMatchObject({ CLAUDE_CODE_AUTO_MODE_MODEL: classifierModel });
+      } else {
+        expect(o.env).not.toHaveProperty('CLAUDE_CODE_AUTO_MODE_MODEL');
+      }
+      expect(permissions).toEqual([
+        { profile: 'autonomous', gate: 'classifier', note: null, judge: 'server' },
+      ]);
+    }
+  });
+
+  it('keeps the classifier settings free of per-run text so workers share its prompt cache', async () => {
+    const seen: unknown[] = [];
+    for (const [cwd, runId] of [
+      ['/work/a', 'run_1'],
+      ['/work/b', 'run_2'],
+    ] as const) {
+      const sdk = replaySdk(rec(R.TEXT));
+      const gate = new ToolGate({ cwd, profile: 'autonomous', autoMode: { classifierModel: null } });
+      await collect(runtime(sdk.module).run(input({ gate, cwd, runId })));
+      seen.push(sdk.queries[0]!.options.settings);
+    }
+    expect(seen[0]).toEqual({ autoMode: AUTO_MODE_SETTINGS });
+    expect(seen[1]).toEqual(seen[0]);
+    const text = JSON.stringify(AUTO_MODE_SETTINGS);
+    for (const s of ['/work', 'run_', CWD]) expect(text).not.toContain(s);
+  });
+
+  it('hands the gray zone to the client classifier when its model is configured', async () => {
     const { gate, decisions, permissions } = testGate('autonomous', {
       classifierModel: 'team-classifier',
+      judge: 'client',
     });
     // An init that reports auto mode (the recorded ones ran in default mode).
     const stream = rec(R.TEXT).map((m) =>
@@ -597,7 +766,9 @@ describe('ClaudeAgentSdkRuntime', () => {
       autoMode: { classifyAllShell: true, hard_deny: expect.arrayContaining(['$defaults']) },
     });
     expect(gate.mode).toBe('classifier');
-    expect(permissions).toEqual([{ profile: 'autonomous', gate: 'classifier', note: null }]);
+    expect(permissions).toEqual([
+      { profile: 'autonomous', gate: 'classifier', note: null, judge: 'client' },
+    ]);
 
     const hook = preToolUse(o);
     // Gray zone: nothing from the hook, so the classifier decides (an allow would skip it).
@@ -622,9 +793,9 @@ describe('ClaudeAgentSdkRuntime', () => {
   });
 
   it('falls back to the rules when auto mode does not start or its classifier cannot answer', async () => {
-    // LiteLLM without a classifier model: rules from the start.
+    // LiteLLM, the client classifier, no classifier model: rules from the start.
     {
-      const { gate } = testGate('autonomous', { classifierModel: null });
+      const { gate } = testGate('autonomous', { classifierModel: null, judge: 'client' });
       const sdk = replaySdk(rec(R.TEXT));
       const rt = runtime(sdk.module, {
         settings: settings({ litellm: { baseUrl: 'http://127.0.0.1:4000' } }),

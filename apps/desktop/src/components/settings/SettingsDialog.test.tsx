@@ -79,7 +79,7 @@ describe('<SettingsDialog> agent permissions', () => {
   const WITH_PROFILES: SettingsView = {
     ...VIEW,
     defaultPermissionProfile: 'autonomous',
-    autoMode: { enabled: true, classifierModel: null },
+    autoMode: { enabled: true, judge: 'server', classifierModel: null },
   };
 
   it('picks the default profile, each with one plain line of what runs without asking', async () => {
@@ -107,6 +107,31 @@ describe('<SettingsDialog> agent permissions', () => {
       fireEvent.click(screen.getAllByRole('radio', { name: 'オフ' }).find((b) => group.contains(b))!);
     });
     await waitFor(() => expect(updates).toContainEqual({ autoMode: { enabled: false } }));
+  });
+
+  it('chooses where auto mode judges, with one line of cost each', async () => {
+    const { updates } = mount(WITH_PROFILES);
+    const group = await screen.findByRole('radiogroup', { name: '判定する場所' });
+    await waitFor(() => expect(group.querySelector('[aria-checked="true"]')).toHaveTextContent('サーバーで判定（推奨）'));
+    expect(group).toHaveTextContent('追加のリクエストなし');
+    expect(group).toHaveTextContent('1 回約 $0.01、キャッシュが冷えると約 $0.13');
+    // With the server judge, the classifier model is the fallback.
+    expect(screen.getByText(/サーバー判定を使えない上流のときの予備です/)).toBeInTheDocument();
+    expect(screen.getByLabelText('分類器のモデル（LiteLLM 経由のとき）')).toHaveAttribute(
+      'placeholder',
+      expect.stringContaining('Claude Sonnet 5') as string,
+    );
+    await act(async () => {
+      fireEvent.click(group.querySelector('[data-judge="client"]')!);
+    });
+    await waitFor(() => expect(updates).toEqual([{ autoMode: { judge: 'client' } }]));
+    expect(await screen.findByText(/空のままなら、LiteLLM 経由の Run は Core Daemon のルールで判断します/)).toBeInTheDocument();
+  });
+
+  it('hides the judge choice for a daemon that does not report it', async () => {
+    mount({ ...WITH_PROFILES, autoMode: { enabled: true, classifierModel: null } });
+    await screen.findByLabelText('分類器のモデル（LiteLLM 経由のとき）');
+    expect(screen.queryByRole('radiogroup', { name: '判定する場所' })).toBeNull();
   });
 
   it('says so when the daemon has no permission profiles', async () => {

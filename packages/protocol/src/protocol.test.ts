@@ -5,6 +5,7 @@ import {
   EVENT_TYPES,
   METHOD_NAMES,
   Project,
+  RunPermission,
   SessionId,
   Settings,
   api,
@@ -129,8 +130,27 @@ describe('settings', () => {
       autoResumeOrchestrators: true,
       llmCallReserveUsd: 0.25,
       defaultPermissionProfile: 'autonomous',
-      autoMode: { enabled: true, classifierModel: null },
+      autoMode: { enabled: true, judge: 'server', classifierModel: null },
     });
+  });
+
+  it('gives an older auto mode setting the server judge', () => {
+    // Written before `judge` existed (the CLI's own classifier was then the only way).
+    const s = Settings.parse({ autoMode: { enabled: true, classifierModel: 'team-sonnet' } });
+    expect(s.autoMode).toEqual({ enabled: true, judge: 'server', classifierModel: 'team-sonnet' });
+    expect(() => Settings.parse({ autoMode: { judge: 'elsewhere' } })).toThrow();
+  });
+
+  it('keeps older run permissions and tool decisions valid without a judge', () => {
+    expect(RunPermission.parse({ profile: 'standard', gate: 'classifier', note: null })).toEqual({
+      profile: 'standard',
+      gate: 'classifier',
+      note: null,
+    });
+    expect(
+      RunPermission.parse({ profile: 'standard', gate: 'classifier', note: null, judge: 'server' })
+        .judge,
+    ).toBe('server');
   });
 
   it('keeps old projects valid: no permission profile follows the global default', () => {

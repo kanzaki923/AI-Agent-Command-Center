@@ -148,6 +148,74 @@ function NotificationSettings() {
   );
 }
 
+type AutoModeJudge = NonNullable<NonNullable<SettingsPatch['autoMode']>['judge']>;
+
+/** Where auto mode judges: one line each (measured costs: docs/snapshot/20261029_auto-mode-cost.md). */
+const JUDGE_OPTIONS: { value: AutoModeJudge; label: string; hint: string }[] = [
+  {
+    value: 'server',
+    label: 'サーバーで判定（推奨）',
+    hint: 'Anthropic のサーバーで判定。追加のリクエストなし（上流が Anthropic API のとき）',
+  },
+  {
+    value: 'client',
+    label: '手元の分類器',
+    hint: '分類器モデルへ別リクエスト。1 回約 $0.01、キャッシュが冷えると約 $0.13',
+  },
+];
+
+/** A radio list with a one-line explanation per choice (styled like the profile picker). */
+function JudgePicker({ value, onChange }: { value: AutoModeJudge; onChange: (v: AutoModeJudge) => void }) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="判定する場所"
+      className="flex flex-col overflow-hidden rounded-sm border border-line"
+      onKeyDown={(e) => {
+        // Arrow keys move the choice like native radios (and the focus with it).
+        if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+        e.preventDefault();
+        const i = JUDGE_OPTIONS.findIndex((o) => o.value === value);
+        const next = JUDGE_OPTIONS[(i + (e.key === 'ArrowDown' ? 1 : -1) + JUDGE_OPTIONS.length) % JUDGE_OPTIONS.length]!;
+        onChange(next.value);
+        e.currentTarget.querySelector<HTMLElement>(`[data-judge="${next.value}"]`)?.focus();
+      }}
+    >
+      {JUDGE_OPTIONS.map((o) => {
+        const checked = o.value === value;
+        return (
+          <button
+            key={o.value}
+            type="button"
+            role="radio"
+            aria-checked={checked}
+            tabIndex={checked ? 0 : -1}
+            data-judge={o.value}
+            onClick={() => onChange(o.value)}
+            className={cn(
+              'flex items-start gap-2.5 border-b border-line-subtle px-3 py-2 text-left last:border-b-0',
+              checked ? 'bg-selected' : 'hover:bg-hover',
+            )}
+          >
+            <span
+              className={cn(
+                'mt-[3px] flex size-3.5 shrink-0 items-center justify-center rounded-full border',
+                checked ? 'border-accent' : 'border-line-strong',
+              )}
+            >
+              {checked && <span className="size-1.5 rounded-full bg-accent" />}
+            </span>
+            <span className="min-w-0">
+              <span className={cn('block text-ui', checked ? 'text-fg' : 'text-fg-2')}>{o.label}</span>
+              <span className="block text-meta text-fg-3">{o.hint}</span>
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 /**
  * The default permission profile (projects that do not choose one) and Claude Code's auto
  * mode (§8.6). Saved on change; the classifier model field on blur.
@@ -159,7 +227,8 @@ function AgentPermissionSettings({
   update,
 }: {
   profile: NonNullable<SettingsPatch['defaultPermissionProfile']>;
-  autoMode: { enabled: boolean; classifierModel: string | null };
+  /** `judge` is absent from older daemons (they always used the CLI's own classifier). */
+  autoMode: { enabled: boolean; judge?: AutoModeJudge | undefined; classifierModel: string | null };
   /** The daemon knows permission profiles (older ones do not report them). */
   supported: boolean;
   update: (patch: SettingsPatch) => void;
@@ -167,6 +236,7 @@ function AgentPermissionSettings({
   if (!supported) {
     return <p className="text-ui text-fg-3">この Core Daemon は権限のプロファイルに対応していません。</p>;
   }
+  const judge = autoMode.judge;
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -183,9 +253,8 @@ function AgentPermissionSettings({
         <div className="min-w-0">
           <div className="text-ui text-fg">Claude Code の Auto mode</div>
           <div className="text-meta text-fg-3">
-            使えるときは、ルールで決まらない操作の判断を Claude Code の安全性の分類器に任せます（おまかせ・標準のみ）。ご自身の
-            Claude ログインか、LiteLLM で下の分類器のモデルを指定したときに使えます。使えないときや分類器が答えられないときは、Core
-            Daemon のルールで判断します。
+            ルールで決まらない操作の判断を Claude Code の安全性の分類器に任せます（おまかせ・標準のみ）。判定できないときは Core Daemon
+            のルールで判断します。
           </div>
         </div>
         <Segmented<'on' | 'off'>
@@ -200,6 +269,15 @@ function AgentPermissionSettings({
           ]}
         />
       </div>
+      {autoMode.enabled && judge && (
+        <div className="-mt-1">
+          <div className="mb-1.5 text-ui text-fg">判定する場所</div>
+          <JudgePicker value={judge} onChange={(v) => v !== judge && update({ autoMode: { judge: v } })} />
+          <p className="mt-1.5 text-meta text-fg-3">
+            どちらも、このアプリ向けの追加ルールで判定します。Core Daemon の絶対ルールはその前に必ず適用されます。
+          </p>
+        </div>
+      )}
       {autoMode.enabled && (
         <div className="-mt-1">
           <FieldLabel htmlFor="classifier-model">分類器のモデル（LiteLLM 経由のとき）</FieldLabel>
@@ -208,7 +286,7 @@ function AgentPermissionSettings({
             className={`${inputClass} font-mono`}
             defaultValue={autoMode.classifierModel ?? ''}
             key={`classifier-${autoMode.classifierModel ?? ''}`}
-            placeholder="LiteLLM のモデル名（Claude Sonnet 4.6 以降）"
+            placeholder="LiteLLM で Claude Sonnet 5 を指すモデル名（例: claude-sonnet-5）"
             spellCheck={false}
             onBlur={(e) => {
               const v = e.target.value.trim() || null;
@@ -216,7 +294,10 @@ function AgentPermissionSettings({
             }}
           />
           <p className="mt-1 text-meta text-fg-3">
-            空のままなら、LiteLLM 経由の Run は Core Daemon のルールで判断します。分類器の費用はまだ予算に含まれません。
+            {judge === 'server'
+              ? 'サーバー判定を使えない上流のときの予備です。空なら Claude Code の既定（Claude Sonnet 5）を使い、LiteLLM にそのモデルがなければルールで判断します。'
+              : '空のままなら、LiteLLM 経由の Run は Core Daemon のルールで判断します。'}
+            分類器の費用はまだ予算に含まれません。
           </p>
         </div>
       )}
