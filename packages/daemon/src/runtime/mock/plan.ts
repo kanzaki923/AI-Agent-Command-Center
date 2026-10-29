@@ -85,7 +85,12 @@ export const MockStep = z.discriminatedUnion('type', [
     type: z.literal('fail'),
     message: z.string().default('モックの失敗ステップです'),
   }),
-  z.strictObject({ type: z.literal('sleep'), ms: z.int().min(0).max(600_000) }),
+  /** Waits as if working; `activity` is what the chip's `now` says meanwhile. */
+  z.strictObject({
+    type: z.literal('sleep'),
+    ms: z.int().min(0).max(600_000),
+    activity: z.string().min(1).max(40).optional(),
+  }),
   /**
    * Report usage as a runtime does (cost tests): `estimate` (default) counts at once like the
    * mock's own per-call estimates; `final` replaces every estimate of the run so far (the

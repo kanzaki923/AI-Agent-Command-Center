@@ -284,6 +284,21 @@ describe('MockAgentRuntime plans', () => {
     ]);
   });
 
+  it('says what a long step is doing (the chip shows it as now)', async () => {
+    const ac = new AbortController();
+    const { base } = input(plan([{ type: 'sleep', ms: 10_000, activity: '競合サイトを確認中' }]), {
+      signal: ac.signal,
+    });
+    const events: AgentEvent[] = [];
+    const p = (async () => {
+      for await (const e of fast.run(base)) events.push(e);
+    })();
+    await new Promise((r) => setTimeout(r, 20));
+    ac.abort(new Error('cancelled'));
+    await expect(p).rejects.toThrow('cancelled');
+    expect(events).toContainEqual({ type: 'activity', text: '競合サイトを確認中' });
+  });
+
   it('stops with the abort error when cancelled', async () => {
     const ac = new AbortController();
     const { base } = input(

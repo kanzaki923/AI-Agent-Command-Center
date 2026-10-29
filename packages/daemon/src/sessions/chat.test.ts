@@ -403,6 +403,25 @@ describe('session.search', () => {
     expect(hit!.snippet).toContain('景色');
   });
 
+  it('never shows machine text: mock steps and ids are not hits and not in snippets', async () => {
+    const d = await daemon();
+    const s = await d.call(HUMAN, 'session.create', { title: 'FAQ' });
+    const add = (text: string) =>
+      d.ctx.service('sessions').appendMessage({
+        sessionId: s.id,
+        role: 'user',
+        content: [{ type: 'text', text }],
+        author: HUMAN,
+      });
+    add('質問をつくって\n```acc-mock\n[{ "type": "write", "path": "faq.md" }]\n```');
+    const note = add('「FAQ を 10 問つくる」（ses_01m64p0w949gvqabcdefghij）から知らせ');
+    const search = async (query: string) => (await d.call(HUMAN, 'session.search', { query })).items;
+    expect(await search('faq.md')).toEqual([]);
+    const [hit] = await search('知らせ');
+    expect(hit?.messageId).toBe(note.id);
+    expect(hit?.snippet).toBe('「FAQ を 10 問つくる」から知らせ');
+  });
+
   it('indexes messages that existed before the index (migration backfill)', async () => {
     const { sessionsModule } = await import('./index');
     const { modules } = await import('../modules');

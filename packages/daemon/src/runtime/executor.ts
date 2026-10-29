@@ -430,7 +430,8 @@ async function recordDiffArtifact(
   try {
     await ctx.service('artifacts').recordDiff({
       workspaceId,
-      title: `変更内容: ${truncate(title, 80)}`,
+      // The code icon already says it is a change: the title is the work itself.
+      title: truncate(title, 80),
       projectId: ctl.run.projectId,
       sessionId: ctl.run.sessionId,
       runId: ctl.run.id,

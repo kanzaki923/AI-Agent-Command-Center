@@ -275,7 +275,7 @@ describe('agent executor', () => {
     expect(fakes.artifacts).toEqual([
       {
         workspaceId: fakes.workspaceId,
-        title: '変更内容: README を整える',
+        title: 'README を整える',
         projectId: run.projectId,
         sessionId: run.sessionId,
         runId: run.id,

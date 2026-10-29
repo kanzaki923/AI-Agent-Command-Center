@@ -2,7 +2,7 @@ import { sleep } from '../../async';
 import type { StepHandler } from './types';
 
 export const sleepStep: StepHandler<'sleep'> = async function* (ctx, step) {
-  yield { type: 'activity', text: '待機中' };
+  yield { type: 'activity', text: step.activity ?? '待機中' };
   await sleep(step.ms, ctx.input.signal);
   return 'next';
 };

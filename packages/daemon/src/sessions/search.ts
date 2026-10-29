@@ -55,6 +55,16 @@ function likeEscape(s: string): string {
   return s.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
+/**
+ * The part of a message a person reads: without the mock runtime's ```acc-mock steps (for
+ * the model) and without ids such as `（ses_01…）` that wake-up and inbox notes carry.
+ */
+export function readableText(text: string): string {
+  return text
+    .replace(/```acc-mock[^\n]*\n[\s\S]*?(?:```|$)/g, ' ')
+    .replace(/\s*[（(]?\b[a-z]{2,4}_[0-9a-z]{20,}\b[)）]?/g, '');
+}
+
 /** A short excerpt around the first match, on one line. */
 export function makeSnippet(text: string, terms: string[], before = 30, after = 70): string {
   const flat = text.replace(/\s+/g, ' ').trim();
@@ -115,11 +125,19 @@ export function searchMessages(
       LIMIT ?`,
     [...params, q.limit],
   );
-  return rows.map((r) => ({
-    sessionId: r.session_id,
-    sessionTitle: r.title ?? '',
-    messageId: r.message_id,
-    snippet: makeSnippet(r.text ?? '', terms),
-    createdAt: r.created_at,
-  }));
+  const hits: SessionSearchHit[] = [];
+  for (const r of rows) {
+    // A match only inside machine text (a mock step, an id) is not a hit for a person.
+    const text = readableText(r.text ?? '');
+    const lower = text.toLowerCase();
+    if (!terms.every((t) => lower.includes(t.toLowerCase()))) continue;
+    hits.push({
+      sessionId: r.session_id,
+      sessionTitle: r.title ?? '',
+      messageId: r.message_id,
+      snippet: makeSnippet(text, terms),
+      createdAt: r.created_at,
+    });
+  }
+  return hits;
 }
