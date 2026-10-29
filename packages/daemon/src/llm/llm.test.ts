@@ -6,6 +6,7 @@ import { silentLogger } from '../core/log';
 import { HUMAN, type TestDaemonNoServer, createTestDaemon } from '../testing';
 import { LlmGateway } from './gateway';
 import { toChatMessages } from './messages';
+import { describeGatewayError, gatewayErrorHint } from './gatewayErrors';
 import { MockProvider, mockCallInfo, scripted } from './mock';
 import { OpenAiCompatibleProvider, OpenAiStreamAccumulator } from './openai';
 import { SseParser } from './sse';
@@ -591,5 +592,221 @@ describe('API tools', () => {
       items: unknown[];
     };
     expect(res.items).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shapes a real LiteLLM Proxy produces (observed: docs/snapshot/20261029_litellm-contract.md;
+// the opt-in llm/litellm-contract.test.ts runs against the real thing)
+// ---------------------------------------------------------------------------
+
+describe('LiteLLM error texts', () => {
+  const wrapped = (inner: string, cls = 'BadRequestError') =>
+    `litellm.${cls}: AnthropicException - b'${inner}'\n\nLiteLLM: model group 'team-sonnet' failed with the error above. No fallback was attempted.`;
+  const anthropic = (msg: string) =>
+    JSON.stringify({ type: 'error', error: { type: 'x', message: msg }, request_id: 'req_1' });
+
+  it('unwraps provider errors, finds unknown models and cooldowns', () => {
+    expect(describeGatewayError(wrapped(anthropic('fake 400')))).toEqual({
+      message: 'fake 400',
+      kind: null,
+    });
+    // The CLI prefixes "API Error: <status>" and drops the b'' quoting.
+    expect(
+      describeGatewayError(
+        `API Error: 400 litellm.BadRequestError: AnthropicException - ${anthropic('bad')}\n\nLiteLLM: model group 'x' failed with the error above. No fallback was attempted.`,
+      ).message,
+    ).toBe('API Error: 400 bad');
+    // The 500 variant ends with a "Handle with" hint.
+    expect(
+      describeGatewayError(
+        `litellm.InternalServerError: AnthropicException - b'${anthropic('boom')}'. Handle with \`litellm.InternalServerError\`.\n\nLiteLLM: model group 'x' failed.`,
+      ).message,
+    ).toBe('boom');
+    expect(
+      describeGatewayError(
+        '/chat/completions: Invalid model name passed in model=gpt-4.1-mini. Call `/v1/models` to view available models for your key.',
+      ),
+    ).toMatchObject({ kind: 'model_not_found', model: 'gpt-4.1-mini' });
+    const cooldown = describeGatewayError(
+      "No deployments available for selected model, Try again in 5 seconds. All deployments for selected model are in cooldown. Passed model=team-sonnet. pre-call-checks=False, cooldown_list=['abc']",
+    );
+    expect(cooldown.kind).toBe('cooldown');
+    expect(gatewayErrorHint(cooldown)).toContain('数秒間止めています');
+    // Anything else passes through untouched.
+    expect(describeGatewayError('plain failure')).toEqual({ message: 'plain failure', kind: null });
+  });
+
+  it('maps LiteLLM HTTP errors to Japanese messages and codes', async () => {
+    const bodies: Record<string, [number, unknown]> = {
+      unknown: [
+        400,
+        {
+          error: {
+            message:
+              '/chat/completions: Invalid model name passed in model=nope. Call `/v1/models` to view available models for your key.',
+            type: 'invalid_request_error',
+            code: '400',
+          },
+        },
+      ],
+      provider: [
+        401,
+        { error: { message: wrapped(anthropic('invalid x-api-key'), 'AuthenticationError') } },
+      ],
+      cooldown: [
+        429,
+        {
+          error: {
+            message: 'No deployments available for selected model, Try again in 5 seconds.',
+            type: 'all_deployments_in_cooldown',
+          },
+        },
+      ],
+    };
+    const server = await fakeServer((_req, body, res) => {
+      const model = (JSON.parse(body) as { model: string }).model;
+      const [status, json] = bodies[model]!;
+      res.writeHead(status, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(json));
+    });
+    const fail = (model: string): Promise<LlmError> =>
+      collect(provider(server.url).stream(req({ model }), new AbortController().signal)).then(
+        () => {
+          throw new Error('expected an error');
+        },
+        (e: unknown) => e as LlmError,
+      );
+    expect(await fail('unknown')).toMatchObject({
+      code: 'llm_model_not_found',
+      status: 400,
+      message: expect.stringContaining('LiteLLM にモデル「nope」がありません') as unknown,
+    });
+    expect(await fail('provider')).toMatchObject({
+      code: 'llm_http_error',
+      status: 401,
+      message:
+        'LLM の呼び出しに失敗しました（HTTP 401）。LiteLLM の API キー、または LiteLLM に設定した上流の認証情報を確認してください: invalid x-api-key',
+    });
+    expect((await fail('cooldown')).message).toContain('このモデルへの送信を数秒間止めています');
+  });
+});
+
+describe('OpenAiCompatibleProvider idle timeout', () => {
+  it('stops a stream that goes silent, and a server that never answers', async () => {
+    const server = await fakeServer(async (_req, body, res) => {
+      if ((JSON.parse(body) as { model: string }).model === 'silent') {
+        await wait(5000); // no headers at all
+        res.end();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(sse({ choices: [{ index: 0, delta: { content: 'a' } }] }));
+      await wait(5000); // LiteLLM keeps a stalled upstream stream open
+      res.end();
+    });
+    const p = new OpenAiCompatibleProvider({
+      connection: () => ({ baseUrl: server.url, apiKey: null }),
+      idleTimeoutMs: 300,
+    });
+    const got: LlmStreamEvent[] = [];
+    const stalled = (async () => {
+      for await (const e of p.stream(req(), new AbortController().signal)) got.push(e);
+    })();
+    await expect(stalled).rejects.toMatchObject({
+      code: 'llm_timeout',
+      message: expect.stringContaining('0 秒以上応答がない') as unknown,
+    });
+    expect(got).toEqual([{ type: 'text', text: 'a' }]);
+    const started = Date.now();
+    await expect(
+      collect(p.stream(req({ model: 'silent' }), new AbortController().signal)),
+    ).rejects.toMatchObject({ code: 'llm_timeout' });
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  it('still reports a caller abort as an AbortError, not a timeout', async () => {
+    const server = await fakeServer(async (_req, _body, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      await wait(5000);
+      res.end();
+    });
+    const p = new OpenAiCompatibleProvider({
+      connection: () => ({ baseUrl: server.url, apiKey: null }),
+      idleTimeoutMs: 10_000,
+    });
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 100);
+    await expect(collect(p.stream(req(), ac.signal))).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+  });
+});
+
+describe('thinking blocks (Anthropic extended thinking via LiteLLM)', () => {
+  it('joins streamed thinking_blocks fragments', () => {
+    const acc = new OpenAiStreamAccumulator('m', null);
+    const delta = (d: Record<string, unknown>) =>
+      acc.handle(JSON.stringify({ choices: [{ index: 0, delta: d }] }));
+    delta({ reasoning_content: '考え', thinking_blocks: [{ type: 'thinking', thinking: '考え' }] });
+    delta({ reasoning_content: 'ます', thinking_blocks: [{ type: 'thinking', thinking: 'ます' }] });
+    delta({ thinking_blocks: [{ type: 'thinking', thinking: '', signature: 'sig1' }] });
+    delta({ thinking_blocks: [{ type: 'redacted_thinking', data: 'xyz' }] });
+    expect(acc.finish()[0]).toEqual({
+      type: 'thinking_blocks',
+      blocks: [
+        { type: 'thinking', thinking: '考えます', signature: 'sig1' },
+        { type: 'redacted_thinking', data: 'xyz' },
+      ],
+    });
+  });
+
+  it('sends them back with the tool-use turn of a chat run', async () => {
+    const server = await fakeServer((_req, body, res) => {
+      const sent = JSON.parse(body) as { messages: unknown[] };
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const delta =
+        sent.messages.length === 1
+          ? {
+              reasoning_content: '調べる',
+              thinking_blocks: [{ type: 'thinking', thinking: '調べる', signature: 'sig' }],
+              tool_calls: [
+                { index: 0, id: 'toolu_1', function: { name: 'session__list', arguments: '{}' } },
+              ],
+            }
+          : { content: '完了' };
+      res.write(sse({ choices: [{ index: 0, delta }] }));
+      res.end(sse('[DONE]'));
+    });
+    daemon = await createTestDaemon();
+    const { ctx } = daemon;
+    await daemon.call(HUMAN, 'settings.update', { litellm: { baseUrl: server.url } });
+    const session = await daemon.call(HUMAN, 'session.create', { model: 'think-model' });
+    ctx.repos.grants.insert({
+      id: ctx.ids.next('grant'),
+      subject: { kind: 'session', sessionId: session.id },
+      parentGrantId: null,
+      permissions: ['session.list'],
+      scope: {},
+      limits: {},
+      depth: 0,
+      lifetime: 'session',
+      expiresAt: null,
+      revokedAt: null,
+      reason: null,
+      grantedBy: HUMAN,
+      createdAt: ctx.clock.iso(),
+    });
+    const { runId } = await daemon.call(HUMAN, 'session.send', {
+      sessionId: session.id,
+      content: 'go',
+    });
+    const run = await ctx.service('runs').waitForEnd(runId);
+    expect(run.status).toBe('completed');
+    const second = JSON.parse(server.requests[1]!.body) as { messages: Record<string, unknown>[] };
+    expect(second.messages.find((m) => m.role === 'assistant')).toMatchObject({
+      tool_calls: [{ id: 'toolu_1' }],
+      thinking_blocks: [{ type: 'thinking', thinking: '調べる', signature: 'sig' }],
+    });
   });
 });

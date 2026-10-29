@@ -159,6 +159,8 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
       role: 'assistant',
       content: result.text || null,
       ...(calls.length > 0 ? { toolCalls: calls.map((c) => c.tc) } : {}),
+      // Sent back with the tool results (Anthropic thinking requires it); not persisted.
+      ...(result.thinkingBlocks.length > 0 ? { thinkingBlocks: result.thinkingBlocks } : {}),
     });
     if (calls.length === 0) {
       return { messages, text, turns: turn + 1, stopReason: 'done', usage };

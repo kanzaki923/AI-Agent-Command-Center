@@ -1,6 +1,7 @@
 import type { ContentPart } from '@acc/protocol';
 import type { AgentEvent } from '../../contracts';
 import { asRecord, asString, describeToolActivity } from '../tools';
+import { describeGatewayError, gatewayErrorHint } from '../../llm/gatewayErrors';
 
 /**
  * Claude Agent SDK message stream -> AgentEvent (see
@@ -400,7 +401,13 @@ export class ClaudeMessageNormalizer {
     const fromAssistant = this.lastAssistantError
       ? ASSISTANT_ERRORS[this.lastAssistantError]
       : undefined;
+    // A success subtype with is_error carries the API error text in `result`. Behind LiteLLM
+    // it is wrapped ("litellm.BadRequestError: AnthropicException - ...") and an unknown model
+    // is a 400 rather than a 404: unwrap it and say what is wrong when we can tell.
+    const resultText = subtype === 'success' ? asString(msg.result)?.trim() : undefined;
+    const gateway = resultText ? describeGatewayError(resultText) : null;
     const base =
+      (gateway ? gatewayErrorHint(gateway) : null) ??
       fromAssistant ??
       (terminal ? TERMINAL_REASONS[terminal] : undefined) ??
       RESULT_ERRORS[subtype] ??
@@ -409,12 +416,15 @@ export class ClaudeMessageNormalizer {
     const status = msg.api_error_status;
     if (typeof status === 'number') details.push(`HTTP ${status}`);
     if (Array.isArray(msg.errors)) {
-      details.push(...msg.errors.filter((e): e is string => typeof e === 'string' && !!e));
+      details.push(
+        ...msg.errors
+          .filter((e): e is string => typeof e === 'string' && !!e)
+          .map((e) => describeGatewayError(e).message),
+      );
     }
-    // A success subtype with is_error carries the API error text in `result`.
-    const resultText = subtype === 'success' ? asString(msg.result)?.trim() : undefined;
-    if (resultText) {
-      details.push(resultText.length > 300 ? `${resultText.slice(0, 299)}…` : resultText);
+    if (gateway?.message) {
+      const text = gateway.message;
+      details.push(text.length > 300 ? `${text.slice(0, 299)}…` : text);
     }
     return details.length > 0 ? `${base}: ${details.join(' / ')}` : base;
   }

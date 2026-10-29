@@ -153,6 +153,37 @@ describe('ClaudeMessageNormalizer (recorded streams)', () => {
     expect(n.baselineTotals).toBeNull();
   });
 
+  it('unwraps LiteLLM error texts and names a model LiteLLM does not serve', () => {
+    // The same recorded failure with the result text a real LiteLLM produces
+    // (docs/snapshot/20261029_litellm-contract.md).
+    const withResult = (text: string) => {
+      const n = new ClaudeMessageNormalizer(CWD);
+      for (const m of rec(R.API_ERROR)) {
+        const msg = m as { type?: string; result?: unknown };
+        n.push(msg.type === 'result' ? { ...msg, result: text } : m);
+      }
+      return n.outcome;
+    };
+    expect(
+      withResult(
+        `API Error: 400 litellm.BadRequestError: AnthropicException - {"type":"error","error":{"type":"invalid_request_error","message":"fake 400"},"request_id":"req_1"}\n\nLiteLLM: model group 'claude-sonnet-4-5' failed with the error above. No fallback was attempted.`,
+      ),
+    ).toEqual({
+      ok: false,
+      message: 'モデルの呼び出しでエラーが発生しました: HTTP 400 / API Error: 400 fake 400',
+    });
+    expect(
+      withResult(
+        'API Error: 400 anthropic_messages: Invalid model name passed in model=no-such-model. Call `/v1/models` to view available models for your key.',
+      ),
+    ).toMatchObject({
+      ok: false,
+      message: expect.stringMatching(
+        /^LiteLLM にモデル「no-such-model」がありません。.*: HTTP 400 \/ API Error: 400/,
+      ) as unknown,
+    });
+  });
+
   it('treats a rejected credential as fatal at the first retry', () => {
     const n = new ClaudeMessageNormalizer(CWD);
     const retry = rec(R.AUTH_ERROR).find(

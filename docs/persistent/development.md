@@ -190,6 +190,12 @@ packages/cli        @acc/cli       `acc` コマンド
 - **Claude Agent SDK の契約テスト**（`runtime/claude/sdk-contract.test.ts`）：本物の SDK と SDK 同梱の本物の Claude Code CLI を、ローカルの偽 Anthropic API（`runtime/claude/contract/fakeAnthropic.ts`。SSE を本物と同じ形で返し、台本は受け取ったリクエストの関数）に向けて `ClaudeAgentSdkRuntime` を動かす。費用・ネットワーク・認証情報なし。CLI の HOME / `CLAUDE_CONFIG_DIR` / TEMP は一時ディレクトリで、`~/.claude` には触れない。環境変数は許可リストからだけ作る（開発機の `ANTHROPIC_*` は渡らない）。`HTTPS_PROXY` を「すべて拒否して記録する」プロキシに向け、偽 API 以外への接続がないことも確かめる。通常の `pnpm test` に含まれ（約 20 秒）、CLI のバイナリがなければ自動でスキップ、`ACC_SKIP_SDK_CONTRACT=1` でも飛ばせる。単体で回すときは `pnpm --filter @acc/daemon test:sdk-contract`。
   - 単体テスト（`runtime/claude.test.ts`）は、この CLI から**記録した**メッセージ列（`runtime/claude/contract/recorded.ts`）を再生する。手で書いた SDK メッセージは使わない。記録は `satisfies RecordedStream`（`contract/recordedTypes.ts`）で SDK の型に照らして型検査されるので、SDK の型が変わると typecheck で気づける。
   - **SDK を上げたら**：`pnpm --filter @acc/daemon record:sdk-fixtures` で記録し直し（パスは `<REPO>` などに置き換え、ダミーのトークン・ユーザー名・ローカルパスが残っていたら書き出さない）、`pnpm check` を通す。挙動の違いは契約テストが落ちて分かる。
+- **本物の LiteLLM との契約テスト**（`llm/litellm-contract.test.ts`、任意）：本物の LiteLLM Proxy を `127.0.0.1` で起動し（`runtime/claude/contract/litellmProxy.ts`。ダミーのマスターキー、環境変数は許可リストだけ、`LITELLM_TELEMETRY=False`・`LITELLM_LOCAL_MODEL_COST_MAP=True`、外向きは拒否プロキシ）、上流を偽 Anthropic API に向けて、デーモンの LLM Gateway（`/chat/completions`）と Claude Agent SDK（`/v1/messages`）の両方を通す。費用なし。`ACC_LITELLM_BIN` が `litellm` の実行ファイルを指すときだけ動き、`pnpm check` では飛ばす。
+  ```sh
+  python -m venv <どこか>/litellm-venv && <どこか>/litellm-venv/Scripts/pip install "litellm[proxy]"   # macOS / Linux は bin/
+  ACC_LITELLM_BIN=<どこか>/litellm-venv/Scripts/litellm.exe pnpm --filter @acc/daemon test:litellm-contract
+  ```
+  LiteLLM 1.106 の wheel には tiktoken の `cl100k_base` が入っておらず、オフラインだと起動後の最初の呼び出しがダウンロードを試みて 500 になる。そのときは `cl100k_base` のキャッシュ（ファイル名は URL の SHA-1 `9b5ad71b2ce5302211f9c61530b329a4922fc6a4`。tiktoken が SHA-256 を検証する）を置いたディレクトリを `ACC_LITELLM_TIKTOKEN_CACHE` で渡す（`CUSTOM_TIKTOKEN_CACHE_DIR` になる）。結果は `docs/snapshot/20261029_litellm-contract.md`。
 - Run の Executor は `ctx.service('runs').registerExecutor(kind, fn)` で差し替えられる（後勝ち）。
 
 ## 7. 約束ごと

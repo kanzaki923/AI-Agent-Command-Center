@@ -110,6 +110,11 @@ export interface FakeAnthropicOptions {
   intercept?: (req: FakeRequest) => FakeReply | undefined;
   /** Keep every request body (probes only; bodies can be large). */
   keepBodies?: boolean;
+  /**
+   * Imitate the real API's rule for extended thinking with tools: with `thinking` on, an
+   * assistant turn that ends in tool_use must start with its thinking block, else HTTP 400.
+   */
+  strictThinking?: boolean;
 }
 
 const SECRET_HEADERS = new Set(['authorization', 'x-api-key', 'proxy-authorization', 'cookie']);
@@ -130,13 +135,15 @@ export class FakeAnthropicServer {
   private fallback: FakeTurn;
   private port = 0;
   private readonly jsonChunkSize: number;
-  private readonly intercept: FakeAnthropicOptions['intercept'];
+  private intercept: FakeAnthropicOptions['intercept'];
   private readonly keepBodies: boolean;
+  private strictThinking: boolean;
 
   constructor(opts: FakeAnthropicOptions = {}) {
     this.jsonChunkSize = opts.jsonChunkSize ?? 12;
     this.intercept = opts.intercept;
     this.keepBodies = opts.keepBodies ?? false;
+    this.strictThinking = opts.strictThinking ?? false;
     this.turns = [...(opts.turns ?? [])];
     this.aux = opts.aux ?? (() => ({ content: [{ type: 'text', text: 'Fake title' }] }));
     this.fallback = opts.fallback ?? (() => ({ content: [{ type: 'text', text: 'done' }] }));
@@ -152,6 +159,16 @@ export class FakeAnthropicServer {
   /** Replace the remaining script (between runs of one test). */
   script(turns: FakeTurn[]): void {
     this.turns = [...turns];
+  }
+
+  /**
+   * Replace the fallback / intercept between runs (one server shared by several tests, e.g.
+   * behind a real LiteLLM that is slow to start). `undefined` leaves a setting as it is.
+   */
+  configure(o: Pick<FakeAnthropicOptions, 'fallback' | 'intercept' | 'strictThinking'>): void {
+    if (o.fallback) this.fallback = o.fallback;
+    if ('intercept' in o) this.intercept = o.intercept;
+    if (o.strictThinking !== undefined) this.strictThinking = o.strictThinking;
   }
 
   get url(): string {
@@ -206,6 +223,16 @@ export class FakeAnthropicServer {
       entry.status = 404;
       sendJson(res, 404, apiError('not_found_error', `Not found: ${url.pathname}`));
       return;
+    }
+
+    if (this.strictThinking) {
+      const problem = thinkingProblem(body);
+      if (problem) {
+        entry.status = 400;
+        if (this.keepBodies) this.bodies.push({ kind: 'other', headers: entry.headers, body });
+        sendJson(res, 400, apiError('invalid_request_error', problem));
+        return;
+      }
     }
 
     const isMain = Array.isArray(body.tools) && body.tools.length > 0;
@@ -491,6 +518,25 @@ function lastToolResults(body: MessagesBody): FakeRequest['toolResults'] {
       content: b.content,
       is_error: b.is_error === true,
     }));
+}
+
+/** The real API's complaint when thinking blocks were not sent back (see strictThinking). */
+function thinkingProblem(body: MessagesBody): string | null {
+  const t = (body.thinking as { type?: string } | undefined)?.type;
+  if (t !== 'enabled' && t !== 'adaptive') return null;
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const i = messages.findLastIndex((m) => m.role === 'assistant');
+  const content = messages[i]?.content;
+  if (!Array.isArray(content)) return null;
+  const blocks = content as { type?: string }[];
+  if (!blocks.some((b) => b.type === 'tool_use')) return null;
+  const first = blocks[0]?.type;
+  if (first === 'thinking' || first === 'redacted_thinking') return null;
+  return (
+    `messages.${i}.content.0.type: Expected \`thinking\` or \`redacted_thinking\`, but found ` +
+    `\`${first}\`. When \`thinking\` is enabled, a final \`assistant\` message must start ` +
+    'with a thinking block.'
+  );
 }
 
 function sleep(ms: number): Promise<void> {

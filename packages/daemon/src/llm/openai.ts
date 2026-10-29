@@ -1,4 +1,5 @@
 import type { CostSource, Usage } from '@acc/protocol';
+import { describeGatewayError, gatewayErrorHint } from './gatewayErrors';
 import { SseParser } from './sse';
 import {
   type ChatMessage,
@@ -22,6 +23,8 @@ export interface OpenAiProviderOptions {
   connection: () => LiteLlmConnection;
   fetch?: typeof fetch;
   pricing?: PricingLookup;
+  /** No bytes from LiteLLM for this long aborts the call (default 5 min). */
+  idleTimeoutMs?: number;
 }
 
 /** LiteLLM puts the computed cost of a call in this response header. */
@@ -42,7 +45,12 @@ export function toWireMessages(messages: ChatMessage[]): unknown[] {
       case 'system':
       case 'user':
         return { role: m.role, content: m.content };
-      case 'assistant':
+      case 'assistant': {
+        // LiteLLM turns `thinking_blocks` back into Anthropic thinking blocks (with signature).
+        const thinking =
+          m.thinkingBlocks && m.thinkingBlocks.length > 0
+            ? { thinking_blocks: m.thinkingBlocks }
+            : {};
         return m.toolCalls && m.toolCalls.length > 0
           ? {
               role: 'assistant',
@@ -52,8 +60,10 @@ export function toWireMessages(messages: ChatMessage[]): unknown[] {
                 type: 'function',
                 function: { name: t.name, arguments: t.arguments },
               })),
+              ...thinking,
             }
-          : { role: 'assistant', content: m.content ?? '' };
+          : { role: 'assistant', content: m.content ?? '', ...thinking };
+      }
       case 'tool':
         return { role: 'tool', tool_call_id: m.toolCallId, content: m.content };
     }
@@ -85,6 +95,7 @@ interface WireChunk {
     delta?: {
       content?: unknown;
       reasoning_content?: unknown;
+      thinking_blocks?: unknown;
       tool_calls?: {
         index?: number;
         id?: unknown;
@@ -109,6 +120,7 @@ const num = (v: unknown): number | null =>
  */
 export class OpenAiStreamAccumulator {
   private readonly calls = new Map<number, { id: string; name: string; args: string }>();
+  private readonly thinking: Record<string, unknown>[] = [];
   private finishReason: string | null = null;
   private usage: WireChunk['usage'] = null;
   done = false;
@@ -150,6 +162,9 @@ export class OpenAiStreamAccumulator {
       if (typeof d?.content === 'string' && d.content) {
         out.push({ type: 'text', text: d.content });
       }
+      if (Array.isArray(d?.thinking_blocks)) {
+        for (const b of d.thinking_blocks as unknown[]) this.addThinking(b);
+      }
       for (const tc of d?.tool_calls ?? []) {
         // Some providers omit `index` when sending each call whole; append those.
         const index = typeof tc.index === 'number' ? tc.index : this.calls.size;
@@ -165,8 +180,27 @@ export class OpenAiStreamAccumulator {
     return out;
   }
 
+  /**
+   * LiteLLM streams Anthropic thinking as `thinking_blocks` fragments: text pieces of the
+   * current block, then an empty piece carrying its signature (observed with 1.106).
+   * Fragments are joined into whole blocks; a signature closes a block.
+   */
+  private addThinking(raw: unknown): void {
+    if (!raw || typeof raw !== 'object') return;
+    const b = raw as Record<string, unknown>;
+    const last = this.thinking.at(-1);
+    if (b.type === 'thinking' && last?.type === 'thinking' && !last.signature) {
+      const prev = typeof last.thinking === 'string' ? last.thinking : '';
+      if (typeof b.thinking === 'string') last.thinking = prev + b.thinking;
+      if (typeof b.signature === 'string' && b.signature) last.signature = b.signature;
+      return;
+    }
+    this.thinking.push({ ...b });
+  }
+
   finish(): LlmStreamEvent[] {
     const out: LlmStreamEvent[] = [];
+    if (this.thinking.length > 0) out.push({ type: 'thinking_blocks', blocks: this.thinking });
     const sorted = [...this.calls.entries()].sort((a, b) => a[0] - b[0]);
     for (const [index, c] of sorted) {
       const toolCall: ChatToolCall = {
@@ -231,83 +265,143 @@ export class OpenAiCompatibleProvider implements LlmProvider {
         'LiteLLM の接続先が設定されていません。設定で LiteLLM の URL を指定してください',
       );
     }
-    const url = joinUrl(baseUrl, 'chat/completions');
-    let res: Response;
-    try {
-      res = await this.fetchImpl(url, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          accept: 'text/event-stream',
-          ...authHeaders(apiKey),
-        },
-        body: JSON.stringify(toWireRequest(req)),
-        signal,
-      });
-    } catch (err) {
-      if (signal.aborted || isAbortError(err)) throw abortError(signal);
-      const cause = (err as { cause?: { code?: unknown } }).cause?.code;
-      throw new LlmError(
-        'llm_unreachable',
-        `LiteLLM（${baseUrl}）に接続できませんでした${typeof cause === 'string' ? `: ${cause}` : ''}`,
+    if (signal.aborted) throw abortError(signal);
+    // LiteLLM keeps a stalled upstream stream open for its own request timeout (6000 s by
+    // default), so silence is bounded here: no bytes for idleMs (waiting for the response
+    // headers included) aborts the call.
+    const idleMs = this.opts.idleTimeoutMs ?? DEFAULT_LLM_IDLE_TIMEOUT_MS;
+    const ctl = new AbortController();
+    const forward = () => ctl.abort(signal.reason);
+    signal.addEventListener('abort', forward, { once: true });
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = () => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        ctl.abort();
+      }, idleMs);
+    };
+    const disarm = () => clearTimeout(timer);
+    const timeout = () =>
+      new LlmError(
+        'llm_timeout',
+        `LLM から${formatDuration(idleMs)}以上応答がないため停止しました（LiteLLM か上流のモデルが応答していません）`,
       );
-    }
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw new LlmError(
-        'llm_http_error',
-        `LLM の呼び出しに失敗しました（HTTP ${res.status}）${errorDetail(body)}`,
-        res.status,
-      );
-    }
-    if (!res.body) throw new LlmError('llm_stream_error', 'LLM の応答が空でした');
 
-    const acc = new OpenAiStreamAccumulator(
-      req.model,
-      num(res.headers.get(LITELLM_COST_HEADER)),
-      this.opts.pricing,
-    );
-    const parser = new SseParser();
-    const decoder = new TextDecoder();
-    const reader = res.body.getReader();
     try {
-      for (;;) {
-        let chunk: Awaited<ReturnType<typeof reader.read>>;
-        try {
-          chunk = await reader.read();
-        } catch (err) {
-          if (signal.aborted || isAbortError(err)) throw abortError(signal);
-          throw new LlmError('llm_stream_error', 'LLM のストリームが途中で切断されました');
+      const url = joinUrl(baseUrl, 'chat/completions');
+      let res: Response;
+      arm();
+      try {
+        res = await this.fetchImpl(url, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'text/event-stream',
+            ...authHeaders(apiKey),
+          },
+          body: JSON.stringify(toWireRequest(req)),
+          signal: ctl.signal,
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => '');
+          throw httpError(res.status, body);
         }
-        const text = chunk.done
-          ? decoder.decode()
-          : decoder.decode(chunk.value as Uint8Array, { stream: true });
-        const messages = chunk.done ? [...parser.push(text), ...parser.flush()] : parser.push(text);
-        for (const m of messages) {
-          if (acc.done) break;
-          for (const ev of acc.handle(m.data)) yield ev;
-        }
-        if (chunk.done || acc.done) break;
+      } catch (err) {
+        if (err instanceof LlmError) throw err;
+        if (timedOut) throw timeout();
+        if (signal.aborted || isAbortError(err)) throw abortError(signal);
+        const cause = (err as { cause?: { code?: unknown } }).cause?.code;
+        throw new LlmError(
+          'llm_unreachable',
+          `LiteLLM（${baseUrl}）に接続できませんでした${typeof cause === 'string' ? `: ${cause}` : ''}`,
+        );
+      } finally {
+        disarm();
       }
+      if (!res.body) throw new LlmError('llm_stream_error', 'LLM の応答が空でした');
+
+      const acc = new OpenAiStreamAccumulator(
+        req.model,
+        num(res.headers.get(LITELLM_COST_HEADER)),
+        this.opts.pricing,
+      );
+      const parser = new SseParser();
+      const decoder = new TextDecoder();
+      const reader = res.body.getReader();
+      try {
+        for (;;) {
+          let chunk: Awaited<ReturnType<typeof reader.read>>;
+          arm();
+          try {
+            chunk = await reader.read();
+          } catch (err) {
+            if (timedOut) throw timeout();
+            if (signal.aborted || isAbortError(err)) throw abortError(signal);
+            throw new LlmError('llm_stream_error', 'LLM のストリームが途中で切断されました');
+          } finally {
+            disarm();
+          }
+          const text = chunk.done
+            ? decoder.decode()
+            : decoder.decode(chunk.value as Uint8Array, { stream: true });
+          const messages = chunk.done
+            ? [...parser.push(text), ...parser.flush()]
+            : parser.push(text);
+          for (const m of messages) {
+            if (acc.done) break;
+            for (const ev of acc.handle(m.data)) yield ev;
+          }
+          if (chunk.done || acc.done) break;
+        }
+      } finally {
+        reader.cancel().catch(() => {});
+      }
+      for (const ev of acc.finish()) yield ev;
     } finally {
-      reader.cancel().catch(() => {});
+      disarm();
+      signal.removeEventListener('abort', forward);
     }
-    for (const ev of acc.finish()) yield ev;
   }
 }
 
-/** Short, key-free detail from an error body (OpenAI / LiteLLM `{ error: { message } }`). */
-function errorDetail(body: string): string {
-  if (!body) return '';
-  let msg = body;
+/** Default for OpenAiProviderOptions.idleTimeoutMs. */
+export const DEFAULT_LLM_IDLE_TIMEOUT_MS = 5 * 60_000;
+
+function formatDuration(ms: number): string {
+  return ms >= 60_000 ? ` ${Math.round(ms / 60_000)} 分` : ` ${Math.round(ms / 1000)} 秒`;
+}
+
+/** Japanese hint per HTTP status of a failed call (LiteLLM's own or the upstream's). */
+function statusHint(status: number): string | null {
+  if (status === 401 || status === 403) {
+    return 'LiteLLM の API キー、または LiteLLM に設定した上流の認証情報を確認してください';
+  }
+  if (status === 429) return 'レート制限に達しました。しばらく待ってから再試行してください';
+  if (status >= 500) return 'LiteLLM か上流のモデルでエラーが発生しました';
+  return null;
+}
+
+/** LlmError for a non-2xx answer, with LiteLLM's wrapping removed and the key masked. */
+export function httpError(status: number, body: string): LlmError {
+  let raw = body;
   try {
     const parsed = JSON.parse(body) as { error?: { message?: unknown } | string };
     const e = parsed.error;
-    if (typeof e === 'string') msg = e;
-    else if (e && typeof e.message === 'string') msg = e.message;
+    if (typeof e === 'string') raw = e;
+    else if (e && typeof e.message === 'string') raw = e.message;
   } catch {
     // plain text body
   }
-  msg = msg.replace(/sk-[A-Za-z0-9_-]{6,}/g, 'sk-…').trim();
-  return msg ? `: ${msg.length > 300 ? `${msg.slice(0, 300)}…` : msg}` : '';
+  const info = describeGatewayError(raw);
+  let detail = info.message.replace(/sk-[A-Za-z0-9_-]{6,}/g, 'sk-…').trim();
+  if (detail.length > 300) detail = `${detail.slice(0, 300)}…`;
+  const hint = gatewayErrorHint(info) ?? statusHint(status);
+  const head = `LLM の呼び出しに失敗しました（HTTP ${status}）`;
+  const message = [hint ? `${head}。${hint}` : head, detail].filter(Boolean).join(': ');
+  return new LlmError(
+    info.kind === 'model_not_found' ? 'llm_model_not_found' : 'llm_http_error',
+    message,
+    status,
+  );
 }

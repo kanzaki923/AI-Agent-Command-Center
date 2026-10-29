@@ -11,6 +11,8 @@ export interface LlmGatewayOptions {
   log: Logger;
   fetch?: typeof fetch;
   pricing?: PricingLookup;
+  /** See OpenAiProviderOptions.idleTimeoutMs. */
+  idleTimeoutMs?: number;
   /** How long a successful /models answer is reused (default 5 min). */
   modelsTtlMs?: number;
   now?: () => number;
@@ -44,6 +46,7 @@ export class LlmGateway {
       connection: opts.connection,
       fetch: this.fetchImpl,
       ...(opts.pricing ? { pricing: opts.pricing } : {}),
+      ...(opts.idleTimeoutMs !== undefined ? { idleTimeoutMs: opts.idleTimeoutMs } : {}),
     });
   }
 
@@ -64,6 +67,7 @@ export class LlmGateway {
       text: '',
       reasoning: '',
       toolCalls: [] as ChatToolCall[],
+      thinkingBlocks: [],
       usage: { ...EMPTY_USAGE },
       finishReason: null,
     };
@@ -79,6 +83,9 @@ export class LlmGateway {
           break;
         case 'tool_call':
           result.toolCalls.push(ev.toolCall);
+          break;
+        case 'thinking_blocks':
+          result.thinkingBlocks.push(...ev.blocks);
           break;
         case 'usage':
           result.usage = ev.usage;

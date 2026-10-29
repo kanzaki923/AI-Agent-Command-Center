@@ -11,7 +11,18 @@ export interface ChatToolCall {
 export type ChatMessage =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string }
-  | { role: 'assistant'; content: string | null; toolCalls?: ChatToolCall[] }
+  | {
+      role: 'assistant';
+      content: string | null;
+      toolCalls?: ChatToolCall[];
+      /**
+       * The provider's reasoning blocks of this turn, opaque (Anthropic `thinking` with its
+       * signature, as LiteLLM streams them in `thinking_blocks`). With thinking enabled the
+       * Anthropic API rejects a tool-use turn sent back without them, so the tool loop
+       * keeps them for the next call. Not persisted.
+       */
+      thinkingBlocks?: unknown[];
+    }
   | { role: 'tool'; toolCallId: string; content: string };
 
 /** Function tool offered to the model. `parameters` is a JSON Schema object. */
@@ -38,6 +49,8 @@ export type LlmStreamEvent =
   | { type: 'text'; text: string }
   | { type: 'reasoning'; text: string }
   | { type: 'tool_call'; toolCall: ChatToolCall }
+  /** Reasoning blocks to send back with this turn (see ChatMessage.thinkingBlocks). */
+  | { type: 'thinking_blocks'; blocks: unknown[] }
   | { type: 'usage'; usage: Usage }
   | { type: 'finish'; reason: string | null };
 
@@ -45,6 +58,8 @@ export interface ChatResult {
   text: string;
   reasoning: string;
   toolCalls: ChatToolCall[];
+  /** See ChatMessage.thinkingBlocks (empty when the provider sent none). */
+  thinkingBlocks: unknown[];
   usage: Usage;
   finishReason: string | null;
 }
@@ -72,6 +87,7 @@ export class LlmError extends Error {
       | 'llm_unreachable'
       | 'llm_http_error'
       | 'llm_stream_error'
+      | 'llm_timeout'
       | 'llm_model_not_found',
     message: string,
     readonly status?: number,
