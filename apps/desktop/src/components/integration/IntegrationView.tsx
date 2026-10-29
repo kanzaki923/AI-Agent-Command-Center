@@ -1,60 +1,219 @@
-import type { Integration, IntegrationStep, WorkspaceDiff } from '@acc/protocol';
+import type { Artifact, Integration, SessionState, WorkspaceDiff } from '@acc/protocol';
 import { useQuery } from '@tanstack/react-query';
-import {
-  AlertTriangle,
-  ArrowLeft,
-  Bot,
-  CheckCircle2,
-  CircleX,
-  GitBranch,
-  GitMerge,
-  RotateCcw,
-  ShieldCheck,
-} from 'lucide-react';
-import { AnimatePresence, motion } from 'motion/react';
-import { type ReactNode, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, Bot, CircleCheck, GitMerge, RotateCcw, TriangleAlert } from 'lucide-react';
+import { motion } from 'motion/react';
+import { type ReactNode, useMemo, useRef } from 'react';
 import {
   approveIntegration,
   rejectIntegration,
   rerunIntegration,
   resolveWithAgent,
 } from '../../daemon/orchestration';
-import { useArtifact, useIntegrations, usePendingApprovals, useProjects, useRun, useTasks } from '../../daemon/queries';
+import { useOutputs } from '../../daemon/outputs';
+import { useArtifact, useIntegrations, useProjects } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
+import { useSessionTree } from '../../daemon/tree';
 import { useWindowKeydown } from '../../hooks/useWindowKeydown';
-import { cn } from '../../lib/cn';
-import { formatClock } from '../../lib/format';
 import { overlayOpen } from '../../lib/overlay';
 import { isTypingTarget } from '../../lib/shortcuts';
-import { formatDuration } from '../../model/chat';
-import { parsePatch } from '../../model/diff';
-import {
-  INTEGRATION_STATUS_LABEL,
-  applyPlan,
-  canApprove,
-  canReject,
-  canRerun,
-  canResolveWithAgent,
-  integrationState,
-  isIntegrationActive,
-  isResolving,
-  resolutionFailed,
-  resolvePlan,
-  stepDurationMs,
-  stepState,
-} from '../../model/integration';
-import { InlineApproval } from '../approval/ApprovalControls';
-import { ActivityLine } from '../ui/ActivityLine';
+import { sessionTitle } from '../../lib/states';
+import { type DiffFile, parsePatch } from '../../model/diff';
+import { canResolveWithAgent, conflictStep, isResolving } from '../../model/integration';
 import { useUi } from '../../store/ui';
-import { DiffStatText } from '../panel/DiffViewer';
+import { DiffStatText } from '../outputs/DiffViewer';
+import { ReviewBar } from '../outputs/ReviewBar';
 import { Button } from '../ui/Button';
-import { Dialog, inputClass } from '../ui/Dialog';
-import { Kbd } from '../ui/Kbd';
 import { Skeleton } from '../ui/Meta';
-import { StatusIcon, stateColor } from '../ui/StatusIcon';
+import { OutputIcon } from '../ui/SemanticIcons';
+import { StateIcon } from '../ui/StateIcon';
+import { Tooltip } from '../ui/Tooltip';
 import { CombinedDiff, FileIndex, useCombinedDiffState } from './CombinedDiff';
 
 const NONE: never[] = [];
+
+/**
+ * The full view of code (ui-redesign spec §6: the panel's 「広げる」). It replaces the main area
+ * until closed (Esc). `integrationId` names what is shown (the store's `reviewIntegrationId`):
+ * - a code output (`art_…`): its change, file by file, and its decision (採用 / やり直す, then
+ *   反映) — the same bar as the panel;
+ * - an integration (`int_…`, from the timeline or a supervisor's combined change): its combined
+ *   change and what is left to do (反映, やめる; on a conflict 解消を任せる; on a failure もう一度).
+ * J / K move between files, O folds the current one.
+ */
+export function IntegrationView({ integrationId }: { integrationId: string }) {
+  return integrationId.startsWith('art_') ? (
+    <CodeOutputView key={integrationId} artifactId={integrationId} />
+  ) : (
+    <IntegrationById key={integrationId} id={integrationId} />
+  );
+}
+
+// ---------------------------------------------------------------------------- shared frame
+
+/** Header, file index + stacked diff, and the bottom bar, with J / K / O over the files. */
+function ReviewFrame({
+  head,
+  side,
+  files,
+  loading,
+  bar,
+}: {
+  head: ReactNode;
+  side?: ReactNode;
+  files: DiffFile[];
+  loading: boolean;
+  bar: ReactNode;
+}) {
+  const state = useCombinedDiffState(files);
+  const scroller = useRef<HTMLDivElement | null>(null);
+  const jump = (path: string) => {
+    state.setCurrent(path);
+    scroller.current
+      ?.querySelector<HTMLElement>(`[data-diff-file="${CSS.escape(path)}"]`)
+      ?.scrollIntoView({ block: 'start' });
+  };
+  useWindowKeydown((e) => {
+    if (e.defaultPrevented || overlayOpen() || isTypingTarget(e.target)) return;
+    if (e.ctrlKey || e.metaKey || e.altKey || files.length === 0) return;
+    const i = files.findIndex((f) => f.path === state.current);
+    if (e.key === 'j' || e.key === 'k') {
+      e.preventDefault();
+      const next =
+        e.key === 'j' ? Math.min(files.length - 1, i + 1) : Math.max(0, i === -1 ? 0 : i - 1);
+      jump(files[next]!.path);
+    } else if (e.key === 'o' && state.current) {
+      e.preventDefault();
+      state.toggle(state.current);
+    }
+  });
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+      className="flex h-full min-h-0 flex-col"
+      data-testid="integration-view"
+    >
+      <header className="flex h-11 shrink-0 items-center gap-2.5 border-b border-line-subtle px-3">
+        {head}
+      </header>
+      <div className="flex min-h-0 flex-1">
+        <aside
+          className="flex w-[280px] shrink-0 flex-col gap-3 overflow-y-auto border-r border-line-subtle p-2"
+          aria-label="ファイル"
+        >
+          {side}
+          <FileIndex files={files} state={state} onJump={jump} />
+        </aside>
+        <div
+          ref={scroller}
+          className="min-w-0 flex-1 overflow-y-auto px-6 py-4"
+          data-region="main"
+          tabIndex={-1}
+        >
+          {loading ? (
+            <div className="flex flex-col gap-3">
+              <Skeleton className="h-9 w-full" />
+              <Skeleton className="h-40 w-full" />
+            </div>
+          ) : (
+            <CombinedDiff files={files} state={state} />
+          )}
+        </div>
+      </div>
+      {bar}
+    </motion.div>
+  );
+}
+
+function BackButton({ label }: { label: string }) {
+  const back = useUi((s) => s.closeIntegration);
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      icon={<ArrowLeft size={13} strokeWidth={1.75} />}
+      onClick={back}
+      shortcutKeys="Escape"
+      className="max-w-60 min-w-0"
+    >
+      <span className="min-w-0 truncate">{label}</span>
+    </Button>
+  );
+}
+
+function Stats({ files }: { files: DiffFile[] }) {
+  if (files.length === 0) return null;
+  const add = files.reduce((n, f) => n + f.additions, 0);
+  const del = files.reduce((n, f) => n + f.deletions, 0);
+  return (
+    <span className="flex shrink-0 items-center gap-2 text-meta text-fg-3 tabular">
+      {files.length} ファイル
+      <DiffStatText additions={add} deletions={del} />
+    </span>
+  );
+}
+
+/** Where 反映 goes (`main`), for code only. */
+function Target({ branch }: { branch: string | null | undefined }) {
+  if (!branch) return null;
+  return (
+    <Tooltip content="反映先">
+      <span
+        className="flex shrink-0 items-center gap-1 font-mono text-meta text-fg-3"
+        data-testid="target"
+      >
+        <GitMerge size={12} strokeWidth={1.75} aria-hidden />
+        {branch}
+      </span>
+    </Tooltip>
+  );
+}
+
+// ---------------------------------------------------------------------------- a code output
+
+/** The freshest copy of an output: from its conversation's outputs (kept current by events). */
+function useOutput(artifactId: string): Artifact | null {
+  const base = useArtifact(artifactId).data ?? null;
+  const list = useOutputs(base?.sessionId ? { sessionId: base.sessionId } : null).data ?? NONE;
+  return list.find((a) => a.id === artifactId) ?? base;
+}
+
+function CodeOutputView({ artifactId }: { artifactId: string }) {
+  const output = useOutput(artifactId);
+  const tree = useSessionTree(output?.sessionId).data;
+  const maker = tree?.nodes.find((n) => n.id === output?.sessionId) ?? null;
+  const project = (useProjects().data ?? NONE).find((p) => p.id === output?.projectId) ?? null;
+  const patch = output?.kind === 'diff' ? output.data.patch : '';
+  const files = useMemo(() => parsePatch(patch), [patch]);
+  if (!output) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Skeleton className="h-6 w-64" />
+      </div>
+    );
+  }
+  return (
+    <ReviewFrame
+      files={files}
+      loading={false}
+      head={
+        <>
+          <BackButton label={maker ? sessionTitle(maker) : '戻る'} />
+          <span className="h-4 w-px shrink-0 bg-line" />
+          <OutputIcon kind="code" className="text-fg-2" />
+          <h1 className="min-w-0 truncate text-title text-fg">{output.title}</h1>
+          <span className="flex-1" />
+          <Stats files={files} />
+          <Target branch={project?.defaultBranch} />
+        </>
+      }
+      bar={<ReviewBar output={output} size="full" />}
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------- an integration
 
 function useIntegration(id: string): Integration | null {
   const rt = useRuntime();
@@ -68,7 +227,7 @@ function useIntegration(id: string): Integration | null {
 }
 
 /**
- * The combined diff: the integration branch's diff artifact (recorded after verification),
+ * The combined change: the integration branch's diff artifact (recorded after verification),
  * else the live diff of the integration worktree against the target it started from.
  */
 function useIntegrationDiff(integ: Integration) {
@@ -102,757 +261,239 @@ function useIntegrationDiff(integ: Integration) {
   });
 }
 
-/** The Integrator's session (from its run), for "Integrator を開く". */
-function useResolverSession(integ: Integration): string | null {
-  return useRun(integ.resolverRunId ?? null).data?.sessionId ?? null;
-}
-
-function StepRow({
-  step,
-  n,
-  resolverRunId,
-  resolverSessionId,
-}: {
-  step: IntegrationStep;
-  n: number;
-  /** Fix steps: the Integrator's run (live activity) and session (open it). */
-  resolverRunId?: string | null;
-  resolverSessionId?: string | null;
-}) {
-  const openSession = useUi((s) => s.openSession);
-  const state = stepState(step);
-  const dur = stepDurationMs(step);
-  const running = step.status === 'running';
-  const isFix = step.kind === 'fix';
-  return (
-    <li className="relative flex gap-3 py-2" data-step={step.kind} data-status={step.status}>
-      <span className="flex w-5 shrink-0 flex-col items-center pt-0.5">
-        <StatusIcon state={state} size={14} />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="text-micro text-fg-3 tabular">{n}</span>
-          <span
-            className={cn(
-              'min-w-0 flex-1 truncate text-ui',
-              step.status === 'pending' || step.status === 'skipped' ? 'text-fg-3' : 'text-fg',
-            )}
-          >
-            {step.title}
-          </span>
-          {dur != null && (
-            <span className="text-meta text-fg-3 tabular">{formatDuration(dur)}</span>
-          )}
-        </div>
-        {running && (
-          <div className="mt-1.5 h-0.5 overflow-hidden rounded-full bg-selected" aria-hidden="true">
-            <div
-              className="acc-progress h-full w-2/5 rounded-full"
-              style={{ background: stateColor('running') }}
-            />
-          </div>
-        )}
-        {step.detail && (
-          <p
-            className={cn(
-              'mt-0.5 text-meta whitespace-pre-line',
-              step.status === 'failed' ? 'text-st-failed' : 'text-fg-3',
-            )}
-          >
-            {step.detail}
-          </p>
-        )}
-        {isFix && running && resolverRunId && (
-          // What the Integrator is doing right now (its tool calls), like an agent card.
-          <ActivityLine
-            runId={resolverRunId}
-            fallback={null}
-            className="mt-0.5 text-meta text-fg-2"
-          />
-        )}
-        {isFix && resolverSessionId && (
-          <button
-            type="button"
-            className="mt-1 flex items-center gap-1 text-meta text-accent hover:underline"
-            onClick={() => openSession(resolverSessionId)}
-          >
-            <Bot size={12} strokeWidth={1.75} />
-            Integrator の作業を開く
-          </button>
-        )}
-        {step.conflictFiles.length > 0 && !isFix && (
-          // Kept on the merge after the Integrator resolved it: the record of where it
-          // conflicted, quiet once it no longer stands.
-          <ul
-            className={cn(
-              'mt-1.5 flex flex-col gap-0.5 rounded-sm border bg-canvas px-2 py-1.5',
-              step.status === 'failed'
-                ? 'border-[color-mix(in_oklch,var(--st-failed)_30%,transparent)]'
-                : 'border-line-subtle',
-            )}
-            aria-label={step.status === 'failed' ? 'コンフリクトしたファイル' : 'コンフリクトしていたファイル'}
-          >
-            {step.conflictFiles.map((f) => (
-              <li key={f} className="flex items-center gap-1.5 font-mono text-meta text-fg-2">
-                <AlertTriangle
-                  size={11}
-                  strokeWidth={1.75}
-                  className={cn('shrink-0', step.status === 'failed' ? 'text-st-failed' : 'text-fg-3')}
-                />
-                {f}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </li>
-  );
-}
-
-/**
- * The careful profile asks before running the tests of an integration an agent started:
- * the question sits right under the test result, so the review is where it is answered
- * (other profiles never ask: the workers already ran the same code).
- */
-function VerifyApproval({ integ }: { integ: Integration }) {
-  const pending = usePendingApprovals().data ?? NONE;
-  const ask = pending.find(
-    (a) =>
-      a.integrationId === integ.id &&
-      a.kind === 'integration' &&
-      (a.payload as { action?: unknown } | null)?.action === 'verify',
-  );
-  if (!ask) return null;
-  return (
-    <div className="mt-3" data-testid="verify-approval">
-      <InlineApproval approval={ask} />
-    </div>
-  );
-}
-
-function TestResult({ integ }: { integ: Integration }) {
-  const verify = integ.steps.find((s) => s.kind === 'verify');
-  const art = useArtifact(verify?.artifactId).data;
-  if (!verify) return null;
-  if (verify.status === 'skipped' && integ.steps.some((s) => s.kind === 'merge' && s.status === 'failed')) {
-    // Skipped because a merge stopped the attempt, not because there is no test command.
-    return <p className="text-meta text-fg-3">マージが終わっていないため、テストはまだ実行していません。</p>;
+/** An integration's status in the session-state vocabulary (shape + colour). */
+export function integrationShape(i: Integration): SessionState {
+  switch (i.status) {
+    case 'pending':
+      return 'queued';
+    case 'running':
+    case 'verifying':
+      return 'working';
+    case 'awaiting_approval':
+      return 'review';
+    case 'conflict':
+    case 'failed':
+      return 'failed';
+    case 'applied':
+      return 'done';
+    case 'rejected':
+    case 'cancelled':
+      return 'stopped';
   }
-  if (verify.status === 'skipped') {
-    return (
-      <p className="text-meta text-fg-3">
-        テストコマンドが設定されていないため、検証を省略しました。
-      </p>
-    );
+}
+
+/** One noun phrase for where an integration stands. */
+export function integrationLabel(i: Integration): string {
+  if (isResolving(i)) return '競合を解消中';
+  switch (i.status) {
+    case 'pending':
+      return '準備中';
+    case 'running':
+    case 'verifying':
+      return '反映中';
+    case 'awaiting_approval':
+      return '反映待ち';
+    case 'conflict':
+      return '競合';
+    case 'failed':
+      return i.error?.code === 'tests_failed' || i.error?.code === 'tests_timed_out'
+        ? 'テスト失敗'
+        : '反映できません';
+    case 'applied':
+      return '反映済み';
+    case 'rejected':
+    case 'cancelled':
+      return 'やめました';
   }
-  if (verify.status === 'pending')
-    return <p className="text-meta text-fg-3">マージが終わるとテストを実行します。</p>;
-  if (verify.status === 'running')
-    return <p className="text-meta text-fg-3">テストを実行しています…</p>;
-  if (!art || art.kind !== 'test_result') return <Skeleton className="h-16 w-full" />;
-  const d = art.data;
-  return (
-    <div className="flex flex-col gap-2" data-testid="integration-tests">
-      <div className="flex items-center gap-2">
-        {d.passed ? (
-          <CheckCircle2 size={15} strokeWidth={1.75} className="text-st-completed" />
-        ) : (
-          <CircleX size={15} strokeWidth={1.75} className="text-st-failed" />
-        )}
-        {/* The summary already starts with 成功 / 失敗 (daemon wording); do not repeat it. */}
-        <span className="text-ui font-medium text-fg">
-          {d.summary || (d.passed ? '成功' : '失敗')}
-        </span>
-      </div>
-      <div className="font-mono text-meta text-fg-3">$ {d.command}</div>
-      {d.output && (
-        <pre
-          ref={(el) => {
-            // The tail matters most (failures print last): start scrolled to the end.
-            if (el) el.scrollTop = el.scrollHeight;
-          }}
-          className="selectable max-h-56 overflow-auto rounded-sm border border-line-subtle bg-canvas px-2.5 py-2 font-mono text-code whitespace-pre-wrap text-fg-2"
-        >
-          {d.output}
-        </pre>
-      )}
-    </div>
-  );
 }
 
-function Section({
-  title,
-  extra,
-  children,
-}: {
-  title: string;
-  extra?: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <section className="flex flex-col gap-1.5">
-      <div className="flex h-6 items-center gap-2">
-        <h3 className="text-micro text-fg-3">{title}</h3>
-        <span className="flex-1" />
-        {extra}
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function ApplyDialog({
-  integ,
-  open,
-  onClose,
-  stats,
-}: {
-  integ: Integration;
-  open: boolean;
-  onClose: () => void;
-  stats: WorkspaceDiff['stats'] | null;
-}) {
-  const rt = useRuntime();
-  const tasks = useTasks().data ?? NONE;
-  const [note, setNote] = useState('');
-  const plan = applyPlan(integ, { tasks, stats });
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(o) => !o && onClose()}
-      title={plan.title}
-      className="w-[520px]"
-    >
-      <div className="flex flex-col gap-3" data-testid="apply-dialog">
-        <ul className="flex flex-col gap-1.5">
-          {plan.lines.map((l) => (
-            <li key={l} className="flex gap-2 text-ui text-fg-2">
-              <span className="mt-[9px] size-1 shrink-0 rounded-full bg-fg-4" />
-              {l}
-            </li>
-          ))}
-        </ul>
-        {plan.caution && (
-          <p
-            className="flex items-center gap-2 rounded-sm px-2.5 py-2 text-ui text-st-awaiting_approval"
-            style={{
-              background: 'color-mix(in oklch, var(--st-awaiting_approval) 10%, transparent)',
-            }}
-          >
-            <AlertTriangle size={14} strokeWidth={1.75} className="shrink-0" />
-            {plan.caution}
-          </p>
-        )}
-        <input
-          className={inputClass}
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          placeholder="メモ（任意）· 承認の記録に残ります"
-        />
-        <div className="flex items-center justify-end gap-2 pt-1">
-          <Button variant="ghost" onClick={onClose}>
-            キャンセル
-          </Button>
-          <Button
-            variant="primary"
-            autoFocus
-            icon={<GitMerge size={13} strokeWidth={1.75} />}
-            onClick={() => {
-              onClose();
-              void approveIntegration(rt, integ, note.trim() || undefined);
-            }}
-          >
-            {plan.confirmLabel}
-          </Button>
-        </div>
-      </div>
-    </Dialog>
-  );
-}
-
-function RejectDialog({
-  integ,
-  open,
-  onClose,
-}: {
-  integ: Integration;
-  open: boolean;
-  onClose: () => void;
-}) {
-  const rt = useRuntime();
-  const [note, setNote] = useState('');
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(o) => !o && onClose()}
-      title="この統合候補を却下しますか？"
-      description={`${integ.targetRef ?? '反映先'} は変更されません。各 Task の worktree とブランチは残ります。`}
-      className="w-[480px]"
-    >
-      <form
-        className="flex flex-col gap-3"
-        onSubmit={(e) => {
-          e.preventDefault();
-          onClose();
-          void rejectIntegration(rt, integ, note.trim() || undefined);
-        }}
-      >
-        <input
-          autoFocus
-          className={inputClass}
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          placeholder="却下の理由（任意）· Orchestrator にも伝わります"
-        />
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose}>
-            キャンセル
-          </Button>
-          <Button type="submit" variant="secondary">
-            却下する
-          </Button>
-        </div>
-      </form>
-    </Dialog>
-  );
-}
-
-/**
- * "Integrator に解消を任せる": says what will happen (the target branch is not touched), takes
- * optional guidance, and starts the integrator agent. Ctrl+Enter in the guidance confirms.
- */
-function ResolveDialog({
-  integ,
-  open,
-  onClose,
-}: {
-  integ: Integration;
-  open: boolean;
-  onClose: () => void;
-}) {
-  const rt = useRuntime();
-  const [instructions, setInstructions] = useState('');
-  const plan = resolvePlan(integ);
-  const submit = () => {
-    onClose();
-    void resolveWithAgent(rt, integ, instructions);
-  };
-  return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()} title={plan.title} className="w-[520px]">
-      <form
-        className="flex flex-col gap-3"
-        data-testid="resolve-dialog"
-        onSubmit={(e) => {
-          e.preventDefault();
-          submit();
-        }}
-      >
-        <ul className="flex flex-col gap-1.5">
-          {plan.lines.map((l) => (
-            <li key={l} className="flex gap-2 text-ui text-fg-2">
-              <span className="mt-[9px] size-1 shrink-0 rounded-full bg-fg-4" />
-              {l}
-            </li>
-          ))}
-        </ul>
-        <textarea
-          rows={3}
-          value={instructions}
-          onChange={(e) => setInstructions(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-          aria-label="Integrator への補足"
-          placeholder="Integrator への補足（任意）· 例: 両方の節を残し、ドキュメントの節を先にしてください"
-          className="w-full resize-none rounded-sm border border-line bg-canvas px-2.5 py-2 text-ui text-fg placeholder:text-fg-4 focus:border-[var(--focus-ring)]"
-        />
-        <div className="flex items-center justify-end gap-2">
-          <Button variant="ghost" onClick={onClose}>
-            キャンセル
-          </Button>
-          <Button
-            type="submit"
-            variant="primary"
-            autoFocus
-            icon={<Bot size={13} strokeWidth={1.75} />}
-            shortcutKeys="Mod+Enter"
-          >
-            Integrator に任せる
-          </Button>
-        </div>
-      </form>
-    </Dialog>
-  );
-}
-
-/** Bottom decision bar: what is being decided, and the two human-only actions. */
-function DecisionBar({
-  integ,
-  stats,
-  onApply,
-  onReject,
-  onResolve,
-}: {
-  integ: Integration;
-  stats: WorkspaceDiff['stats'] | null;
-  onApply: () => void;
-  onReject: () => void;
-  onResolve: () => void;
-}) {
-  const rt = useRuntime();
-  const connected = useConnectionState() === 'open';
-  const openSession = useUi((s) => s.openSession);
-  const resolverSession = useResolverSession(integ);
-  const verify = integ.steps.find((s) => s.kind === 'verify');
-  let body: ReactNode;
-  if (isResolving(integ)) {
-    body = (
-      <span className="flex min-w-0 items-center gap-2 text-ui text-fg-2" data-testid="resolving">
-        <Bot size={15} strokeWidth={1.75} className="shrink-0 text-st-running" />
-        <span className="truncate">
-          Integrator がコンフリクトを解消しています。終わると統合を再開してテストします
-        </span>
-      </span>
-    );
-  } else if (integ.status === 'applied') {
-    body = (
-      <span className="flex items-center gap-2 text-ui text-fg-2">
-        <CheckCircle2 size={15} strokeWidth={1.75} className="text-st-completed" />
-        {integ.targetRef} に反映しました
-        {integ.decidedAt && (
-          <span className="text-meta text-fg-3 tabular">· {formatClock(integ.decidedAt)}</span>
-        )}
-        {integ.decisionNote && <span className="text-meta text-fg-3">· {integ.decisionNote}</span>}
-      </span>
-    );
-  } else if (integ.status === 'rejected') {
-    body = (
-      <span className="flex items-center gap-2 text-ui text-fg-3">
-        <CircleX size={15} strokeWidth={1.75} />
-        却下しました{integ.decisionNote ? ` · ${integ.decisionNote}` : ''}
-      </span>
-    );
-  } else if (isIntegrationActive(integ)) {
-    body = (
-      <span className="text-ui text-fg-3">
-        {integ.status === 'verifying'
-          ? // The daemon says why it is not running yet (e.g. waiting for a human's go-ahead).
-            (verify?.status === 'running' && verify.detail) ||
-            'テストを実行しています。終わると反映できます'
-          : '変更を順番にマージしています…'}
-      </span>
-    );
-  } else if (integ.status === 'awaiting_approval') {
-    body = (
-      <span className="flex min-w-0 items-center gap-2 text-ui text-fg-2">
-        <ShieldCheck size={15} strokeWidth={1.75} className="shrink-0 text-st-review" />
-        <span className="truncate">
-          {verify?.status === 'succeeded'
-            ? 'テスト成功'
-            : verify?.status === 'skipped'
-              ? 'テストなし'
-              : 'テスト未完了'}
-          {stats && ` · ${stats.files} ファイル`}
-          {` · ${integ.targetRef} へ早送りで反映`}
-        </span>
-      </span>
-    );
-  } else {
-    body = (
-      <span className="flex min-w-0 items-center gap-2 text-ui text-st-failed">
-        <AlertTriangle size={15} strokeWidth={1.75} className="shrink-0" />
-        <span className="truncate">{integ.error?.message ?? '統合に失敗しました'}</span>
-      </span>
-    );
-  }
-  return (
-    <div className="flex h-14 shrink-0 items-center gap-3 border-t border-line-subtle bg-canvas px-6">
-      <div className="min-w-0 flex-1">{body}</div>
-      {isResolving(integ) && resolverSession && (
-        <Button
-          icon={<Bot size={12} strokeWidth={1.75} />}
-          onClick={() => openSession(resolverSession)}
-        >
-          Integrator を開く
-        </Button>
-      )}
-      {canRerun(integ) && integ.status !== 'awaiting_approval' && (
-        <Button
-          icon={<RotateCcw size={12} strokeWidth={1.75} />}
-          disabled={!connected}
-          // On a conflict this starts over from the target and conflicts again; the
-          // Integrator is the way forward, re-running is for a target that moved on.
-          variant={canResolveWithAgent(integ) ? 'ghost' : 'secondary'}
-          onClick={() => void rerunIntegration(rt, integ)}
-        >
-          再実行
-        </Button>
-      )}
-      {canReject(integ) && (
-        <Button variant="ghost" disabled={!connected} onClick={onReject}>
-          却下
-        </Button>
-      )}
-      {canApprove(integ) && (
-        <Button
-          variant="primary"
-          size="lg"
-          shortcutKeys="Mod+Enter"
-          icon={<GitMerge size={14} strokeWidth={1.75} />}
-          disabled={!connected}
-          onClick={onApply}
-          data-testid="approve-integration"
-        >
-          承認して反映
-        </Button>
-      )}
-      {canResolveWithAgent(integ) && (
-        <Button
-          variant="primary"
-          size="lg"
-          shortcutKeys="Mod+Enter"
-          icon={<Bot size={14} strokeWidth={1.75} />}
-          disabled={!connected}
-          onClick={onResolve}
-          data-testid="resolve-with-agent"
-        >
-          {resolutionFailed(integ) ? 'もう一度 Integrator に任せる' : 'Integrator に解消を任せる'}
-        </Button>
-      )}
-    </div>
-  );
-}
-
-/**
- * Review & integrate (concept §6, §12.1 steps 7–9). Replaces the main area: ordered steps
- * with live progress on the left, the combined diff on the right, the human decision at the
- * bottom. j / k move between files, o toggles the current file, Esc goes back.
- */
-export function IntegrationView({ integrationId }: { integrationId: string }) {
-  const integ = useIntegration(integrationId);
-  const close = useUi((s) => s.closeIntegration);
+function IntegrationById({ id }: { id: string }) {
+  const integ = useIntegration(id);
   if (!integ) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2">
+      <div className="flex h-full items-center justify-center">
         <Skeleton className="h-6 w-64" />
       </div>
     );
   }
-  return <IntegrationReview key={integ.id} integ={integ} onClose={close} />;
+  return <IntegrationReview integ={integ} />;
 }
 
-function IntegrationReview({ integ, onClose }: { integ: Integration; onClose: () => void }) {
-  const projects = useProjects().data ?? NONE;
-  const project = projects.find((p) => p.id === integ.projectId) ?? null;
+function IntegrationReview({ integ }: { integ: Integration }) {
   const diff = useIntegrationDiff(integ);
-  const patch = diff.data?.patch;
-  const files = useMemo(() => (patch ? parsePatch(patch) : []), [patch]);
-  const state = useCombinedDiffState(files);
-  const scroller = useRef<HTMLDivElement | null>(null);
-  const [applyOpen, setApplyOpen] = useState(false);
-  const [rejectOpen, setRejectOpen] = useState(false);
-  const [resolveOpen, setResolveOpen] = useState(false);
-  const resolverSession = useResolverSession(integ);
-  const stats = diff.data?.stats ?? null;
-  const st = integrationState(integ.status);
+  const patch = diff.data?.patch ?? '';
+  const files = useMemo(() => parsePatch(patch), [patch]);
+  const conflict = integ.status === 'conflict' ? conflictStep(integ) : null;
+  return (
+    <ReviewFrame
+      files={files}
+      loading={
+        diff.isPending &&
+        !!integ.workspaceId &&
+        integ.status !== 'pending' &&
+        integ.status !== 'running'
+      }
+      head={
+        <>
+          <BackButton label="戻る" />
+          <span className="h-4 w-px shrink-0 bg-line" />
+          <StateIcon state={integrationShape(integ)} size={14} />
+          <h1 className="min-w-0 truncate text-title text-fg">{integ.title}</h1>
+          <span className="flex-1" />
+          <Stats files={files} />
+          <Target branch={integ.targetRef} />
+        </>
+      }
+      side={
+        <>
+          {conflict && conflict.conflictFiles.length > 0 && (
+            <ul
+              aria-label="競合したファイル"
+              className="flex shrink-0 flex-col gap-0.5 rounded-sm border border-[color-mix(in_oklch,var(--st-failed)_30%,transparent)] px-2 py-1.5"
+            >
+              {conflict.conflictFiles.map((f) => (
+                <li key={f} className="flex items-center gap-1.5 font-mono text-meta text-fg-2">
+                  <TriangleAlert
+                    size={11}
+                    strokeWidth={1.75}
+                    className="shrink-0 text-st-failed"
+                    aria-hidden
+                  />
+                  <span className="truncate">{f}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <FailedTests integ={integ} />
+        </>
+      }
+      bar={<IntegrationBar integ={integ} />}
+    />
+  );
+}
 
-  const jump = (path: string) => {
-    state.setCurrent(path);
-    const el = scroller.current?.querySelector<HTMLElement>(
-      `[data-diff-file="${CSS.escape(path)}"]`,
-    );
-    el?.scrollIntoView({ block: 'start' });
-  };
+/** The tail of a failed test run (failures print last). */
+function FailedTests({ integ }: { integ: Integration }) {
+  const verify = integ.steps.find((s) => s.kind === 'verify' && s.status === 'failed');
+  const art = useArtifact(verify?.artifactId).data;
+  if (!verify || !art || art.kind !== 'test_result' || !art.data.output) return null;
+  return (
+    <pre
+      aria-label="テストの出力"
+      ref={(el) => {
+        // The tail matters most (failures print last): start scrolled to the end.
+        if (el) el.scrollTop = el.scrollHeight;
+      }}
+      className="selectable max-h-56 shrink-0 overflow-auto rounded-sm border border-line-subtle bg-canvas px-2 py-1.5 font-mono text-[11px] whitespace-pre-wrap text-fg-2"
+    >
+      {art.data.output}
+    </pre>
+  );
+}
 
+function IntegrationBar({ integ }: { integ: Integration }) {
+  const rt = useRuntime();
+  const connected = useConnectionState() === 'open';
+  const state = integrationShape(integ);
+  const canApply = integ.status === 'awaiting_approval';
+  const canStop =
+    integ.status === 'awaiting_approval' ||
+    integ.status === 'conflict' ||
+    integ.status === 'failed';
+  const resolve = canResolveWithAgent(integ);
+  const retry = integ.status === 'failed' || (integ.status === 'conflict' && !resolve);
   useWindowKeydown((e) => {
-    if (e.defaultPrevented || overlayOpen() || isTypingTarget(e.target)) return;
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && canApprove(integ)) {
-      e.preventDefault();
-      setApplyOpen(true);
+    // The bar's one primary action, as on the buttons.
+    if (
+      !connected ||
+      e.defaultPrevented ||
+      overlayOpen() ||
+      e.key !== 'Enter' ||
+      !(e.ctrlKey || e.metaKey)
+    )
       return;
-    }
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && canResolveWithAgent(integ)) {
-      // The bar's one primary action, like 承認して反映 (the dialog still confirms).
+    if (canApply) {
       e.preventDefault();
-      setResolveOpen(true);
-      return;
-    }
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
-    const i = files.findIndex((f) => f.path === state.current);
-    if (e.key === 'j' || e.key === 'k') {
-      if (files.length === 0) return;
+      void approveIntegration(rt, integ);
+    } else if (resolve) {
       e.preventDefault();
-      const next =
-        e.key === 'j' ? Math.min(files.length - 1, i + 1) : Math.max(0, i === -1 ? 0 : i - 1);
-      jump(files[next]!.path);
-    } else if (
-      (e.key === 'o' || e.key === 'Enter') &&
-      state.current &&
-      !(e.target instanceof HTMLButtonElement)
-    ) {
-      e.preventDefault();
-      state.toggle(state.current);
+      void resolveWithAgent(rt, integ);
     }
   });
-
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-      className="flex h-full min-h-0 flex-col"
-      data-testid="integration-view"
+    <div
+      className="flex h-14 shrink-0 items-center gap-2 border-t border-line-subtle bg-canvas px-6"
+      data-integration-status={integ.status}
     >
-      <header className="flex h-11 shrink-0 items-center gap-3 border-b border-line-subtle px-4">
-        <Button
-          size="sm"
-          variant="ghost"
-          icon={<ArrowLeft size={13} strokeWidth={1.75} />}
-          onClick={onClose}
-          shortcutKeys="Escape"
-        >
-          司令室
-        </Button>
-        <span className="h-4 w-px bg-line" />
-        <StatusIcon state={st} size={14} />
-        <h1 className="min-w-0 truncate text-title text-fg">{integ.title}</h1>
-        <span
-          className="shrink-0 rounded-xs px-1.5 text-micro"
-          style={{
-            color: stateColor(st),
-            background: `color-mix(in oklch, ${stateColor(st)} 14%, transparent)`,
-          }}
-        >
-          {INTEGRATION_STATUS_LABEL[integ.status]}
-        </span>
-        <span className="flex-1" />
-        <span className="flex min-w-0 items-center gap-1.5 font-mono text-meta text-fg-3">
-          <GitBranch size={12} strokeWidth={1.75} className="shrink-0" />
-          <span className="truncate">{integ.branch ?? '—'}</span>
-          <span className="text-fg-4">→</span>
-          <span className="text-fg-2">{integ.targetRef ?? project?.defaultBranch ?? '—'}</span>
-        </span>
-      </header>
-
-      <div className="flex min-h-0 flex-1">
-        <aside
-          className="flex w-[320px] shrink-0 flex-col gap-5 overflow-y-auto border-r border-line-subtle px-4 py-4"
-          aria-label="手順とテスト"
-        >
-          <Section title="手順">
-            <ol className="flex flex-col">
-              {integ.steps.map((s, i) => (
-                <StepRow
-                  key={s.index}
-                  step={s}
-                  n={i + 1}
-                  resolverRunId={s.kind === 'fix' ? integ.resolverRunId : null}
-                  resolverSessionId={s.kind === 'fix' ? resolverSession : null}
-                />
-              ))}
-            </ol>
-          </Section>
-          <Section title="テスト結果">
-            <TestResult integ={integ} />
-            <VerifyApproval integ={integ} />
-          </Section>
-          {files.length > 0 && (
-            <Section
-              title={`ファイル ${files.length}`}
-              extra={
-                stats && <DiffStatText additions={stats.additions} deletions={stats.deletions} />
-              }
-            >
-              <FileIndex files={files} state={state} onJump={jump} />
-            </Section>
-          )}
-        </aside>
-
-        <div
-          ref={scroller}
-          className="min-w-0 flex-1 overflow-y-auto px-6 py-4"
-          data-region="main"
-          tabIndex={-1}
-        >
-          <div className="@container mb-3 flex h-7 items-center gap-3 whitespace-nowrap">
-            <h2 className="shrink-0 text-ui font-medium text-fg">統合後の差分</h2>
-            {stats && (
-              <span className="flex shrink-0 items-center gap-2 text-meta text-fg-3">
-                {stats.files} ファイル{' '}
-                <DiffStatText additions={stats.additions} deletions={stats.deletions} />
-              </span>
-            )}
-            <span className="flex-1" />
-            {files.length > 0 && (
-              <span className="flex items-center gap-3 text-meta text-fg-3">
-                {/* Key hints give way first in a narrow window; the buttons stay. */}
-                <span className="hidden items-center gap-1 @[620px]:flex">
-                  <Kbd keys="J" />
-                  <Kbd keys="K" /> ファイル移動
-                </span>
-                <span className="hidden items-center gap-1 @[620px]:flex">
-                  <Kbd keys="O" /> 開閉
-                </span>
-                <button
-                  type="button"
-                  className="text-fg-3 hover:text-fg-2"
-                  onClick={() => state.setAll(false)}
-                >
-                  すべて展開
-                </button>
-                <button
-                  type="button"
-                  className="text-fg-3 hover:text-fg-2"
-                  onClick={() => state.setAll(true)}
-                >
-                  すべて折りたたむ
-                </button>
-              </span>
-            )}
-          </div>
-          <AnimatePresence initial={false}>
-            {diff.isPending && integ.workspaceId && !isIntegrationActive(integ) ? (
-              <div className="flex flex-col gap-3">
-                <Skeleton className="h-9 w-full" />
-                <Skeleton className="h-40 w-full" />
-              </div>
-            ) : files.length > 0 ? (
-              <CombinedDiff files={files} state={state} />
+      <span className="flex min-w-0 flex-1">
+        <Tooltip content={integ.status === 'applied' ? null : integ.error?.message}>
+          <span
+            className="flex min-w-0 items-center gap-1.5 text-ui text-fg-2"
+            data-testid="integration-status"
+          >
+            {state === 'done' ? (
+              <CircleCheck
+                size={14}
+                strokeWidth={2}
+                className="shrink-0 text-st-done"
+                aria-hidden
+              />
             ) : (
-              <div className="flex flex-col items-center gap-1 py-16 text-center">
-                <div className="text-ui font-medium text-fg-2">
-                  {isIntegrationActive(integ)
-                    ? 'マージが終わると差分が表示されます'
-                    : '差分はありません'}
-                </div>
-                <div className="text-meta text-fg-3">
-                  各 Task のブランチを統合ブランチへ順番にマージしています。
-                </div>
-              </div>
+              <StateIcon state={state} size={14} />
             )}
-          </AnimatePresence>
-        </div>
-      </div>
-
-      <DecisionBar
-        integ={integ}
-        stats={stats}
-        onApply={() => setApplyOpen(true)}
-        onReject={() => setRejectOpen(true)}
-        onResolve={() => setResolveOpen(true)}
-      />
-      <ResolveDialog integ={integ} open={resolveOpen} onClose={() => setResolveOpen(false)} />
-      <ApplyDialog
-        integ={integ}
-        open={applyOpen}
-        onClose={() => setApplyOpen(false)}
-        stats={stats}
-      />
-      <RejectDialog integ={integ} open={rejectOpen} onClose={() => setRejectOpen(false)} />
-    </motion.div>
+            <span className={state === 'failed' ? 'text-st-failed' : undefined}>
+              {integrationLabel(integ)}
+            </span>
+          </span>
+        </Tooltip>
+      </span>
+      {canStop && (
+        <Button
+          variant="ghost"
+          size="lg"
+          disabled={!connected}
+          onClick={() => void rejectIntegration(rt, integ)}
+        >
+          やめる
+        </Button>
+      )}
+      {retry && (
+        <Button
+          size="lg"
+          icon={<RotateCcw size={13} strokeWidth={1.75} />}
+          disabled={!connected}
+          onClick={() => void rerunIntegration(rt, integ)}
+        >
+          もう一度
+        </Button>
+      )}
+      {resolve && (
+        <Button
+          variant="primary"
+          size="lg"
+          icon={<Bot size={14} strokeWidth={1.75} />}
+          shortcutKeys="Mod+Enter"
+          hint="エージェントに競合の解消を任せる"
+          disabled={!connected}
+          onClick={() => void resolveWithAgent(rt, integ)}
+          data-testid="resolve-with-agent"
+        >
+          解消を任せる
+        </Button>
+      )}
+      {canApply && (
+        <Button
+          variant="primary"
+          size="lg"
+          icon={<GitMerge size={14} strokeWidth={1.75} />}
+          shortcutKeys="Mod+Enter"
+          disabled={!connected}
+          onClick={() => void approveIntegration(rt, integ)}
+          data-testid="approve-integration"
+        >
+          反映
+        </Button>
+      )}
+    </div>
   );
 }

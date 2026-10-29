@@ -1,39 +1,25 @@
-import { AccClientError } from '@acc/client';
-import type { Integration, IntegrationStep } from '@acc/protocol';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import type { Artifact, Integration, IntegrationStep } from '@acc/protocol';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
-import { T0, event, integration, iso } from '../../test/fixtures';
+import { T0, card, integration, iso } from '../../test/fixtures';
+import { output } from '../outputs/fixtures';
 import { TooltipProvider } from '../ui/Tooltip';
-import { IntegrationView } from './IntegrationView';
+import { IntegrationView, integrationLabel, integrationShape } from './IntegrationView';
 
-const PATCH = `diff --git a/docs/auth.md b/docs/auth.md
-new file mode 100644
---- /dev/null
-+++ b/docs/auth.md
-@@ -0,0 +1,2 @@
-+# 認証 API
-+POST /api/login
-diff --git a/src/auth/session.ts b/src/auth/session.ts
---- a/src/auth/session.ts
-+++ b/src/auth/session.ts
-@@ -1,3 +1,3 @@
- export function isExpired() {
--  return false;
-+  return true;
- }
-`;
+const CHILD = 'ses_00000000000000000000000002';
+const INT = 'int_00000000000000000000000001';
 
 const step = (over: Partial<IntegrationStep>): IntegrationStep => ({
   index: 0,
   kind: 'merge',
   status: 'succeeded',
-  title: '「認証 API のドキュメント」をマージ',
+  title: '「認証 API」をマージ',
   taskId: null,
   artifactId: null,
-  detail: 'マージしました（1506e2a）',
+  detail: null,
   startedAt: iso(T0),
   endedAt: iso(T0 + 500),
   workspaceId: null,
@@ -42,382 +28,212 @@ const step = (over: Partial<IntegrationStep>): IntegrationStep => ({
   ...over,
 });
 
-function ready(): Integration {
-  return integration({
-    id: 'int_00000000000000000000000001',
-    title: '統合: 認証 API のドキュメント → main',
-    status: 'awaiting_approval',
-    targetRef: 'main',
-    branch: 'acc/integration-00000001',
-    workspaceId: 'wsp_int',
-    baseSha: 'aaaaaaa0',
-    headSha: 'bbbbbbb0',
-    taskIds: ['tsk_1'],
-    steps: [
-      step({ index: 0 }),
-      step({
-        index: 1,
-        kind: 'verify',
-        title: 'テストを実行（pnpm test）',
-        detail: '成功（1.2 秒）',
-        artifactId: 'art_test',
-      }),
-      step({
-        index: 2,
-        kind: 'apply',
-        status: 'pending',
-        title: '「main」へ反映（要承認）',
-        detail: null,
-        startedAt: null,
-        endedAt: null,
-      }),
-    ],
-  });
-}
-
-function mount(i: Integration, extra: Parameters<typeof createFakeClient>[0] = {}) {
+function mount(id: string, handlers: Parameters<typeof createFakeClient>[0] = {}) {
   const fake = createFakeClient({
-    'integration.list': () => ({ items: [i], nextCursor: null }),
-    'project.list': () => ({ items: [] }),
-    'task.list': () => ({ items: [], nextCursor: null }),
-    'artifact.list': () => ({
-      items: [
-        {
-          id: 'art_diff',
-          kind: 'diff',
-          data: {
-            patch: PATCH,
-            baseRef: null,
-            headRef: null,
-            stats: { files: 2, additions: 3, deletions: 1 },
-            files: [],
-          },
-        },
-      ],
-      nextCursor: null,
+    'project.list': () => ({
+      items: [{ id: 'prj_00000000000000000000000001', name: 'web', defaultBranch: 'main' }],
     }),
-    'artifact.get': () => ({
-      id: 'art_test',
-      kind: 'test_result',
-      data: {
-        command: 'pnpm test',
-        passed: true,
-        exitCode: 0,
-        durationMs: 1200,
-        summary: '成功（1.2 秒）',
-        output: 'Tests  24 passed (24)',
-      },
-    }),
-    ...extra,
+    'integration.list': () => ({ items: [], nextCursor: null }),
+    ...handlers,
   });
   const rt = createRuntime(fake.client);
   render(
     <RuntimeProvider runtime={rt}>
       <TooltipProvider>
-        <IntegrationView integrationId={i.id} />
+        <IntegrationView integrationId={id} />
       </TooltipProvider>
     </RuntimeProvider>,
   );
   return { fake, rt };
 }
 
-describe('<IntegrationView>', () => {
-  beforeEach(() => {
-    useUi.setState({ reviewIntegrationId: 'int_00000000000000000000000001' });
-  });
+describe('<IntegrationView> of a code output (広げる)', () => {
+  const code = (): Artifact =>
+    output('diff', {
+      sessionId: CHILD,
+      projectId: 'prj_00000000000000000000000001',
+      workspaceId: 'wsp_1',
+      title: 'エラーメッセージを直す',
+      review: { state: 'pending', by: null, at: null, note: null },
+    });
 
-  it('shows ordered steps, test output and the combined diff per file', async () => {
-    mount(ready());
-    expect(await screen.findByText('「認証 API のドキュメント」をマージ')).toBeInTheDocument();
-    expect(screen.getByText('テストを実行（pnpm test）')).toBeInTheDocument();
-    expect(await screen.findByText(/Tests\s+24 passed/)).toBeInTheDocument();
+  beforeEach(() => useUi.setState({ reviewIntegrationId: null }));
+
+  function mountCode(a: Artifact, extra: Parameters<typeof createFakeClient>[0] = {}) {
+    useUi.setState({ reviewIntegrationId: a.id });
+    return mount(a.id, {
+      'artifact.get': () => a,
+      'artifact.list': () => ({ items: [a], nextCursor: null }),
+      'session.tree': () => ({
+        rootSessionId: CHILD,
+        nodes: [card({ id: CHILD, title: 'エラーを直す子', state: 'review' })],
+      }),
+      ...extra,
+    });
+  }
+
+  it('shows the change file by file with where it goes, and goes back to the conversation', async () => {
+    mountCode(code());
+    expect(
+      await screen.findByRole('heading', { name: 'エラーメッセージを直す' }),
+    ).toBeInTheDocument();
     expect(await screen.findByText(/# 認証 API/)).toBeInTheDocument();
-    // Per-file collapse.
-    const header = screen
-      .getAllByRole('button', { name: /session\.ts/ })
-      .find((b) => b.getAttribute('aria-expanded') !== null)!;
-    expect(screen.getByText(/return true;/)).toBeInTheDocument();
-    fireEvent.click(header);
-    expect(screen.queryByText(/return true;/)).not.toBeInTheDocument();
-    // j / k move between files (session.ts is current after the click), o toggles.
-    fireEvent.keyDown(window, { key: 'k' });
+    expect(screen.getByText('2 ファイル')).toBeInTheDocument();
+    expect(await screen.findByTestId('target')).toHaveTextContent('main');
+    // J / K move between files, O folds the current one.
+    fireEvent.keyDown(window, { key: 'j' });
     fireEvent.keyDown(window, { key: 'o' });
     expect(screen.queryByText(/# 認証 API/)).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: /エラーを直す子/ }));
+    expect(useUi.getState().reviewIntegrationId).toBeNull();
   });
 
-  it('confirms exactly what applying does, then applies at once', async () => {
-    const i = ready();
-    let approved: Record<string, unknown> | null = null;
-    mount(i, {
-      'integration.approve': (p) => {
-        approved = p;
-        return { ...i, status: 'applied', decidedAt: iso(T0 + 9000) };
-      },
+  it('adopts with Ctrl+Enter, then shows the change being applied', async () => {
+    const a = code();
+    const { fake } = mountCode(a, {
+      'artifact.review': () => ({ artifact: a, integrationId: INT }),
     });
-    fireEvent.click(await screen.findByTestId('approve-integration'));
-    const dialog = await screen.findByRole('dialog', { name: 'main に変更を反映しますか？' });
-    expect(within(dialog).getByText(/早送り（fast-forward）/)).toHaveTextContent(
-      'aaaaaaa → bbbbbbb',
-    );
-    expect(within(dialog).getByText(/を main に反映します/)).toHaveTextContent('2 ファイル、+3 −1');
-    await act(async () => {
-      fireEvent.click(within(dialog).getByRole('button', { name: '反映する' }));
+    await screen.findByRole('button', { name: /採用/ });
+    fireEvent.keyDown(window, { key: 'Enter', ctrlKey: true });
+    expect(fake.calls.find((c) => c.method === 'artifact.review')?.params).toEqual({
+      artifactId: a.id,
+      decision: 'accept',
     });
-    expect(approved).toEqual({ integrationId: i.id });
-    expect(await screen.findByText('main に反映しました')).toBeInTheDocument();
-    expect(screen.queryByTestId('approve-integration')).not.toBeInTheDocument();
+    expect(await screen.findByText('反映中')).toBeInTheDocument();
   });
 
-  it('follows live step progress and offers a re-run after a conflict', async () => {
-    const i = {
-      ...ready(),
-      status: 'running' as const,
-      steps: ready().steps.map((s) => ({ ...s, status: 'pending' as const, detail: null })),
-    };
-    const { fake } = mount(i);
-    expect(await screen.findByText('変更を順番にマージしています…')).toBeInTheDocument();
-    const conflicted: Integration = {
-      ...i,
-      status: 'conflict',
-      error: {
-        code: 'merge_conflict',
-        message: '「acc/x」のマージでコンフリクトが発生しました: src/a.ts',
-      },
-      steps: i.steps.map((s) =>
-        s.index === 0
-          ? {
-              ...s,
-              status: 'failed',
-              conflictFiles: ['src/a.ts'],
-              detail: 'コンフリクトが発生しました',
-            }
-          : s,
-      ),
-    };
-    act(() =>
-      fake.emit(
-        event('integration.updated', { integration: conflicted, changes: ['status', 'steps'] }),
-      ),
-    );
-    expect(await screen.findByText('src/a.ts')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '再実行' })).toBeInTheDocument();
-    expect(screen.queryByTestId('approve-integration')).not.toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.getByText(/コンフリクトが発生しました: src\/a\.ts/)).toBeInTheDocument(),
-    );
+  it('says 反映済み once the change was applied', async () => {
+    mountCode({
+      ...code(),
+      review: { state: 'accepted', by: { kind: 'human', client: 'test' }, at: iso(T0), note: null },
+    });
+    expect(await screen.findByText('反映済み')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /採用/ })).toBeNull();
   });
 });
 
-/** Two merges; the second conflicted on README.md (as the daemon records it). */
-function conflicted(): Integration {
-  return integration({
-    id: 'int_00000000000000000000000001',
-    title: '統合: ドキュメントとテスト → main',
-    status: 'conflict',
-    targetRef: 'main',
-    branch: 'acc/integration-00000001',
-    workspaceId: 'wsp_int',
-    taskIds: ['tsk_1', 'tsk_2'],
-    error: { code: 'merge_conflict', message: '「acc/tests」のマージでコンフリクトが発生しました: README.md' },
-    steps: [
-      step({ index: 0, title: '「ドキュメント」をマージ', branch: 'acc/docs' }),
-      step({
-        index: 1,
-        status: 'failed',
-        title: '「テスト」をマージ',
-        branch: 'acc/tests',
-        detail: 'コンフリクトが発生しました',
-        conflictFiles: ['README.md'],
+describe('<IntegrationView> of an integration', () => {
+  function mountInteg(i: Integration, extra: Parameters<typeof createFakeClient>[0] = {}) {
+    useUi.setState({ reviewIntegrationId: i.id });
+    return mount(i.id, {
+      'integration.list': () => ({ items: [i], nextCursor: null }),
+      'artifact.list': () => ({
+        items: [output('diff', { workspaceId: 'wsp_int' })],
+        nextCursor: null,
       }),
-      // The daemon skips verification of an attempt that stopped on a conflict.
-      step({ index: 2, kind: 'verify', status: 'skipped', title: 'テストを実行（pnpm test）', detail: null }),
-      step({ index: 3, kind: 'apply', status: 'pending', title: '「main」へ反映（要承認）', detail: null }),
-    ],
-  });
-}
-
-const fix = (over: Partial<IntegrationStep>): IntegrationStep =>
-  step({
-    index: 2,
-    kind: 'fix',
-    status: 'running',
-    title: 'Integrator がコンフリクトを解消（README.md）',
-    branch: 'acc/tests',
-    conflictFiles: ['README.md'],
-    detail: 'Integrator（Run run_int）がコンフリクトを解消しています',
-    endedAt: null,
-    ...over,
-  });
-
-function resolving(base: Integration, over: Partial<IntegrationStep> = {}): Integration {
-  const [m0, m1, verify, apply] = base.steps;
-  return {
-    ...base,
-    status: 'running',
-    error: null,
-    resolverRunId: 'run_int',
-    steps: [m0!, m1!, fix(over), { ...verify!, index: 3 }, { ...apply!, index: 4 }],
-    updatedAt: iso(T0 + 1000),
-  };
-}
-
-describe('<IntegrationView> conflict → Integrator', () => {
-  beforeEach(() => {
-    useUi.setState({ reviewIntegrationId: 'int_00000000000000000000000001', focusSessionId: null });
-  });
-
-  it('explains what the Integrator will do, starts it with the guidance and shows its live progress', async () => {
-    const i = conflicted();
-    let called: Record<string, unknown> | null = null;
-    const { fake } = mount(i, {
-      'integration.resolveWithAgent': (p) => {
-        called = p;
-        return { integration: resolving(i, { detail: 'コンフリクトしたマージを作業ツリーに再現しています' }), sessionId: 'ses_int', runId: 'run_int' };
-      },
-      'run.get': () => ({ id: 'run_int', sessionId: 'ses_int', status: 'running' }),
+      ...extra,
     });
-    const button = await screen.findByTestId('resolve-with-agent');
-    expect(button).toHaveTextContent('Integrator に解消を任せる');
-    // Not "no test command": the tests did not run because the merge stopped.
-    expect(screen.getByText('マージが終わっていないため、テストはまだ実行していません。')).toBeInTheDocument();
-    // Re-running would only conflict again: it steps back to a quiet action.
-    expect(screen.getByRole('button', { name: '再実行' })).toBeInTheDocument();
-    fireEvent.click(button);
-    const dialog = await screen.findByRole('dialog', { name: 'Integrator にコンフリクトの解消を任せますか？' });
-    expect(dialog).toHaveTextContent('「テスト」をマージするときに README.md がコンフリクトしました。');
-    expect(dialog).toHaveTextContent('main はまだ変更しません（反映にはあなたの承認が必要です）');
-    fireEvent.change(within(dialog).getByLabelText('Integrator への補足'), {
-      target: { value: '両方の節を残して' },
-    });
-    await act(async () => {
-      fireEvent.click(within(dialog).getByRole('button', { name: /Integrator に任せる/ }));
-    });
-    expect(called).toEqual({ integrationId: i.id, instructions: '両方の節を残して' });
-    expect(await screen.findByTestId('resolving')).toHaveTextContent('Integrator がコンフリクトを解消しています');
-    expect(screen.queryByTestId('resolve-with-agent')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '却下' })).not.toBeInTheDocument();
+  }
 
-    // The daemon's integration.updated events carry the fix step's progress.
-    act(() =>
-      fake.emit(
-        event('integration.updated', {
-          integration: { ...resolving(i), updatedAt: iso(T0 + 2000) },
-          changes: ['resolverRunId', 'steps'],
-        }),
-      ),
-    );
-    expect(await screen.findByText('Integrator（Run run_int）がコンフリクトを解消しています')).toBeInTheDocument();
-    const fixRow = document.querySelector('[data-step="fix"]')!;
-    expect(fixRow).toHaveAttribute('data-status', 'running');
-    // Its session is one click away (the bar and the step).
-    fireEvent.click(await screen.findByRole('button', { name: /Integrator を開く/ }));
-    expect(useUi.getState().focusSessionId).toBe('ses_int');
-  });
-
-  it('shows the result: resumed to approval with the fix step done', async () => {
-    const i = resolving(conflicted());
-    const { fake } = mount(i, { 'run.get': () => ({ id: 'run_int', sessionId: 'ses_int', status: 'completed' }) });
-    expect(await screen.findByTestId('resolving')).toBeInTheDocument();
-    const done: Integration = {
-      ...i,
+  const ready = () =>
+    integration({
+      id: INT,
+      title: '2 件のコードの変更を反映',
       status: 'awaiting_approval',
-      headSha: 'ccccccc0',
-      baseSha: 'aaaaaaa0',
-      steps: i.steps.map((s) =>
-        s.kind === 'fix'
-          ? { ...s, status: 'succeeded', detail: 'Integrator がコンフリクトを解消し、マージをコミットしました（ccccccc）', endedAt: iso(T0 + 4000) }
-          : s.kind === 'apply'
-            ? s
-            : { ...s, status: 'succeeded' },
-      ),
-      updatedAt: iso(T0 + 5000),
-    };
-    act(() => fake.emit(event('integration.updated', { integration: done, changes: ['status', 'steps'] })));
-    expect(await screen.findByTestId('approve-integration')).toBeInTheDocument();
-    expect(screen.getByText('Integrator がコンフリクトを解消し、マージをコミットしました（ccccccc）')).toBeInTheDocument();
-    expect(screen.queryByTestId('resolving')).not.toBeInTheDocument();
-    // The merge keeps the record of where it conflicted, labelled as past.
-    expect(screen.getByRole('list', { name: 'コンフリクトしていたファイル' })).toHaveTextContent('README.md');
+      targetRef: 'main',
+      workspaceId: 'wsp_int',
+      steps: [step({}), step({ index: 1, kind: 'verify', title: 'テスト' })],
+    });
+
+  it('applies with 反映 (and Ctrl+Enter); やめる rejects', async () => {
+    const i = ready();
+    const { fake } = mountInteg(i, {
+      'integration.approve': () => ({ ...i, status: 'applied' }),
+      'integration.reject': () => ({ ...i, status: 'rejected' }),
+    });
+    expect(await screen.findByText('反映待ち')).toBeInTheDocument();
+    expect(await screen.findByText(/return true;/)).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('approve-integration'));
+    expect(fake.calls.some((c) => c.method === 'integration.approve')).toBe(true);
+    expect(await screen.findByText('反映済み')).toBeInTheDocument();
   });
 
-  it('offers another try when the Integrator could not resolve it', async () => {
-    const base = conflicted();
-    const failed: Integration = {
-      ...resolving(base, {
-        status: 'failed',
-        detail: 'Integrator の解消を確認できませんでした: コンフリクトマーカーが残っています: README.md',
-      }),
+  it('やめる rejects it', async () => {
+    const i = ready();
+    const { fake } = mountInteg(i, { 'integration.reject': () => ({ ...i, status: 'rejected' }) });
+    fireEvent.click(await screen.findByRole('button', { name: 'やめる' }));
+    await waitFor(() =>
+      expect(fake.calls.some((c) => c.method === 'integration.reject')).toBe(true),
+    );
+    expect(await screen.findByText('やめました')).toBeInTheDocument();
+  });
+
+  it('on a conflict lists the files and hands the conflict to an agent', async () => {
+    const i = integration({
+      id: INT,
+      title: '2 件のコードの変更を反映',
       status: 'conflict',
-      error: {
-        code: 'resolution_failed',
-        message: 'Integrator の解消を確認できませんでした: コンフリクトマーカーが残っています: README.md',
-      },
-    };
-    mount(failed);
-    expect(await screen.findByTestId('resolve-with-agent')).toHaveTextContent('もう一度 Integrator に任せる');
-    expect(screen.getAllByText(/コンフリクトマーカーが残っています/).length).toBeGreaterThan(0);
+      targetRef: 'main',
+      steps: [step({ status: 'failed', conflictFiles: ['src/auth.ts'], branch: 'acc/a' })],
+      error: { code: 'conflict', message: 'src/auth.ts が競合しました' },
+    });
+    const { fake } = mountInteg(i, {
+      'integration.resolveWithAgent': () => ({
+        integration: { ...i, status: 'running' },
+        sessionId: null,
+      }),
+    });
+    expect(await screen.findByRole('list', { name: '競合したファイル' })).toHaveTextContent(
+      'src/auth.ts',
+    );
+    expect(screen.getByText('競合')).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: 'Enter', ctrlKey: true });
+    await waitFor(() =>
+      expect(fake.calls.some((c) => c.method === 'integration.resolveWithAgent')).toBe(true),
+    );
+    expect(await screen.findByText('反映中')).toBeInTheDocument();
   });
 
-  it('puts the conflict back when the daemon refuses', async () => {
-    const i = conflicted();
-    mount(i, {
-      'integration.resolveWithAgent': () => {
-        throw new AccClientError('forbidden', 'この操作の権限がありません');
-      },
+  it('after failed tests shows their output and offers もう一度', async () => {
+    const i = integration({
+      id: INT,
+      title: '「ログイン」の変更を反映',
+      status: 'failed',
+      targetRef: 'main',
+      steps: [
+        step({}),
+        step({ index: 1, kind: 'verify', status: 'failed', artifactId: 'art_test' }),
+      ],
+      error: { code: 'tests_failed', message: 'テストが失敗しました' },
     });
-    fireEvent.click(await screen.findByTestId('resolve-with-agent'));
-    const dialog = await screen.findByRole('dialog');
-    await act(async () => {
-      fireEvent.click(within(dialog).getByRole('button', { name: /Integrator に任せる/ }));
+    const { fake } = mountInteg(i, {
+      'artifact.get': () => ({
+        ...output('test_result'),
+        data: {
+          command: 'pnpm test',
+          passed: false,
+          exitCode: 1,
+          durationMs: 10,
+          summary: '失敗',
+          output: 'FAIL login.test.js',
+        },
+      }),
+      'integration.run': () => ({ ...i, status: 'running' }),
     });
-    expect(await screen.findByTestId('resolve-with-agent')).toBeInTheDocument();
-    expect(screen.queryByTestId('resolving')).not.toBeInTheDocument();
+    expect(await screen.findByText('テスト失敗')).toBeInTheDocument();
+    expect(await screen.findByLabelText('テストの出力')).toHaveTextContent('FAIL login.test.js');
+    fireEvent.click(screen.getByRole('button', { name: 'もう一度' }));
+    await waitFor(() => expect(fake.calls.some((c) => c.method === 'integration.run')).toBe(true));
   });
 
-  it('asks for the tests right in the review when the careful profile waits for a human', async () => {
-    const i = {
-      ...ready(),
-      status: 'verifying' as const,
-      steps: ready().steps.map((x) =>
-        x.kind === 'verify'
-          ? { ...x, status: 'running' as const, detail: 'エージェントが書いたコードを実行するため、テストの前に人間の承認を待っています', artifactId: null }
-          : x,
-      ),
-    };
-    let responded: unknown = null;
-    const ask = {
-      id: 'apr_00000000000000000000000001',
-      kind: 'integration' as const,
-      status: 'pending' as const,
-      title: '統合後のテストを実行',
-      detail: 'pnpm test',
-      payload: { action: 'verify', command: 'pnpm test' },
-      projectId: i.projectId,
-      sessionId: null,
-      runId: null,
-      taskId: null,
-      integrationId: i.id,
-      requestedBy: { kind: 'agent' as const, sessionId: 'ses_x', runId: 'run_x' },
-      resolvedBy: null,
-      resolutionNote: null,
-      createdAt: iso(T0),
-      resolvedAt: null,
-    };
-    mount(i, {
-      'approval.list': (p) => ({ items: (p.status as string[]).includes('pending') ? [ask] : [], nextCursor: null }),
-      'approval.respond': (p) => {
-        responded = p;
-        return { ...ask, status: 'approved' };
-      },
-    });
-    const card = await screen.findByTestId('verify-approval');
-    expect(within(card).getByText('統合後のテストを実行しますか？')).toBeInTheDocument();
-    expect(within(card).getByText(/慎重プロファイルでは/)).toBeInTheDocument();
-    // Not a tool use: nothing to remember.
-    expect(within(card).queryByTestId('approve-always')).not.toBeInTheDocument();
-    await act(async () => {
-      fireEvent.click(within(card).getByRole('button', { name: /承認/ }));
-    });
-    expect(responded).toMatchObject({ approvalId: ask.id, decision: 'approve' });
+  it('names every status with a shape and a noun phrase', () => {
+    const at = (status: Integration['status'], over: Partial<Integration> = {}) =>
+      integration({ status, ...over });
+    expect(
+      [
+        at('pending'),
+        at('verifying'),
+        at('awaiting_approval'),
+        at('conflict'),
+        at('applied'),
+        at('cancelled'),
+      ].map(integrationShape),
+    ).toEqual(['queued', 'working', 'review', 'failed', 'done', 'stopped']);
+    expect(integrationLabel(at('failed', { error: { code: 'apply_failed', message: '' } }))).toBe(
+      '反映できません',
+    );
+    expect(
+      integrationLabel(at('running', { steps: [step({ kind: 'fix', status: 'running' })] })),
+    ).toBe('競合を解消中');
   });
 });

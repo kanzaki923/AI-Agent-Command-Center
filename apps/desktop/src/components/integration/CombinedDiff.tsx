@@ -2,7 +2,7 @@ import { ChevronRight, FileDiff, FileMinus2, FilePlus2 } from 'lucide-react';
 import { memo, useCallback, useState } from 'react';
 import { cn } from '../../lib/cn';
 import type { DiffFile } from '../../model/diff';
-import { DiffStatText, FileDiffView } from '../panel/DiffViewer';
+import { DiffStatText, FileDiffView } from '../outputs/DiffViewer';
 
 /** Files larger than this start collapsed (the page stays fast; one click shows them). */
 export const LARGE_FILE_LINES = 400;
@@ -89,9 +89,7 @@ const FileSection = memo(function FileSection({
       ) : (
         initiallyCollapsed(file) && (
           <div className="px-3 py-2 text-meta text-fg-3">
-            {file.binary
-              ? 'バイナリファイル'
-              : `大きな差分のため折りたたんでいます（${file.lines.length} 行）`}
+            {file.binary ? 'バイナリファイル' : `${file.lines.length.toLocaleString()} 行`}
           </div>
         )
       )}
