@@ -6,15 +6,11 @@ import {
   type Session,
 } from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
+import { approvalAttentionTitle, approvalRefs, approvalSessionId } from './approvals';
 import { attentionPriority } from './priority';
+import { oneLine } from './text';
 
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-const MAX_TITLE = 80;
-
-function oneLine(text: string): string {
-  const flat = text.replace(/\s+/g, ' ').trim();
-  return flat.length > MAX_TITLE ? `${flat.slice(0, MAX_TITLE - 1)}…` : flat;
-}
 
 /**
  * Startup backfill (spec 20261029 §1.12-3, run once): attention items for what was already
@@ -60,13 +56,9 @@ export function backfillAttention(ctx: DaemonContext): number {
       sql: { clause: 'created_at >= ?', params: [since] },
       direction: 'asc',
     })) {
-      const session = liveSession(ap.sessionId);
+      const session = liveSession(approvalSessionId(ctx, ap));
       if (!session) continue;
-      open('approval', session, ap.title, {
-        approvalId: ap.id,
-        ...(ap.runId ? { runId: ap.runId } : {}),
-        ...(ap.integrationId ? { integrationId: ap.integrationId } : {}),
-      });
+      open('approval', session, approvalAttentionTitle(ctx, ap), approvalRefs(ap));
     }
 
     for (const task of repos.tasks.find({

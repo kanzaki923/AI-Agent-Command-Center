@@ -94,7 +94,7 @@ async function executeAgentRun(
     canUseTool: (req) =>
       ctl.requestApproval({
         kind: 'tool_use',
-        title: approvalTitleFor(req.toolName),
+        title: approvalTitleFor(req.toolName, req.input, workspace.path),
         detail: approvalDetailFor(req.toolName, req.input, workspace.path) ?? req.title ?? null,
         payload: {
           toolName: req.toolName,

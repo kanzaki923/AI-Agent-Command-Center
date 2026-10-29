@@ -1,39 +1,39 @@
-import type { Attention } from '@acc/protocol';
-import { stubMethod } from '../api/registry';
-import type { AttentionResolutionInput, AttentionService, OpenAttentionInput } from '../contracts';
+import type { SystemActor } from '@acc/protocol';
 import { runOnce } from '../core/backfills';
-import { ApiError } from '../core/errors';
+import type { DaemonContext } from '../core/context';
 import { defineModule } from '../module';
 import { backfillAttention } from './backfill';
+import { attentionMethods } from './methods';
+import { AttentionManager } from './service';
+import { syncAttention } from './sync';
 
 export { ATTENTION_KIND_PRIORITY, attentionPriority } from './priority';
 export { backfillAttention } from './backfill';
+export { AttentionManager } from './service';
+export { answerText } from './answer';
+export { approvalAttentionTitle } from './approvals';
 
 /**
- * Placeholder of the attention service (T4, architecture.md §2.16) until the Attention track
- * lands: opens and resolves nothing.
+ * Approval items whose approval is no longer pending (cancelled while the daemon was down,
+ * or by a module's own startup reconciliation before it subscribed): resolve them.
  */
-export class StubAttention implements AttentionService {
-  open(_input: OpenAttentionInput): Attention | null {
-    return null;
+function resolveStaleApprovals(ctx: DaemonContext, manager: AttentionManager): number {
+  const actor: SystemActor = { kind: 'system', component: 'attention' };
+  let resolved = 0;
+  for (const att of ctx.repos.attention.find({ where: { status: 'open', kind: 'approval' } })) {
+    const ap = att.refs.approvalId ? ctx.repos.approvals.get(att.refs.approvalId) : undefined;
+    if (ap?.status === 'pending') continue;
+    manager.close(att.id, 'resolved', { by: actor });
+    resolved += 1;
   }
-
-  resolveWhere(_refs: Attention['refs'], _resolution: AttentionResolutionInput): Attention[] {
-    return [];
-  }
-
-  respond(): Promise<Attention> {
-    return Promise.reject(
-      new ApiError('not_found', 'Method not implemented yet: attention.respond', {
-        reason: 'not_implemented',
-      }),
-    );
-  }
+  return resolved;
 }
 
 /**
- * Attention ("your turn") items and questions to humans (T4, spec 20261029 §1.6, §3.6).
- * Core ships the table, the startup backfill and stubs.
+ * Attention ("your turn") items and questions to humans (T4, spec 20261029 §1.6, §3.6,
+ * architecture.md §2.16). Provides `ctx.service('attention')` and the methods human.ask /
+ * attention.list / attention.respond / attention.dismiss; keeps items in step with
+ * approvals, runs, tasks, outputs, integrations and budgets (sync.ts).
  */
 export const attentionModule = defineModule({
   name: 'attention',
@@ -57,13 +57,10 @@ CREATE INDEX attention_session ON attention(session_id, status);
     },
   ],
   register(ctx) {
-    ctx.provide('attention', new StubAttention());
-    ctx.methods.register(
-      stubMethod('human.ask'),
-      stubMethod('attention.list'),
-      stubMethod('attention.respond'),
-      stubMethod('attention.dismiss'),
-    );
+    const manager = new AttentionManager(ctx);
+    ctx.provide('attention', manager);
+    ctx.methods.register(...attentionMethods(ctx, manager));
+    const off = syncAttention(ctx, manager);
     return {
       start() {
         // Once: items for what already waited on a human before attention existed.
@@ -72,6 +69,11 @@ CREATE INDEX attention_session ON attention(session_id, status);
           created = backfillAttention(ctx);
         });
         if (created > 0) ctx.log.info('attention backfilled', { items: created });
+        const stale = ctx.db.transaction(() => resolveStaleApprovals(ctx, manager));
+        if (stale > 0) ctx.log.info('stale approval items resolved', { items: stale });
+      },
+      stop() {
+        off();
       },
     };
   },

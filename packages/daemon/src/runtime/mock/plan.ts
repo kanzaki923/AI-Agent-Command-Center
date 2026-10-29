@@ -12,7 +12,7 @@ import { z } from 'zod';
  *     { "type": "write", "path": "src/sum.ts", "content": "export const sum = ..." },
  *     { "type": "append", "path": "README.md", "content": "\n- sum を追加\n" },
  *     { "type": "run", "command": "node", "args": ["-e", "process.exit(0)"], "title": "テストを実行" },
- *     { "type": "ask", "title": "本番設定に触れてよいですか", "onReject": "stop" },
+ *     { "type": "ask", "title": "価格を FAQ に載せる？", "choices": ["載せる", "載せない"] },
  *     { "type": "check", "path": "src/sum.ts", "contains": "export const sum" },
  *     { "type": "sleep", "ms": 500 },
  *     { "type": "resolve", "strategy": "ours+theirs" },
@@ -29,7 +29,10 @@ import { z } from 'zod';
  * the project's profile asks about goes to approval (`onReject`), what the daemon's rules
  * deny comes back as a tool error and the mock carries on (`onDeny`, default "continue").
  * `run` never uses a shell: `command` + `args` (`"node"` runs the daemon's own Node binary,
- * so plans are cross-platform). `ask` always asks a human (an explicit approval scenario).
+ * so plans are cross-platform). `ask` always asks a human: with the `human.ask` tool (a run
+ * whose grant offers it) it asks a question and ends the run there; the answer resumes the
+ * session and the rest of the plan runs (kept in memory by the runtime, so not across a
+ * daemon restart). Without the tool it is an explicit approval scenario (`onReject`).
  */
 const RejectAction = z.enum(['stop', 'continue', 'fail']).default('stop');
 /** What to do when the daemon's rules deny a tool use (like a real agent: carry on). */
@@ -66,9 +69,14 @@ export const MockStep = z.discriminatedUnion('type', [
   }),
   z.strictObject({
     type: z.literal('ask'),
-    title: z.string().min(1),
-    detail: z.string().optional(),
-    /** Tool name shown in the approval payload. */
+    /** The question (one line). */
+    title: z.string().min(1).max(200),
+    detail: z.string().max(2000).optional(),
+    /** Answers to pick from (human.ask). */
+    choices: z.array(z.string().min(1).max(40)).max(4).optional(),
+    /** Accept a free-text answer (human.ask; default true). */
+    allowText: z.boolean().optional(),
+    /** Tool name shown in the approval payload (runs without human.ask). */
     toolName: z.string().min(1).default('MockApproval'),
     onReject: RejectAction,
   }),

@@ -2,7 +2,11 @@ import type { AgentEvent, AgentRunInput, ApprovalDecision } from '../../../contr
 import type { ToolGate } from '../../gate';
 import type { DenyAction, MockStep } from '../plan';
 
-export type StepOutcome = 'next' | 'stop';
+/**
+ * `next`: go on; `stop`: end the plan here (the summary says it stopped); `wait`: end the run
+ * here waiting for an answer — the rest of the plan runs when the answer resumes the session.
+ */
+export type StepOutcome = 'next' | 'stop' | 'wait';
 
 /** What the gate said about a tool use. */
 export type Permit =

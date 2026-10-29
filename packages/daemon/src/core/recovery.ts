@@ -1,9 +1,44 @@
 import { RECOVERABLE_RUN_STATUSES, type SystemActor } from '@acc/protocol';
 import type { DaemonContext } from './context';
 
+/**
+ * Withdraw the open attention items of a cancelled approval (spec 20261029 §3.10-2). Runs
+ * before the modules register, so it writes the rows itself (the attention module's own
+ * startup check catches any it could not see).
+ */
+function resolveApprovalAttention(
+  ctx: DaemonContext,
+  approvalId: string,
+  actor: SystemActor,
+  now: string,
+): string[] {
+  const out: string[] = [];
+  for (const att of ctx.repos.attention.find({
+    where: { status: 'open', kind: 'approval' },
+    sql: { clause: "json_extract(data, '$.refs.approvalId') = ?", params: [approvalId] },
+  })) {
+    const attention = ctx.repos.attention.update(att.id, (a) => ({
+      ...a,
+      status: 'resolved',
+      resolution: { choiceId: null, text: null, by: actor },
+      resolvedAt: now,
+    }));
+    ctx.bus.emit({
+      type: 'attention.resolved',
+      actor,
+      payload: { attention },
+      refs: { sessionId: attention.sessionId, runId: null, taskId: null },
+    });
+    out.push(att.id);
+  }
+  return out;
+}
+
 export interface RecoveryReport {
   interruptedRuns: string[];
   cancelledApprovals: string[];
+  /** Approval attention items withdrawn with their approvals (questions are kept). */
+  resolvedAttention: string[];
   releasedWorkspaces: string[];
   clearedSessions: string[];
 }
@@ -12,7 +47,9 @@ export interface RecoveryReport {
  * Reconcile persisted state after a (re)start. No run can still be executing when the
  * daemon starts, so:
  * - runs in running/queued/awaiting_approval -> interrupted (run.status_changed, reason "daemon_restart")
- * - pending approvals of those runs -> cancelled (approval.resolved)
+ * - pending approvals of those runs -> cancelled (approval.resolved), and their attention
+ *   items resolved (attention.resolved; the resumed agent asks again if it still needs to).
+ *   Questions stay open: they belong to the session, and the answer starts a new run.
  * - workspace locks held by those runs -> released (workspace.updated)
  * - session.activeRunId pointing at those runs -> null (session.updated)
  * Whether an interrupted run can be resumed is decided later by the runtime (run.retry).
@@ -22,6 +59,7 @@ export function recoverOnStartup(ctx: DaemonContext): RecoveryReport {
   const report: RecoveryReport = {
     interruptedRuns: [],
     cancelledApprovals: [],
+    resolvedAttention: [],
     releasedWorkspaces: [],
     clearedSessions: [],
   };
@@ -64,6 +102,7 @@ export function recoverOnStartup(ctx: DaemonContext): RecoveryReport {
         }));
         ctx.bus.emit({ type: 'approval.resolved', actor, payload: { approval } });
         report.cancelledApprovals.push(ap.id);
+        report.resolvedAttention.push(...resolveApprovalAttention(ctx, ap.id, actor, now));
       }
 
       for (const w of ctx.repos.workspaces.find({ where: { locked_by_run_id: run.id } })) {
