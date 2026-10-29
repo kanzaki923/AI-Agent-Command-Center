@@ -15,6 +15,7 @@
     "e2e:conflict": "node e2e/conflict.js",
     "e2e:perf": "node e2e/perf.js",
     "screenshots": "node e2e/screenshots.js",
+    "e2e:audit": "node e2e/audit.js",
     "tauri": "tauri",
     "tauri:dev": "node scripts/prepare-sidecar.js && tauri dev",
     "tauri:build": "tauri build"
