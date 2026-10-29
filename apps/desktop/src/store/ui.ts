@@ -53,8 +53,6 @@ export interface UiState {
   reviewIntegrationId: string | null;
   /** Project dialog: add a repository, or edit one project's settings. */
   projectDialog: { kind: 'new' } | { kind: 'edit'; projectId: string } | null;
-  /** Session whose orchestrator-grant dialog is open. */
-  grantDialogSessionId: string | null;
   /** Suggested first message per session (demo: a one-click chip above the composer). */
   suggestions: Record<string, string>;
   /**
@@ -116,7 +114,6 @@ interface UiActions {
   openIntegration: (integrationId: string) => void;
   closeIntegration: () => void;
   setProjectDialog: (d: UiState['projectDialog']) => void;
-  setGrantDialog: (sessionId: string | null) => void;
   setSuggestion: (sessionId: string, text: string | null) => void;
   /** Open the conversation and scroll to one message. */
   openMessage: (sessionId: string, messageId: string) => void;
@@ -166,7 +163,6 @@ const initial: UiState = {
   keyboardSelectAt: 0,
   reviewIntegrationId: null,
   projectDialog: null,
-  grantDialogSessionId: null,
   suggestions: {},
   jumpTo: null,
   flash: null,
@@ -345,7 +341,6 @@ export const createUiStore = () =>
         openIntegration: (reviewIntegrationId) => set({ reviewIntegrationId }),
         closeIntegration: () => set({ reviewIntegrationId: null }),
         setProjectDialog: (projectDialog) => set({ projectDialog }),
-        setGrantDialog: (grantDialogSessionId) => set({ grantDialogSessionId }),
         openMessage: (sessionId, messageId) => {
           get().openSession(sessionId);
           set({ jumpTo: { sessionId, messageId, nonce: ++jumpNonce } });

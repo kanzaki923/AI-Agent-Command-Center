@@ -167,4 +167,19 @@ describe('<Composer>', () => {
     fireEvent.change(textarea, { target: { value: '下書き' } });
     expect(useUi.getState().drafts[s.id]).toBe('下書き');
   });
+
+  it('sends the suggested first message with one click', async () => {
+    useUi.setState({ suggestions: { [s.id]: '新製品のローンチ準備を進めて' } });
+    const { sends } = setup();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('suggestion-chip'));
+    });
+    expect(sends()[0]?.params).toEqual({ sessionId: s.id, content: '新製品のローンチ準備を進めて' });
+    expect(useUi.getState().suggestions[s.id]).toBeUndefined();
+  });
+
+  it('says nothing about grants or an orchestrator', () => {
+    setup();
+    expect(document.body).not.toHaveTextContent(/Orchestrator|権限/);
+  });
 });
