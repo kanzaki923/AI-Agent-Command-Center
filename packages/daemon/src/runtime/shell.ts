@@ -23,6 +23,8 @@ export interface ShellCommand {
   piped: boolean;
   /** Inner text of command / process substitutions in this command. */
   substitutions: string[];
+  /** Leading `NAME=value` environment assignments stripped from `argv` (posix). */
+  assignments: string[];
 }
 
 export interface ShellParse {
@@ -34,7 +36,15 @@ export interface ShellParse {
 const MAX_LENGTH = 20_000;
 
 function emptyCommand(piped: boolean): ShellCommand {
-  return { argv: [], writes: [], reads: [], background: false, piped, substitutions: [] };
+  return {
+    argv: [],
+    writes: [],
+    reads: [],
+    background: false,
+    piped,
+    substitutions: [],
+    assignments: [],
+  };
 }
 
 /** Index just after the `)` closing the substitution whose `(` is at `open`, or -1. */
@@ -93,9 +103,11 @@ export function parseShell(text: string, dialect: ShellDialect = 'posix'): Shell
     if (next === 'background') cmd.background = true;
     if (dialect === 'posix') {
       while (cmd.argv.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(cmd.argv[0]!)) {
-        cmd.argv.shift();
+        cmd.assignments.push(cmd.argv.shift()!);
       }
-      if (cmd.argv.length === 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(cmd.argv[0]!)) cmd.argv = [];
+      if (cmd.argv.length === 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(cmd.argv[0]!)) {
+        cmd.assignments.push(cmd.argv.shift()!);
+      }
     }
     if (cmd.argv.length > 0 || cmd.writes.length > 0 || cmd.substitutions.length > 0) {
       commands.push(cmd);

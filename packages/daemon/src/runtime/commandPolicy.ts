@@ -43,8 +43,10 @@ export interface CommandContext {
   allowedOutside(path: string): boolean;
   /** Credentials or daemon data (only asked for paths outside the workspace). */
   sensitive(path: string): boolean;
-  /** Any component is `.git`. */
+  /** Any component is `.git` (resolving symlinks, so an in-repo link to `.git` is caught). */
   touchesGit(path: string): boolean;
+  /** An agent-CLI settings file (`.claude/settings.json`), resolving symlinks. Default: text only. */
+  isSettings?(path: string): boolean;
   /** Whether a path exists (for `git checkout <path>`); default: unknown (false). */
   exists?(path: string): boolean;
   /** Port of the Control API; a command naming it on a loopback host is denied. */
@@ -474,6 +476,123 @@ const PM_BUILTINS = new Set([
   'npm',
 ]);
 
+/**
+ * Environment variables that redirect git's storage or working tree out of the daemon's
+ * worktree. Set as a command prefix (`GIT_WORK_TREE=/home/me git checkout ...`) they let an
+ * otherwise-benign git command read or write outside it, so the daemon cannot see the escape
+ * in the command's words. Denied as git_metadata.
+ */
+const GIT_REDIRECT_ENV = new Set([
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_INDEX_FILE',
+  'GIT_NAMESPACE',
+  'GIT_COMMON_DIR',
+  'GIT_CONFIG',
+  'GIT_CONFIG_GLOBAL',
+  'GIT_CONFIG_SYSTEM',
+  'GIT_CONFIG_COUNT',
+  'GIT_TEMPLATE_DIR',
+  'GIT_CEILING_DIRECTORIES',
+]);
+
+/**
+ * Environment variables whose value is run as a command, loaded as code, or preloaded into a
+ * process. Set as a command prefix they smuggle an arbitrary command past the policy (which
+ * otherwise reads `sh -c`, `node -e`, pipelines, ...). Denied as opaque: the real effect of
+ * the command cannot be verified from its words.
+ */
+const CODE_INJECTION_ENV = new Set([
+  // git hooks / helpers that run a command
+  'GIT_SSH',
+  'GIT_SSH_COMMAND',
+  'GIT_PROXY_COMMAND',
+  'GIT_EXTERNAL_DIFF',
+  'GIT_PAGER',
+  'GIT_EDITOR',
+  'GIT_SEQUENCE_EDITOR',
+  'GIT_ASKPASS',
+  'SSH_ASKPASS',
+  // generic pager / editor a tool may shell out to
+  'PAGER',
+  'EDITOR',
+  'VISUAL',
+  // shells that source a file before running
+  'BASH_ENV',
+  'ENV',
+  'ZDOTDIR',
+  'PROMPT_COMMAND',
+  'PS4',
+  'IFS',
+  'SHELLOPTS',
+  'BASHOPTS',
+  // dynamic linker / loader preloads
+  'LD_PRELOAD',
+  'LD_LIBRARY_PATH',
+  'LD_AUDIT',
+  'DYLD_INSERT_LIBRARIES',
+  'DYLD_LIBRARY_PATH',
+  'DYLD_FRAMEWORK_PATH',
+  // language runtimes that load extra code at startup
+  'NODE_OPTIONS',
+  'PYTHONSTARTUP',
+  'PYTHONPATH',
+  'PERL5OPT',
+  'PERL5LIB',
+  'RUBYOPT',
+  'RUBYLIB',
+]);
+
+/** The hard rule a leading `NAME=value` env assignment breaks, or null when it is harmless. */
+export function envAssignmentRule(name: string): HardRule | null {
+  const n = name.toUpperCase();
+  if (GIT_REDIRECT_ENV.has(n)) return 'git_metadata';
+  if (CODE_INJECTION_ENV.has(n)) return 'opaque';
+  // Shadowing the command search path points a plain `git`/`node`/... at an attacker's binary.
+  if (n === 'PATH' || n === 'PATHEXT') return 'opaque';
+  return null;
+}
+
+/** git config keys (`git -c key=value`) that make git run a command or load code. */
+const GIT_CONFIG_EXEC = [
+  /^core\.sshcommand$/i,
+  /^core\.pager$/i,
+  /^core\.editor$/i,
+  /^core\.hookspath$/i,
+  /^core\.fsmonitor$/i,
+  /^core\.(askpass|editor)$/i,
+  /^sequence\.editor$/i,
+  /^diff\.external$/i,
+  /^diff\..*\.command$/i,
+  /\.textconv$/i,
+  /^filter\..*\.(clean|smudge|process)$/i,
+  /^.*\.sshcommand$/i,
+  /^pager\./i,
+  /^protocol\..*\.allow$/i,
+  /^credential\..*helper$/i,
+  /^credential\.helper$/i,
+  /^uploadpack\.packobjectshook$/i,
+  /^gpg\.program$/i,
+];
+
+/** Whether `git -c key=value` overrides a key that can run a command or load code. */
+function gitConfigRunsCode(kv: string): boolean {
+  const key = kv.slice(0, kv.indexOf('=') >= 0 ? kv.indexOf('=') : kv.length);
+  if (/^alias\./i.test(key)) {
+    // `git -c alias.x='!cmd' x` runs the shell alias.
+    const val = kv.slice(kv.indexOf('=') + 1);
+    return kv.includes('=') ? val.trimStart().startsWith('!') : true;
+  }
+  return GIT_CONFIG_EXEC.some((re) => re.test(key));
+}
+
+/** A remote URL / transport that runs a local command (`ext::sh -c ...`). */
+function isExecTransport(url: string): boolean {
+  return /^ext::/i.test(url.trim());
+}
+
 function programName(word: string): string {
   const base = word.replace(/^.*[\\/]/, '').toLowerCase();
   return base.replace(/\.(exe|cmd|bat|ps1|com)$/, '');
@@ -562,10 +681,12 @@ class Analyzer {
     fedByDownload: boolean,
   ): string | null {
     let argv = c.argv.slice();
+    for (const a of c.assignments) this.envAssign(a);
     for (const w of c.writes) this.pathArg(w, 'write');
     for (const r of c.reads) this.pathArg(r, 'read');
     if (c.background) this.hard('system', 'background process (&)');
     for (const w of argv) this.wordChecks(w);
+    if (dialect === 'powershell') for (const w of argv) this.powershellEnvWrite(w);
     if (argv.length === 0) return null;
 
     // Unwrap shell keywords and wrappers: env / command / exec / time / nice / timeout / xargs.
@@ -593,6 +714,9 @@ class Analyzer {
         argv = argv.slice(1);
         while (argv[0] && (isFlag(argv[0]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[0]))) {
           const f = argv.shift()!;
+          // `env NAME=value cmd` carries the same risk as a bare `NAME=value cmd` prefix.
+          if ((p === 'env' || p === 'command') && /^[A-Za-z_][A-Za-z0-9_]*=/.test(f))
+            this.envAssign(f);
           if ((p === 'nice' && f === '-n') || (p === 'xargs' && /^-[IdLnPs]$/.test(f)))
             argv.shift();
         }
@@ -788,6 +912,21 @@ class Analyzer {
     if (/\$\{?acc_home\b|%acc_home%|\$env:acc_home/i.test(w)) this.hard('credentials', w);
   }
 
+  /** A leading `NAME=value` env assignment that hijacks a tool's behaviour. */
+  private envAssign(word: string): void {
+    const name = word.slice(0, word.indexOf('='));
+    const rule = envAssignmentRule(name);
+    if (rule) this.hard(rule, `${name}=`);
+  }
+
+  /** A PowerShell env write (`$env:NAME=...`, `Set-Item Env:NAME ...`) to a hijacking var. */
+  private powershellEnvWrite(word: string): void {
+    const m = /^\$env:([A-Za-z_][A-Za-z0-9_]*)=/i.exec(word) ?? /^env:([A-Za-z_][A-Za-z0-9_]*)$/i.exec(word);
+    if (!m) return;
+    const rule = envAssignmentRule(m[1]!);
+    if (rule) this.hard(rule, `$env:${m[1]}`);
+  }
+
   private outside(p: string): boolean {
     if (homeish(p)) return true;
     return !this.ctx.inside(p) && !this.ctx.allowedOutside(p);
@@ -812,7 +951,7 @@ class Analyzer {
     }
     if (mode === 'write') {
       if (this.ctx.touchesGit(p)) this.hard('git_metadata', p);
-      else if (isClaudeSettings(p)) this.hard('self_escalation', p);
+      else if ((this.ctx.isSettings ?? isClaudeSettings)(p)) this.hard('self_escalation', p);
     }
   }
 
@@ -843,7 +982,7 @@ class Analyzer {
         continue;
       }
       if (looksLikePath(w)) this.pathArg(w, mode);
-      else if (mode === 'write' && (this.ctx.touchesGit(w) || isClaudeSettings(w)))
+      else if (mode === 'write' && (this.ctx.touchesGit(w) || (this.ctx.isSettings ?? isClaudeSettings)(w)))
         this.pathArg(w, 'write');
     }
   }
@@ -949,8 +1088,23 @@ class Analyzer {
         dirArg = args[++i] ?? null;
         continue;
       }
-      if (a === '-c') {
+      if (a === '-c' || a === '--config-env') {
+        const kv = args[++i];
+        // `git -c core.sshCommand=... fetch` runs an arbitrary command; `-c alias.x='!...'` too.
+        if (kv && gitConfigRunsCode(kv)) this.hard('opaque', `git -c ${kv.split('=')[0]}`);
+        continue;
+      }
+      if (a.startsWith('-c') && a.length > 2 && gitConfigRunsCode(a.slice(2))) {
+        this.hard('opaque', `git -c ${a.slice(2).split('=')[0]}`);
+        continue;
+      }
+      if ((a === '--upload-pack' || a === '--receive-pack' || a === '--exec') && args[i + 1]) {
+        this.hard('opaque', `git ${a}`);
         i++;
+        continue;
+      }
+      if (/^--(upload-pack|receive-pack|exec)=/.test(a)) {
+        this.hard('opaque', `git ${a.split('=')[0]}`);
         continue;
       }
       if (a.startsWith('--git-dir') || a.startsWith('--work-tree')) {
@@ -965,6 +1119,18 @@ class Analyzer {
     const sub = args[i];
     const rest = args.slice(i + 1);
     const pos = positionals(rest);
+    // A remote-helper transport (`git fetch ext::sh -c ...`) runs a local command.
+    if (rest.some((a) => isExecTransport(a))) {
+      this.hard('opaque', `git ${sub ?? ''} ext::`.trim());
+      return;
+    }
+    // `--upload-pack` / `--receive-pack` / `--exec` run a program git would otherwise invoke
+    // on the remote; with a local or ext transport they run here.
+    const execFlag = rest.find((a) => /^--(upload-pack|receive-pack|exec)(=|$)/.test(a));
+    if (execFlag) {
+      this.hard('opaque', `git ${execFlag.split('=')[0]}`);
+      return;
+    }
     if (dirArg && this.outside(dirArg)) {
       const reading =
         sub !== undefined &&

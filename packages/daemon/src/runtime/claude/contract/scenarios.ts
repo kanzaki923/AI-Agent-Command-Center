@@ -90,7 +90,7 @@ export const scenarios = {
     name: 'bashForcedAsk',
     setup: () => ({
       turns: [
-        toolUse('Bash', { command: 'git -c core.pager=cat log -1', description: 'ログ' }),
+        toolUse('Bash', { command: 'git -c core.quotepath=false log -1', description: 'ログ' }),
         echoResults,
       ],
       run: { prompt: 'ログを見て', decide: async () => ({ decision: 'rejected', note: 'だめ' }) },
@@ -188,7 +188,7 @@ export const scenarios = {
           subagent_type: 'general-purpose',
         }),
         // The sub-agent's own requests.
-        toolUse('Bash', { command: 'git -c core.pager=cat log -1', description: 'ログ' }),
+        toolUse('Bash', { command: 'git -c core.quotepath=false log -1', description: 'ログ' }),
         text('サブエージェント完了'),
         // Back in the main thread with the Agent result.
         echoResults,

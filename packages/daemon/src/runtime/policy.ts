@@ -170,8 +170,8 @@ const RULE_TEXT: Record<DenyRule, { ja: string; en: string }> = {
     en: 'Running a downloaded script directly is not allowed. Install dependencies from the manifest (package.json, ...).',
   },
   opaque: {
-    ja: '中身を確かめられない形のコマンド（エンコードされたコマンド、深い入れ子など）は実行できません。普通の形で書いてください。',
-    en: 'Commands whose content cannot be checked (encoded commands, deep nesting) are not allowed. Write the command plainly.',
+    ja: '中身を確かめられない形のコマンド（エンコードされたコマンド、深い入れ子、環境変数や git の設定で別のコマンドを走らせる書き方など）は実行できません。普通の形で書いてください。',
+    en: 'Commands whose real effect cannot be checked (encoded commands, deep nesting, or smuggling another command through an environment variable or git config) are not allowed. Write the command plainly.',
   },
   unattended: {
     ja: 'このツールはこの環境では使えません。人間は途中で回答しません。妥当な仮定を置いて自律的に進め、仮定は最終報告に書いてください。',
@@ -260,7 +260,16 @@ export function decideToolPermission(req: ToolPolicyInput): ToolPolicyResult {
   const sensitive = (target: string) =>
     SENSITIVE.test(target.replace(/\\/g, '/')) ||
     protectedRoots.some((r) => isInside(resolveFrom(cwd, target, platform), r, platform));
-  const touchesGit = (target: string) => touchesGitDir(target, cwd, platform);
+  // Resolve symlinks before deciding `.git` / settings: an in-repo link named `x` pointing at
+  // `.git` stays inside the worktree, so `inside()` passes, but writing through it would touch
+  // git metadata (e.g. install a hook the daemon runs when it commits). Check the real path.
+  const resolved = (target: string) =>
+    real ? real(resolveFrom(cwd, target, platform)) : resolveFrom(cwd, target, platform);
+  const realRoot = () => (real ? real(cwd) : cwd);
+  const touchesGit = (target: string) =>
+    touchesGitDir(target, cwd, platform) || touchesGitDir(resolved(target), realRoot(), platform);
+  const isSettings = (target: string) =>
+    isClaudeSettings(target) || isClaudeSettings(resolved(target));
 
   const hard = (rule: DenyRule, category: ToolCategory, detail: string): ToolPolicyResult => ({
     decision: 'deny',
@@ -310,7 +319,7 @@ export function decideToolPermission(req: ToolPolicyInput): ToolPolicyResult {
     if (!command.trim()) return gray('command_other', 'command without text');
     const verdict = analyzeCommand(
       command,
-      { inside, allowedOutside, sensitive, touchesGit, exists, daemonPort: req.daemonPort },
+      { inside, allowedOutside, sensitive, touchesGit, isSettings, exists, daemonPort: req.daemonPort },
       toolName === 'PowerShell' ? 'powershell' : 'posix',
     );
     if (verdict.hard) return hard(verdict.hard.rule, 'command_other', verdict.hard.detail);
@@ -353,7 +362,7 @@ export function decideToolPermission(req: ToolPolicyInput): ToolPolicyResult {
   if (isEditTool) {
     const gitPath = paths.find((p) => touchesGit(p));
     if (gitPath !== undefined) return hard('git_metadata', 'edit', gitPath);
-    const settings = paths.find((p) => isClaudeSettings(p));
+    const settings = paths.find((p) => isSettings(p));
     if (settings !== undefined) return hard('self_escalation', 'edit', settings);
     return gray('edit', 'edit inside workspace');
   }

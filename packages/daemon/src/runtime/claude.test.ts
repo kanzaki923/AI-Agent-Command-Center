@@ -436,7 +436,7 @@ describe('ClaudeAgentSdkRuntime', () => {
     expect(await hook('mcp__acc__task_get', {})).toEqual({});
     // Ask: the CLI then calls canUseTool even for tools it would auto-approve.
     for (const [tool, toolInput] of [
-      ['Bash', { command: 'git -c core.fsmonitor=evil status' }],
+      ['Bash', { command: 'git -c core.quotepath=false log' }],
       ['Workflow', { script: 'x' }],
       ['Read', { file_path: '/definitely/outside/secret' }],
     ] as const) {

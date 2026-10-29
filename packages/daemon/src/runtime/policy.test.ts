@@ -132,7 +132,7 @@ describe('decideToolPermission', () => {
     expect(decide('Bash', { command: "grep -rn 'TODO' src" })).toBe('allow');
     expect(decide('Bash', { command: 'cat ../other/secret' })).toBe('ask');
     expect(decide('Bash', { command: 'cat /etc/passwd' })).toBe('ask');
-    expect(decide('Bash', { command: 'git -c core.fsmonitor=x status' })).toBe('ask');
+    expect(decide('Bash', { command: 'git -c core.quotepath=false status' })).toBe('ask');
     // Windows paths and case folding apply to command arguments too.
     expect(decide('Bash', { command: 'cat src/a.ts' }, WIN, 'win32')).toBe('allow');
     expect(decide('Bash', { command: 'cat C:/Users/me/.ssh/id_rsa' }, WIN, 'win32')).toBe('deny');
