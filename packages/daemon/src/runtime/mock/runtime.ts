@@ -48,6 +48,12 @@ const DEFAULT_PRICE = { inputPerMTok: 3, outputPerMTok: 15 };
 export class MockAgentRuntime implements AgentRuntime {
   readonly id = MOCK_RUNTIME_ID;
   readonly displayName = 'モックエージェント（オフライン）';
+  /**
+   * The rest of a plan that stopped to wait for an answer (an `ask` step), by runtime
+   * session id: the run that resumes the session continues it. In memory only, like the
+   * mock's whole "conversation" (a restarted daemon resumes without it).
+   */
+  private readonly waiting = new Map<string, MockPlan>();
 
   constructor(private readonly opts: MockRuntimeOptions = {}) {}
 
@@ -56,9 +62,15 @@ export class MockAgentRuntime implements AgentRuntime {
   }
 
   run(input: AgentRunInput): AsyncIterable<AgentEvent> {
-    return new MockRun(this.opts, input).events();
+    return new MockRun(this.opts, input, this.waiting).events();
   }
 }
+
+/**
+ * The answer to a question the mock asked: a line "回答: …" (spec 20261029 §3.6), the whole
+ * prompt or the extra instructions after a task's description (which may carry the plan).
+ */
+const ANSWER_LINE = /(?:^|\n)回答[:：][^\S\n]*([^\n]*)/;
 
 class MockRun implements StepContext {
   private seq = 0;
@@ -70,6 +82,7 @@ class MockRun implements StepContext {
   constructor(
     readonly opts: MockRuntimeOptions,
     readonly input: AgentRunInput,
+    private readonly waiting: Map<string, MockPlan> = new Map(),
   ) {
     this.contextChars = input.prompt.length + (input.systemPrompt?.length ?? 0);
     this.gate = input.gate ?? new ToolGate({ cwd: input.cwd, profile: 'careful' });
@@ -78,23 +91,42 @@ class MockRun implements StepContext {
   async *events(): AsyncGenerator<AgentEvent, void, undefined> {
     const { input } = this;
     throwIfAborted(input.signal);
-    yield { type: 'session', runtimeSessionId: input.resumeSessionId ?? `mock_${input.runId}` };
+    const runtimeSessionId = input.resumeSessionId ?? `mock_${input.runId}`;
+    yield { type: 'session', runtimeSessionId };
     yield { type: 'activity', text: '依頼内容を確認中' };
 
     const parsed = parseMockPlan(input.prompt);
-    const plan = parsed ?? (await defaultPlan(input.prompt, input.cwd, input.runId));
+    // An answer resumes the session: continue the plan that waited for it, never start the
+    // task's plan over (it would ask the same question again).
+    const answer = input.resumeSessionId
+      ? (ANSWER_LINE.exec(input.prompt)?.[1]?.trim() ?? null)
+      : null;
+    const rest = answer !== null ? this.waiting.get(input.resumeSessionId!) : undefined;
+    if (rest) this.waiting.delete(input.resumeSessionId!);
+    const plan =
+      rest ??
+      (answer !== null ? answerOnlyPlan(answer) : null) ??
+      parsed ??
+      (await defaultPlan(input.prompt, input.cwd, input.runId));
     this.scale = plan.delayScale ?? 1;
     await this.pause();
 
-    if (input.resumeSessionId) {
+    if (answer !== null) {
+      yield* this.say(`回答を受け取りました（${truncate(answer, 60)}）。続きを進めます。`);
+    } else if (input.resumeSessionId) {
       yield* this.say('前回の作業の続きから再開します。');
     }
 
     let stopped = false;
-    for (const step of plan.steps) {
+    for (const [i, step] of plan.steps.entries()) {
       throwIfAborted(input.signal);
       const outcome = yield* this.step(step);
       await this.pause();
+      if (outcome === 'wait') {
+        // Asked a question: the rest of the plan waits for the answer (a new run).
+        this.waiting.set(runtimeSessionId, { ...plan, steps: plan.steps.slice(i + 1) });
+        return;
+      }
       if (outcome === 'stop') {
         stopped = true;
         break;
@@ -262,6 +294,16 @@ function denialSummary(message: string): string {
 }
 
 // ---- default plan ------------------------------------------------------------
+
+/** An answer with nothing left to do (the question's plan is gone, e.g. after a restart). */
+function answerOnlyPlan(answer: string): MockPlan {
+  return {
+    steps: [],
+    summary: answer.trim()
+      ? `回答（${truncate(answer, 60)}）を確認しました。追加の作業はありません。`
+      : '回答を確認しました。追加の作業はありません。',
+  };
+}
 
 /**
  * What the mock does without an acc-mock block: resolve the merge conflicts when it finds a

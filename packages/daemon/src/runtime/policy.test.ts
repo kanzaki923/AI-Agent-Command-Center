@@ -195,9 +195,33 @@ describe('tool descriptions', () => {
   });
 
   it('titles approvals', () => {
-    expect(approvalTitleFor('Bash')).toBe('コマンドの実行を承認しますか');
-    expect(approvalTitleFor('Write')).toBe('ファイルの変更を承認しますか');
-    expect(approvalTitleFor('mcp__x__y')).toBe('ツール「mcp__x__y」の使用を承認しますか');
+    // One noun phrase naming what will happen; never a question (spec 20261029 §3.6).
+    const cwd = process.cwd();
+    expect(approvalTitleFor('Bash', { command: 'pnpm add zod' }, cwd)).toBe('pnpm add zod を実行');
+    expect(approvalTitleFor('Write', { file_path: `${cwd}/docs/faq.md` }, cwd)).toBe(
+      'docs/faq.md を編集',
+    );
+    expect(approvalTitleFor('Read', { file_path: `${cwd}/pricing.md` }, cwd)).toBe(
+      'pricing.md を参照',
+    );
+    expect(approvalTitleFor('Grep', { pattern: 'TODO' }, cwd)).toBe('「TODO」を検索');
+    expect(approvalTitleFor('WebFetch', { url: 'https://example.com/a?b=1' }, cwd)).toBe(
+      'example.com を閲覧',
+    );
+    expect(approvalTitleFor('WebSearch', { query: '競合 価格' }, cwd)).toBe(
+      '「競合 価格」を Web で検索',
+    );
+    expect(approvalTitleFor('Bash')).toBe('コマンドを実行');
+    expect(approvalTitleFor('Write')).toBe('ファイルを編集');
+    expect(approvalTitleFor('mcp__x__y')).toBe('ツール「mcp__x__y」を使用');
+    const long = approvalTitleFor('Edit', { file_path: `${'a/'.repeat(60)}faq.md` }, cwd);
+    expect(long.endsWith('faq.md を編集')).toBe(true);
+    expect(long.length).toBeLessThanOrEqual(80);
+    const longCmd = approvalTitleFor('Bash', { command: `echo ${'x'.repeat(200)}` }, cwd);
+    expect(longCmd.length).toBeLessThanOrEqual(80);
+    for (const t of [long, longCmd, approvalTitleFor('Bash'), approvalTitleFor('x')]) {
+      expect(t).not.toMatch(/承認しますか|[?？]$/);
+    }
     expect(approvalDetailFor('Bash', { command: 'rm -rf build' }, process.cwd())).toBe(
       'rm -rf build',
     );

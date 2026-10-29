@@ -887,3 +887,17 @@ T0 で仕様から足した・変えたもの（各トラックはこれを前�
 | S13 | `session.create` に `workspace` がないときは従来どおり（エージェントの会話でも作業場所を作らない） | 既存の呼び出しの意味を変えない。UI は `workspace: { kind: 'none' }` を渡す |
 | S14 | Claude ランタイムには `readRoots` を `additionalDirectories` として渡していない（T5 のファイル）。CLI が外と判断した読み取り（`blockedPath`）もゲートが読み取り root の中なら許可する | ファイルの持ち主を守るため。ゲートだけで読める |
 | S15 | `outputs` のスタブ（最後の本文を document に）は本体に入れず、T2 のテストでだけ差し替えた | `outputs/` は T3 のファイルのため |
+
+### 7.5 T4 で入れた差分（T4 出番と質問の実装時に追記）
+
+| # | 差分 | 理由 |
+|---|---|---|
+| A1 | `attention.opened` / `attention.resolved` の envelope は会話とプロジェクトだけ（`runId` / `taskId` は null。refs は payload にある） | Run・Task のイベント一覧（既存のテストと Timeline）に承認の「双子」を混ぜない |
+| A2 | 受信箱が回答を引き取らない（`deliver` の結果が `item: null` かつ `runId: null`＝T1 前のスタブ）とき、`attention/answer.ts` が `session.send` と同じ判定で Run を始め、実行中なら今の Run の後に渡す（メモリ上） | §5.6 の「T1 スタブ：直接 session.send 相当で可」。T1 の受信箱が入れば自動でそちらが使われる |
+| A3 | モックの `ask` は Run のツールに `human.ask` があるときだけ質問（なければ従来の承認の確認）。質問の後の手順はランタイムのメモリに持ち、本文「回答: …」で再開した Run が続ける。手順の結果に `wait` を追加 | 既存の承認のテスト・デモを壊さない。子の権限に `human.ask` を入れるのは T2（§3.3-6） |
+| A4 | agent は自分の会話の質問には答えられない。`attention.dismiss` は承認には使えない（`conflict`） | 自問自答の防止。承認を閉じると Run が待ったままになる |
+| A5 | 会話のない統合の承認は、統合（またはその最初の Task）を作ったエージェントの会話の出番にする。見つからなければ出番にしない | `Attention.sessionId` は必須 |
+| A6 | 自動の解消に足したもの：会話に新しい Run ができたらその会話の failure / stuck、会話のアーカイブで承認以外 | 再試行・再開・指示の開始を 1 つの規則で拾う。アーカイブした会話の出番がホームに残らない |
+| A7 | `budget.add_N` は `refs.budgetId` があるときだけ。日次上限の choices（「今日だけ +$10」「設定」）は T5 が `attention/respond.ts` に足す | 日次上限の扱いは T5 |
+| A8 | 子への「答えがないと進めないなら区切って終える」は `human.ask` のツール説明（T0 の protocol）で伝え、プロンプトの断片は足さない | `buildAgentPrompt` は T2 の持ち物 |
+| A9 | 共有ファイルの最小の変更：`runtime/executor.ts` の 1 行（`approvalTitleFor` に input と作業場所を渡す）とその期待値（`executor.test.ts`）、`runtime/policy.test.ts` の題の期待値、`redesign-seams.test.ts` のスタブ一覧から T4 の 4 メソッドを外した。`runtime/mock/{plan,runtime}.ts` と `steps/types.ts` に `ask` の質問と `wait` の分 | 承認の題を名詞句にする（§3.6）・スタブの置き換え・モックの質問 |

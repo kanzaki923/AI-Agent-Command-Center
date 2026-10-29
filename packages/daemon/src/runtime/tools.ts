@@ -185,13 +185,55 @@ export function describeToolActivity(toolName: string, input: unknown, cwd: stri
   }
 }
 
-/** Japanese approval title for a tool use (the question the human answers). */
-export function approvalTitleFor(toolName: string): string {
-  if (COMMAND_TOOLS.has(toolName)) return 'コマンドの実行を承認しますか';
-  if (EDIT_TOOLS.has(toolName)) return 'ファイルの変更を承認しますか';
-  if (READ_ONLY_TOOLS.has(toolName)) return 'ファイルの読み込みを承認しますか';
-  if (WEB_TOOLS.has(toolName)) return 'Web へのアクセスを承認しますか';
-  return `ツール「${toolName}」の使用を承認しますか`;
+/** Longest command / pattern / path shown in an approval title. */
+const TITLE_PART_MAX = 60;
+
+/** A path for a title: the end is what identifies it ("…/src/faq.md"). */
+function titlePath(p: string, cwd: string | undefined): string {
+  const shown = cwd ? displayPath(p, cwd) : p;
+  const flat = shown.replace(/\s+/g, ' ').trim();
+  return flat.length <= TITLE_PART_MAX ? flat : `…${flat.slice(-(TITLE_PART_MAX - 1))}`;
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host || url;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Japanese approval title for a tool use: one noun phrase naming what will happen
+ * ("pnpm add zod を実行", "faq.md を編集"), never a question (spec 20261029 §3.6). The
+ * choices (許可 / 拒否) carry the decision. Without the input it names the kind of use.
+ */
+export function approvalTitleFor(toolName: string, input?: unknown, cwd?: string): string {
+  const rec = asRecord(input) ?? {};
+  const firstPath = toolPaths(toolName, input)[0];
+  if (COMMAND_TOOLS.has(toolName)) {
+    const cmd = asString(rec.command);
+    return cmd ? `${truncate(cmd, TITLE_PART_MAX)} を実行` : 'コマンドを実行';
+  }
+  if (EDIT_TOOLS.has(toolName)) {
+    return firstPath ? `${titlePath(firstPath, cwd)} を編集` : 'ファイルを編集';
+  }
+  if (toolName === 'Glob' || toolName === 'Grep') {
+    const pattern = asString(rec.pattern);
+    return pattern ? `「${truncate(pattern, TITLE_PART_MAX)}」を検索` : 'ファイルを検索';
+  }
+  if (READ_ONLY_TOOLS.has(toolName)) {
+    return firstPath ? `${titlePath(firstPath, cwd)} を参照` : 'ファイルを参照';
+  }
+  if (toolName === 'WebFetch') {
+    const url = asString(rec.url);
+    return url ? `${truncate(hostOf(url), TITLE_PART_MAX)} を閲覧` : 'Web ページを閲覧';
+  }
+  if (toolName === 'WebSearch') {
+    const q = asString(rec.query);
+    return q ? `「${truncate(q, TITLE_PART_MAX)}」を Web で検索` : 'Web を検索';
+  }
+  return `ツール「${truncate(toolName, TITLE_PART_MAX)}」を使用`;
 }
 
 /** Short detail line for an approval: the command, path or URL the tool will touch. */

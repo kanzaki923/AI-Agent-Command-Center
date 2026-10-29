@@ -313,7 +313,7 @@ describe('agent executor', () => {
     expect(calls.approvals).toEqual([
       {
         kind: 'tool_use',
-        title: 'コマンドの実行を承認しますか',
+        title: expect.stringMatching(/^node -e .* を実行$/),
         detail: expect.stringMatching(/^node -e /),
         payload: {
           toolName: 'Bash',
