@@ -73,6 +73,11 @@ export class IntegrationService {
    * await), so run / reject / resolveWithAgent cannot slip in while git moves the target.
    */
   private readonly applying = new Set<string>();
+  /**
+   * Attempts started by a human's acceptance (`artifact.review accept`): they apply on their
+   * own once the tests pass, as that human (`Integration.preApprovedBy`).
+   */
+  private readonly autoApplying = new Set<string>();
   /** Resolutions in progress: where the integration branch was before the re-created merge. */
   private readonly resolutions = new Map<string, { preSha: string | null; branch: string }>();
   private readonly shutdown = new AbortController();
@@ -132,7 +137,12 @@ export class IntegrationService {
     title?: string | undefined;
     targetRef?: string | undefined;
     actor: Actor;
+    /** The human who already accepted these changes (spec 20261029 §3.5). */
+    preApprovedBy?: Actor | null;
   }): Promise<Integration> {
+    if (input.preApprovedBy && input.preApprovedBy.kind !== 'human') {
+      throw forbidden('反映の事前承認ができるのは人間だけです');
+    }
     const { ctx } = this;
     const project = ctx.repos.projects.require(input.projectId);
     const repo = this.workspaces.requireRepo(project);
@@ -172,6 +182,7 @@ export class IntegrationService {
         decidedBy: null,
         decidedAt: null,
         decisionNote: null,
+        preApprovedBy: input.preApprovedBy ?? null,
         error: null,
         createdBy: input.actor,
         createdAt: now,
@@ -231,9 +242,18 @@ export class IntegrationService {
   // run
   // -------------------------------------------------------------------------
 
-  /** Start (or restart) an attempt in the background and return the `running` integration. */
-  run(integrationId: string, actor: Actor): Integration {
+  /**
+   * Start (or restart) an attempt in the background and return the `running` integration.
+   * `autoApply` (the attempt a human's acceptance starts, with `preApprovedBy` set): once
+   * the tests pass it applies right away as that human instead of waiting for an approval.
+   * Later attempts (re-runs, an integrator's resolution) wait as usual: the human accepted
+   * the code as it was, not what came after.
+   */
+  run(integrationId: string, actor: Actor, opts: { autoApply?: boolean } = {}): Integration {
     const cur = this.get(integrationId);
+    if (opts.autoApply && !cur.preApprovedBy) {
+      throw invalidParams('事前承認のない統合は自動で反映できません');
+    }
     if (this.applying.has(integrationId)) {
       throw conflict('この統合は反映中です', { integrationId });
     }
@@ -263,16 +283,61 @@ export class IntegrationService {
           .map((s) => (s.kind === 'verify' ? { ...s, title: verifyTitle(project) } : s)),
       }),
     );
-    this.startJob(integrationId, cur.projectId, actor, 'fresh');
+    this.startJob(integrationId, cur.projectId, actor, 'fresh', opts.autoApply ?? false);
     return started;
   }
 
-  private startJob(id: string, projectId: string, actor: Actor, mode: 'fresh' | 'resume'): void {
+  /** Whether the current attempt applies on its own when its tests pass. */
+  willAutoApply(integrationId: string): boolean {
+    return this.autoApplying.has(integrationId);
+  }
+
+  private startJob(
+    id: string,
+    projectId: string,
+    actor: Actor,
+    mode: 'fresh' | 'resume',
+    autoApply = false,
+  ): void {
+    if (autoApply) this.autoApplying.add(id);
     const job = this.projectQueue
       .run(projectId, () => this.execute(id, actor, mode))
       .catch((err: unknown) => this.failUnexpected(id, actor, err))
-      .finally(() => this.jobs.delete(id));
+      .then((i) => (autoApply ? this.autoApply(i) : i))
+      .finally(() => {
+        this.autoApplying.delete(id);
+        this.jobs.delete(id);
+      });
     this.jobs.set(id, job);
+  }
+
+  /**
+   * Apply a verified, pre-approved attempt as the human who accepted it. When the target
+   * cannot be fast-forwarded (it moved, its checkout is dirty), the integration stays
+   * `awaiting_approval` with the reason in `error` (code `apply_failed`) for a human.
+   */
+  private async autoApply(i: Integration): Promise<Integration> {
+    const by = i.preApprovedBy;
+    if (i.status !== 'awaiting_approval' || !by || this.shutdown.signal.aborted) {
+      this.autoApplying.delete(i.id);
+      return i;
+    }
+    this.applying.add(i.id);
+    try {
+      return await this.projectQueue.run(i.projectId, () => this.apply(i.id, by, null));
+    } catch (err) {
+      this.autoApplying.delete(i.id);
+      try {
+        return this.update(i.id, by, ['error'], (cur) => ({
+          ...cur,
+          error: { code: 'apply_failed', message: errorMessage(err) },
+        }));
+      } catch {
+        return i; // DB already closed (shutdown)
+      }
+    } finally {
+      this.applying.delete(i.id);
+    }
   }
 
   /**
@@ -357,6 +422,8 @@ export class IntegrationService {
           workspaceId: wsId,
           baseRef: baseSha,
           title: `統合結果の差分: ${integ.branch} ← ${integ.targetRef}`,
+          // How the merged result looks, not a change of its own to accept.
+          role: 'evidence',
           createdBy: actor,
         })
         .catch((err: unknown) =>

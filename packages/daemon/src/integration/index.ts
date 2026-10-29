@@ -1,7 +1,8 @@
 import { isTerminalRunStatus } from '@acc/protocol';
-import { defineMethod } from '../api/registry';
+import { type CallScope, defineMethod } from '../api/registry';
 import type { DaemonContext } from '../core/context';
 import { defineModule } from '../module';
+import { artifactScope } from '../outputs/scope';
 import { ArtifactService } from './artifacts';
 import { type IntegrationOptions, IntegrationService } from './service';
 
@@ -20,24 +21,34 @@ declare module '../core/context' {
   }
 }
 
-/** Projects an artifact.list call touches, derived from whichever ref narrows it. */
+/**
+ * What an artifact.list call touches, derived from whichever ref narrows it: the project, and
+ * the sessions it names (an agent may only list inside its own session tree).
+ */
 function artifactListScope(
   ctx: DaemonContext,
   p: {
     projectId?: string;
     runId?: string;
     sessionId?: string;
+    rootSessionId?: string;
     taskId?: string;
     workspaceId?: string;
   },
-): { projectIds: string[] } {
+): CallScope {
+  const run = p.runId ? ctx.repos.runs.get(p.runId) : undefined;
   const projectId =
     p.projectId ??
-    (p.runId ? ctx.repos.runs.get(p.runId)?.projectId : undefined) ??
+    run?.projectId ??
     (p.sessionId ? ctx.repos.sessions.get(p.sessionId)?.projectId : undefined) ??
     (p.taskId ? ctx.repos.tasks.get(p.taskId)?.projectId : undefined) ??
-    (p.workspaceId ? ctx.repos.workspaces.get(p.workspaceId)?.projectId : undefined);
-  return { projectIds: projectId ? [projectId] : [] };
+    (p.workspaceId ? ctx.repos.workspaces.get(p.workspaceId)?.projectId : undefined) ??
+    undefined;
+  const sessionIds = [p.sessionId, p.rootSessionId, run?.sessionId].filter((s): s is string => !!s);
+  return {
+    projectIds: projectId ? [projectId] : [],
+    ...(sessionIds.length > 0 ? { sessionIds: [...new Set(sessionIds)] } : {}),
+  };
 }
 
 /** Build the integration module (options are for tests: e.g. a short test timeout). */
@@ -62,10 +73,7 @@ export function createIntegrationModule(opts: Partial<IntegrationOptions> = {}) 
         }),
 
         defineMethod('artifact.get', {
-          scope: (p) => {
-            const a = ctx.repos.artifacts.get(p.artifactId);
-            return { projectIds: a?.projectId ? [a.projectId] : [] };
-          },
+          scope: (p) => artifactScope(ctx, p.artifactId),
           handler: (p) => artifacts.get(p.artifactId),
         }),
 

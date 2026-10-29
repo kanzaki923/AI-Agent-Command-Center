@@ -867,3 +867,16 @@ T0 で仕様から足した・変えたもの（各トラックはこれを前�
 | C14 | `SpawnerService.spawn(params, actor, opts?)` の `opts` = `{ scheduleId, scheduledFor, trigger }`。`StartRunInput.trigger` を足した | 定期実行（T6）が spawner を通るため |
 | C15 | `CallScope.sessionIds` は agent すべてに効く（`session.*` の scope が返す）。人間・system は対象外 | §1.8 の「agent は自分か子孫」 |
 | C16 | `session.list` の `rootsOnly` / `parentSessionId`、`session.messages` の `streaming`（streams のスタブ経由）、`Project.folderPath` の保存は Core が配線済み | 引数を受けて黙って無視しないため |
+
+T3（成果物とコードの工程）で仕様から足した・変えたもの：
+
+| # | 差分 | 理由 |
+|---|---|---|
+| T3-1 | `Integration.preApprovedBy`（`Actor`、nullable・optional）を `domain.ts` に足した（共有ファイル、追加のみ） | §3.5 の「`preApprovedBy` を記録」に型がなかった |
+| T3-2 | 自動の反映は「採用が始めた試行」だけ。再実行・Integrator の解消後の試行は承認を待つ | 採用したのはその時点のコード。後から入ったコードを人が見ずに反映しない |
+| T3-3 | `accept` は種類を問わず人間だけ（§2.2 は「コードの accept は人間のみ」） | §3.9 の指揮役プリセットが「redo だけ」。`reviewBy: human` を AI が代わりに採用すると意味がない |
+| T3-4 | finalize は「公開済み」と「worktree のコードの変更」を両方残す（優先順位は並び順と、書き込み・最後の本文を使うかの判断） | 文書を公開してもコードの変更は反映の判断が要る |
+| T3-5 | 統合結果の diff は `role: evidence` | 子の変更と二重に「採用」の対象に見えないように |
+| T3-6 | 早送りできなかった採用は `awaiting_approval` ＋ `error.code: apply_failed` ＋ 出番 review（子の会話） | 人が反映先を片付けてから `integration.approve` で続けられる |
+| T3-7 | `redo` は `task.retry` を依頼者の actor で呼ぶ。agent は `task.spawnWorker` の権限で判定される（`assertCanSpawnWorker`） | T2 が `session.spawn` の子の判定（`assertCanSpawnChild`）に揃えるまでの継ぎ目。T1 の指揮役プリセットで redo するには T2 側の対応が要る |
+| T3-8 | `done` の Task の成果物を redo すると Task を `review` に戻してから再実行する | 既定で人の確認が要らない成果物（`reviewBy: none`）も依頼者がやり直せるように |

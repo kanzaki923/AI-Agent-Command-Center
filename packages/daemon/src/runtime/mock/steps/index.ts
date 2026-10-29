@@ -8,6 +8,7 @@ import { askStep } from './ask';
 import { checkStep } from './check';
 import { failStep, sleepStep } from './control';
 import { appendStep, writeStep } from './edit';
+import { publishStep } from './publish';
 import { resolveStep } from './resolve';
 import { runStep } from './run';
 import { sayStep } from './say';
@@ -22,6 +23,7 @@ export const STEP_HANDLERS: { [T in MockStepType]: StepHandler<T> } = {
   ask: askStep,
   sleep: sleepStep,
   fail: failStep,
+  publish: publishStep,
 };
 
 export { editFile } from './edit';

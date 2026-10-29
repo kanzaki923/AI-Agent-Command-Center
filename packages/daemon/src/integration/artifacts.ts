@@ -1,7 +1,16 @@
-import type { Actor, Artifact, ArtifactKind } from '@acc/protocol';
+import type {
+  Actor,
+  Artifact,
+  ArtifactKind,
+  ArtifactReview,
+  ArtifactRole,
+  ArtifactSource,
+} from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
+import type { SqlValue } from '../core/db';
 import type { Page } from '../core/repo';
 import { invalidParams } from '../core/errors';
+import { asCurrentKind, storedKindsFor } from '../outputs/legacy';
 import { git } from '../workspace/git';
 import { parseNumstatZ } from '../workspace/diff';
 
@@ -21,6 +30,13 @@ export interface RecordArtifactInput<K extends ArtifactKind> extends ArtifactRef
   title: string;
   data: DataOf<K>;
   createdBy: Actor;
+  /** Default by kind: output (commit / test_result: evidence). */
+  role?: ArtifactRole;
+  /** Default: published (diff: workspace_diff). */
+  source?: ArtifactSource;
+  /** One line. */
+  summary?: string | null;
+  review?: ArtifactReview;
 }
 
 export interface ArtifactQuery {
@@ -29,7 +45,11 @@ export interface ArtifactQuery {
   runId?: string | undefined;
   taskId?: string | undefined;
   workspaceId?: string | undefined;
+  /** `document` also finds legacy notes, `files` legacy files (shown as such). */
   kind?: ArtifactKind | undefined;
+  role?: ArtifactRole | undefined;
+  /** Artifacts of every session of this tree. */
+  rootSessionId?: string | undefined;
   limit: number;
   cursor?: string | undefined;
 }
@@ -38,32 +58,65 @@ export interface ArtifactQuery {
 export const MAX_TEST_OUTPUT_CHARS = 64 * 1024;
 
 /**
- * Artifacts record what work produced (diffs, commits, test results …) so it can be
- * traced to its task / run / workspace (concept §6.3). Other modules record through this
- * service: `ctx.service('artifacts').recordDiff({ workspaceId, runId, createdBy })`.
+ * Role of rows written before `role` existed (the schema default), for SQL filters: commits
+ * and test results are evidence, everything else output.
+ */
+const ROLE_SQL =
+  "COALESCE(json_extract(data, '$.role'), CASE WHEN kind IN ('commit', 'test_result') THEN 'evidence' ELSE 'output' END)";
+
+/**
+ * Artifacts record what work produced (documents, data, links, files, code changes) and how
+ * it was checked (commits, test results), traced to its session / run / task / workspace
+ * (concept §6.3, spec 20261029 §1.5). Other modules record through this service:
+ * `ctx.service('artifacts').recordDiff({ workspaceId, runId, createdBy })`.
+ *
+ * Reads (`get` / `list`) show legacy `note` / `file` rows as `document` / `files`; the rows
+ * themselves are never rewritten (`getStored` returns them as they are).
  */
 export class ArtifactService {
   constructor(private readonly ctx: DaemonContext) {}
 
   get(artifactId: string): Artifact {
+    return asCurrentKind(this.getStored(artifactId));
+  }
+
+  /** The row as stored (legacy kinds included). */
+  getStored(artifactId: string): Artifact {
     return this.ctx.repos.artifacts.require(artifactId);
   }
 
   list(q: ArtifactQuery): Page<Artifact> {
-    return this.ctx.repos.artifacts.page({
+    const sql: { clause: string; params: SqlValue[] }[] = [];
+    if (q.workspaceId) {
+      sql.push({ clause: "json_extract(data, '$.workspaceId') = ?", params: [q.workspaceId] });
+    }
+    if (q.role) sql.push({ clause: `${ROLE_SQL} = ?`, params: [q.role] });
+    if (q.rootSessionId) {
+      sql.push({
+        clause: 'session_id IN (SELECT id FROM sessions WHERE root_session_id = ?)',
+        params: [q.rootSessionId],
+      });
+    }
+    const page = this.ctx.repos.artifacts.page({
       where: {
         project_id: q.projectId,
         session_id: q.sessionId,
         run_id: q.runId,
         task_id: q.taskId,
-        kind: q.kind,
+        kind: q.kind ? storedKindsFor(q.kind) : undefined,
       },
-      ...(q.workspaceId
-        ? { sql: { clause: "json_extract(data, '$.workspaceId') = ?", params: [q.workspaceId] } }
+      ...(sql.length > 0
+        ? {
+            sql: {
+              clause: sql.map((c) => `(${c.clause})`).join(' AND '),
+              params: sql.flatMap((c) => c.params),
+            },
+          }
         : {}),
       limit: q.limit,
       cursor: q.cursor,
     });
+    return { ...page, items: page.items.map(asCurrentKind) };
   }
 
   /** Persist an artifact and emit `artifact.created` (in the caller's transaction, if any). */
@@ -83,11 +136,31 @@ export class ArtifactService {
         data: input.data,
         createdBy: input.createdBy,
         createdAt: this.ctx.clock.iso(),
+        ...(input.role ? { role: input.role } : {}),
+        ...(input.source ? { source: input.source } : {}),
+        ...(input.summary !== undefined ? { summary: input.summary } : {}),
+        ...(input.review ? { review: input.review } : {}),
       } as Artifact);
       this.ctx.bus.emit({
         type: 'artifact.created',
         actor: input.createdBy,
-        payload: { artifact },
+        payload: { artifact: asCurrentKind(artifact) },
+      });
+      return artifact;
+    });
+  }
+
+  /** Change an artifact's review state (emits `artifact.updated` `["review"]` when it changed). */
+  setReview(artifactId: string, review: ArtifactReview, actor: Actor): Artifact {
+    return this.ctx.db.transaction(() => {
+      const cur = this.getStored(artifactId);
+      if (sameReview(cur.review, review)) return asCurrentKind(cur);
+      const next = this.ctx.repos.artifacts.update(artifactId, (a) => ({ ...a, review }));
+      const artifact = asCurrentKind(next);
+      this.ctx.bus.emit({
+        type: 'artifact.updated',
+        actor,
+        payload: { artifact, changes: ['review'] },
       });
       return artifact;
     });
@@ -100,6 +173,8 @@ export class ArtifactService {
       baseRef?: string;
       title?: string;
       createdBy: Actor;
+      /** Default output (a code change to look at); an integration's own result is evidence. */
+      role?: ArtifactRole;
     },
   ): Promise<Artifact> {
     const d = await this.ctx.service('workspaceManager').diff(input.workspaceId, input.baseRef);
@@ -179,4 +254,13 @@ export class ArtifactService {
       },
     });
   }
+}
+
+function sameReview(a: ArtifactReview, b: ArtifactReview): boolean {
+  return (
+    a.state === b.state &&
+    a.note === b.note &&
+    a.at === b.at &&
+    JSON.stringify(a.by) === JSON.stringify(b.by)
+  );
 }
