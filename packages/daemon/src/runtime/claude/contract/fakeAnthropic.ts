@@ -53,8 +53,10 @@ export interface FakeRequest {
   body: MessagesBody;
   /** tool_result blocks of the last user message (what the CLI sent back). */
   toolResults: { tool_use_id: string; content: unknown; is_error: boolean }[];
-  /** Index of this main-loop request (0-based). */
+  /** Index of this main-loop request (0-based; -1 for aux and intercepted requests). */
   turn: number;
+  /** Request headers, credentials redacted. */
+  headers: Record<string, string>;
 }
 
 export type FakeTurn = (req: FakeRequest) => FakeReply;
@@ -101,12 +103,25 @@ export interface FakeAnthropicOptions {
    * fixture recorder sends tool inputs whole so paths in them can be sanitized.
    */
   jsonChunkSize?: number;
+  /**
+   * Looked at before the script: a reply here answers the request without consuming a turn
+   * (e.g. the auto mode classifier's side requests, which carry tools of their own).
+   */
+  intercept?: (req: FakeRequest) => FakeReply | undefined;
+  /** Keep every request body (probes only; bodies can be large). */
+  keepBodies?: boolean;
 }
 
 const SECRET_HEADERS = new Set(['authorization', 'x-api-key', 'proxy-authorization', 'cookie']);
 
 export class FakeAnthropicServer {
   readonly requests: LoggedRequest[] = [];
+  /** Full bodies with their headers, when `keepBodies` is set. */
+  readonly bodies: {
+    kind: LoggedRequest['kind'] | 'intercepted';
+    headers: Record<string, string>;
+    body: MessagesBody;
+  }[] = [];
   private readonly server: http.Server;
   private readonly sockets = new Set<Socket>();
   private turns: FakeTurn[];
@@ -115,9 +130,13 @@ export class FakeAnthropicServer {
   private fallback: FakeTurn;
   private port = 0;
   private readonly jsonChunkSize: number;
+  private readonly intercept: FakeAnthropicOptions['intercept'];
+  private readonly keepBodies: boolean;
 
   constructor(opts: FakeAnthropicOptions = {}) {
     this.jsonChunkSize = opts.jsonChunkSize ?? 12;
+    this.intercept = opts.intercept;
+    this.keepBodies = opts.keepBodies ?? false;
     this.turns = [...(opts.turns ?? [])];
     this.aux = opts.aux ?? (() => ({ content: [{ type: 'text', text: 'Fake title' }] }));
     this.fallback = opts.fallback ?? (() => ({ content: [{ type: 'text', text: 'done' }] }));
@@ -191,14 +210,27 @@ export class FakeAnthropicServer {
 
     const isMain = Array.isArray(body.tools) && body.tools.length > 0;
     entry.kind = isMain ? 'main' : 'aux';
-    const view: FakeRequest = {
+    const probe: FakeRequest = {
       path: entry.path,
       body,
       toolResults: lastToolResults(body),
-      turn: isMain ? this.mainCount : -1,
+      turn: -1,
+      headers: entry.headers,
     };
+    const intercepted = this.intercept?.(probe);
+    if (this.keepBodies) {
+      this.bodies.push({
+        kind: intercepted ? 'intercepted' : entry.kind,
+        headers: entry.headers,
+        body,
+      });
+    }
+    const view: FakeRequest = { ...probe, turn: isMain && !intercepted ? this.mainCount : -1 };
     let reply: FakeReply;
-    if (isMain) {
+    if (intercepted) {
+      entry.kind = 'aux';
+      reply = intercepted;
+    } else if (isMain) {
       const next = this.turns.shift() ?? this.fallback;
       this.mainCount += 1;
       reply = next(view);

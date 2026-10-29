@@ -34,12 +34,15 @@ export function recordingSdk(
     options: Options[];
     /** Tools whose PreToolUse hook answer is replaced by a deny (to observe the CLI on deny). */
     forceHookDeny?: readonly string[];
+    /** Rewrites the runtime's options before the CLI starts (probes, e.g. another permissionMode). */
+    overrideOptions?: (o: Options) => Options;
   },
 ): ClaudeSdkModule {
   return {
     ...real,
     query: (params) => {
-      const options: Options = { ...params.options };
+      const given: Options = { ...params.options };
+      const options: Options = sink.overrideOptions ? sink.overrideOptions(given) : given;
       const cut = options.canUseTool;
       if (cut) {
         options.canUseTool = async (toolName, input, o) => {
@@ -116,6 +119,8 @@ export interface RunScenarioOptions {
   runtime?: ClaudeRuntimeOptions;
   /** See recordingSdk. */
   forceHookDeny?: string[];
+  /** See recordingSdk. */
+  overrideOptions?: (o: Options) => Options;
   /** Overall safety timeout (ms). Default 60s. */
   timeoutMs?: number;
 }
@@ -144,6 +149,7 @@ export async function runScenario(
     calls: { canUseTool: [], preToolUse: [] } as SdkCallLog,
     options: [] as Options[],
     ...(o.forceHookDeny ? { forceHookDeny: o.forceHookDeny } : {}),
+    ...(o.overrideOptions ? { overrideOptions: o.overrideOptions } : {}),
   };
   const rt =
     runtime ??

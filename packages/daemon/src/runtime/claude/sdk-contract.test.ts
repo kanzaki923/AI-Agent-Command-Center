@@ -13,6 +13,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { AgentEvent } from '../../contracts';
 import { DISALLOWED_AGENT_TOOLS } from '../tools';
 import {
+  type ClassifierVerdict,
+  FAKE_BLOCK_CATEGORY,
+  classifierReply,
+  isClassifierRequest,
+} from './contract/autoMode';
+import {
   type CliSandbox,
   childCliProcesses,
   createCliSandbox,
@@ -363,6 +369,130 @@ describe.skipIf(!cli).concurrent('Claude Agent SDK contract (real CLI, fake API)
       const r7 = await go([turn(32000)], { resumeSessionId: sid });
       expect(inputOf(r7)).toBe(32000);
       expect(baselines.get(sid)).toMatchObject({ inputTokens: 1000 + 2000 + 4000 + 8000 + 32000 });
+    },
+  );
+});
+
+/**
+ * Auto mode (`permissionMode: 'auto'`) behind our custom ANTHROPIC_BASE_URL, with the fake API
+ * answering the CLI's own classifier requests. Not used in production yet: these pin the CLI
+ * behaviour the layered policy relies on (docs/snapshot/20261029_auto-mode.md).
+ */
+describe.skipIf(!cli).concurrent('Claude Agent SDK contract: auto mode', () => {
+  /** A command the CLI does not auto-approve (not read-only) and that needs no network. */
+  const nodeCommand = { command: 'node -e "process.exit(0)"', description: 'node' };
+
+  async function auto(opts: {
+    model: string;
+    verdict: ClassifierVerdict;
+    /** Our PreToolUse hook answer: 'pass' leaves the decision to the CLI (the classifier). */
+    hook: 'pass' | 'deny';
+  }) {
+    const classifierModels: string[] = [];
+    const sb = await createCliSandbox({
+      intercept: (req) => {
+        if (!isClassifierRequest(req)) return undefined;
+        classifierModels.push(req.body.model ?? '');
+        return classifierReply(req, opts.verdict);
+      },
+    });
+    sandboxes.push(sb);
+    sb.api.script([
+      () => ({ content: [{ type: 'tool_use', name: 'Bash', input: nodeCommand }] }),
+      () => ({ content: [{ type: 'text', text: 'done' }] }),
+    ]);
+    const r = await runScenario(sb, cli!.path, real, {
+      prompt: 'node を動かして',
+      model: opts.model,
+      ...(opts.hook === 'deny' ? { forceHookDeny: ['Bash'] } : {}),
+      overrideOptions: (o) => ({
+        ...o,
+        permissionMode: 'auto',
+        // The gateway does not return safeguard results: skip the server review round trip.
+        env: { ...o.env, CLAUDE_CODE_AUTO_MODE_SERVER: '0' },
+        ...(opts.hook === 'pass' ? { hooks: {} } : {}),
+      }),
+    });
+    expect(sb.proxy.attempts).toEqual([]);
+    expect(r.error).toBeNull();
+    return { r, classifierModels };
+  }
+  const denied = (r: ScenarioResult) =>
+    raw(r).filter((m) => m.type === 'system' && m.subtype === 'permission_denied');
+
+  it(
+    'accepts auto mode for a gateway alias and returns a classifier block to the model',
+    { timeout: TIMEOUT },
+    async () => {
+      const { r, classifierModels } = await auto({
+        model: 'team-sonnet',
+        verdict: 'block',
+        hook: 'pass',
+      });
+      expect(init(r)?.permissionMode).toBe('auto');
+      // Two stages, on the default classifier model (not the session's alias).
+      expect(classifierModels).toEqual(['claude-sonnet-5', 'claude-sonnet-5']);
+      expect(r.calls.canUseTool).toEqual([]);
+      expect(denied(r)).toEqual([
+        expect.objectContaining({ tool_name: 'Bash', decision_reason_type: 'classifier' }),
+      ]);
+      const [result] = toolResults(r);
+      expect(result?.isError).toBe(true);
+      expect(result?.text).toContain('auto mode classifier');
+      // The severity-style answer (Sonnet 5) names a category, but the CLI passes on only a
+      // generic reason; the `<block>` style passes on its `<reason>` (the probe saw both).
+      expect(result?.text).toContain('Reason: Blocked by classifier');
+      expect(result?.text).not.toContain(FAKE_BLOCK_CATEGORY);
+    },
+  );
+
+  it('runs the command when the classifier allows it', { timeout: TIMEOUT }, async () => {
+    const { r, classifierModels } = await auto({
+      model: 'claude-sonnet-4-6',
+      verdict: 'allow',
+      hook: 'pass',
+    });
+    // A Sonnet 4.6 session classifies with Sonnet 4.6; one stage when it allows.
+    expect(classifierModels).toEqual(['claude-sonnet-4-6']);
+    expect(r.calls.canUseTool).toEqual([]);
+    expect(denied(r)).toEqual([]);
+    expect(toolResults(r)).toEqual([expect.objectContaining({ isError: false })]);
+    const meta = raw(r).find((m) => m.type === 'user')?.tool_result_meta;
+    expect(meta).toEqual([
+      expect.objectContaining({
+        permission_decision: expect.objectContaining({
+          decision: 'accept',
+          reason_type: 'classifier',
+        }) as unknown,
+      }),
+    ]);
+  });
+
+  it('applies our PreToolUse deny before the classifier', { timeout: TIMEOUT }, async () => {
+    const { r, classifierModels } = await auto({
+      model: 'claude-sonnet-4-6',
+      verdict: 'allow',
+      hook: 'deny',
+    });
+    expect(classifierModels).toEqual([]);
+    expect(hooked(r)).toEqual(['Bash']);
+    expect(toolResults(r)[0]?.text).toContain('PreToolUse:Bash hook error');
+  });
+
+  it(
+    'silently starts in default mode for a model auto mode does not support',
+    {
+      timeout: TIMEOUT,
+    },
+    async () => {
+      const { r, classifierModels } = await auto({
+        model: 'claude-sonnet-4-5',
+        verdict: 'allow',
+        hook: 'pass',
+      });
+      expect(init(r)?.permissionMode).toBe('default');
+      expect(classifierModels).toEqual([]);
+      expect(asked(r)).toEqual(['Bash']);
     },
   );
 });
