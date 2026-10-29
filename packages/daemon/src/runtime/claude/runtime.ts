@@ -237,19 +237,10 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
     //   request, no extra call). Passes through LiteLLM; where the upstream does not answer,
     //   the CLI falls back to its own classifier, and when that cannot answer either (no
     //   classifier model served) the run falls back to the rules below.
-    // - judge "client": the CLI's own classifier request, which behind LiteLLM needs a
-    //   classifier model LiteLLM serves.
-    if (gate.autoMode) {
-      if (
-        routing.kind === 'claude-login' ||
-        gate.autoMode.judge === 'server' ||
-        gate.autoMode.classifierModel
-      ) {
-        gate.useClassifier();
-      } else {
-        gate.useRules(GATE_NOTES.noClassifierModel);
-      }
-    }
+    // - judge "client": the CLI's own classifier request, to `classifierModel` or, when it is
+    //   empty, the CLI's default (Claude Sonnet 5). Behind LiteLLM that name must be served;
+    //   when it is not, the classifier cannot answer and the run falls back to the rules.
+    if (gate.autoMode) gate.useClassifier();
     const auto = gate.mode === 'classifier';
     const serverJudge = auto && gate.autoMode?.judge === 'server';
     const env = buildChildEnv(this.opts.parentEnv ?? process.env, routing, {

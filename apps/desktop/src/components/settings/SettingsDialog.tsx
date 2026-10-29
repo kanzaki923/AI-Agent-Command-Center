@@ -296,7 +296,7 @@ function AgentPermissionSettings({
           <p className="mt-1 text-meta text-fg-3">
             {judge === 'server'
               ? 'サーバー判定を使えない上流のときの予備です。空なら Claude Code の既定（Claude Sonnet 5）を使い、LiteLLM にそのモデルがなければルールで判断します。'
-              : '空のままなら、LiteLLM 経由の Run は Core Daemon のルールで判断します。'}
+              : '空なら Claude Code の既定（Claude Sonnet 5）を使い、LiteLLM にそのモデルがなければルールで判断します。'}
             分類器の費用はまだ予算に含まれません。
           </p>
         </div>

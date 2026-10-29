@@ -793,7 +793,8 @@ describe('ClaudeAgentSdkRuntime', () => {
   });
 
   it('falls back to the rules when auto mode does not start or its classifier cannot answer', async () => {
-    // LiteLLM, the client classifier, no classifier model: rules from the start.
+    // LiteLLM, the client classifier, no classifier model: auto mode with the CLI's default
+    // classifier (no CLAUDE_CODE_AUTO_MODE_MODEL); if LiteLLM lacks it, the case below applies.
     {
       const { gate } = testGate('autonomous', { classifierModel: null, judge: 'client' });
       const sdk = replaySdk(rec(R.TEXT));
@@ -801,12 +802,10 @@ describe('ClaudeAgentSdkRuntime', () => {
         settings: settings({ litellm: { baseUrl: 'http://127.0.0.1:4000' } }),
       });
       await collect(rt.run(input({ gate })));
-      expect(sdk.queries[0]!.options.permissionMode).toBe('default');
-      expect(gate.permission).toEqual({
-        profile: 'autonomous',
-        gate: 'rules',
-        note: GATE_NOTES.noClassifierModel,
-      });
+      const { options } = sdk.queries[0]!;
+      expect(options.permissionMode).toBe('auto');
+      expect(options.env?.CLAUDE_CODE_AUTO_MODE_SERVER).toBe('0');
+      expect(options.env?.CLAUDE_CODE_AUTO_MODE_MODEL).toBeUndefined();
     }
     // The user's Claude login: auto requested, but init says "default" (unsupported model).
     {

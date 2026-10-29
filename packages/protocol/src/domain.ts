@@ -716,8 +716,9 @@ export const Settings = z.object({
    * in the autonomous and standard profiles. `judge: server` (default): Anthropic's API judges
    * (used with the user's Claude login and behind LiteLLM; the CLI falls back to its own
    * classifier when the upstream does not answer). `judge: client`: the CLI's own classifier
-   * request, behind LiteLLM only when `classifierModel` names a Claude model (Sonnet 4.6 or
-   * later) that LiteLLM serves. When auto mode cannot judge, the daemon's rules decide.
+   * request, to `classifierModel` or, when it is null, the CLI's default (Claude Sonnet 5).
+   * When auto mode cannot judge (e.g. LiteLLM does not serve that model), the daemon's rules
+   * decide.
    */
   autoMode: z
     .object({

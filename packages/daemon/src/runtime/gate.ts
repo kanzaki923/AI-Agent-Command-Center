@@ -105,8 +105,6 @@ const REPEATED_BLOCK_TEXT = {
 export const GATE_NOTES = {
   unsupportedModel: 'このモデルでは Claude Code の auto mode を使えないため、規則で判断しています',
   classifierUnavailable: '安全判定（auto mode の分類器）を使えないため、規則で判断しています',
-  noClassifierModel:
-    'LiteLLM 経由で手元の分類器を使う設定ですが、分類器のモデルが未設定のため、規則で判断しています',
   serverJudgeUnavailable:
     '上流が Anthropic のサーバー判定に対応していないため、手元の分類器で判定しています',
 } as const;

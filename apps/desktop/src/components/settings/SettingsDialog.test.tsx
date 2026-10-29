@@ -125,7 +125,7 @@ describe('<SettingsDialog> agent permissions', () => {
       fireEvent.click(group.querySelector('[data-judge="client"]')!);
     });
     await waitFor(() => expect(updates).toEqual([{ autoMode: { judge: 'client' } }]));
-    expect(await screen.findByText(/空のままなら、LiteLLM 経由の Run は Core Daemon のルールで判断します/)).toBeInTheDocument();
+    expect(await screen.findByText(/^空なら Claude Code の既定（Claude Sonnet 5）を使い/)).toBeInTheDocument();
   });
 
   it('hides the judge choice for a daemon that does not report it', async () => {
