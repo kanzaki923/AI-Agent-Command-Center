@@ -77,7 +77,10 @@ pnpm --filter @acc/desktop e2e:slice    # 本物のデーモン + Vite を一時
 pnpm --filter @acc/desktop e2e:board    # 本物のデーモンで Task ボード（T → j → R で Worker を起動）とパレットのメッセージ検索（session.search → 該当メッセージへ移動）を通す
 pnpm --filter @acc/desktop e2e:conflict # 本物のデーモンで README.md がコンフリクトする統合を作り、レビュー画面の「Integrator に解消を任せる」→ 解消 → 反映待ちまで通す（main は動かないことも確かめる）
 pnpm --filter @acc/desktop e2e:perf     # 本番ビルドで 10 本同時ストリーミングのフレーム間隔と長いタスクを測る（--profile で内訳、--dev で開発サーバ）
+pnpm --filter @acc/desktop e2e:audit -- --out <dir>  # 画面の監査：scripts/audit-scene.ts の場面（任せた木 3 本・定期実行・普通の会話。10 人以上が同時に動く）を一時 ACC_HOME で作り、e2e/audit-shots.js の一覧どおりに撮る（--theme light、--serve で撮らずに起動したまま、--keep）
 ```
+
+`e2e:slice` / `e2e:board` / `e2e:conflict` / `e2e:perf` / `e2e:reconnect` / `screenshots` は作り直し前の画面（司令室・Task ボード）を前提にしていて、画面の作り直しのあとで新しい画面に合わせて直す（それまでは通らない）。
 
 UI とデーモンは同じ `ACC_HOME` を見る（Vite の開発ミドルウェアが `daemon.json` を `/__acc/connection` で渡す）。scene は代役を使わず、すべて Control API を通して作るので、実際の挙動を隠さない。
 

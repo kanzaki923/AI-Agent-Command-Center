@@ -1,7 +1,8 @@
-// UI audit: builds the "normal day" scene (scripts/audit-scene.ts: real daemon, mock models
-// and mock runtime only) in a fresh ACC_HOME on free ports, serves the UI with Vite, and
-// screenshots every screen at 1440x900 — first the empty app (onboarding, empty states),
-// then the populated day.
+// UI audit (ui-redesign spec §10): builds the scene of scripts/audit-scene.ts (real daemon,
+// mock models and mock runtime only: three delegated trees, a schedule, plain chats; more
+// than ten agents at once) in a fresh ACC_HOME on free ports, serves the UI with Vite, and
+// screenshots every screen (e2e/audit-shots.js lists them) — first the empty app, then the
+// scene.
 //
 //   node e2e/audit.js [--out <dir>] [--theme dark|light] [--serve] [--keep]
 //
@@ -27,9 +28,10 @@ const children = [];
 
 function start(name, args, env, { stdin = 'ignore' } = {}) {
   const merged = { ...process.env, ...env, ACC_HOME: home };
-  // Never reach a real LLM endpoint (mock models only).
+  // Never reach a real LLM endpoint or a real Claude (mock models and runtime only).
   delete merged.ACC_LITELLM_BASE_URL;
   delete merged.ACC_LITELLM_API_KEY;
+  for (const k of Object.keys(merged)) if (k.startsWith('ANTHROPIC_')) delete merged[k];
   const child = spawn(process.execPath, args, {
     cwd: desktopDir,
     env: merged,
@@ -54,10 +56,13 @@ async function cleanup() {
     return;
   }
   const { rmSync } = await import('node:fs');
-  try {
-    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-  } catch {
-    log(`could not remove ${home}`);
+  // The scene's folder project lives beside ACC_HOME (scripts/audit-scene.ts).
+  for (const dir of [home, `${home}-market`]) {
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    } catch {
+      log(`could not remove ${dir}`);
+    }
   }
 }
 
@@ -94,7 +99,8 @@ try {
 
   mkdirSync(out, { recursive: true });
   const { shoot } = await import('./audit-shots.js');
-  await shoot({ url, out, theme, build, home, daemonPort });
+  const result = await shoot({ url, out, theme, build, home, daemonPort });
+  if (result.errors.length) process.exitCode = 1;
 } finally {
   await cleanup();
 }
