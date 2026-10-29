@@ -21,7 +21,7 @@ import { finishHeldRun, holdRuns, openAttention, resolveAttention, startHeldRun 
 const daemons: TestDaemonNoServer[] = [];
 const homes: string[] = [];
 afterEach(async () => {
-  for (const d of daemons.splice(0)) await d.close();
+  for (const d of daemons.splice(0)) await d.cleanup();
   for (const h of homes.splice(0)) rmSync(h, { recursive: true, force: true, maxRetries: 5 });
 });
 

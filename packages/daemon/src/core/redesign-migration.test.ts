@@ -29,7 +29,7 @@ const OLD_MIGRATION_IDS = [
 const homes: string[] = [];
 const daemons: TestDaemonNoServer[] = [];
 afterEach(async () => {
-  for (const d of daemons.splice(0)) await d.close();
+  for (const d of daemons.splice(0)) await d.cleanup();
   for (const h of homes.splice(0)) rmSync(h, { recursive: true, force: true, maxRetries: 5 });
 });
 
