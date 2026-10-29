@@ -88,6 +88,14 @@ function messageLine(text: string): string {
   return prose ? shorten(prose, 120) : text.includes('```') ? '（コード）' : '';
 }
 
+const TOOL_DECIDER_LABEL = {
+  rule: '規則',
+  remembered: '記憶した許可',
+  classifier: '安全判定',
+  runtime: 'エージェント',
+  human: 'あなた',
+} as const;
+
 function runSubject(e: Event, names: TimelineNames | undefined): string {
   const title = e.sessionId ? names?.sessionTitle?.(e.sessionId) : undefined;
   return title ? `「${shorten(title, 40)}」` : 'Run';
@@ -218,6 +226,31 @@ export function describeEvent(e: Event, names?: TimelineNames): EventView {
         noise: !e.payload.isError,
       };
     }
+    case 'tool.decided': {
+      const d = e.payload;
+      const by = TOOL_DECIDER_LABEL[d.decidedBy];
+      const what = `${describeTool(d.toolName, {}, names).label}${d.summary ? ` · ${shorten(d.summary, 80)}` : ''}`;
+      return {
+        ...base,
+        group: d.decision === 'asked' ? 'approval' : d.decision === 'denied' ? 'error' : 'tool',
+        icon: d.decision === 'denied' ? 'denied' : d.decision === 'asked' ? 'approval' : 'tool',
+        label: d.decision === 'denied' ? `${by}が拒否` : d.decision === 'asked' ? '確認に回す' : `${by}が許可`,
+        summary: what,
+        detail: d.reason,
+        isError: d.decision === 'denied',
+        // Allowed uses are shown on demand; denials and asks always.
+        noise: d.decision === 'allowed' && !d.notable,
+      };
+    }
+    case 'permission.rule_created':
+    case 'permission.rule_revoked':
+      return {
+        ...base,
+        group: 'approval',
+        icon: 'grant',
+        label: e.type === 'permission.rule_created' ? '許可を記憶' : '記憶を取り消し',
+        summary: e.payload.rule.description,
+      };
     case 'approval.requested':
       return { ...base, group: 'approval', icon: 'approval', label: '承認を要求', summary: e.payload.approval.title };
     case 'approval.resolved': {

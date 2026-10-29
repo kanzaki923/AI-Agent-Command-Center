@@ -219,6 +219,18 @@ export function applyEvent(qc: QueryClient, streams: Streams, event: Event): voi
     case 'tool.result':
       return;
 
+    case 'tool.decided':
+      // A denial is what the agent is reacting to right now: show it on its activity line
+      // (the Timeline keeps every decision).
+      if (event.runId && event.payload.decision === 'denied') {
+        streams.activity.set(event.runId, `規則で拒否しました（${event.payload.toolName}）`);
+      }
+      return;
+
+    case 'permission.rule_created':
+    case 'permission.rule_revoked':
+      return;
+
     case 'approval.requested':
       upsertIn<Approval>(qc, qk.approvals, event.payload.approval, (a, b) =>
         a.createdAt.localeCompare(b.createdAt),

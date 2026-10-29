@@ -175,6 +175,7 @@ describe('createProject', () => {
     defaultModel: null,
     testCommand: null,
     commitAuthor: null,
+    permissionProfile: null,
     createdAt: iso(T0),
     updatedAt: iso(T0),
     archivedAt: null,

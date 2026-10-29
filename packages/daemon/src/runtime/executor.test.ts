@@ -129,6 +129,8 @@ function fakeController(run: Run, decisions: ApprovalDecision[] = []) {
     approvals: [] as ApprovalRequest[],
     usage: [] as Parameters<RunController['reportUsage']>[0][],
     activity: [] as (string | null)[],
+    decisions: [] as Parameters<RunController['recordToolDecision']>[0][],
+    permission: [] as Parameters<RunController['setPermission']>[0][],
   };
   const ctl: RunController = {
     run,
@@ -146,13 +148,25 @@ function fakeController(run: Run, decisions: ApprovalDecision[] = []) {
     reserveBudget: () => ({ amountUsd: 0, settle: (u) => calls.usage.push(u), cancel: () => {} }),
     assertBudgetLeft: () => {},
     setActivity: (t) => calls.activity.push(t),
+    recordToolDecision: (d) => calls.decisions.push(d),
+    setPermission: (p) => calls.permission.push(p),
   };
   return { ctl, calls, abort: (reason?: unknown) => ac.abort(reason) };
 }
 
-async function setup(opts: { task?: Partial<Task>; message?: string; runtime?: string } = {}) {
+async function setup(
+  opts: {
+    task?: Partial<Task>;
+    message?: string;
+    runtime?: string;
+    profile?: 'careful' | 'standard' | 'autonomous';
+  } = {},
+) {
   const ctx: DaemonContext = d.ctx;
-  const project = await d.call(HUMAN, 'project.create', { name: 'demo' });
+  const project = await d.call(HUMAN, 'project.create', {
+    name: 'demo',
+    ...(opts.profile ? { permissionProfile: opts.profile } : {}),
+  });
   const session: Session = await d.call(HUMAN, 'session.create', {
     projectId: project.id,
     kind: 'agent',
@@ -278,7 +292,7 @@ describe('agent executor', () => {
     expect(updated.at(-1)?.payload).toMatchObject({ changes: ['runtimeSessionId'] });
   });
 
-  it('routes tool approvals to the run approval flow', async () => {
+  it('routes tool approvals to the run approval flow (careful profile)', async () => {
     const prompt = [
       'スクリプトを動かして',
       '```acc-mock',
@@ -291,7 +305,7 @@ describe('agent executor', () => {
       ]),
       '```',
     ].join('\n');
-    const { ctx, run } = await setup({ message: prompt });
+    const { ctx, run } = await setup({ message: prompt, profile: 'careful' });
     useFastMock(ctx);
     const { ctl, calls } = fakeController(run, [{ decision: 'rejected', note: 'まだ' }]);
     await createAgentExecutor(ctx)(ctl);
@@ -304,13 +318,53 @@ describe('agent executor', () => {
           toolName: 'Bash',
           input: expect.objectContaining({ command: expect.any(String) }),
           risk: 'medium',
+          category: 'command_other',
+          reason: expect.stringContaining('確認が必要') as string,
         },
       },
     ]);
+    expect(calls.permission).toEqual([{ profile: 'careful', gate: 'rules', note: null }]);
+    expect(calls.decisions.map((x) => [x.toolName, x.decision])).toEqual([['Bash', 'asked']]);
     expect(existsSync(join(dir, 'ran.txt'))).toBe(false);
     expect(fakes.commits).toHaveLength(1);
     // The fake commitAll always returns a sha; the title comes from the message.
     expect(fakes.commits[0]!.message.startsWith('スクリプトを動かして')).toBe(true);
+  });
+
+  it('runs without asking in the autonomous profile (the default) and records the decisions', async () => {
+    const prompt = [
+      'テストして共有して',
+      '```acc-mock',
+      JSON.stringify([
+        {
+          type: 'run',
+          command: 'node',
+          args: ['-e', "require('fs').writeFileSync('ran.txt','1')"],
+        },
+        { type: 'run', command: 'git', args: ['push', 'origin', 'HEAD'] },
+        { type: 'write', path: 'notes.md', content: 'x' },
+      ]),
+      '```',
+    ].join('\n');
+    const { ctx, run } = await setup({ message: prompt });
+    useFastMock(ctx);
+    const { ctl, calls } = fakeController(run);
+    await createAgentExecutor(ctx)(ctl);
+    expect(calls.approvals).toEqual([]);
+    expect(existsSync(join(dir, 'ran.txt'))).toBe(true);
+    expect(existsSync(join(dir, 'notes.md'))).toBe(true);
+    expect(calls.permission).toEqual([{ profile: 'autonomous', gate: 'rules', note: null }]);
+    expect(calls.decisions.map((x) => [x.toolName, x.decision, x.rule, x.routine])).toEqual([
+      ['Bash', 'allowed', null, false],
+      ['Bash', 'denied', 'publish_remote', false],
+      ['Write', 'allowed', null, true],
+    ]);
+    // The push never ran; the agent got the reason as the tool's error.
+    expect(calls.toolResults[1]).toMatchObject({
+      name: 'Bash',
+      isError: true,
+      output: expect.stringContaining('push・公開・リモートの変更はできません') as string,
+    });
   });
 
   it('picks the runtime and resumes its previous session', async () => {

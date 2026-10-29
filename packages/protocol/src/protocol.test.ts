@@ -4,6 +4,7 @@ import {
   Event,
   EVENT_TYPES,
   METHOD_NAMES,
+  Project,
   SessionId,
   Settings,
   api,
@@ -127,6 +128,23 @@ describe('settings', () => {
       maxDelegationDepth: 1,
       autoResumeOrchestrators: true,
       llmCallReserveUsd: 0.25,
+      defaultPermissionProfile: 'autonomous',
+      autoMode: { enabled: true, classifierModel: null },
     });
+  });
+
+  it('keeps old projects valid: no permission profile follows the global default', () => {
+    const p = Project.parse({
+      id: 'prj_00000000000000000000000001',
+      name: 'p',
+      description: null,
+      repoPath: null,
+      defaultBranch: null,
+      defaultModel: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      archivedAt: null,
+    });
+    expect(p.permissionProfile).toBeNull();
   });
 });

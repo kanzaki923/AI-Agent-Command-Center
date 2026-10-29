@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AgentEvent, AgentRunInput, ApprovalDecision } from '../contracts';
+import { type ToolDecisionRecord, ToolGate } from './gate';
 import { MockPlanError, parseMockPlan } from './mock/plan';
 import { MockAgentRuntime, acceptanceCriteria, slugify, taskTitle } from './mock/runtime';
 
@@ -19,7 +20,7 @@ const fast = new MockAgentRuntime({ stepDelayMs: 0, typingDelayMs: 0 });
 const plan = (p: unknown) => `作業して\n\n\`\`\`acc-mock\n${JSON.stringify(p)}\n\`\`\`\n`;
 
 function input(prompt: string, over: Partial<AgentRunInput> = {}) {
-  const asked: { toolName: string; input: unknown; title?: string | undefined }[] = [];
+  const asked: Parameters<AgentRunInput['canUseTool']>[0][] = [];
   const decisions: ApprovalDecision[] = [];
   const base: AgentRunInput = {
     runId: 'run_test',
@@ -226,15 +227,55 @@ describe('MockAgentRuntime plans', () => {
     ).rejects.toThrow('コマンドが失敗しました');
   });
 
-  it('asks before touching paths outside the workspace', async () => {
+  it('never writes outside the workspace: the rules deny it and the mock carries on', async () => {
     const outside = join(dir, '..', `acc-outside-${Date.now()}.txt`);
-    const { base, asked, decisions } = input(
-      plan([{ type: 'write', path: outside, content: 'x' }]),
+    const { base, asked } = input(
+      plan([
+        { type: 'write', path: outside, content: 'x' },
+        { type: 'write', path: 'inside.txt', content: 'y' },
+      ]),
+      // No temp-dir exception: the test's folders are in the temp dir.
+      { gate: new ToolGate({ cwd: dir, profile: 'autonomous', policy: { allowedOutside: [] } }) },
     );
-    decisions.push({ decision: 'rejected' });
-    await collect(fast.run(base));
-    expect(asked[0]).toMatchObject({ toolName: 'Write' });
+    const events = await collect(fast.run(base));
+    expect(asked).toEqual([]);
     expect(existsSync(outside)).toBe(false);
+    expect(existsSync(join(dir, 'inside.txt'))).toBe(true);
+    expect(events.filter((e) => e.type === 'tool_result')[0]).toMatchObject({
+      isError: true,
+      output: expect.stringContaining('worktree の外には書き込めません') as string,
+    });
+    expect(textOf(events)).toContain('デーモンの規則で拒否されました');
+  });
+
+  it('follows the gate: autonomous runs commands, careful asks, ask steps always ask', async () => {
+    const steps = [
+      { type: 'run', command: 'node', args: ['-e', 'process.exit(0)'] },
+      { type: 'run', command: 'git', args: ['push'], onDeny: 'stop' },
+      { type: 'write', path: 'never.txt', content: '' },
+    ];
+    const records: ToolDecisionRecord[] = [];
+    const auto = input(plan(steps), {
+      gate: new ToolGate({ cwd: dir, profile: 'autonomous', record: (r) => records.push(r) }),
+    });
+    const events = await collect(fast.run(auto.base));
+    expect(auto.asked).toEqual([]);
+    // onDeny "stop": the push was denied and the plan stopped there.
+    expect(existsSync(join(dir, 'never.txt'))).toBe(false);
+    expect(textOf(events)).toContain('ここで作業を止めます');
+    expect(records.map((r) => [r.decision, r.rule])).toEqual([
+      ['allowed', null],
+      ['denied', 'publish_remote'],
+    ]);
+
+    const careful = input(plan([steps[0], { type: 'ask', title: '本番に触れてよいですか' }]), {
+      gate: new ToolGate({ cwd: dir, profile: 'careful' }),
+    });
+    await collect(fast.run(careful.base));
+    expect(careful.asked.map((a) => [a.toolName, a.category])).toEqual([
+      ['Bash', 'command_other'],
+      ['MockApproval', undefined],
+    ]);
   });
 
   it('stops with the abort error when cancelled', async () => {

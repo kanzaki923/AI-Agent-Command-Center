@@ -9,6 +9,7 @@ import {
   IntegrationId,
   Limit,
   MessageId,
+  PermissionRuleId,
   ProjectId,
   RunId,
   SessionId,
@@ -20,6 +21,7 @@ import {
 } from './common';
 import {
   Approval,
+  ApprovalRemember,
   ApprovalStatus,
   Artifact,
   ArtifactKind,
@@ -38,6 +40,8 @@ import {
   Message,
   ModelInfo,
   PermissionPattern,
+  PermissionProfile,
+  PermissionRule,
   Project,
   Run,
   RunKind,
@@ -309,6 +313,16 @@ export const api = defineApi({
       maxDelegationDepth: z.int().min(0).max(4).optional(),
       autoResumeOrchestrators: z.boolean().optional(),
       llmCallReserveUsd: z.number().min(0).max(100).optional(),
+      defaultPermissionProfile: PermissionProfile.optional(),
+      autoMode: params({
+        enabled: z.boolean().optional(),
+        classifierModel: z
+          .string()
+          .min(1)
+          .nullable()
+          .optional()
+          .describe('LiteLLM model name of a Claude model (Sonnet 4.6 or later); null clears it'),
+      }).optional(),
     }),
     result: SettingsView,
     description: 'Update daemon settings (persisted to config.json).',
@@ -339,6 +353,9 @@ export const api = defineApi({
         .optional()
         .describe('Shell command that verifies the project, e.g. "pnpm test"'),
       commitAuthor: CommitAuthor.optional(),
+      permissionProfile: PermissionProfile.optional().describe(
+        "Agents' tool permissions; omitted follows the global default",
+      ),
     }),
     result: Project,
     description: 'Create a project (a repository plus settings).',
@@ -373,6 +390,9 @@ export const api = defineApi({
       defaultModel: z.string().min(1).nullable().optional(),
       testCommand: z.string().min(1).max(2000).nullable().optional(),
       commitAuthor: CommitAuthor.nullable().optional(),
+      permissionProfile: PermissionProfile.nullable()
+        .optional()
+        .describe('null follows the global default. Humans only'),
       archived: z.boolean().optional(),
     }),
     result: Project,
@@ -697,9 +717,28 @@ export const api = defineApi({
       approvalId: ApprovalId,
       decision: z.enum(['approve', 'reject']),
       note: z.string().max(5000).optional(),
+      remember: ApprovalRemember.default('once').describe(
+        'Approving a tool use: also allow matching uses for the rest of the run, the task or the project (humans only)',
+      ),
     }),
     result: Approval,
     description: 'Approve or reject a pending approval.',
+    mutates: true,
+  },
+
+  // ---- permission rules (remembered tool approvals) ----
+  'permissionRule.list': {
+    params: params({
+      projectId: ProjectId,
+      includeRevoked: z.boolean().default(false),
+    }),
+    result: z.object({ items: z.array(PermissionRule) }),
+    description: 'List remembered tool approvals of a project, newest first.',
+  },
+  'permissionRule.revoke': {
+    params: params({ ruleId: PermissionRuleId }),
+    result: PermissionRule,
+    description: 'Revoke a remembered tool approval (matching uses are decided as before).',
     mutates: true,
   },
 

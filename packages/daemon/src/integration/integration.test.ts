@@ -47,6 +47,7 @@ async function setup(
     testCommand?: string;
     files?: Record<string, string>;
     integration?: Partial<IntegrationOptions>;
+    profile?: 'careful' | 'standard' | 'autonomous';
   } = {},
 ): Promise<Setup> {
   repo = await createTempRepo({ 'a.txt': 'a\n', 'shared.txt': 'base\n', ...opts.files });
@@ -61,8 +62,31 @@ async function setup(
     repoPath: repo.path,
     defaultBranch: 'main',
     testCommand: opts.testCommand ?? PASS,
+    ...(opts.profile ? { permissionProfile: opts.profile } : {}),
   });
   return { d, repo, project };
+}
+
+/** An agent actor holding "*" (the strongest grant an agent can have). */
+function strongAgent(s: Setup) {
+  const run = s.d.ctx.ids.next('run');
+  const session = s.d.ctx.ids.next('session');
+  s.d.ctx.repos.grants.insert({
+    id: s.d.ctx.ids.next('grant'),
+    subject: { kind: 'run', runId: run },
+    parentGrantId: null,
+    permissions: ['*'],
+    scope: {},
+    limits: {},
+    depth: 0,
+    lifetime: 'run',
+    expiresAt: null,
+    revokedAt: null,
+    reason: null,
+    grantedBy: HUMAN,
+    createdAt: s.d.ctx.clock.iso(),
+  });
+  return { agent: agentActor(session, run), session };
 }
 
 /** A worktree with one commit writing `files`. */
@@ -418,33 +442,42 @@ describe('integration', () => {
     expect(await s.repo.git('rev-parse', 'main')).toBe(integ.baseSha);
   });
 
-  it('runs the tests of an attempt an agent started only after a human allows it', async () => {
+  it('runs the tests of an attempt an agent started without asking, outside the careful profile', async () => {
+    // Workers already ran the same code (their own tests) without asking: no extra stop here.
+    for (const profile of ['autonomous', 'standard'] as const) {
+      const s = await setup({ profile });
+      const ws = await workOn(s, { 'c.txt': 'c\n' });
+      const integ = await s.d.call(HUMAN, 'integration.create', {
+        projectId: s.project.id,
+        workspaceIds: [ws.id],
+      });
+      const { agent } = strongAgent(s);
+      await s.d.call(agent, 'integration.run', { integrationId: integ.id });
+      const done = await s.d.ctx.service('integrations').settled(integ.id);
+      expect([profile, done.status]).toEqual([profile, 'awaiting_approval']);
+      expect(s.d.ctx.repos.approvals.find({})).toEqual([]);
+      // Applying it is still a human's call.
+      await expect(
+        s.d.call(agent, 'integration.approve', { integrationId: integ.id }),
+      ).rejects.toMatchObject({ code: 'forbidden' });
+      await s.d.cleanup();
+      await s.repo.cleanup();
+      d = undefined;
+      repo = undefined;
+    }
+  });
+
+  it('runs the tests of an attempt an agent started only after a human allows it (careful)', async () => {
     const s = await setup({
       testCommand: `node -e "console.log('token=' + (process.env.ACC_TEST_LEAK || 'none'))"`,
+      profile: 'careful',
     });
     const ws = await workOn(s, { 'c.txt': 'c\n' });
     const integ = await s.d.call(HUMAN, 'integration.create', {
       projectId: s.project.id,
       workspaceIds: [ws.id],
     });
-    const run = s.d.ctx.ids.next('run');
-    const session = s.d.ctx.ids.next('session');
-    const agent = agentActor(session, run);
-    s.d.ctx.repos.grants.insert({
-      id: s.d.ctx.ids.next('grant'),
-      subject: { kind: 'run', runId: run },
-      parentGrantId: null,
-      permissions: ['*'],
-      scope: {},
-      limits: {},
-      depth: 0,
-      lifetime: 'run',
-      expiresAt: null,
-      revokedAt: null,
-      reason: null,
-      grantedBy: HUMAN,
-      createdAt: s.d.ctx.clock.iso(),
-    });
+    const { agent, session } = strongAgent(s);
     const pendingVerify = () =>
       s.d.ctx.repos.approvals
         .find({ where: { status: 'pending' } })

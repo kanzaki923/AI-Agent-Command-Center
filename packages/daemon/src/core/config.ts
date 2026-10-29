@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { DEFAULT_PORT, Settings, type SettingsView } from '@acc/protocol';
+import { DEFAULT_PORT, type PermissionProfile, Settings, type SettingsView } from '@acc/protocol';
 import { z } from 'zod';
 
 export interface DaemonPaths {
@@ -53,6 +53,9 @@ export type SettingsPatch = {
   maxDelegationDepth?: number | undefined;
   autoResumeOrchestrators?: boolean | undefined;
   llmCallReserveUsd?: number | undefined;
+  defaultPermissionProfile?: PermissionProfile | undefined;
+  autoMode?:
+    { enabled?: boolean | undefined; classifierModel?: string | null | undefined } | undefined;
 };
 
 /**
@@ -142,6 +145,23 @@ export class SettingsStore {
     set('llmCallReserveUsd', next.llmCallReserveUsd, patch.llmCallReserveUsd, () => {
       next.llmCallReserveUsd = patch.llmCallReserveUsd!;
     });
+    set(
+      'defaultPermissionProfile',
+      next.defaultPermissionProfile,
+      patch.defaultPermissionProfile,
+      () => {
+        next.defaultPermissionProfile = patch.defaultPermissionProfile!;
+      },
+    );
+    if (patch.autoMode) {
+      const a = patch.autoMode;
+      set('autoMode.enabled', next.autoMode.enabled, a.enabled, () => {
+        next.autoMode.enabled = a.enabled!;
+      });
+      set('autoMode.classifierModel', next.autoMode.classifierModel, a.classifierModel, () => {
+        next.autoMode.classifierModel = a.classifierModel ?? null;
+      });
+    }
     if (changes.length === 0) return changes;
     const valid = ConfigFile.parse(next);
     writeJsonAtomic(this.path, valid);
@@ -170,6 +190,8 @@ export function toSettingsView(s: Settings): SettingsView {
     maxDelegationDepth: s.maxDelegationDepth,
     autoResumeOrchestrators: s.autoResumeOrchestrators,
     llmCallReserveUsd: s.llmCallReserveUsd,
+    defaultPermissionProfile: s.defaultPermissionProfile,
+    autoMode: { enabled: s.autoMode.enabled, classifierModel: s.autoMode.classifierModel },
   };
 }
 

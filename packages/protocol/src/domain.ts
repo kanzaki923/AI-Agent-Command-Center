@@ -8,6 +8,7 @@ import {
   GrantId,
   IntegrationId,
   MessageId,
+  PermissionRuleId,
   ProjectId,
   RunId,
   SessionId,
@@ -15,6 +16,24 @@ import {
   Timestamp,
   WorkspaceId,
 } from './common';
+
+// ---------------------------------------------------------------------------
+// Permission profile (tool permissions of coding agents)
+// ---------------------------------------------------------------------------
+
+/**
+ * How much a project lets its coding agents do without asking (architecture.md §2.10).
+ * Hard rules (no pushing, nothing outside the worktree, no credentials, ...) apply to every
+ * profile; the profile decides the gray zone:
+ * - `autonomous` (おまかせ, default): everything that stays inside the worktree runs without
+ *   asking; what cannot be decided is denied with a reason, never asked. Zero approvals.
+ * - `standard` (標準): like autonomous, but new dependencies, reads outside the worktree and
+ *   unknown tools ask a human.
+ * - `careful` (慎重): only reads, edits and read-only commands run without asking; integration
+ *   tests started by agents wait for a human too.
+ */
+export const PermissionProfile = z.enum(['careful', 'standard', 'autonomous']);
+export type PermissionProfile = z.infer<typeof PermissionProfile>;
 
 // ---------------------------------------------------------------------------
 // Project
@@ -38,6 +57,8 @@ export const Project = z.object({
     .object({ name: z.string().min(1), email: z.string().min(1) })
     .nullable()
     .default(null),
+  /** Tool permission profile of the project's agents; null follows `settings.defaultPermissionProfile`. */
+  permissionProfile: PermissionProfile.nullable().default(null),
   createdAt: Timestamp,
   updatedAt: Timestamp,
   archivedAt: Timestamp.nullable(),
@@ -255,6 +276,34 @@ export const EMPTY_USAGE: Usage = {
   costSource: 'unknown',
 };
 
+/**
+ * Who decided a tool use: a daemon `rule` (hard rule or the profile's rule), a `remembered`
+ * human approval, Claude Code's auto mode `classifier`, the agent `runtime` itself (e.g. the
+ * CLI's built-in auto-approval of edits in its directory), or a `human` (an approval).
+ */
+export const ToolDecider = z.enum(['rule', 'remembered', 'classifier', 'runtime', 'human']);
+export type ToolDecider = z.infer<typeof ToolDecider>;
+export const ToolDecisionKind = z.enum(['allowed', 'denied', 'asked']);
+export type ToolDecisionKind = z.infer<typeof ToolDecisionKind>;
+
+/** How an agent run decides tool uses (resolved when it starts; `gate` may fall back later). */
+export const RunPermission = z.object({
+  profile: PermissionProfile,
+  /** `classifier`: Claude Code auto mode decides the gray zone; `rules`: the daemon's rules. */
+  gate: z.enum(['classifier', 'rules']),
+  /** Japanese note on why this gate (e.g. why auto mode is not used); null when obvious. */
+  note: z.string().nullable(),
+});
+export type RunPermission = z.infer<typeof RunPermission>;
+
+/** Tool decisions of a run so far (shown as "自動許可 42 / 拒否 2 / 承認 0"). */
+export const ToolDecisionCounts = z.object({
+  allowed: z.int().nonnegative(),
+  denied: z.int().nonnegative(),
+  asked: z.int().nonnegative(),
+});
+export type ToolDecisionCounts = z.infer<typeof ToolDecisionCounts>;
+
 /** One execution of an LLM/agent. Capabilities and budget are evaluated per run. */
 export const Run = z.object({
   id: RunId,
@@ -283,6 +332,10 @@ export const Run = z.object({
    * `run.updated` with `changes: ["activity"]`.
    */
   activity: z.string().nullable().optional(),
+  /** Agent runs: how tool uses are decided. Updates arrive as `run.updated` `["permission"]`. */
+  permission: RunPermission.nullable().optional(),
+  /** Agent runs: decision counts. Updates arrive as `run.updated` `["toolDecisions"]` (batched). */
+  toolDecisions: ToolDecisionCounts.nullable().optional(),
   createdBy: Actor,
   createdAt: Timestamp,
   updatedAt: Timestamp,
@@ -461,6 +514,10 @@ export const ToolApprovalPayload = z.object({
   toolName: z.string(),
   input: z.unknown(),
   risk: ToolRisk,
+  /** Daemon category of the tool use (e.g. "deps_add", "outside_read", "build_test"). */
+  category: z.string().optional(),
+  /** Why it was not decided automatically (Japanese). */
+  reason: z.string().optional(),
 });
 export type ToolApprovalPayload = z.infer<typeof ToolApprovalPayload>;
 
@@ -485,6 +542,38 @@ export const Approval = z.object({
   resolvedAt: Timestamp.nullable(),
 });
 export type Approval = z.infer<typeof Approval>;
+
+/**
+ * How long an approved tool use is remembered (`approval.respond` `remember`): `once` (only
+ * this use), `run` (the rest of this run), `task` (every run of this task), `project` (the
+ * project's agents from now on, until revoked). Remembered approvals never override hard rules.
+ */
+export const ApprovalRemember = z.enum(['once', 'run', 'task', 'project']);
+export type ApprovalRemember = z.infer<typeof ApprovalRemember>;
+
+/**
+ * A remembered approval: tool uses that match it are allowed without asking again. Matching:
+ * the same tool, and for commands every part of the command line has one of `commandKeys`
+ * (program plus subcommand, e.g. "pnpm add", "curl"); for paths, under `pathPrefix`.
+ */
+export const PermissionRule = z.object({
+  id: PermissionRuleId,
+  projectId: ProjectId,
+  scope: z.enum(['run', 'task', 'project']),
+  runId: RunId.nullable(),
+  taskId: TaskId.nullable(),
+  toolName: z.string(),
+  commandKeys: z.array(z.string()).nullable(),
+  pathPrefix: z.string().nullable(),
+  /** Japanese one-liner, e.g. "コマンド「pnpm add」を許可". */
+  description: z.string(),
+  approvalId: ApprovalId.nullable(),
+  createdBy: Actor,
+  createdAt: Timestamp,
+  revokedAt: Timestamp.nullable(),
+  revokedBy: Actor.nullable(),
+});
+export type PermissionRule = z.infer<typeof PermissionRule>;
 
 // ---------------------------------------------------------------------------
 // Capability Grant
@@ -602,6 +691,21 @@ export const Settings = z.object({
    * so concurrent runs sharing a budget cannot overshoot it (as long as a call costs less).
    */
   llmCallReserveUsd: z.number().min(0).max(100).default(0.25),
+  /** Permission profile of projects that do not set one. */
+  defaultPermissionProfile: PermissionProfile.default('autonomous'),
+  /**
+   * Claude Code auto mode (its safety classifier decides the gray zone) for the Claude runtime
+   * in the autonomous and standard profiles. Used only where it works: with the user's own
+   * Claude login, or behind LiteLLM when `classifierModel` names a Claude model (Sonnet 4.6 or
+   * later) that LiteLLM serves. Otherwise, and when it fails mid-run, the daemon's rules decide.
+   */
+  autoMode: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** LiteLLM model name for the classifier (passed as CLAUDE_CODE_AUTO_MODE_MODEL). */
+      classifierModel: z.string().min(1).nullable().default(null),
+    })
+    .default({ enabled: true, classifierModel: null }),
 });
 export type Settings = z.infer<typeof Settings>;
 
@@ -619,6 +723,8 @@ export const SettingsView = z.object({
   maxDelegationDepth: z.int(),
   autoResumeOrchestrators: z.boolean().optional(),
   llmCallReserveUsd: z.number().optional(),
+  defaultPermissionProfile: PermissionProfile.optional(),
+  autoMode: z.object({ enabled: z.boolean(), classifierModel: z.string().nullable() }).optional(),
 });
 export type SettingsView = z.infer<typeof SettingsView>;
 

@@ -10,6 +10,7 @@ import {
 import { type CliSandbox, createCliSandbox } from './harness';
 import type { FakeAnthropicOptions } from './fakeAnthropic';
 import type { Scenario } from './scenarios';
+import type { ToolGate } from '../../gate';
 
 /** Dummy credential for the fake API (never a real key). */
 export const DUMMY_TOKEN = 'sk-acc-contract-dummy';
@@ -123,6 +124,8 @@ export interface RunScenarioOptions {
   overrideOptions?: (o: Options) => Options;
   /** Overall safety timeout (ms). Default 60s. */
   timeoutMs?: number;
+  /** The run's permission gate (default: the runtime's own careful gate). */
+  gate?: ToolGate;
 }
 
 export interface ScenarioResult {
@@ -173,6 +176,7 @@ export async function runScenario(
     resumeSessionId: o.resumeSessionId ?? null,
     signal: ac.signal,
     ...(o.tools ? { tools: o.tools } : {}),
+    ...(o.gate ? { gate: o.gate } : {}),
     canUseTool: async (req) => {
       asked.push({ toolName: req.toolName, input: req.input });
       if (o.abortAfterAskMs !== undefined && asked.length === 1) {

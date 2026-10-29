@@ -14,6 +14,7 @@ export const ID_PREFIXES = {
   artifact: 'art',
   integration: 'int',
   approval: 'apr',
+  permissionRule: 'prl',
   grant: 'grt',
   budget: 'bud',
   event: 'evt',
@@ -45,6 +46,7 @@ export const RunId = idSchema('run');
 export const ArtifactId = idSchema('artifact');
 export const IntegrationId = idSchema('integration');
 export const ApprovalId = idSchema('approval');
+export const PermissionRuleId = idSchema('permissionRule');
 export const GrantId = idSchema('grant');
 export const BudgetId = idSchema('budget');
 export const EventId = idSchema('event');

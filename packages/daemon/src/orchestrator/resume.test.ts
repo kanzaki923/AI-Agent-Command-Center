@@ -76,6 +76,9 @@ async function interruptedOrchestration(opts: { autoResume?: boolean } = {}) {
     repoPath: repo.path,
     defaultBranch: 'main',
     testCommand: 'node --test',
+    // The careful profile makes the test worker's command wait for approval: a fixed point
+    // to restart the daemon at (the autonomous default would not stop there).
+    permissionProfile: 'careful',
   });
   const chat = await d1.call(HUMAN, 'session.create', {
     projectId: project.id,

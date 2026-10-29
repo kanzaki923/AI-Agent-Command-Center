@@ -33,6 +33,7 @@ import {
   taskGetTool,
 } from './contract/scenarios';
 import { MemoryBaselineStore, type ClaudeSdkModule } from './runtime';
+import { GATE_NOTES, type ToolDecisionRecord, ToolGate } from '../gate';
 
 const cli = process.env.ACC_SKIP_SDK_CONTRACT ? null : locateBundledCli();
 const TIMEOUT = 60_000;
@@ -173,11 +174,14 @@ describe.skipIf(!cli).concurrent('Claude Agent SDK contract (real CLI, fake API)
   );
 
   it(
-    'asks before editing .git and before reading outside the workspace',
+    'denies editing .git (a hard rule) and asks before reading outside the workspace',
     { timeout: TIMEOUT },
     async () => {
       const [git, outside] = await Promise.all([play('editGitConfig'), play('readOutside')]);
-      expect(asked(git.r)).toEqual(['Edit']);
+      expect(asked(git.r)).toEqual([]);
+      // The Read of .git/config is fine; the Edit is refused with the reason.
+      expect(toolResults(git.r).map((t) => t.isError)).toEqual([false, true]);
+      expect(toolResults(git.r)[1]?.text).toContain('Git metadata');
       expect(readFileSync(join(git.sb.repo, '.git', 'config'), 'utf8')).not.toContain('fsmonitor');
       expect(asked(outside.r)).toEqual(['Read']);
       expect(toolResults(outside.r)[0]).toMatchObject({ isError: true });
@@ -493,6 +497,84 @@ describe.skipIf(!cli).concurrent('Claude Agent SDK contract: auto mode', () => {
       expect(init(r)?.permissionMode).toBe('default');
       expect(classifierModels).toEqual([]);
       expect(asked(r)).toEqual(['Bash']);
+    },
+  );
+});
+
+/**
+ * The production auto mode path: our runtime with an autonomous gate whose classifier model
+ * is configured (the executor builds the same gate), against the real CLI.
+ */
+describe.skipIf(!cli).concurrent('Claude Agent SDK contract: layered permissions', () => {
+  async function production(opts: { verdict: ClassifierVerdict; commands: string[] }) {
+    const sb = await createCliSandbox({
+      intercept: (req) =>
+        isClassifierRequest(req) ? classifierReply(req, opts.verdict) : undefined,
+    });
+    sandboxes.push(sb);
+    sb.api.script([
+      ...opts.commands.map((command) => () => ({
+        content: [
+          { type: 'tool_use' as const, name: 'Bash', input: { command, description: 'x' } },
+        ],
+      })),
+      () => ({ content: [{ type: 'text' as const, text: 'done' }] }),
+    ]);
+    const decisions: ToolDecisionRecord[] = [];
+    const gate = new ToolGate({
+      cwd: sb.repo,
+      profile: 'autonomous',
+      autoMode: { classifierModel: 'claude-sonnet-4-6' },
+      record: (d) => decisions.push(d),
+    });
+    const r = await runScenario(sb, cli!.path, real, {
+      prompt: 'テストを動かして',
+      model: 'claude-sonnet-4-6',
+      gate,
+    });
+    expect(sb.proxy.attempts).toEqual([]);
+    expect(r.error).toBeNull();
+    return { r, gate, decisions };
+  }
+
+  it(
+    'lets the classifier decide the gray zone and denies hard rules before it',
+    { timeout: TIMEOUT },
+    async () => {
+      const { r, gate, decisions } = await production({
+        verdict: 'allow',
+        commands: ['node -e "process.exit(0)"', 'git push origin HEAD'],
+      });
+      expect(r.options[0]).toMatchObject({ permissionMode: 'auto' });
+      expect(init(r)?.permissionMode).toBe('auto');
+      expect(gate.permission).toEqual({ profile: 'autonomous', gate: 'classifier', note: null });
+      expect(r.asked).toEqual([]);
+      expect(toolResults(r).map((t) => t.isError)).toEqual([false, true]);
+      expect(toolResults(r)[1]?.text).toContain('push');
+      expect(decisions.map((d) => [d.toolName, d.decision, d.decidedBy, d.rule])).toEqual([
+        ['Bash', 'allowed', 'classifier', null],
+        ['Bash', 'denied', 'rule', 'publish_remote'],
+      ]);
+    },
+  );
+
+  it(
+    'falls back to the rules when the classifier cannot answer',
+    { timeout: TIMEOUT },
+    async () => {
+      const { r, gate, decisions } = await production({
+        verdict: 'garbage',
+        commands: ['node -e "process.exit(0)"', 'node -e "process.exit(0)"'],
+      });
+      expect(gate.permission.gate).toBe('rules');
+      expect(gate.permission.note).toBe(GATE_NOTES.classifierUnavailable);
+      expect(r.asked).toEqual([]);
+      // The first try was refused for want of a verdict; the retry ran under the rules.
+      expect(toolResults(r).map((t) => t.isError)).toEqual([true, false]);
+      expect(decisions.map((d) => [d.decision, d.decidedBy])).toEqual([
+        ['denied', 'classifier'],
+        ['allowed', 'rule'],
+      ]);
     },
   );
 });

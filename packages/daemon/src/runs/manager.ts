@@ -7,9 +7,11 @@ import {
   type ErrorInfo,
   type Run,
   type RunKind,
+  type RunPermission,
   type RunStatus,
   type Session,
   type SystemActor,
+  type ToolDecisionCounts,
   type Usage,
   isTerminalRunStatus,
 } from '@acc/protocol';
@@ -43,7 +45,11 @@ export const ACTIVE_RUN_STATUSES = [
 ] as const satisfies RunStatus[];
 
 const SYSTEM: SystemActor = { kind: 'system', component: 'runs' };
+/** Actor of tool decisions made by the daemon's tool permission gate. */
+const PERMISSIONS: SystemActor = { kind: 'system', component: 'permissions' };
 const MAX_ACTIVITY_CHARS = 200;
+/** Routine tool decisions update `Run.toolDecisions` at most this often. */
+const TOOL_COUNT_FLUSH_MS = 1000;
 
 type AbortKind = 'cancel' | 'shutdown' | 'budget';
 
@@ -68,6 +74,10 @@ interface ActiveRun {
   forceTimer: ReturnType<typeof setTimeout> | null;
   /** Budget reservations of in-flight LLM calls (cancelled if the run ends first). */
   readonly reservations: Set<BudgetReservation>;
+  /** Tool decision counts not yet written to the run (flushed in batches and at the end). */
+  toolCounts: ToolDecisionCounts | null;
+  toolCountsDirty: boolean;
+  toolCountTimer: ReturnType<typeof setTimeout> | null;
 }
 
 export interface RunManagerOptions {
@@ -443,6 +453,9 @@ export class RunManager implements RunsService {
       done: Promise.resolve(),
       forceTimer: null,
       reservations: new Set(),
+      toolCounts: run.toolDecisions ?? null,
+      toolCountsDirty: false,
+      toolCountTimer: null,
     };
     this.active.set(run.id, a);
     try {
@@ -484,6 +497,7 @@ export class RunManager implements RunsService {
 
   private finalize(a: ActiveRun, ok: boolean, error: unknown): void {
     if (a.settled || this.detached) return;
+    this.flushToolCounts(a);
     try {
       const cur = this.ctx.repos.runs.get(a.runId);
       if (cur && !isTerminalRunStatus(cur.status)) {
@@ -516,6 +530,7 @@ export class RunManager implements RunsService {
     if (a.settled) return;
     a.settled = true;
     if (a.forceTimer) clearTimeout(a.forceTimer);
+    if (a.toolCountTimer) clearTimeout(a.toolCountTimer);
     this.rejectApprovalWaiters(a.runId, abortErr('Run ended'));
     if (!this.detached) {
       try {
@@ -647,6 +662,38 @@ export class RunManager implements RunsService {
       ctx.bus.emit({ type: 'run.updated', actor, payload: { run, changes: ['activity'] } });
       return run;
     });
+  }
+
+  /** Write pending tool decision counts to the run (run.updated `["toolDecisions"]`). */
+  private flushToolCounts(a: ActiveRun): void {
+    if (a.toolCountTimer) {
+      clearTimeout(a.toolCountTimer);
+      a.toolCountTimer = null;
+    }
+    if (!a.toolCountsDirty || !a.toolCounts || this.detached) return;
+    a.toolCountsDirty = false;
+    const counts = { ...a.toolCounts };
+    const { ctx } = this;
+    try {
+      const run = ctx.db.transaction(() => {
+        const cur = ctx.repos.runs.get(a.runId);
+        if (!cur) return null;
+        const next = ctx.repos.runs.update(a.runId, (r) => ({
+          ...r,
+          toolDecisions: counts,
+          updatedAt: ctx.clock.iso(),
+        }));
+        ctx.bus.emit({
+          type: 'run.updated',
+          actor: SYSTEM,
+          payload: { run: next, changes: ['toolDecisions'] },
+        });
+        return next;
+      });
+      if (run) a.run = run;
+    } catch (err) {
+      ctx.log.warn('failed to record tool decision counts', { runId: a.runId, err });
+    }
   }
 
   // ------------------------------------------------------------------ controller
@@ -790,6 +837,61 @@ export class RunManager implements RunsService {
         if (!live() || ended()) return;
         const run = this.updateActivity(a.runId, text, actor);
         if (run) a.run = run;
+      },
+
+      recordToolDecision: (d) => {
+        if (!live() || ended()) return;
+        const counts = a.toolCounts ?? { allowed: 0, denied: 0, asked: 0 };
+        counts[d.decision] += 1;
+        a.toolCounts = counts;
+        a.toolCountsDirty = true;
+        if (!d.routine) {
+          ctx.bus.emit({
+            type: 'tool.decided',
+            actor: PERMISSIONS,
+            payload: {
+              runId: a.runId,
+              toolCallId: d.toolCallId,
+              toolName: d.toolName,
+              summary: d.summary,
+              decision: d.decision,
+              decidedBy: d.decidedBy,
+              rule: d.rule,
+              category: d.category,
+              reason: d.reason,
+              profile: d.profile,
+              notable: d.notable,
+            },
+            refs: refs(),
+          });
+          this.flushToolCounts(a);
+        } else if (!a.toolCountTimer) {
+          a.toolCountTimer = setTimeout(() => {
+            a.toolCountTimer = null;
+            if (!a.settled) this.flushToolCounts(a);
+          }, TOOL_COUNT_FLUSH_MS);
+          a.toolCountTimer.unref?.();
+        }
+      },
+
+      setPermission: (p: RunPermission) => {
+        if (!live() || ended()) return;
+        const cur = a.run.permission;
+        if (cur && cur.profile === p.profile && cur.gate === p.gate && cur.note === p.note) return;
+        const run = ctx.db.transaction(() => {
+          const next = ctx.repos.runs.update(a.runId, (r) => ({
+            ...r,
+            permission: p,
+            updatedAt: ctx.clock.iso(),
+          }));
+          ctx.bus.emit({
+            type: 'run.updated',
+            actor: SYSTEM,
+            payload: { run: next, changes: ['permission'] },
+          });
+          return next;
+        });
+        a.run = run;
       },
     };
   }

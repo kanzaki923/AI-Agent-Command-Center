@@ -491,8 +491,12 @@ export class IntegrationService {
     }));
 
     // The test command runs code agents wrote, as the user. An attempt a human started is
-    // that human's decision; any other attempt waits for one (like a Bash tool use).
-    if (actor.kind !== 'human') {
+    // that human's decision. In the careful profile any other attempt waits for one; in the
+    // standard / autonomous profiles the workers already ran the same code (their tests,
+    // as the same user and environment) without asking, so waiting here protects nothing
+    // more (docs/snapshot/20261029_auto-mode.md (e)).
+    const profile = project.permissionProfile ?? this.ctx.settings.get().defaultPermissionProfile;
+    if (actor.kind !== 'human' && profile === 'careful') {
       const consent = await this.awaitVerifyConsent(id, actor, project, command, step.index);
       if (consent !== 'approved') {
         const message =

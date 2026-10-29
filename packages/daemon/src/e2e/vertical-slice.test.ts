@@ -4,9 +4,12 @@
  * test command, the `mock/orchestrator` model and the `mock` agent runtime.
  *
  *   human: chat + orchestrator grant + goal
- *   → orchestrator: 2 tasks → 2 workers in parallel worktrees (one needs an approval)
+ *   → orchestrator: 2 tasks → 2 workers in parallel worktrees (the test worker runs its
+ *     tests without asking and its push is denied by the daemon's hard rules)
  *   → both tasks in review with diffs → integration merges both, tests pass
  *   → awaiting_approval; agents cannot approve → human approves → target branch has both.
+ *
+ * In the default (autonomous) profile the only human decision is that last approval.
  */
 import type { AccClient } from '@acc/client';
 import type { Approval, Event, Run } from '@acc/protocol';
@@ -75,6 +78,8 @@ function expectStory(events: Event[], steps: [string, (e: Event) => boolean][]):
 }
 
 interface Slice {
+  /** Lets held workers finish (setup({ holdWorkers: true })). */
+  releaseWorkers: () => void;
   d: TestDaemon;
   repo: TempRepo;
   client: AccClient;
@@ -86,7 +91,9 @@ interface Slice {
   inputs: AgentRunInput[];
 }
 
-async function setup(): Promise<Slice> {
+async function setup(
+  opts: { profile?: 'careful' | 'standard' | 'autonomous'; holdWorkers?: boolean } = {},
+): Promise<Slice> {
   const repo = await createTempRepo({
     'test/basic.test.js': [
       "const test = require('node:test');",
@@ -110,6 +117,10 @@ async function setup(): Promise<Slice> {
   let started = 0;
   let releaseAll!: () => void;
   const bothStarted = new Promise<void>((r) => (releaseAll = r));
+  let releaseWorkers!: () => void;
+  const released = opts.holdWorkers
+    ? new Promise<void>((r) => (releaseWorkers = r))
+    : ((releaseWorkers = () => {}), Promise.resolve());
   vi.spyOn(d.ctx.service('runtimes').get('mock'), 'run').mockImplementation(
     (input: AgentRunInput) => {
       inputs.push(input);
@@ -118,6 +129,8 @@ async function setup(): Promise<Slice> {
       return (async function* () {
         yield* fast.run(input);
         await bothStarted;
+        // Still running (and holding its grant) until the test lets it finish.
+        await released;
       })();
     },
   );
@@ -139,6 +152,7 @@ async function setup(): Promise<Slice> {
     repoPath: repo.path,
     defaultBranch: 'main',
     testCommand: 'node --test',
+    ...(opts.profile ? { permissionProfile: opts.profile } : {}),
   });
   const session = await client.call('session.create', {
     projectId: project.id,
@@ -147,6 +161,7 @@ async function setup(): Promise<Slice> {
     model: 'mock/orchestrator',
   });
   return {
+    releaseWorkers,
     d,
     repo,
     client,
@@ -166,7 +181,7 @@ async function lastAssistantText(s: Slice): Promise<string> {
 
 describe('vertical slice (concept §12.1)', () => {
   it('a chat with an orchestrator grant decomposes a goal, runs 2 workers in parallel, integrates, and the human approves', async () => {
-    const s = await setup();
+    const s = await setup({ holdWorkers: true });
     const { d, client, repo } = s;
 
     // A normal chat becomes an orchestrator by capability (concept §3.1).
@@ -186,12 +201,24 @@ describe('vertical slice (concept §12.1)', () => {
     });
     expect((await client.call('run.get', { runId: orchRunId })).kind).toBe('orchestrator');
 
-    // One worker hits an approval: its test command.
-    const approval = await until(() => s.approvals[0]);
-    expect(approval.kind).toBe('tool_use');
-    expect(approval.payload).toMatchObject({ toolName: 'Bash', risk: 'medium' });
-    const workerRun = d.ctx.repos.runs.require(approval.runId!);
+    // The test worker runs its tests without asking; its push is denied by a hard rule and it
+    // carries on (the reason went back to it as the tool's error).
+    const pushDenied = await until(() =>
+      s.events.find(
+        (e): e is Extract<Event, { type: 'tool.decided' }> =>
+          e.type === 'tool.decided' && e.payload.rule === 'publish_remote',
+      ),
+    );
+    expect(pushDenied.payload).toMatchObject({
+      toolName: 'Bash',
+      summary: 'git push origin HEAD',
+      decision: 'denied',
+      decidedBy: 'rule',
+      profile: 'autonomous',
+    });
+    const workerRun = d.ctx.repos.runs.require(pushDenied.runId!);
     expect(workerRun).toMatchObject({ kind: 'agent', parentRunId: orchRunId });
+    expect(workerRun.permission).toEqual({ profile: 'autonomous', gate: 'rules', note: null });
 
     // A worker (depth 1) can neither start workers nor delegate (enforced by the daemon).
     const worker = agentActor(workerRun.sessionId, workerRun.id);
@@ -214,8 +241,7 @@ describe('vertical slice (concept §12.1)', () => {
         .sort(),
     ).toEqual(['artifact.get', 'artifact.list', 'task.get', 'workspace.diff', 'workspace.get']);
 
-    await client.call('approval.respond', { approvalId: approval.id, decision: 'approve' });
-
+    s.releaseWorkers();
     const orchRun: Run = await d.ctx.service('runs').waitForEnd(orchRunId);
     expect(orchRun.status).toBe('completed');
 
@@ -240,6 +266,11 @@ describe('vertical slice (concept §12.1)', () => {
     expect(a.workspaceId).not.toBe(b.workspaceId);
     expect(a.parentRunId).toBe(orchRunId);
     expect(a.startedAt! < b.endedAt! && b.startedAt! < a.endedAt!).toBe(true);
+    // Every tool decision is on the runs: the test worker had one denial, nobody was asked.
+    const tester = workers.find((w) => w.id === workerRun.id)!;
+    // (writing the test file and running it; the push)
+    expect(tester.toolDecisions).toEqual({ allowed: 2, denied: 1, asked: 0 });
+    expect(workers.map((w) => w.toolDecisions?.asked)).toEqual([0, 0]);
 
     // The integration merged both branches and the tests passed.
     const integrations = (await client.call('integration.list', { projectId: s.projectId })).items;
@@ -269,6 +300,8 @@ describe('vertical slice (concept §12.1)', () => {
       ),
     ).toBe('forbidden');
 
+    // Zero approval requests until here: the human's "承認して反映" is the first decision.
+    expect(s.approvals).toEqual([]);
     const applied = await client.call('integration.approve', { integrationId: integ.id });
     expect(applied.status).toBe('applied');
     const files = await repo.git('ls-tree', '-r', '--name-only', 'main');
@@ -307,22 +340,9 @@ describe('vertical slice (concept §12.1)', () => {
       ],
       ['worktree 2', (e) => e.type === 'workspace.created'],
       ['worker 2', (e) => e.type === 'run.created' && e.payload.run.kind === 'agent'],
-      ['approval requested', (e) => e.type === 'approval.requested'],
-      [
-        'approval resolved',
-        (e) => e.type === 'approval.resolved' && e.payload.approval.status === 'approved',
-      ],
       ['review 1', isTask('review')],
       ['review 2', isTask('review')],
       ['integration created', (e) => e.type === 'integration.created'],
-      [
-        'human allowed the tests',
-        (e) =>
-          e.type === 'approval.resolved' &&
-          e.payload.approval.kind === 'integration' &&
-          e.payload.approval.status === 'approved' &&
-          e.actor.kind === 'human',
-      ],
       [
         'integration verified',
         (e) =>
@@ -337,10 +357,20 @@ describe('vertical slice (concept §12.1)', () => {
           e.actor.kind === 'human',
       ],
     ]);
+    // The push was denied before the task went to review.
+    expect(s.events.indexOf(pushDenied)).toBeLessThan(
+      s.events.findIndex(
+        (e) =>
+          isTask('review')(e) &&
+          e.type === 'task.updated' &&
+          e.payload.task.id === workerRun.taskId,
+      ),
+    );
     // The refused agent calls are on the audit trail.
     expect(
       s.events.flatMap((e) => (e.type === 'policy.denied' ? [e.payload.permission] : [])),
     ).toEqual(['task.spawnWorker', 'grant.create', 'integration.approve']);
+    expect(s.events.some((e) => e.type === 'approval.requested')).toBe(false);
   });
 
   it('when both tasks touch the same file, an integrator agent resolves the merge conflict and the integration resumes', async () => {
@@ -355,9 +385,8 @@ describe('vertical slice (concept §12.1)', () => {
       sessionId: s.sessionId,
       content: `${GOAL}。どちらも README から辿れるようにして`,
     });
-    const approval = await until(() => s.approvals[0]);
-    await client.call('approval.respond', { approvalId: approval.id, decision: 'approve' });
     expect((await d.ctx.service('runs').waitForEnd(orchRunId)).status).toBe('completed');
+    expect(s.approvals).toEqual([]);
 
     const integ = (await client.call('integration.list', { projectId: s.projectId })).items[0]!;
     expect(integ.status).toBe('awaiting_approval');
@@ -421,14 +450,18 @@ describe('vertical slice (concept §12.1)', () => {
     ]);
   });
 
-  it('a failed worker fails its task and the orchestrator reports instead of integrating', async () => {
-    const s = await setup();
+  it('in the careful profile a human refuses the test command: the task fails and the orchestrator reports instead of integrating', async () => {
+    const s = await setup({ profile: 'careful' });
     const { d, client } = s;
     await client.call('session.grantOrchestration', { sessionId: s.sessionId });
     const { runId } = await client.call('session.send', { sessionId: s.sessionId, content: GOAL });
 
     // The human refuses the test worker's command; its plan treats that as a failure.
     const approval = await until(() => s.approvals[0]);
+    expect(approval).toMatchObject({
+      kind: 'tool_use',
+      payload: { toolName: 'Bash', risk: 'medium', category: 'build_test' },
+    });
     await client.call('approval.respond', {
       approvalId: approval.id,
       decision: 'reject',

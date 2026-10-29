@@ -20,6 +20,7 @@ import {
 import * as R from './claude/contract/recorded';
 import { type RecordedStream, withPaths } from './claude/contract/recordedTypes';
 import { DISALLOWED_AGENT_TOOLS } from './tools';
+import { GATE_NOTES, type ToolDecisionRecord, ToolGate } from './gate';
 
 const CWD = process.cwd();
 const rec = (s: RecordedStream) => withPaths(s, { repo: CWD });
@@ -85,13 +86,20 @@ describe('ClaudeMessageNormalizer (recorded streams)', () => {
       'tool_call',
       'activity',
       'message',
+      'tool_decision',
       'tool_result',
       'tool_call',
       'activity',
       'message',
+      'tool_decision',
       'tool_result',
       'message',
       'usage',
+    ]);
+    // Who allowed each use (undocumented tool_result_meta): the CLI's mode, then our approval.
+    expect(ofType(events, 'tool_decision')).toEqual([
+      expect.objectContaining({ toolName: 'Read', decision: 'allowed', source: 'runtime' }),
+      expect.objectContaining({ toolName: 'Edit', decision: 'allowed', source: 'human' }),
     ]);
     expect(ofType(events, 'activity').map((a) => a.text)).toEqual([
       'Claude Code を起動しました',
@@ -316,31 +324,59 @@ const runtime = (
   over: Partial<ConstructorParameters<typeof ClaudeAgentSdkRuntime>[0]> = {},
 ) => new ClaudeAgentSdkRuntime({ settings: settings(), loadSdk: async () => module, ...over });
 
+/** Tool use ids are unique per call, like the CLI's (the gate answers one id once). */
+let nextToolUse = 0;
+const freshId = () => `tu_${++nextToolUse}`;
+
 /** The PreToolUse hook the runtime registered. */
-function preToolUse(options: Options): (toolName: string, toolInput: unknown) => Promise<unknown> {
+function preToolUse(
+  options: Options,
+): (toolName: string, toolInput: unknown, id?: string) => Promise<unknown> {
   const hook = options.hooks?.PreToolUse?.[0]?.hooks[0] as HookCallback;
-  return (toolName, toolInput) =>
+  return (toolName, toolInput, id = freshId()) =>
     hook(
       {
         hook_event_name: 'PreToolUse',
         tool_name: toolName,
         tool_input: toolInput,
-        tool_use_id: 'tu_1',
+        tool_use_id: id,
         session_id: 's',
         transcript_path: '',
         cwd: CWD,
       } satisfies HookInput,
-      'tu_1',
+      id,
       { signal: new AbortController().signal },
     );
 }
 
-const cut = (options: Options, toolName: string, toolInput: Record<string, unknown>) =>
+const cut = (
+  options: Options,
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  id = freshId(),
+) =>
   options.canUseTool!(toolName, toolInput, {
     signal: new AbortController().signal,
-    toolUseID: 'tu_1',
+    toolUseID: id,
     requestId: 'req_1',
   });
+
+/** A gate like the executor builds, recording into `decisions`. */
+function testGate(
+  profile: 'careful' | 'standard' | 'autonomous',
+  autoMode: { classifierModel: string | null } | null = null,
+) {
+  const decisions: ToolDecisionRecord[] = [];
+  const permissions: unknown[] = [];
+  const gate = new ToolGate({
+    cwd: CWD,
+    profile,
+    autoMode,
+    record: (d) => decisions.push(d),
+    onPermission: (p) => permissions.push(p),
+  });
+  return { gate, decisions, permissions };
+}
 
 describe('ClaudeAgentSdkRuntime', () => {
   it('passes the fixed options and streams normalized events', async () => {
@@ -389,6 +425,7 @@ describe('ClaudeAgentSdkRuntime', () => {
   });
 
   it('enforces the policy in the PreToolUse hook for every tool use', async () => {
+    // Without a gate from the executor: the careful profile.
     const sdk = replaySdk(rec(R.TEXT));
     await collect(runtime(sdk.module).run(input()));
     const hook = preToolUse(sdk.queries[0]!.options);
@@ -401,14 +438,13 @@ describe('ClaudeAgentSdkRuntime', () => {
     for (const [tool, toolInput] of [
       ['Bash', { command: 'git -c core.fsmonitor=evil status' }],
       ['Workflow', { script: 'x' }],
-      ['Edit', { file_path: `${CWD}/.git/config` }],
       ['Read', { file_path: '/definitely/outside/secret' }],
     ] as const) {
       expect(await hook(tool, toolInput)).toMatchObject({
         hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' },
       });
     }
-    // Deny: removed tools that slip through.
+    // Deny (hard rules, every profile): removed tools that slip through, git metadata, push.
     expect(await hook('Monitor', { command: 'echo hi' })).toMatchObject({
       hookSpecificOutput: { permissionDecision: 'deny' },
     });
@@ -418,6 +454,46 @@ describe('ClaudeAgentSdkRuntime', () => {
         permissionDecisionReason: expect.stringContaining('Work autonomously') as string,
       },
     });
+    expect(await hook('Edit', { file_path: `${CWD}/.git/config` })).toMatchObject({
+      hookSpecificOutput: { permissionDecision: 'deny' },
+    });
+    expect(await hook('Bash', { command: 'git push origin HEAD' })).toMatchObject({
+      hookSpecificOutput: {
+        permissionDecision: 'deny',
+        permissionDecisionReason: expect.stringContaining('Integration') as string,
+      },
+    });
+  });
+
+  it('runs the autonomous profile without asks, recording each decision once', async () => {
+    const { gate, decisions } = testGate('autonomous');
+    const sdk = replaySdk(rec(R.TEXT));
+    await collect(runtime(sdk.module).run(input({ gate })));
+    const o = sdk.queries[0]!.options;
+    const hook = preToolUse(o);
+    expect(o.permissionMode).toBe('default');
+    expect(await hook('Bash', { command: 'pnpm test' }, 'tu_a')).toEqual({});
+    // The CLI then calls canUseTool for the same use: the same answer, recorded once.
+    expect(await cut(o, 'Bash', { command: 'pnpm test' }, 'tu_a')).toMatchObject({
+      behavior: 'allow',
+    });
+    expect(await hook('Bash', { command: 'pnpm add left-pad' })).toEqual({});
+    expect(await hook('Read', { file_path: '/definitely/outside/secret' })).toMatchObject({
+      hookSpecificOutput: { permissionDecision: 'deny' },
+    });
+    expect(await hook('Bash', { command: 'cat ~/.ssh/id_rsa' })).toMatchObject({
+      hookSpecificOutput: { permissionDecision: 'deny' },
+    });
+    expect(
+      decisions.map((d) => [d.toolName, d.decision, d.decidedBy, d.category, d.routine]),
+    ).toEqual([
+      ['Bash', 'allowed', 'rule', 'build_test', false],
+      ['Bash', 'allowed', 'rule', 'deps_add', false],
+      ['Read', 'denied', 'rule', 'outside_read', false],
+      ['Bash', 'denied', 'rule', 'command_other', false],
+    ]);
+    expect(decisions[1]!.notable).toBe(true);
+    expect(decisions[3]!.rule).toBe('credentials');
   });
 
   it('answers canUseTool from the policy and the approval flow', async () => {
@@ -449,16 +525,143 @@ describe('ClaudeAgentSdkRuntime', () => {
       behavior: 'allow',
       updatedInput: { command: 'pnpm test' },
     });
-    expect(await cut(o, 'Bash', { command: 'rm -rf /' })).toEqual({
+    expect(await cut(o, 'Bash', { command: 'rm -rf build' })).toEqual({
       behavior: 'deny',
       message: 'The user rejected this tool use: だめ',
     });
+    // A hard rule never reaches the human.
+    expect(await cut(o, 'Bash', { command: 'rm -rf /' })).toMatchObject({ behavior: 'deny' });
     expect(await cut(o, 'WebFetch', { url: 'https://example.com' })).toEqual({
       behavior: 'deny',
       message: 'The run was cancelled.',
       interrupt: true,
     });
     expect(asked).toEqual(['Bash', 'Bash', 'WebFetch']);
+  });
+
+  it('hands the gray zone to the auto mode classifier when its model is configured', async () => {
+    const { gate, decisions, permissions } = testGate('autonomous', {
+      classifierModel: 'team-classifier',
+    });
+    // An init that reports auto mode (the recorded ones ran in default mode).
+    const stream = rec(R.TEXT).map((m) =>
+      (m as { type?: string; subtype?: string }).type === 'system' &&
+      (m as { subtype?: string }).subtype === 'init'
+        ? { ...(m as object), permissionMode: 'auto' }
+        : m,
+    );
+    const sdk = replaySdk(stream);
+    const rt = runtime(sdk.module, {
+      settings: settings({ litellm: { baseUrl: 'http://127.0.0.1:4000', apiKey: 'sk-x' } }),
+      parentEnv: { PATH: '/bin' },
+    });
+    await collect(rt.run(input({ gate, model: 'team-sonnet' })));
+    const o = sdk.queries[0]!.options;
+    expect(o.permissionMode).toBe('auto');
+    expect(o.env).toMatchObject({
+      CLAUDE_CODE_AUTO_MODE_MODEL: 'team-classifier',
+      CLAUDE_CODE_AUTO_MODE_SERVER: '0',
+    });
+    expect(o.settings).toMatchObject({
+      autoMode: { classifyAllShell: true, hard_deny: expect.arrayContaining(['$defaults']) },
+    });
+    expect(gate.mode).toBe('classifier');
+    expect(permissions).toEqual([{ profile: 'autonomous', gate: 'classifier', note: null }]);
+
+    const hook = preToolUse(o);
+    // Gray zone: nothing from the hook, so the classifier decides (an allow would skip it).
+    expect(await hook('Bash', { command: 'pnpm test' }, 'tu_c1')).toEqual({});
+    // Hard rules still deny first; our own tools skip the classifier.
+    expect(await hook('Bash', { command: 'git push' })).toMatchObject({
+      hookSpecificOutput: { permissionDecision: 'deny' },
+    });
+    expect(await hook('mcp__acc__task_get', {})).toMatchObject({
+      hookSpecificOutput: { permissionDecision: 'allow' },
+    });
+    // The classifier blocked it repeatedly and the CLI asks: autonomous never asks a human.
+    expect(await cut(o, 'Bash', { command: 'pnpm test' }, 'tu_c1')).toMatchObject({
+      behavior: 'deny',
+      message: expect.stringContaining('繰り返し') as string,
+    });
+    expect(decisions.map((d) => [d.decision, d.decidedBy, d.notable])).toEqual([
+      ['denied', 'rule', false],
+      ['allowed', 'rule', false],
+      ['denied', 'classifier', true],
+    ]);
+  });
+
+  it('falls back to the rules when auto mode does not start or its classifier cannot answer', async () => {
+    // LiteLLM without a classifier model: rules from the start.
+    {
+      const { gate } = testGate('autonomous', { classifierModel: null });
+      const sdk = replaySdk(rec(R.TEXT));
+      const rt = runtime(sdk.module, {
+        settings: settings({ litellm: { baseUrl: 'http://127.0.0.1:4000' } }),
+      });
+      await collect(rt.run(input({ gate })));
+      expect(sdk.queries[0]!.options.permissionMode).toBe('default');
+      expect(gate.permission).toEqual({
+        profile: 'autonomous',
+        gate: 'rules',
+        note: GATE_NOTES.noClassifierModel,
+      });
+    }
+    // The user's Claude login: auto requested, but init says "default" (unsupported model).
+    {
+      const { gate } = testGate('standard', { classifierModel: null });
+      const sdk = replaySdk(rec(R.TEXT));
+      await collect(runtime(sdk.module).run(input({ gate })));
+      expect(sdk.queries[0]!.options.permissionMode).toBe('auto');
+      expect(gate.permission.note).toBe(GATE_NOTES.unsupportedModel);
+    }
+    // The classifier could not evaluate: leave auto mode and let the rules decide.
+    {
+      const { gate, decisions } = testGate('autonomous', { classifierModel: 'team-classifier' });
+      const [init, ...rest] = rec(R.TEXT) as Record<string, unknown>[];
+      const denied = {
+        type: 'system',
+        subtype: 'permission_denied',
+        tool_name: 'Bash',
+        tool_use_id: 'tu_x',
+        decision_reason_type: 'classifier',
+        message: 'Auto mode could not evaluate this action and is blocking it for safety.',
+        uuid: 'u',
+        session_id: init!.session_id,
+      };
+      let hook: ReturnType<typeof preToolUse> | null = null;
+      const sdk = replaySdk([{ ...init, permissionMode: 'auto' }, denied, ...rest], {
+        before: async (i, options) => {
+          if (i !== 1) return;
+          hook = preToolUse(options);
+          expect(await hook('Bash', { command: 'pnpm test' }, 'tu_x')).toEqual({});
+        },
+      });
+      const modes: string[] = [];
+      const module: ClaudeSdkModule = {
+        query: (p) => {
+          const q = sdk.module.query(p);
+          return Object.assign(q, {
+            setPermissionMode: async (m: string) => {
+              modes.push(m);
+            },
+          });
+        },
+      };
+      const rt = runtime(module, {
+        settings: settings({ litellm: { baseUrl: 'http://127.0.0.1:4000' } }),
+      });
+      await collect(rt.run(input({ gate })));
+      expect(modes).toEqual(['default']);
+      expect(gate.permission.note).toBe(GATE_NOTES.classifierUnavailable);
+      expect(decisions).toEqual([
+        expect.objectContaining({ decision: 'denied', decidedBy: 'classifier', notable: true }),
+      ]);
+      // From now on the rules allow it outright (explicitly: the CLI may still be in auto mode).
+      expect(await hook!('Bash', { command: 'pnpm test' })).toMatchObject({
+        hookSpecificOutput: { permissionDecision: 'allow' },
+      });
+      expect(decisions.at(-1)).toMatchObject({ decision: 'allowed', decidedBy: 'rule' });
+    }
   });
 
   it('resumes with the stored session and subtracts the baseline', async () => {

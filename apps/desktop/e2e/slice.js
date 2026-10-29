@@ -9,11 +9,11 @@
 //   2. In Chromium (Playwright, 1440x900): onboarding → 「デモモードで試す」 → lands in the
 //      demo design chat holding the orchestrator grant (chip + chat line) with the suggested
 //      first message → sends it with one click → the reply streams in.
-//   3. Approvals: a mock worker asks for approval; Ctrl+J lands on it, Y approves, the run
-//      finishes.
+//   3. Approvals: a mock worker asks for approval (an explicit `ask` step: the default
+//      autonomous profile asks nothing else); Ctrl+J lands on it, Y approves, the run finishes.
 //   4. Integration: if the daemon can spawn workers (task.spawnWorker — the orchestrator
 //      track), it waits for the orchestrator's task tree and its integration candidate,
-//      approving tool requests on the way; otherwise it builds a candidate from the worker's
+//      approving tool requests on the way if a stricter profile asks any; otherwise it builds a candidate from the worker's
 //      task itself. Either way it opens the review, checks the confirmation wording, applies
 //      it and verifies the target branch moved (git, not just the UI).
 //

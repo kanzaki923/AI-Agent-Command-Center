@@ -56,33 +56,36 @@ describe('decideToolPermission', () => {
     expect(decide('TodoWrite', { todos: [] })).toBe('allow');
   });
 
-  it('asks for reads outside the workspace', () => {
-    expect(decide('Read', { file_path: '/home/me/.aws/credentials' })).toBe('ask');
+  it('asks (careful) for reads outside the workspace and denies credentials', () => {
+    expect(decide('Read', { file_path: '/home/me/.aws/credentials' })).toBe('deny');
     expect(decide('Grep', { pattern: 'key', path: '/etc' })).toBe('ask');
     expect(decide('Glob', { pattern: '/home/me/**/*.pem' })).toBe('ask');
     expect(decide('Glob', { pattern: '/work/ws/**/*.ts' })).toBe('allow');
   });
 
-  it('allows edits inside the workspace and asks outside', () => {
+  it('allows edits inside the workspace and denies them outside', () => {
     expect(
       decide('Edit', { file_path: '/work/ws/src/a.ts', old_string: 'a', new_string: 'b' }),
     ).toBe('allow');
     expect(decide('Write', { file_path: 'notes/x.md', content: '' })).toBe('allow');
-    expect(decide('MultiEdit', { file_path: '/work/other/a.ts' })).toBe('ask');
-    expect(decide('Write', { file_path: '../escape.txt' })).toBe('ask');
-    expect(decide('Write', { content: 'no path' })).toBe('ask');
-    expect(decide('Write', { file_path: 'C:\\Windows\\x.dll' }, WIN, 'win32')).toBe('ask');
+    expect(decide('MultiEdit', { file_path: '/work/other/a.ts' })).toBe('deny');
+    expect(decide('Write', { file_path: '../escape.txt' })).toBe('deny');
+    expect(decide('Write', { content: 'no path' })).toBe('deny');
+    expect(decide('Write', { file_path: 'C:\\Windows\\x.dll' }, WIN, 'win32')).toBe('deny');
     expect(decide('Write', { file_path: 'src\\x.ts' }, WIN, 'win32')).toBe('allow');
   });
 
-  it('asks before editing git metadata (gitdir pointer, config, hooks)', () => {
+  it('denies editing git metadata (gitdir pointer, config, hooks) and agent settings', () => {
     // A redirected `.git` or a planted core.fsmonitor / hook would run code in the daemon's
-    // own git calls, so these edits never go through without a human.
-    expect(decide('Write', { file_path: '.git', content: 'gitdir: evil' })).toBe('ask');
-    expect(decide('Edit', { file_path: '/work/ws/.git/config' })).toBe('ask');
-    expect(decide('Write', { file_path: 'sub/.git/hooks/pre-commit' })).toBe('ask');
-    expect(decide('Write', { file_path: '.GIT\\config' }, WIN, 'win32')).toBe('ask');
-    expect(decide('Write', { file_path: '.git.\\config' }, WIN, 'win32')).toBe('ask');
+    // own git calls; the worktree's git belongs to the daemon.
+    expect(decide('Write', { file_path: '.git', content: 'gitdir: evil' })).toBe('deny');
+    expect(decide('Edit', { file_path: '/work/ws/.git/config' })).toBe('deny');
+    expect(decide('Write', { file_path: 'sub/.git/hooks/pre-commit' })).toBe('deny');
+    expect(decide('Write', { file_path: '.GIT\\config' }, WIN, 'win32')).toBe('deny');
+    expect(decide('Write', { file_path: '.git.\\config' }, WIN, 'win32')).toBe('deny');
+    expect(decide('Write', { file_path: '.claude/settings.local.json', content: '{}' })).toBe(
+      'deny',
+    );
     expect(decide('Write', { file_path: '.gitignore', content: 'x' })).toBe('allow');
     expect(decide('Write', { file_path: 'docs/.github/x.md', content: 'x' })).toBe('allow');
     expect(decide('Read', { file_path: '.git/config' })).toBe('allow');
@@ -102,9 +105,11 @@ describe('decideToolPermission', () => {
         return; // the platform does not allow links here
       }
       const real = (toolName: string, input: unknown) =>
-        decideToolPermission({ toolName, input, cwd: ws }).decision;
-      expect(real('Write', { file_path: join(ws, 'cfg', '.bashrc'), content: 'x' })).toBe('ask');
-      expect(real('Read', { file_path: 'cfg/id_ed25519' })).toBe('ask');
+        // No temp-dir exception here: the test's own folders live in the temp dir.
+        decideToolPermission({ toolName, input, cwd: ws, allowedOutside: [] }).decision;
+      expect(real('Write', { file_path: join(ws, 'cfg', '.bashrc'), content: 'x' })).toBe('deny');
+      expect(real('Read', { file_path: 'cfg/notes.txt' })).toBe('ask');
+      expect(real('Read', { file_path: 'cfg/id_ed25519' })).toBe('deny');
       expect(real('Write', { file_path: 'new/dir/a.txt', content: 'x' })).toBe('allow');
       expect(realpathDeep(join(ws, 'cfg', 'missing', 'x'))).toBe(
         join(realpathDeep(outside), 'missing', 'x'),
@@ -114,9 +119,11 @@ describe('decideToolPermission', () => {
     }
   });
 
-  it('asks for commands, except allowlisted read-only Bash inside the workspace', () => {
+  it('asks (careful) for commands, except allowlisted read-only Bash inside the workspace', () => {
     expect(decide('Bash', { command: 'pnpm test' })).toBe('ask');
-    expect(decide('Bash', { command: 'git status && rm -rf /' })).toBe('ask');
+    expect(decide('Bash', { command: 'git status && rm -rf build' })).toBe('ask');
+    expect(decide('Bash', { command: 'git status && git diff' })).toBe('allow');
+    expect(decide('Bash', { command: 'git status && rm -rf /' })).toBe('deny');
     expect(decide('Bash', {})).toBe('ask');
     expect(decide('PowerShell', { command: 'Get-ChildItem' })).toBe('ask');
     // Searching and looking around (commands.test.ts has the details).
@@ -128,7 +135,8 @@ describe('decideToolPermission', () => {
     expect(decide('Bash', { command: 'git -c core.fsmonitor=x status' })).toBe('ask');
     // Windows paths and case folding apply to command arguments too.
     expect(decide('Bash', { command: 'cat src/a.ts' }, WIN, 'win32')).toBe('allow');
-    expect(decide('Bash', { command: 'cat C:/Users/me/.ssh/id_rsa' }, WIN, 'win32')).toBe('ask');
+    expect(decide('Bash', { command: 'cat C:/Users/me/.ssh/id_rsa' }, WIN, 'win32')).toBe('deny');
+    expect(decide('Bash', { command: 'cat C:/Users/me/notes.txt' }, WIN, 'win32')).toBe('ask');
   });
 
   it('denies tools that do not fit an unattended run and allows the agent bookkeeping', () => {
@@ -141,7 +149,8 @@ describe('decideToolPermission', () => {
     ]) {
       const r = decideToolPermission({ toolName: t, input: {}, cwd: POSIX, platform: 'linux' });
       expect(r.decision).toBe('deny');
-      expect(r.reason).toContain('Work autonomously');
+      expect(r.rule).toBe('unattended');
+      expect(r.message).toContain('Work autonomously');
     }
     for (const t of ['TaskCreate', 'TaskUpdate', 'TaskList', 'ToolSearch', 'Skill']) {
       expect(decide(t, {})).toBe('allow');

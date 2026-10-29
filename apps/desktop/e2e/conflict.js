@@ -12,7 +12,8 @@
 //      confirming starts the integrator (integration.resolveWithAgent).
 //   4. The fix step runs live; the integration resumes and lands in 反映待ち with the fix step
 //      done; README.md on the integration branch has both sections and no markers; main is
-//      unchanged until a human approves.
+//      unchanged until a human approves. In the default (autonomous) profile nothing asks
+//      before that: the integration tests after the fix run without an approval.
 //
 // Screenshots go to the OS temp dir (never the repo). Exit code 0 = pass.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -128,27 +129,7 @@ try {
   await page.locator('[data-step="fix"]').first().waitFor({ timeout: 15_000 });
   if (await page.getByTestId('resolving').isVisible().catch(() => false)) await shot('resolving');
 
-  // 5. the integrator's code runs only once a human allows it: the board asks, Y answers.
-  const ask = await waitFor(
-    async () =>
-      (await rpc.call('approval.list', { status: ['pending'] })).items.find(
-        (a) => a.integrationId === created.id,
-      ),
-    'the request to run the tests',
-    60_000,
-  );
-  await page.keyboard.press('Control+1');
-  await page.keyboard.press('Control+j');
-  await page.waitForTimeout(250);
-  await shot('tests-asked');
-  await page.keyboard.press('y');
-  await waitFor(
-    async () =>
-      (await rpc.call('approval.list', { status: ['approved'] })).items.find((a) => a.id === ask.id),
-    'the test run to be allowed',
-    15_000,
-  );
-  log('the human allowed the tests from the board');
+  // 5. back to the review (the tests after the fix need no approval in the autonomous profile)
   await page.keyboard.press('Control+k');
   await page.keyboard.type('README の 2 つの節');
   await page.getByText('統合をレビュー: README の 2 つの節').first().click();

@@ -2,6 +2,7 @@ import type {
   Actor,
   ContentPart,
   Message,
+  PermissionProfile,
   Run,
   Session,
   Task,
@@ -11,6 +12,7 @@ import type { AgentEvent, AgentTool, RunController, RunExecutor } from '../contr
 import type { DaemonContext } from '../core/context';
 import { apiTools } from '../llm/tools';
 import { abortError } from './async';
+import { ToolGate } from './gate';
 import { classifyToolRisk } from './risk';
 import { RuntimeSessionStore } from './state';
 import { approvalDetailFor, approvalTitleFor, truncate } from './tools';
@@ -60,6 +62,7 @@ async function executeAgentRun(
   ctl.setActivity('エージェントを起動中');
   const model = run.model ?? session.model ?? null;
   const resumeSessionId = store.get(session.id, runtimeId);
+  const gate = createToolGate(ctx, ctl, workspace.path, workspace.projectId);
 
   // Runtime message ids -> our message ids (deltas and the final message share one id).
   const ids = new Map<string, string>();
@@ -82,6 +85,7 @@ async function executeAgentRun(
     resumeSessionId,
     signal,
     tools: agentTools(ctx, ctl),
+    gate,
     canUseTool: (req) =>
       ctl.requestApproval({
         kind: 'tool_use',
@@ -91,6 +95,8 @@ async function executeAgentRun(
           toolName: req.toolName,
           input: req.input,
           risk: classifyToolRisk({ toolName: req.toolName, input: req.input, cwd: workspace.path }),
+          ...(req.category ? { category: req.category } : {}),
+          ...(req.reason ? { reason: req.reason } : {}),
         } satisfies ToolApprovalPayload,
       }),
   });
@@ -136,6 +142,9 @@ async function executeAgentRun(
       case 'session':
         rememberRuntimeSession(ctx, store, session.id, runtimeId, ev.runtimeSessionId, ctl.actor);
         return;
+      case 'tool_decision':
+        // Runtimes hand these to their gate, which records them.
+        return;
     }
   };
 
@@ -153,6 +162,51 @@ async function executeAgentRun(
   );
   if (sha) await recordDiffArtifact(ctx, ctl, workspaceId, title);
   ctl.setActivity(null);
+}
+
+/** The project's permission profile, else the global default (architecture.md §2.10). */
+export function resolvePermissionProfile(
+  ctx: DaemonContext,
+  projectId: string | null,
+): PermissionProfile {
+  const project = projectId ? ctx.repos.projects.get(projectId) : undefined;
+  return project?.permissionProfile ?? ctx.settings.get().defaultPermissionProfile;
+}
+
+/**
+ * The run's tool permission gate: the profile, remembered approvals of the run / task /
+ * project, Claude Code auto mode when the settings allow it, and recording through the run.
+ */
+function createToolGate(
+  ctx: DaemonContext,
+  ctl: RunController,
+  cwd: string,
+  projectId: string,
+): ToolGate {
+  const settings = ctx.settings.get();
+  const { run } = ctl;
+  const gate = new ToolGate({
+    cwd,
+    profile: resolvePermissionProfile(ctx, run.projectId ?? projectId),
+    autoMode: settings.autoMode.enabled
+      ? { classifierModel: settings.autoMode.classifierModel }
+      : null,
+    policy: { protectedPaths: [ctx.paths.home], ...(ctx.port ? { daemonPort: ctx.port } : {}) },
+    ...(ctx.hasService('permissionRules')
+      ? {
+          remembered: ctx
+            .service('permissionRules')
+            .matcher(
+              { projectId: run.projectId ?? projectId, runId: run.id, taskId: run.taskId },
+              cwd,
+            ),
+        }
+      : {}),
+    record: (d) => ctl.recordToolDecision(d),
+    onPermission: (p) => ctl.setPermission(p),
+  });
+  ctl.setPermission(gate.permission);
+  return gate;
 }
 
 /**

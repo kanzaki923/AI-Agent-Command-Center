@@ -91,6 +91,13 @@ function toolResultOutput(content: unknown): unknown {
   return content ?? null;
 }
 
+/** The classifier's reason without the CLI's boilerplate around it. */
+function classifierReason(text: string): string | null {
+  const m = /Reason:\s*([^\n]+)/.exec(text);
+  const reason = (m?.[1] ?? text).trim();
+  return reason ? reason.slice(0, 300) : null;
+}
+
 export interface NormalizerOptions {
   /**
    * Tools that must be registered (our in-process MCP tools). When system/init lists tools
@@ -105,6 +112,8 @@ export class ClaudeMessageNormalizer {
   sessionId: string | null = null;
   /** Set when a `result` message arrives. */
   outcome: TurnOutcome | null = null;
+  /** The permission mode system/init reported (auto mode silently falls back to "default"). */
+  permissionMode: string | null = null;
   /**
    * Japanese reason the run cannot go on and should be stopped now: our MCP tools did not
    * register, or the API keeps rejecting the credentials (the CLI would retry a 401 ten times
@@ -194,8 +203,28 @@ export class ClaudeMessageNormalizer {
           out.push({ type: 'session', runtimeSessionId: sid });
         }
         this.checkTools(msg);
+        this.permissionMode = asString(msg.permissionMode) ?? this.permissionMode;
         out.push({ type: 'activity', text: 'Claude Code を起動しました' });
         return out;
+      }
+      case 'permission_denied': {
+        // A denial the CLI made itself (auto mode classifier, mode): not our hook's.
+        const toolCallId = asString(msg.tool_use_id);
+        const toolName = asString(msg.tool_name);
+        if (!toolCallId || !toolName) return [];
+        const kind = asString(msg.decision_reason_type);
+        const message = asString(msg.message) ?? '';
+        return [
+          {
+            type: 'tool_decision',
+            toolCallId,
+            toolName,
+            decision: 'denied',
+            source: kind === 'classifier' ? 'classifier' : kind === 'hook' ? 'hook' : 'runtime',
+            reason: classifierReason(asString(msg.decision_reason) ?? message),
+            classifierUnavailable: /could not evaluate/i.test(message),
+          },
+        ];
       }
       case 'api_retry': {
         const error = asString(msg.error);
@@ -310,6 +339,31 @@ export class ClaudeMessageNormalizer {
     const content = asRecord(msg.message)?.content;
     if (!Array.isArray(content)) return [];
     const out: AgentEvent[] = [];
+    // Undocumented `tool_result_meta`: who allowed / refused each tool use (optional).
+    if (Array.isArray(msg.tool_result_meta)) {
+      for (const raw of msg.tool_result_meta) {
+        const m = asRecord(raw);
+        const d = asRecord(m?.permission_decision);
+        const toolCallId = asString(m?.id);
+        if (!d || !toolCallId) continue;
+        const reasonType = asString(d.reason_type);
+        const source = asString(d.source);
+        out.push({
+          type: 'tool_decision',
+          toolCallId,
+          toolName: this.toolNames.get(toolCallId) ?? 'unknown',
+          decision: d.decision === 'reject' ? 'denied' : 'allowed',
+          source:
+            reasonType === 'classifier'
+              ? 'classifier'
+              : reasonType === 'hook' || source === 'hook'
+                ? 'hook'
+                : source === 'user_temporary'
+                  ? 'human'
+                  : 'runtime',
+        });
+      }
+    }
     for (const raw of content) {
       const block = asRecord(raw);
       if (block?.type !== 'tool_result') continue;

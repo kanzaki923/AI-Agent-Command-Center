@@ -1,5 +1,5 @@
 import { defineMethod } from '../api/registry';
-import { conflict } from '../core/errors';
+import { conflict, invalidParams } from '../core/errors';
 import { defineModule } from '../module';
 import { RunManager } from './manager';
 
@@ -122,14 +122,25 @@ export const runsModule = defineModule({
           return { projectIds: ap?.projectId ? [ap.projectId] : [] };
         },
         handler: (p, call) =>
-          manager.resolveApproval(
-            p.approvalId,
-            {
-              decision: p.decision === 'approve' ? 'approved' : 'rejected',
-              note: p.note ?? null,
-            },
-            call.actor,
-          ),
+          ctx.db.transaction(() => {
+            const remember = p.decision === 'approve' ? p.remember : 'once';
+            if (p.decision === 'reject' && p.remember !== 'once') {
+              throw invalidParams('覚えられるのは承認した操作だけです');
+            }
+            const approval = manager.resolveApproval(
+              p.approvalId,
+              {
+                decision: p.decision === 'approve' ? 'approved' : 'rejected',
+                note: p.note ?? null,
+              },
+              call.actor,
+            );
+            // Remembered approvals (this run / task / project) apply to later tool uses.
+            if (remember !== 'once') {
+              ctx.service('permissionRules').rememberFromApproval(approval, remember, call.actor);
+            }
+            return approval;
+          }),
       }),
     );
 

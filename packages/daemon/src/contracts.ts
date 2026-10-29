@@ -16,9 +16,12 @@ import type {
   MethodName,
   Run,
   RunKind,
+  RunPermission,
   Usage,
   Workspace,
 } from '@acc/protocol';
+import type { ToolDecisionRecord, ToolGate } from './runtime/gate';
+import type { PermissionRuleService } from './runtime/rules';
 
 // ---------------------------------------------------------------------------
 // runs (implemented by src/runs)
@@ -87,6 +90,13 @@ export interface RunController {
   assertBudgetLeft(): void;
   /** Short "what is it doing now" line shown in Command Mode (e.g. "npm test を実行中"). */
   setActivity(text: string | null): void;
+  /**
+   * Record how a tool use was decided: `tool.decided` (unless routine) and the counts on
+   * `Run.toolDecisions` (run.updated `["toolDecisions"]`, batched for routine decisions).
+   */
+  recordToolDecision(d: ToolDecisionRecord): void;
+  /** How this run decides tool uses (run.updated `["permission"]`). */
+  setPermission(p: RunPermission): void;
 }
 
 /** Budget held for one LLM call (RunController.reserveBudget). Settle or cancel it once. */
@@ -225,7 +235,22 @@ export type AgentEvent =
   | { type: 'tool_result'; toolCallId: string; name: string; output: unknown; isError?: boolean }
   | { type: 'activity'; text: string | null }
   | { type: 'usage'; usage: Partial<Usage> }
-  | { type: 'session'; runtimeSessionId: string };
+  | { type: 'session'; runtimeSessionId: string }
+  /**
+   * How the runtime itself decided a tool use (Claude Code: the auto mode classifier's
+   * denials, `tool_result_meta`). Runtimes hand these to their gate; executors ignore them.
+   */
+  | {
+      type: 'tool_decision';
+      toolCallId: string;
+      toolName: string;
+      decision: 'allowed' | 'denied';
+      /** classifier / runtime (the CLI's mode), hook / human (our own answers, ignored). */
+      source: 'classifier' | 'runtime' | 'hook' | 'human';
+      reason?: string | null;
+      /** The classifier could not answer at all (not a judgement). */
+      classifierUnavailable?: boolean;
+    };
 
 export interface AgentRunInput {
   runId: string;
@@ -237,8 +262,22 @@ export interface AgentRunInput {
   /** Previous runtime session to resume, if the runtime supports it. */
   resumeSessionId?: string | null;
   signal: AbortSignal;
-  /** Called before any tool that is not pre-approved. Resolve with the decision. */
-  canUseTool(req: { toolName: string; input: unknown; title?: string }): Promise<ApprovalDecision>;
+  /**
+   * Ask a human about a tool use the gate could not decide. `category` / `reason` come from
+   * the gate (shown on the approval card).
+   */
+  canUseTool(req: {
+    toolName: string;
+    input: unknown;
+    title?: string;
+    category?: string;
+    reason?: string;
+  }): Promise<ApprovalDecision>;
+  /**
+   * Decides tool uses (hard rules, remembered approvals, the profile, the classifier) and
+   * records the decisions. Without one, runtimes use the careful profile and record nothing.
+   */
+  gate?: ToolGate;
   /**
    * Control API methods the run's grant allows (read-only for workers by default). Runtimes
    * that support custom tools expose them to the agent (Claude: in-process MCP server "acc").
@@ -277,5 +316,7 @@ declare module './core/context' {
     budget: BudgetService;
     workspaces: WorkspacesService;
     runtimes: RuntimesService;
+    /** Remembered tool approvals (runtime module). */
+    permissionRules: PermissionRuleService;
   }
 }

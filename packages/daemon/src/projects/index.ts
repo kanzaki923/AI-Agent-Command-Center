@@ -1,8 +1,8 @@
 import { existsSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import type { Project } from '@acc/protocol';
+import type { Actor, Project } from '@acc/protocol';
 import { defineMethod } from '../api/registry';
-import { invalidParams } from '../core/errors';
+import { forbidden, invalidParams } from '../core/errors';
 import { defineModule } from '../module';
 import { inspectRepo } from './inspect';
 
@@ -12,6 +12,16 @@ function checkRepoPath(path: string | null | undefined): void {
   if (path == null) return;
   if (!isAbsolute(path)) throw invalidParams(`repoPath must be an absolute path: ${path}`);
   if (!existsSync(path)) throw invalidParams(`repoPath does not exist: ${path}`);
+}
+
+/**
+ * How much agents may do without asking is a human's call: an agent with project.update
+ * must not move its own project to a looser profile.
+ */
+function checkProfileChange(profile: unknown, actor: Actor): void {
+  if (profile !== undefined && actor.kind === 'agent') {
+    throw forbidden('権限プロファイルを変えられるのは人間だけです');
+  }
 }
 
 /** project.* — projects (a repository plus settings). project.inspectRepo validates a folder first. */
@@ -29,6 +39,7 @@ export const projectsModule = defineModule({
         handler: (p, call) =>
           db.transaction(() => {
             checkRepoPath(p.repoPath);
+            checkProfileChange(p.permissionProfile, call.actor);
             const now = ctx.clock.iso();
             const project = repos.projects.insert({
               id: ctx.ids.next('project'),
@@ -39,6 +50,7 @@ export const projectsModule = defineModule({
               defaultModel: p.defaultModel ?? null,
               testCommand: p.testCommand?.trim() ?? null,
               commitAuthor: p.commitAuthor ?? null,
+              permissionProfile: p.permissionProfile ?? null,
               createdAt: now,
               updatedAt: now,
               archivedAt: null,
@@ -70,6 +82,7 @@ export const projectsModule = defineModule({
         handler: (p, call) =>
           db.transaction(() => {
             checkRepoPath(p.repoPath);
+            checkProfileChange(p.permissionProfile, call.actor);
             const changes: string[] = [];
             const project = repos.projects.update(p.projectId, (cur) => {
               const next: Project = { ...cur };
@@ -83,6 +96,7 @@ export const projectsModule = defineModule({
               assign('repoPath', p.repoPath);
               assign('defaultBranch', p.defaultBranch);
               assign('defaultModel', p.defaultModel);
+              assign('permissionProfile', p.permissionProfile);
               assign(
                 'testCommand',
                 p.testCommand === undefined ? undefined : (p.testCommand?.trim() ?? null),

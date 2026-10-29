@@ -107,7 +107,7 @@ export const scenarios = {
       run: { prompt: 'ファイルを作って' },
     }),
   },
-  /** c) Editing .git/config: the CLI would allow it inside cwd; the policy asks. */
+  /** c) Editing .git/config: the CLI would allow it inside cwd; the hard rules deny it. */
   editGitConfig: {
     name: 'editGitConfig',
     setup: (sb) => ({

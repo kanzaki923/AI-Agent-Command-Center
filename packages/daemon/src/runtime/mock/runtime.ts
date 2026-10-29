@@ -7,11 +7,13 @@ import type { ContentPart } from '@acc/protocol';
 import type { AgentEvent, AgentRunInput, AgentRuntime, ApprovalDecision } from '../../contracts';
 import { abortError, sleep, throwIfAborted } from '../async';
 import { allowlistedEnv } from '../env';
-import { decideToolPermission, isInside } from '../policy';
+import { askReason, ToolGate } from '../gate';
+import { isInside } from '../policy';
 import { MOCK_RUNTIME_ID } from '../registry';
 import { describeToolActivity, truncate } from '../tools';
 import { conflictedFiles } from '../../workspace/git';
 import {
+  type DenyAction,
   type MockPlan,
   type MockStep,
   type ResolveStrategy,
@@ -41,8 +43,10 @@ const OUTPUT_TAIL = 4000;
  * workspace: follows an `acc-mock` plan in the prompt (see plan.ts) or, by default, writes a
  * notes file named after the task (`notes/<slug>.md`) and verifies it.
  *
- * Tool uses go through the same policy as real agents (`decideToolPermission`), so commands
- * and anything outside the workspace hit the approval flow via `canUseTool`.
+ * Tool uses go through the same gate as real agents (`AgentRunInput.gate`: hard rules, the
+ * profile, remembered approvals). A denial comes back as a tool error with the reason, and
+ * the mock carries on like a real agent would (`onDeny`); what the gate asks about goes to
+ * the approval flow via `canUseTool`.
  */
 export class MockAgentRuntime implements AgentRuntime {
   readonly id = MOCK_RUNTIME_ID;
@@ -61,17 +65,25 @@ export class MockAgentRuntime implements AgentRuntime {
 
 type StepOutcome = 'next' | 'stop';
 
+/** What the gate said about a tool use. */
+type Permit =
+  | { kind: 'allowed' }
+  | { kind: 'denied'; message: string }
+  | { kind: 'answered'; decision: ApprovalDecision };
+
 class MockRun {
   private seq = 0;
   private contextChars: number;
   private readonly changed = new Map<string, 'created' | 'updated'>();
   private scale = 1;
+  private readonly gate: ToolGate;
 
   constructor(
     private readonly opts: MockRuntimeOptions,
     private readonly input: AgentRunInput,
   ) {
     this.contextChars = input.prompt.length + (input.systemPrompt?.length ?? 0);
+    this.gate = input.gate ?? new ToolGate({ cwd: input.cwd, profile: 'careful' });
   }
 
   async *events(): AsyncGenerator<AgentEvent, void, undefined> {
@@ -113,7 +125,7 @@ class MockRun {
         return 'next';
       case 'write':
       case 'append':
-        return yield* this.editFile(step.type, step.path, step.content);
+        return yield* this.editFile(step.type, step.path, step.content, step.onDeny);
       case 'check':
         yield* this.check(step.path, step.contains);
         return 'next';
@@ -123,6 +135,8 @@ class MockRun {
         return yield* this.resolve(step.strategy, step.paths);
       case 'ask': {
         yield* this.say(`確認が必要です: ${step.title}`);
+        const askInput = { title: step.title, ...(step.detail ? { detail: step.detail } : {}) };
+        this.gate.asked({ toolName: step.toolName, input: askInput, reason: step.title });
         const decision = await this.input.canUseTool({
           toolName: step.toolName,
           input: { title: step.title, ...(step.detail ? { detail: step.detail } : {}) },
@@ -148,6 +162,7 @@ class MockRun {
     kind: 'write' | 'append',
     relPath: string,
     content: string,
+    onDeny: DenyAction = 'continue',
   ): AsyncGenerator<AgentEvent, StepOutcome, undefined> {
     const rel = toPosix(relPath);
     const exists = existsSync(this.abs(relPath));
@@ -157,10 +172,11 @@ class MockRun {
     const verb = kind === 'append' ? '追記' : exists ? '書き換え' : '作成';
     const call = yield* this.toolCall(`${rel} を${verb}します。`, toolName, toolInput);
 
-    const decision = await this.permit(toolName, toolInput);
-    if (decision && decision.decision === 'rejected') {
+    const permit = await this.permit(toolName, toolInput, call);
+    if (permit.kind === 'denied') return yield* this.denied(call, toolName, permit, onDeny);
+    if (permit.kind === 'answered' && permit.decision.decision === 'rejected') {
       yield this.result(call, toolName, '承認されなかったため変更しませんでした', true);
-      return yield* this.rejected('stop', decision);
+      return yield* this.rejected('stop', permit.decision);
     }
 
     const abs = this.abs(relPath);
@@ -187,8 +203,12 @@ class MockRun {
     const toolName = contains ? 'Grep' : 'Read';
     const toolInput = contains ? { pattern: contains, path: rel } : { file_path: rel };
     const call = yield* this.toolCall(`${rel} の内容を確認します。`, toolName, toolInput);
-    const decision = await this.permit(toolName, toolInput);
-    if (decision && decision.decision === 'rejected') {
+    const permit = await this.permit(toolName, toolInput, call);
+    if (permit.kind === 'denied') {
+      yield this.result(call, toolName, permit.message, true);
+      throw new Error(`確認できませんでした（規則で拒否）: ${rel}`);
+    }
+    if (permit.kind === 'answered' && permit.decision.decision === 'rejected') {
       yield this.result(call, toolName, '承認されなかったため確認できませんでした', true);
       throw new Error(`確認が承認されませんでした: ${rel}`);
     }
@@ -237,10 +257,11 @@ class MockRun {
       const rel = toPosix(f);
       const readInput = { file_path: rel };
       const call = yield* this.toolCall(`${rel} のコンフリクトを確認します。`, 'Read', readInput);
-      const decision = await this.permit('Read', readInput);
-      if (decision && decision.decision === 'rejected') {
+      const permit = await this.permit('Read', readInput, call);
+      if (permit.kind === 'denied') return yield* this.denied(call, 'Read', permit, 'stop');
+      if (permit.kind === 'answered' && permit.decision.decision === 'rejected') {
         yield this.result(call, 'Read', '承認されなかったため確認できませんでした', true);
-        return yield* this.rejected('stop', decision);
+        return yield* this.rejected('stop', permit.decision);
       }
       let text: string;
       try {
@@ -268,10 +289,12 @@ class MockRun {
       : 'コマンドを実行します。';
     const call = yield* this.toolCall(intro, 'Bash', toolInput);
 
-    const decision = await this.permit('Bash', toolInput);
-    if (decision && decision.decision === 'rejected') {
+    const permit = await this.permit('Bash', toolInput, call);
+    if (permit.kind === 'denied')
+      return yield* this.denied(call, 'Bash', permit, step.onDeny ?? 'continue');
+    if (permit.kind === 'answered' && permit.decision.decision === 'rejected') {
       yield this.result(call, 'Bash', '承認されなかったため実行しませんでした', true);
-      return yield* this.rejected(step.onReject, decision);
+      return yield* this.rejected(step.onReject, permit.decision);
     }
 
     yield { type: 'activity', text: describeToolActivity('Bash', toolInput, this.input.cwd) };
@@ -311,12 +334,45 @@ class MockRun {
 
   // ---- primitives ----------------------------------------------------------
 
-  /** Policy check; asks for approval only when the policy says so. null = allowed outright. */
-  private async permit(toolName: string, toolInput: unknown): Promise<ApprovalDecision | null> {
-    const policy = decideToolPermission({ toolName, input: toolInput, cwd: this.input.cwd });
-    if (policy.decision === 'allow') return null;
+  /** The gate's answer; asks a human only when the gate says so. */
+  private async permit(toolName: string, toolInput: unknown, toolCallId: string): Promise<Permit> {
+    const r = this.gate.check({ toolName, input: toolInput, toolUseId: toolCallId });
+    if (r.action === 'allow' || r.action === 'defer') return { kind: 'allowed' };
+    if (r.action === 'deny') return { kind: 'denied', message: r.message ?? r.policy.reason };
     throwIfAborted(this.input.signal);
-    return this.input.canUseTool({ toolName, input: toolInput });
+    const decision = await this.input.canUseTool({
+      toolName,
+      input: toolInput,
+      category: r.policy.category,
+      reason: askReason(r),
+    });
+    return { kind: 'answered', decision };
+  }
+
+  /** A denied tool use: the reason goes back as the tool's error, then the agent adapts. */
+  private async *denied(
+    toolCallId: string,
+    toolName: string,
+    permit: Extract<Permit, { kind: 'denied' }>,
+    action: DenyAction,
+  ): AsyncGenerator<AgentEvent, StepOutcome, undefined> {
+    yield this.result(toolCallId, toolName, permit.message, true);
+    const why = denialSummary(permit.message);
+    switch (action) {
+      case 'continue':
+        yield* this.say(
+          `この操作はデーモンの規則で拒否されました（${why}）。この手順は行わずに作業を続けます。`,
+        );
+        return 'next';
+      case 'fail':
+        yield* this.say(`この操作はデーモンの規則で拒否されたため、作業を中止します（${why}）。`);
+        throw new Error('必要な操作がデーモンの規則で拒否されました');
+      case 'stop':
+        yield* this.say(
+          `この操作はデーモンの規則で拒否されたため、ここで作業を止めます（${why}）。`,
+        );
+        return 'stop';
+    }
   }
 
   /** Narrate, then announce a tool call (streamed text + message with the tool_call part). */
@@ -400,6 +456,12 @@ class MockRun {
     if (files.length === 0) return `${head}ファイルの変更はありません。`;
     return `${head}変更したファイル:\n${files.join('\n')}`;
   }
+}
+
+/** First sentence of the Japanese part of a denial message. */
+function denialSummary(message: string): string {
+  const first = message.split('\n')[0] ?? message;
+  return first.replace(/^\[AI Agent Command Center\]\s*/, '').split('。')[0] ?? first;
 }
 
 // ---- default plan ------------------------------------------------------------

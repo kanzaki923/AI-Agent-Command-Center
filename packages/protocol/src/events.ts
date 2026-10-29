@@ -20,11 +20,15 @@ import {
   CapabilityGrant,
   Integration,
   Message,
+  PermissionProfile,
+  PermissionRule,
   Project,
   Run,
   RunStatus,
   Session,
   Task,
+  ToolDecider,
+  ToolDecisionKind,
   Workspace,
 } from './domain';
 
@@ -72,6 +76,32 @@ export const eventPayloads = {
     durationMs: z.int().nonnegative().nullable(),
   }),
 
+  /**
+   * How the daemon (or the runtime's classifier) decided a tool use. Recorded for every
+   * denial, every approval request and every decision that is not routine; routine allows
+   * (reads, edits and read-only commands inside the worktree) only count in
+   * `Run.toolDecisions`, so a busy agent does not flood the timeline.
+   */
+  'tool.decided': z.object({
+    runId: RunId,
+    /** The runtime's tool use id when known (matches `tool.called`). */
+    toolCallId: z.string().nullable(),
+    toolName: z.string(),
+    /** The command, path or URL (truncated), for display. */
+    summary: z.string().nullable(),
+    decision: ToolDecisionKind,
+    decidedBy: ToolDecider,
+    /** Hard rule id when one decided (e.g. "publish_remote"), else null. */
+    rule: z.string().nullable(),
+    /** Daemon category (e.g. "build_test", "deps_add", "network_read", "outside_read"). */
+    category: z.string(),
+    /** Japanese reason (what the agent was told, for denials). */
+    reason: z.string().nullable(),
+    profile: PermissionProfile,
+    /** Worth a look afterwards (new dependency, network, repeatedly blocked ...). */
+    notable: z.boolean(),
+  }),
+
   'approval.requested': z.object({ approval: Approval }),
   'approval.resolved': z.object({ approval: Approval }),
 
@@ -96,6 +126,10 @@ export const eventPayloads = {
     /** Projects the call touched; null for calls without a project scope. */
     projectIds: z.array(z.string()).nullable(),
   }),
+
+  /** A remembered tool approval (approval.respond with `remember`). */
+  'permission.rule_created': z.object({ rule: PermissionRule }),
+  'permission.rule_revoked': z.object({ rule: PermissionRule }),
 
   'budget.updated': z.object({ budget: BudgetAllocation, reason: z.string().nullable() }),
 

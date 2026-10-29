@@ -25,18 +25,33 @@ import { z } from 'zod';
  * ````
  *
  * A bare JSON array is accepted as shorthand for `{ "steps": [...] }`. Paths are relative to
- * the workspace; like any agent, touching a path outside it needs approval. `run` always
- * needs approval and never uses a shell: `command` + `args` (`"node"` runs the daemon's own
- * Node binary, so plans are cross-platform).
+ * the workspace. Like any agent, every tool use goes through the run's permission gate: what
+ * the project's profile asks about goes to approval (`onReject`), what the daemon's rules
+ * deny comes back as a tool error and the mock carries on (`onDeny`, default "continue").
+ * `run` never uses a shell: `command` + `args` (`"node"` runs the daemon's own Node binary,
+ * so plans are cross-platform). `ask` always asks a human (an explicit approval scenario).
  */
 const RejectAction = z.enum(['stop', 'continue', 'fail']).default('stop');
+/** What to do when the daemon's rules deny a tool use (like a real agent: carry on). */
+const DenyActionSchema = z.enum(['stop', 'continue', 'fail']).optional();
+export type DenyAction = NonNullable<z.infer<typeof DenyActionSchema>>;
 
 const RelPath = z.string().min(1).max(500);
 
 export const MockStep = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('say'), text: z.string().min(1) }),
-  z.strictObject({ type: z.literal('write'), path: RelPath, content: z.string() }),
-  z.strictObject({ type: z.literal('append'), path: RelPath, content: z.string() }),
+  z.strictObject({
+    type: z.literal('write'),
+    path: RelPath,
+    content: z.string(),
+    onDeny: DenyActionSchema,
+  }),
+  z.strictObject({
+    type: z.literal('append'),
+    path: RelPath,
+    content: z.string(),
+    onDeny: DenyActionSchema,
+  }),
   z.strictObject({
     type: z.literal('run'),
     command: z.string().min(1),
@@ -47,6 +62,7 @@ export const MockStep = z.discriminatedUnion('type', [
     allowFailure: z.boolean().default(false),
     timeoutMs: z.int().min(1).max(600_000).default(60_000),
     onReject: RejectAction,
+    onDeny: DenyActionSchema,
   }),
   z.strictObject({
     type: z.literal('ask'),

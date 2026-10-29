@@ -78,6 +78,11 @@ export function summarizeEvent(e: Event): string {
       return e.payload.name;
     case 'tool.result':
       return `${e.payload.name}${e.payload.isError ? ' (error)' : ''}`;
+    case 'tool.decided':
+      return `${e.payload.decision} by ${e.payload.decidedBy}: ${e.payload.toolName}${e.payload.summary ? ` ${truncate(e.payload.summary, 50)}` : ''}${e.payload.reason && e.payload.decision !== 'allowed' ? ` — ${truncate(e.payload.reason, 60)}` : ''}`;
+    case 'permission.rule_created':
+    case 'permission.rule_revoked':
+      return `${e.payload.rule.scope}: ${truncate(e.payload.rule.description, 70)}`;
     case 'approval.requested':
     case 'approval.resolved':
       return `${e.payload.approval.status}: ${truncate(e.payload.approval.title, 60)}`;

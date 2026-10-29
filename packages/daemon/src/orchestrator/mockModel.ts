@@ -26,8 +26,11 @@ interface PastCall {
  * (concept §12.1) through the same Control API tools a real model gets — no shortcuts:
  *
  *   goal → task.create ×2 (independent, acceptance criteria, acc-mock plans for the mock
- *   worker; the test worker's plan runs a command that needs approval) → task.spawnWorker ×2
- *   → task.wait (all) → integration.create → integration.run → integration.wait → report.
+ *   worker; the test worker runs its tests, then tries to push, which the daemon's hard rules
+ *   deny, so it finishes with its commit) → task.spawnWorker ×2 → task.wait (all) →
+ *   integration.create → integration.run → integration.wait → report. In the autonomous
+ *   profile nothing in this flow asks a human until the integration is approved; in the
+ *   careful profile the test command (and the integration's tests) wait for approvals.
  *
  * Every step is decided from the tool results so far (after the last user message), so a
  * failed worker or integration leads to a report instead of the next step. Decisions are
@@ -338,8 +341,16 @@ function planTasks(projectId: string, goal: string, decide: Decide): MockReply {
         title: '追加したテストを実行する',
         onReject: 'fail',
       },
+      // Denied by the hard rules (publish_remote): the worker reads the reason and goes on.
+      {
+        type: 'run',
+        command: 'git',
+        args: ['push', 'origin', 'HEAD'],
+        title: '変更をリモートに共有する',
+        onDeny: 'continue',
+      },
     ],
-    summary: `${testPath} を追加し、テストが通ることを確認しました。`,
+    summary: `${testPath} を追加し、テストが通ることを確認しました。push はデーモンの規則で止められたため、コミットだけして終えます（反映は統合と人間の承認で行われます）。`,
   };
   const task = (title: string, body: string[], criteria: string[], plan: unknown) => ({
     projectId,
