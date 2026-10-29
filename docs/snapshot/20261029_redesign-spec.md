@@ -951,3 +951,15 @@ T0 で仕様から足した・変えたもの（各トラックはこれを前�
 | E8 | Gateway の再試行は接続失敗も対象。20 秒を超える `Retry-After` は待たずに失敗させる | §3.8-9 の「最大 20 秒」の解釈 |
 | E9 | チャットの呼び出しの単価は価格表のキャッシュだけを見る（`/model/info` を取りに行くのは Claude ランタイムの推定のとき）。知らないモデルの推定は `estimated`（最高単価）で、`unknown` にしない | 本物の LiteLLM は費用を返すので、チャットのために LiteLLM へ余計な要求を出さない |
 | E10 | 他トラックのファイルへの最小の変更：`runs/manager.ts`（T1：`activeRunIds`、`budgetStop` で止めた理由、`reportUsage` の opts）、`runtime/executor.ts`（T2：`maxBudgetUsd` と phase / component の受け渡し）、`orchestrator/workers.ts`（T2：再試行で返却済みの Budget を `reallocate`）、`runtime/index.ts`・`llm/index.ts`・`llm/types.ts`（価格表の配線、`llm_quota_exceeded`・`retryAfterMs`） | 呼び出し位置がそこにしかない |
+
+### 7.9 T6（定期実行）で入れた差分
+
+| # | 差分 | 理由 |
+|---|---|---|
+| S1 | `SpawnOptions += { budget?: { parentBudgetId: string \| null; limitUsd }; supervise?: boolean }`（`contracts.ts` に追加のみ）。発火は actor `system:scheduler` で spawner を呼び、子の予算（AI 製は作った AI の会話の予算から切り出し、人製は根）と `supervise` を渡す。T2 の spawner はこれに従う | 発火の時点で依頼者の実行はないので「依頼者の実行から切り出す」が使えない |
+| S2 | 重なり＝直近の発火の子とその子孫に、終わっていない Run か pending / ready / running の Task がある。失敗・人の出番待ちの子は次の発火を止めない | 失敗のまま放置された子で、以後の発火がすべて止まらないように |
+| S3 | AI の会話に予算が一度もなければ根の予算（日次上限の中）で発火。予算が閉じていれば `failed_to_start` | 予算なしで権限を渡したのは人間。閉じた予算の外では動かさない |
+| S4 | agent は人が作った定期実行を変更・実行・削除できない（読むのは可）。`maxSchedules` は「有効で次回のある」AI 製の数 | 人製は根の予算を使うため。止めた分は枠を空ける |
+| S5 | 無効にすると `nextRunAt: null`、有効に戻すと今から次を計算（止めていた間の分は取り戻さない） | 止めた意図を尊重する |
+| S6 | 予算以外の `failed_to_start`（持ち主のアーカイブ、spawner のエラー）は出番を作らず `lastRun.error` と `schedule.fired` に残す | `AttentionRefs` に `scheduleId` がなく、重複を除けない（T4 と相談） |
+| S7 | `croner` は 10.0.1 に固定（11.0.0 は公開から 3 日） | 公開直後の版は避ける |

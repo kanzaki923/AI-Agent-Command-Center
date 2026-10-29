@@ -20,13 +20,6 @@ afterEach(async () => {
 /** Methods of the redesign the Core track ships as placeholders. */
 const STUBS = [
   'session.tree',
-  'schedule.create',
-  'schedule.list',
-  'schedule.get',
-  'schedule.update',
-  'schedule.delete',
-  'schedule.runNow',
-  'schedule.preview',
   'home.get',
 ] as const;
 

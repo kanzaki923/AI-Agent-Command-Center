@@ -418,6 +418,18 @@ export interface SpawnOptions {
   /** Firing time, for the first message's `meta.schedule`. */
   scheduledFor?: string | null;
   trigger?: RunTrigger;
+  /**
+   * The child's budget as decided by the daemon (schedules, §3.11), instead of carving it from
+   * the requester's run: `limitUsd` carved from `parentBudgetId` (an AI-made schedule: its
+   * creator's budget), or a new root budget when null (a human-made schedule). Spawning fails
+   * with budget_exceeded when it does not fit.
+   */
+  budget?: { parentBudgetId: string | null; limitUsd: number } | null;
+  /**
+   * The child may lead children of its own (a human-made schedule with `run.supervise`), an
+   * exception to the delegation depth.
+   */
+  supervise?: boolean;
 }
 
 /** spawner (src/sessions/spawn.ts, T2): `session.spawn` and schedule firings. */

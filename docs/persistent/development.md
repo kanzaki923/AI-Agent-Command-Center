@@ -61,7 +61,7 @@ pnpm --filter @acc/desktop tauri build --no-bundle  # exe だけ（インスト�
 `tauri build` の `beforeBuildCommand` が Vite のビルドと `node scripts/prepare-sidecar.js --release` を実行し、次を揃える（どちらも `.gitignore` 済み。コミットしない）：
 
 - `src-tauri/binaries/acc-node-<target-triple>.exe`：Node ランタイム。バージョンと SHA-256 を `prepare-sidecar.js` の `NODE_RUNTIME` に固定し、nodejs.org から 1 度だけ取得してビルドキャッシュに置く。以降はキャッシュを検証して使うのでオフラインでもビルドできる。ハッシュが合わないものは使わない。上げるときは Node 22 LTS の `SHASUMS256.txt` から値を写す。
-- `src-tauri/resources/daemon/main.mjs`（+ `.map`）：`packages/daemon/scripts/bundle.js`（esbuild）でデーモンを 1 ファイルにしたもの。依存（ws・zod・Claude Agent SDK の JS）はすべて含む。`pnpm --filter @acc/daemon bundle` で単体でも作れる（`packages/daemon/dist/`）。
+- `src-tauri/resources/daemon/main.mjs`（+ `.map`）：`packages/daemon/scripts/bundle.js`（esbuild）でデーモンを 1 ファイルにしたもの。依存（ws・zod・croner・Claude Agent SDK の JS）はすべて含む。`pnpm --filter @acc/daemon bundle` で単体でも作れる（`packages/daemon/dist/`）。
 
 インストール後のアプリは、`get_connection` が `daemon.json` と `/health`（`service: "acc-daemon"` と `pid`）で既存のデーモンを確かめ、いなければ同梱の `acc-node.exe main.mjs` をコンソールなしの detach で起動する。`pnpm dev:daemon` や CLI で起動したデーモンがいればそれを使う。二重起動したアプリは既存のウィンドウを前に出して終わる。
 
