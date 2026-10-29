@@ -1,33 +1,38 @@
 import type { CapabilityGrant, Session } from '@acc/protocol';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
-import { T0, event, iso, session } from '../../test/fixtures';
+import { T0, iso, session } from '../../test/fixtures';
 import { Composer } from '../focus/Composer';
 import { TooltipProvider } from '../ui/Tooltip';
-import { GrantDialog } from './Grant';
+import { GrantLine, isReplacement } from './Grant';
 
-const project = {
-  id: 'prj_00000000000000000000000001',
-  name: 'acme-web',
-  description: null,
-  repoPath: 'C:\\work\\acme-web',
-  defaultBranch: 'main',
-  defaultModel: null,
-  testCommand: 'pnpm test',
-  commitAuthor: null,
-  createdAt: iso(T0),
-  updatedAt: iso(T0),
-  archivedAt: null,
-};
+function grant(s: Session, over: Partial<CapabilityGrant> = {}): CapabilityGrant {
+  return {
+    id: 'grt_00000000000000000000000009',
+    subject: { kind: 'session', sessionId: s.id },
+    parentGrantId: null,
+    permissions: ['session.spawn', 'session.send'],
+    scope: {},
+    limits: { maxChildren: 4, maxDepth: 1 },
+    depth: 0,
+    lifetime: 'session',
+    expiresAt: null,
+    revokedAt: null,
+    reason: 'supervisor',
+    grantedBy: { kind: 'human', client: 'desktop' },
+    createdAt: iso(T0),
+    ...over,
+  };
+}
 
-function mount(s: Session, extra: Parameters<typeof createFakeClient>[0] = {}) {
-  let granted: Record<string, unknown> | null = null;
+function mount(ui: ReactNode, handlers: Parameters<typeof createFakeClient>[0] = {}) {
   const fake = createFakeClient({
-    'session.list': () => ({ items: [s], nextCursor: null }),
-    'project.list': () => ({ items: [project] }),
+    'session.list': () => ({ items: [], nextCursor: null }),
+    'project.list': () => ({ items: [] }),
     'settings.get': () => ({
       litellm: { baseUrl: null, hasApiKey: false, apiKeyMasked: null },
       defaultModel: null,
@@ -36,126 +41,39 @@ function mount(s: Session, extra: Parameters<typeof createFakeClient>[0] = {}) {
       maxDelegationDepth: 1,
     }),
     'models.list': () => ({ models: [], source: 'mock' }),
-    'system.info': () => ({
-      methods: ['grant.create', 'budget.allocate'],
-      stats: { lastEventSeq: 0 },
-    }),
+    'system.info': () => ({ methods: [], stats: { lastEventSeq: 0 } }),
     'grant.list': () => ({ items: [] }),
     'events.list': () => ({ events: [], lastSeq: 0, hasMore: false }),
-    'grant.create': (p) => {
-      granted = p;
-      return {
-        id: 'grt_00000000000000000000000001',
-        subject: p.subject,
-        parentGrantId: null,
-        permissions: p.permissions,
-        scope: p.scope,
-        limits: p.limits,
-        depth: 0,
-        lifetime: p.lifetime,
-        expiresAt: p.expiresAt ?? null,
-        revokedAt: null,
-        reason: null,
-        grantedBy: { kind: 'human', client: 'desktop' },
-        createdAt: iso(T0 + 1000),
-      };
-    },
-    'budget.allocate': (p) => ({
-      id: 'bud_1',
-      parentId: null,
-      subject: p.subject,
-      status: 'active',
-      limitUsd: p.limitUsd,
-      allocatedUsd: 0,
-      reservedUsd: 0,
-      spentUsd: 0,
-      createdAt: iso(T0),
-      updatedAt: iso(T0),
-      releasedAt: null,
-      createdBy: { kind: 'human', client: 'desktop' },
-    }),
-    'grant.revoke': () => ({}),
-    ...extra,
+    ...handlers,
   });
-  const rt = createRuntime(fake.client);
   render(
-    <RuntimeProvider runtime={rt}>
-      <TooltipProvider>
-        <Composer session={s} activeRun={null} onSent={() => {}} />
-        <GrantDialog />
-      </TooltipProvider>
+    <RuntimeProvider runtime={createRuntime(fake.client)}>
+      <TooltipProvider>{ui}</TooltipProvider>
     </RuntimeProvider>,
   );
-  return { fake, rt, granted: () => granted };
+  return fake;
 }
 
-describe('Orchestrator grant (権限を与えるだけで Orchestrator になる)', () => {
+describe('the old grant dialog is gone', () => {
   beforeEach(() => {
-    useUi.setState({ grantDialogSessionId: null, projectId: null, suggestions: {}, drafts: {} });
+    useUi.setState({ projectId: null, suggestions: {}, drafts: {} });
   });
 
-  it('grants from the composer chip in a few clicks and shows the result as a chip', async () => {
-    const s = session({ kind: 'chat', title: '設計チャット', projectId: project.id });
-    const { granted } = mount(s);
-    fireEvent.click(await screen.findByRole('button', { name: /Orchestrator 権限: なし/ }));
-    const dialog = await screen.findByRole('dialog', {
-      name: 'このチャットを Orchestrator にする',
-    });
-    // The sentence says exactly what will be allowed.
-    expect(within(dialog).getByTestId('grant-sentence')).toHaveTextContent(
-      'このチャットは「acme-web」で Task を分け、Worker を 2 人まで並列に起動できます。Worker に配れる予算は $5.00 です。次の実行が終わると自動で失効します。',
-    );
-    fireEvent.click(within(dialog).getByRole('button', { name: '増やす' }));
-    fireEvent.click(within(dialog).getByRole('radio', { name: 'このセッション' }));
-    await act(async () => {
-      fireEvent.click(within(dialog).getByRole('button', { name: '権限を与える' }));
-    });
-    await waitFor(() => expect(granted()).not.toBeNull());
-    expect(granted()).toMatchObject({
-      subject: { kind: 'session', sessionId: s.id },
-      scope: { projectIds: [project.id] },
-      limits: { maxWorkers: 3, maxDepth: 1 },
-      lifetime: 'session',
-    });
-    const chip = await screen.findByTestId('grant-chip');
-    expect(chip).toHaveTextContent('Orchestrator');
-    expect(chip).toHaveTextContent('Worker 3');
-  });
-
-  it('revokes from the chip, and a live grant.revoked removes it too', async () => {
+  it('shows no grant chip or "Orchestrator" wording in the composer', async () => {
     const s = session({ kind: 'chat' });
-    const g: CapabilityGrant = {
-      id: 'grt_00000000000000000000000009',
-      subject: { kind: 'session', sessionId: s.id },
-      parentGrantId: null,
-      permissions: ['task.*', 'session.create', 'session.send'],
-      scope: {},
-      limits: { maxWorkers: 2, maxDepth: 1 },
-      depth: 0,
-      lifetime: 'run',
-      expiresAt: null,
-      revokedAt: null,
-      reason: null,
-      grantedBy: { kind: 'human', client: 'desktop' },
-      createdAt: iso(T0),
-    };
-    const { fake } = mount(s, { 'grant.list': () => ({ items: [g] }) });
-    expect(await screen.findByTestId('grant-chip')).toHaveTextContent('この実行のみ');
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Orchestrator 権限を取り消す' }));
+    mount(<Composer session={s} activeRun={null} onSent={() => {}} />, {
+      'grant.list': () => ({ items: [grant(s)] }),
     });
-    await waitFor(() => expect(screen.queryByTestId('grant-chip')).not.toBeInTheDocument());
-    expect(fake.calls.some((c) => c.method === 'grant.revoke')).toBe(true);
-    expect(screen.getByRole('button', { name: /Orchestrator 権限: なし/ })).toBeInTheDocument();
-    // Run-lifetime grants also end on their own (daemon event).
-    act(() => fake.emit(event('grant.revoked', { grantId: g.id, reason: 'run ended' })));
+    await screen.findByRole('textbox');
+    expect(screen.queryByTestId('grant-chip')).toBeNull();
+    expect(document.body).not.toHaveTextContent(/Orchestrator|権限/);
   });
 
   it('sends the suggested first message with one click', async () => {
     const s = session({ kind: 'chat' });
-    useUi.setState({ suggestions: { [s.id]: '認証まわりのドキュメントとテストを並列で整備して' } });
+    useUi.setState({ suggestions: { [s.id]: '新製品のローンチ準備を進めて' } });
     let sent: Record<string, unknown> | null = null;
-    mount(s, {
+    mount(<Composer session={s} activeRun={null} onSent={() => {}} />, {
       'session.send': (p) => {
         sent = p;
         return { messageId: 'msg_1', runId: 'run_1' };
@@ -164,11 +82,59 @@ describe('Orchestrator grant (権限を与えるだけで Orchestrator になる
     await act(async () => {
       fireEvent.click(await screen.findByTestId('suggestion-chip'));
     });
-    expect(sent).toEqual({
-      sessionId: s.id,
-      content: '認証まわりのドキュメントとテストを並列で整備して',
-    });
+    expect(sent).toEqual({ sessionId: s.id, content: '新製品のローンチ準備を進めて' });
     expect(useUi.getState().suggestions[s.id]).toBeUndefined();
-    expect(screen.queryByTestId('suggestion-chip')).not.toBeInTheDocument();
+  });
+});
+
+describe('<GrantLine>', () => {
+  it('says 任せました and 任せるのをやめました with the time', async () => {
+    const s = session({ kind: 'chat' });
+    const g = grant(s, { revokedAt: iso(T0 + 60_000) });
+    mount(
+      <>
+        <GrantLine grant={g} change="given" />
+        <GrantLine grant={g} change="ended" />
+      </>,
+      { 'grant.list': () => ({ items: [g] }) },
+    );
+    expect(await screen.findByTestId('grant-line-given')).toHaveTextContent('任せました');
+    expect(screen.getByTestId('grant-line-ended')).toHaveTextContent('任せるのをやめました');
+  });
+
+  it("stays quiet for a child's own working grant (not a delegation by a person)", async () => {
+    const child = session({ kind: 'agent' });
+    const own = grant(child, {
+      permissions: ['artifact.publish', 'human.ask'],
+      grantedBy: { kind: 'agent', sessionId: 'ses_parent', runId: 'run_parent' } as CapabilityGrant['grantedBy'],
+    });
+    mount(<GrantLine grant={own} change="given" />, { 'grant.list': () => ({ items: [own] }) });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(screen.queryByTestId('grant-line-given')).toBeNull();
+  });
+
+  it('stays quiet when delegating again replaced the grant (new settings)', async () => {
+    const s = session({ kind: 'chat' });
+    const old = grant(s, { revokedAt: iso(T0 + 60_000) });
+    const next = grant(s, { id: 'grt_00000000000000000000000010', createdAt: iso(T0 + 60_020) });
+    expect(isReplacement(old, 'ended', [old, next])).toBe(true);
+    expect(isReplacement(next, 'given', [old, next])).toBe(true);
+    expect(isReplacement(old, 'given', [old, next])).toBe(false);
+    mount(
+      <>
+        <GrantLine grant={old} change="given" />
+        <GrantLine grant={old} change="ended" />
+        <GrantLine grant={next} change="given" />
+      </>,
+      { 'grant.list': () => ({ items: [old, next] }) },
+    );
+    await screen.findByTestId('grant-line-given');
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(screen.getAllByTestId('grant-line-given')).toHaveLength(1);
+    expect(screen.queryByTestId('grant-line-ended')).toBeNull();
   });
 });

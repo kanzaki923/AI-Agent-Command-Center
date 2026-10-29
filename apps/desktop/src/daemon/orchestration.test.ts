@@ -1,12 +1,11 @@
 import { AccClientError } from '@acc/client';
-import type { CapabilityGrant, Integration, Project, Session, Task } from '@acc/protocol';
+import type { CapabilityGrant, Integration, Project, Task } from '@acc/protocol';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { DEMO_MESSAGE, parseDemoResult, pickDemoModel, startDemo } from '../app/demo';
 import { DEFAULT_GRANT_INPUT } from '../model/grant';
 import { useToasts } from '../store/toast';
 import { useUi } from '../store/ui';
 import { createFakeClient } from '../test/fakeClient';
-import { T0, integration, iso, session, task } from '../test/fixtures';
+import { T0, integration, iso, task } from '../test/fixtures';
 import { qk } from './keys';
 import {
   approveIntegration,
@@ -331,116 +330,3 @@ describe('integration decisions', () => {
   });
 });
 
-describe('demo', () => {
-  it('reads ids from any demo setup result shape', () => {
-    expect(
-      parseDemoResult({ session: { id: 'ses_1' }, project: { id: 'prj_1' }, grant: { id: 'g' } }),
-    ).toEqual({ sessionId: 'ses_1', projectId: 'prj_1', message: null, granted: true });
-    expect(parseDemoResult({ sessionId: 'ses_2', suggestedMessage: 'やって' })).toMatchObject({
-      sessionId: 'ses_2',
-      message: 'やって',
-      granted: false,
-    });
-    expect(parseDemoResult(null)).toEqual({
-      sessionId: null,
-      projectId: null,
-      message: null,
-      granted: false,
-    });
-    expect(
-      pickDemoModel([
-        { id: 'mock/echo', label: null, provider: null },
-        { id: 'mock/orchestrator', label: null, provider: null },
-      ]),
-    ).toBe('mock/orchestrator');
-    expect(pickDemoModel([{ id: 'gpt-x', label: null, provider: null }])).toBeNull();
-  });
-
-  it('falls back to a client-side design chat with the grant and the suggested message', async () => {
-    const created: Session[] = [];
-    const fake = createFakeClient({
-      'project.list': () => ({ items: [] }),
-      'models.list': () => ({
-        models: [{ id: 'mock/echo', label: null, provider: null }],
-        source: 'mock',
-      }),
-      'session.create': (p) => {
-        const s = session({ kind: 'chat', title: p.title as string, model: p.model as string });
-        created.push(s);
-        return s;
-      },
-      'grant.list': () => ({ items: [] }),
-      'grant.create': (p) => grantFrom(p),
-      'budget.allocate': () => ({
-        id: 'bud_1',
-        status: 'active',
-        limitUsd: 5,
-        allocatedUsd: 0,
-        reservedUsd: 0,
-        spentUsd: 0,
-        createdAt: iso(T0),
-      }),
-    });
-    const rt = createRuntime(fake.client);
-    rt.queryClient.setQueryData<Session[]>(qk.sessions, []);
-    await startDemo(rt, new Set(['session.create']));
-    const s = created[0]!;
-    expect(s).toMatchObject({ title: '設計チャット', model: 'mock/echo' });
-    const ui = useUi.getState();
-    expect(ui.focusSessionId).toBe(s.id);
-    expect(ui.mode).toBe('session');
-    expect(ui.onboardingDone).toBe(true);
-    expect(ui.suggestions[s.id]).toBe(DEMO_MESSAGE);
-    const grantCall = fake.calls.find((c) => c.method === 'grant.create')!;
-    expect(grantCall.params).toMatchObject({
-      subject: { kind: 'session', sessionId: s.id },
-      lifetime: 'session',
-      limits: { maxWorkers: 2 },
-    });
-    rt.dispose();
-  });
-
-  it('uses the daemon demo setup when offered and keeps an existing grant', async () => {
-    const fake = createFakeClient({
-      'system.setupDemo': () => ({ sessionId: 'ses_demo', projectId: 'prj_demo' }),
-      'session.list': () => ({ items: [session({ id: 'ses_demo' })], nextCursor: null }),
-      'project.list': () => ({ items: [] }),
-      'grant.list': () => ({
-        items: [
-          grantFrom({
-            subject: { kind: 'session', sessionId: 'ses_demo' },
-            permissions: ['task.*'],
-          }),
-        ],
-      }),
-    });
-    const rt = createRuntime(fake.client);
-    await startDemo(rt, new Set(['system.setupDemo']));
-    expect(fake.calls.some((c) => c.method === 'grant.create')).toBe(false);
-    expect(useUi.getState()).toMatchObject({ focusSessionId: 'ses_demo', projectId: 'prj_demo' });
-    expect(useUi.getState().suggestions.ses_demo).toBe(DEMO_MESSAGE);
-    rt.dispose();
-  });
-
-  it('probes system.setupDemo by calling it before system.info is known, and trusts its grant', async () => {
-    const fake = createFakeClient({
-      'system.setupDemo': () => ({
-        project: { id: 'prj_d' },
-        session: { id: 'ses_d' },
-        grant: { id: 'grt_d' },
-        repoPath: 'x',
-        created: true,
-      }),
-      'session.list': () => ({ items: [session({ id: 'ses_d' })], nextCursor: null }),
-      'project.list': () => ({ items: [] }),
-    });
-    const rt = createRuntime(fake.client);
-    await startDemo(rt, null);
-    const methods = fake.calls.map((c) => c.method);
-    expect(methods[0]).toBe('system.setupDemo');
-    expect(methods).not.toContain('grant.create');
-    expect(methods).not.toContain('session.create');
-    expect(useUi.getState()).toMatchObject({ focusSessionId: 'ses_d', projectId: 'prj_d', onboardingDone: true });
-    rt.dispose();
-  });
-});

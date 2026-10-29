@@ -32,7 +32,19 @@ export function classifyConnectionError(err: unknown): { message: string; field:
  * LiteLLM Proxy connection (onboarding + settings). The key goes to the Core Daemon only;
  * the UI never keeps it (§8.1) — the field is cleared after saving.
  */
-export function LiteLlmForm({ onDone, compact = false }: { onDone?: () => void; compact?: boolean }) {
+export function LiteLlmForm({
+  onDone,
+  onCancel,
+  compact = false,
+  doneLabel = '保存',
+}: {
+  onDone?: () => void;
+  /** Shows a 取り消し button (settings: fold the form again). */
+  onCancel?: () => void;
+  compact?: boolean;
+  /** The last button once the connection works. */
+  doneLabel?: string;
+}) {
   const rt = useRuntime();
   const settings = useSettings().data;
   const connected = useConnectionState() === 'open';
@@ -93,7 +105,7 @@ export function LiteLlmForm({ onDone, compact = false }: { onDone?: () => void; 
       }}
     >
       <div>
-        <FieldLabel htmlFor="litellm-url">Proxy の URL</FieldLabel>
+        <FieldLabel htmlFor="litellm-url">LiteLLM Proxy の URL</FieldLabel>
         <input
           id="litellm-url"
           autoFocus={!compact}
@@ -124,13 +136,12 @@ export function LiteLlmForm({ onDone, compact = false }: { onDone?: () => void; 
           autoComplete="off"
         />
         {err?.field === 'key' && <p className="mt-1 text-meta text-st-failed">{err.message}</p>}
-        {!compact && <p className="mt-1 text-meta text-fg-3">キーは Core Daemon の設定にだけ保存され、画面には残りません。</p>}
       </div>
       {state.kind === 'ok' && (
         <div className="flex flex-col gap-2 rounded-md border border-line-subtle bg-canvas p-3">
           <div className="flex items-center gap-1.5 text-ui text-st-completed">
             <CheckCircle2 size={14} strokeWidth={1.75} />
-            {state.models.length} 個のモデルが使えます
+            {state.models.length} モデル
           </div>
           <FieldLabel htmlFor="litellm-model">既定のモデル</FieldLabel>
           <select
@@ -147,14 +158,16 @@ export function LiteLlmForm({ onDone, compact = false }: { onDone?: () => void; 
           </select>
         </div>
       )}
-      {state.kind === 'saved-no-models' && (
-        <p className="text-meta text-fg-3">設定を保存しました。モデル一覧の取得は Core Daemon の対応後に使えるようになります。</p>
-      )}
       {err && err.field === null && <p className="text-meta text-st-failed">{err.message}</p>}
       <div className="flex justify-end gap-2">
+        {onCancel && (
+          <Button variant="ghost" onClick={onCancel}>
+            取り消し
+          </Button>
+        )}
         {state.kind === 'ok' || state.kind === 'saved-no-models' ? (
           <Button type="submit" variant="primary">
-            この設定で始める
+            {doneLabel}
           </Button>
         ) : (
           <Button
@@ -164,7 +177,7 @@ export function LiteLlmForm({ onDone, compact = false }: { onDone?: () => void; 
             hint={connected ? undefined : 'Core Daemon に接続していません'}
           >
             {state.kind === 'testing' && <Loader2 size={14} className="animate-spin" />}
-            接続テスト
+            確かめる
           </Button>
         )}
       </div>

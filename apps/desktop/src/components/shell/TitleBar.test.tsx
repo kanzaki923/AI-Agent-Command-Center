@@ -49,7 +49,8 @@ describe('<TitleBar>', () => {
     await screen.findByRole('meter');
     expect(screen.queryByRole('button', { name: /出番/ })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '今日の費用' }));
-    expect(await screen.findByText('ローンチ準備')).toBeInTheDocument();
+    // The popover lists it per tree and (this fake answers every grouping alike) per model.
+    expect((await screen.findAllByText('ローンチ準備')).length).toBeGreaterThan(0);
   });
 
   it('goes back and forward', async () => {
