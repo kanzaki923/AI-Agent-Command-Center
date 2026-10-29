@@ -186,6 +186,10 @@ describe('deriveSessionState (§3.7, first match wins)', () => {
     [{ lastRunStatus: 'awaiting_approval' }, 'working'],
     [{ lastRunStatus: 'completed', descendantBusy: true, hasChildren: true }, 'supervising'],
     [{ lastRunStatus: 'queued', descendantBusy: true }, 'queued'],
+    // A child's run ended and its outputs are being settled (the task moves next).
+    [{ lastRunStatus: 'completed', taskStatus: 'running' }, 'working'],
+    [{ lastRunStatus: 'failed', taskStatus: 'running' }, 'working'],
+    [{ lastRunStatus: 'completed', taskStatus: 'running', descendantBusy: true }, 'supervising'],
     [{ taskStatus: 'ready' }, 'queued'],
     [{ taskStatus: 'review' }, 'review'],
     [{ openAttention: ['review'] }, 'review'],

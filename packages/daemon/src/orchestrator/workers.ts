@@ -723,7 +723,15 @@ export class WorkerService {
           actor: ORCHESTRATION_SYSTEM,
         });
       }
-      if (end.notifyParent && child.parentSessionId && ctx.hasService('inbox')) {
+      // The inbox reports every other outcome to a supervising parent itself (it follows the
+      // task / attention / state events and derives the child's state, once per state and
+      // run); only a stop that did not come through session.stop is left to tell here.
+      if (
+        end.notifyParent &&
+        run.status === 'cancelled' &&
+        child.parentSessionId &&
+        ctx.hasService('inbox')
+      ) {
         ctx.service('inbox').deliver(child.parentSessionId, {
           kind: 'child_update',
           refs: { childSessionId: child.id, runId: run.id },

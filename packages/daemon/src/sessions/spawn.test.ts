@@ -5,7 +5,7 @@
  *
  * The services of later tracks are stand-ins here, as the spec allows: outputs.finalize
  * turns the final answer into a document (T3), attention.open stores the item (T4),
- * inbox.deliver records what the parent is told (T1).
+ * and inbox.deliver is spied on to record what the parent is told (the real inbox delivers).
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -109,11 +109,13 @@ async function setup(): Promise<Harness> {
     opened.push(a);
     return a;
   });
-  // T1 stand-in: record what parents are told.
+  // Record what parents are told (the real inbox still delivers it).
   const delivered: Harness['delivered'] = [];
-  vi.spyOn(d.ctx.service('inbox'), 'deliver').mockImplementation((sessionId, input) => {
+  const inbox = d.ctx.service('inbox');
+  const deliver = inbox.deliver.bind(inbox);
+  vi.spyOn(inbox, 'deliver').mockImplementation((sessionId, input) => {
     delivered.push({ sessionId, input });
-    return { item: null, delivery: 'queued', runId: null };
+    return deliver(sessionId, input);
   });
   return { d, inputs, opened, delivered };
 }
@@ -906,7 +908,7 @@ describe('code through session.spawn (the daemon side of e2e:slice)', () => {
 });
 
 describe('restart', () => {
-  it('a child left waiting for a slot starts after a restart; an interrupted one waits to resume', async () => {
+  it('a child left waiting for a slot starts after a restart; an interrupted one resumes once', async () => {
     const home = tempDir('acc-restart-');
     const first = await createTestDaemon({ home });
     let closed = false;
@@ -941,10 +943,20 @@ describe('restart', () => {
       return t.status === 'done' && t;
     });
     expect(doneB.status).toBe('done');
-    const taskA = second.ctx.repos.tasks.require(
-      second.ctx.repos.sessions.require(a.session.id).taskId!,
-    );
-    expect(taskA).toMatchObject({ status: 'ready', statusReason: 'interrupted' });
+    // The interrupted child continues in its own session (spec §3.10, the inbox's resume).
+    // (its plan sleeps again, so the resumed run is still going when the test ends).
+    const runsA = await until(() => {
+      const runs = second.ctx.repos.runs.find({
+        where: { session_id: a.session.id },
+        orderBy: 'id',
+        direction: 'asc',
+      });
+      return runs.length === 2 && runs;
+    });
+    expect(runsA.map((r) => [r.status, r.trigger])).toEqual([
+      ['interrupted', 'spawn'],
+      [expect.stringMatching(/^(created|queued|running)$/), 'resume'],
+    ]);
   });
 });
 

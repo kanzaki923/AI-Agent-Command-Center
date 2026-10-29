@@ -28,9 +28,14 @@ export interface StateFacts {
 
 const ASKS_A_HUMAN: readonly AttentionKind[] = ['question', 'approval', 'budget', 'stuck'];
 
+function isActiveRun(status: RunStatus): boolean {
+  return (ACTIVE_RUN_STATUSES as readonly RunStatus[]).includes(status);
+}
+
 /**
  * The §3.7 table, first match wins: needs_you > failed > working > supervising > queued >
- * review > stopped > done > idle. Pure; the Home track (T7) owns and extends it.
+ * review > stopped > done > idle. Pure; the Home track (T7) owns and extends it. One row
+ * beyond the table: a task still `running` after its run ended is `working` (being settled).
  */
 export function deriveSessionState(f: StateFacts): SessionState {
   if (f.openAttention.some((k) => ASKS_A_HUMAN.includes(k))) return 'needs_you';
@@ -38,6 +43,11 @@ export function deriveSessionState(f: StateFacts): SessionState {
   if (f.lastRunStatus === 'running' || f.lastRunStatus === 'awaiting_approval') return 'working';
   const runActive = f.lastRunStatus === 'created' || f.lastRunStatus === 'queued';
   if (!runActive && f.descendantBusy) return 'supervising';
+  // The run just ended and the daemon is still settling the child's outputs (its task moves
+  // next): still working, not a passing "done" the parent and the home screen would see.
+  if (f.taskStatus === 'running' && f.lastRunStatus !== null && !isActiveRun(f.lastRunStatus)) {
+    return 'working';
+  }
   if (runActive || f.taskStatus === 'pending' || f.taskStatus === 'ready') return 'queued';
   if (f.taskStatus === 'review' || f.openAttention.includes('review')) return 'review';
   if (f.taskStatus === 'paused' || f.supervision === 'paused') return 'stopped';

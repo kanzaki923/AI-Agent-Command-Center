@@ -200,7 +200,8 @@ describe('T4 acceptance: questions', () => {
     });
 
     const second = await nextRun(d, session.id, first.id);
-    expect(second).toMatchObject({ kind: 'agent', trigger: 'user', triggerMessageId: answer.id });
+    // An answer is one of the inbox's wake items (spec §3.2), so its run is a wake.
+    expect(second).toMatchObject({ kind: 'agent', trigger: 'wake', triggerMessageId: answer.id });
     expect((await end(d, second.id)).status).toBe('completed');
     expect(existsSync(join(ws.path, 'faq.md'))).toBe(true);
     expect(textOf(d, session.id, 'assistant')).toContain(
