@@ -25,7 +25,6 @@ const STUBS = [
   'session.delegate',
   'session.undelegate',
   'session.setBudget',
-  'session.tree',
   'human.ask',
   'attention.list',
   'attention.respond',
@@ -42,7 +41,6 @@ const STUBS = [
   'schedule.delete',
   'schedule.runNow',
   'schedule.preview',
-  'home.get',
   'project.inspectFolder',
 ] as const;
 

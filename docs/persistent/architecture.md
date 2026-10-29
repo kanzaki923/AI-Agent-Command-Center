@@ -243,7 +243,16 @@ Orchestrator は**セッション種別ではなく役割**（concept §3.1）�
 
 ### 2.19 ホームと状態（T7）
 
-§3.7・§2.2（home）。契約は `SessionStateService`（`recompute` / `isWorkSettled`）と `StreamsService`（`append` / `snapshot`）、型は `ext/home.ts`。`Session.state` の導出表は `home/state.ts` の `deriveSessionState`（起動時に一度だけ全会話に適用）、`isWorkSettled` は `home/tree.ts`（`work` の Grant が使う。実装済み）。`recompute` と streams、`home.get` / `session.tree` はスタブ。`session.list` の `rootsOnly` / `parentSessionId` は実装済み。
+spec §3.7・§2.2（home）・§6。型は `protocol/src/ext/home.ts`、実装は `home/`（`state.ts` 状態、`now.ts` 名詞句、`home.ts` / `cards.ts` 集約、`streams.ts` 書きかけの本文）。
+
+- **状態**：`Session.state` / `stateSince` / `now` の書き手は `sessionState`（`SessionStateTracker`）だけ。導出は純関数 `deriveSessionState`（§3.7 の表、上から優先）。入力は開いた出番・最後の Run・Task・子孫の Run / Task・`supervision` で、`readStateFacts` が読む。
+- **再計算のきっかけ**：home モジュールが `run.status_changed`・`task.*`・`attention.*`・`approval.*`・`inbox.added`・`session.created`・`session.updated`（`supervision` / `parentSessionId`）を購読し、その会話と祖先を `recompute` する。他のモジュールは入力を変えたあとに `recompute` を直接呼んでもよい。変わった会話ごとに `session.state_changed`（`from` / `to` / `stateSince` / `now`）。
+- **起動時**：一度だけのバックフィル（`backfill/home/0001_session_state`）のあと、`idle` / `done` 以外か `now` の残った会話を**イベントなしで**導出し直す（中断された Run を反映）。`start()` までの変化もイベントを出さない。再起動を「作業が落ち着いた」と見せて `work` の Grant を失効させないため（D17）。
+- **いま何してる（`now`）**：Run が `running` / `awaiting_approval` の間だけ。最大 24 字（`clip`、目的語を切って動詞を残す）。規則は `home/now.ts` の 1 か所：`nowForTool`（`tool.called` から。編集「faq.md を編集」・参照・コマンド「pnpm test を実行」・検索「「競合 価格」を検索」・閲覧「example.com を閲覧」、Control API は Claude の `mcp__acc__*` も含め「2 人に依頼」「状況を確認」等）、`nowForActivity`（`run.updated` の activity。`describeToolActivity` の文は同じ名詞句に読み戻し、Runtime の起動文は「準備中」、ツールループの「ツールを実行しています」は無視）、書きかけの本文は「回答を作成中」、思考は「考え中」。承認待ちは開いた approval / question の出番の題。書き込みと `session.now_changed` は会話ごとに 1 秒に 1 回まで（`nowIntervalMs`、最後の値を後から書く）。状態の変化と一緒のときは即時。
+- **書きかけの本文（streams）**：`emitDelta` の断片を Run ごとにメモリに持ち（1MB まで）、`session.messages` の `streaming` に返す。assistant メッセージの保存か Run の終了で捨てる。
+- **`home.get`**：対象の根は「開いた出番／実行中・待ち・指揮中・要対応・失敗・確認待ち／有効な定期実行／ピン留め／`doneWithinHours` 以内に動いた」のどれか（1 本の UNION）。木の会話・予算・委任の Grant（`session.spawn` か `task.spawnWorker` を持てば `supervisor`）・最新 3 件の成果物（`role: output`、ウィンドウ関数）はまとめて読み、**クエリ数は木の数によらない**（500 件ごとの IN）。木は「出番（最小 priority）→ 実行中 → 予定あり（近い順）→ 最近（ピン留め優先）」。子は深さ優先・作成順、`maxNodesPerTree` で打ち切り、同じ親の同じ定期実行の古い発火は畳む（まだ人や作業が要る状態のものは残す）。`hiddenNodes` はその合計。`counts` は木の全会話（畳んだものを含む）。`totals.working` / `failed` はアーカイブされていない全会話の状態、`needsYou` は開いた出番の数、`spendTodayUsd` は `ledger.usedToday()`、`estimated` は今日の台帳に `reported` 以外の行があるか。`upcoming` は次の 5 件。
+- **差分**：`@acc/protocol` の `applyHomeEvent(snapshot, event)` が `session.state_changed` / `now_changed` / `cost_updated`・`attention.opened` / `resolved` を当てる（counts・totals・カードを更新。木の並べ替えはしない）。会話の作成・アーカイブ、定期実行、成果物、Grant、予算の変化は `refetch: true`（`home.get` し直す）。
+- **`session.tree`**：木の全会話（アーカイブ済みを除く）を深さ優先のカードで返す。agent は自分の会話を根とする部分木だけを見る（`rootSessionId` も自分）。**`session.list`**：`rootsOnly` / `parentSessionId`。agent は自分と子孫だけ。
 
 ## 3. Desktop UI
 
