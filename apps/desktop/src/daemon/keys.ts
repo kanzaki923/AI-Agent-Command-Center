@@ -30,4 +30,8 @@ export const qk = {
   sessionBudgets: (sessionId: string) => ['budget.session', sessionId] as const,
   budget: (budgetId: string) => ['budget.get', budgetId] as const,
   eventHistory: ['events.history'] as const,
+  /** Remembered tool approvals of a project (active ones). */
+  permissionRules: (projectId: string) => ['permissionRule.list', projectId] as const,
+  /** tool.decided history of a session, loaded into the event log (value: last seq). */
+  toolDecisions: (sessionId: string) => ['events.toolDecisions', sessionId] as const,
 };

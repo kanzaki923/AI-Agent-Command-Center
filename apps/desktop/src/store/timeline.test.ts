@@ -5,14 +5,16 @@ import { initialTimelineState, useTimeline } from './timeline';
 describe('timeline filter persistence', () => {
   beforeEach(() => {
     localStorage.clear();
-    useTimeline.setState({ filters: EMPTY_FILTERS, groupByRun: true, showAll: false });
+    useTimeline.setState({ filters: EMPTY_FILTERS, groupByRun: true, showAll: false, showAutoAllowed: false });
   });
 
   it('remembers filters and view options across restarts (the desktop has no URL bar)', () => {
     useTimeline.getState().setFilters({ groups: ['decision'], actors: ['agent'], text: 'テスト' });
     useTimeline.getState().setShowAll(true);
+    useTimeline.getState().setShowAutoAllowed(true);
     useTimeline.getState().setGroupByRun(false);
     const next = initialTimelineState('');
+    expect(next.showAutoAllowed).toBe(true);
     expect(next.filters).toMatchObject({ groups: ['decision'], actors: ['agent'], text: 'テスト' });
     expect(next.showAll).toBe(true);
     expect(next.groupByRun).toBe(false);
@@ -25,6 +27,11 @@ describe('timeline filter persistence', () => {
 
   it('ignores broken storage', () => {
     localStorage.setItem('acc.timeline', '{not json');
-    expect(initialTimelineState('')).toEqual({ filters: EMPTY_FILTERS, groupByRun: true, showAll: false });
+    expect(initialTimelineState('')).toEqual({
+      filters: EMPTY_FILTERS,
+      groupByRun: true,
+      showAll: false,
+      showAutoAllowed: false,
+    });
   });
 });

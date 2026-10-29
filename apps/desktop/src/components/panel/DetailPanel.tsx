@@ -11,8 +11,16 @@ import {
   useProjects,
   useRuns,
   useSessions,
+  useSettings,
   useWorkspace,
 } from '../../daemon/queries';
+import {
+  PROFILE_INFO,
+  decisionSummaryText,
+  effectiveProfile,
+  gateText,
+  summarizeDecisions,
+} from '../../model/permissions';
 import { describeGrant } from '../../model/grant';
 import { INTEGRATION_STATUS_LABEL, stepState } from '../../model/integration';
 import { flattenTasks, taskDisplay } from '../../model/tasks';
@@ -112,6 +120,25 @@ function RunHistory({ runs }: { runs: Run[] }) {
   );
 }
 
+/**
+ * An agent's tool permissions: the profile and how its run decides (Auto mode or the
+ * daemon's rules), then what was decided so far (`自動判断 12 件 · ブロック 1 件`).
+ */
+function AgentPermissionField({ session, run }: { session: Session; run: Run | null }) {
+  const projects = useProjects().data ?? NONE;
+  const settings = useSettings().data;
+  const project = projects.find((p) => p.id === session.projectId) ?? null;
+  const summary = summarizeDecisions(run?.toolDecisions);
+  const profile = run?.permission?.profile ?? effectiveProfile(project, settings);
+  return (
+    <div className="flex flex-col gap-0.5" data-testid="agent-permission">
+      <span>{run?.permission ? gateText(run.permission) : PROFILE_INFO[profile].label}</span>
+      {summary && <span className="text-meta text-fg-3 tabular">{decisionSummaryText(summary)}</span>}
+      {run?.permission?.note && <span className="text-meta text-fg-3">{run.permission.note}</span>}
+    </div>
+  );
+}
+
 function SessionOverview({ session, runs }: { session: Session; runs: Run[] }) {
   const sessions = useSessions().data ?? NONE;
   const { items } = useBoard();
@@ -194,11 +221,14 @@ function SessionOverview({ session, runs }: { session: Session; runs: Run[] }) {
         {activeGrant ? (
           <GrantSummaryField grant={activeGrant} projects={projects} />
         ) : (
-          <span className="text-fg-3">
-            {session.kind === 'agent' ? 'worktree 内 · 既定の権限' : 'なし'}
-          </span>
+          <span className="text-fg-3">{session.kind === 'agent' ? 'worktree 内' : 'なし'}</span>
         )}
       </Field>
+      {session.kind === 'agent' && (
+        <Field label="ツール">
+          <AgentPermissionField session={session} run={run} />
+        </Field>
+      )}
       <Field label="コスト">
         <Cost usd={usage.costUsd} source={usage.costSource} className="text-ui text-fg" />
         {run && run.usage.inputTokens + run.usage.outputTokens > 0 && (

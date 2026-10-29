@@ -48,7 +48,10 @@ export const SHORTCUTS = {
   approve: { keys: 'Y', label: '承認', scope: 'approval' },
   approveDanger: { keys: 'Mod+Y', label: '承認（要注意）', scope: 'approval' },
   reject: { keys: 'N', label: '拒否', scope: 'approval' },
-  approveAlways: { keys: 'A', label: 'このRunでは今後も許可', scope: 'approval' },
+  approveAlways: { keys: 'A', label: '承認して今後も許可（範囲を選ぶ）', scope: 'approval' },
+  rememberRun: { keys: '1', label: '今後も許可: この Run', scope: 'approval' },
+  rememberTask: { keys: '2', label: '今後も許可: この Task', scope: 'approval' },
+  rememberProject: { keys: '3', label: '今後も許可: このプロジェクト', scope: 'approval' },
   expand: { keys: 'E', label: '詳細を展開', scope: 'approval' },
 
   send: { keys: 'Enter', label: '送信', scope: 'composer' },

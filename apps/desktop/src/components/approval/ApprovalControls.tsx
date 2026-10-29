@@ -1,14 +1,22 @@
 import type { Approval } from '@acc/protocol';
-import { Check, X } from 'lucide-react';
+import { Check, Repeat, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { type KeyboardEvent, useState } from 'react';
 import { approve, reject } from '../../app/commands';
+import { usePermissionRules } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { claimKeyDecision } from '../../lib/approvalKeys';
 import { formatClock } from '../../lib/format';
 import { matchShortcut } from '../../lib/shortcuts';
 import { cn } from '../../lib/cn';
-import { type ApprovalView, RISK_LABEL } from '../../model/approval';
+import { type ApprovalView, RISK_LABEL, describeApproval } from '../../model/approval';
+import {
+  REMEMBERED_TEXT,
+  type RememberScope,
+  canRemember,
+  rememberHint,
+  rememberOptions,
+} from '../../model/permissions';
 import { Button } from '../ui/Button';
 
 /**
@@ -17,7 +25,7 @@ import { Button } from '../ui/Button';
  */
 export function RiskNote({ view }: { view: ApprovalView }) {
   const level = view.riskLevel && view.riskLevel !== 'low' ? view.riskLevel : view.risk === 'high' ? 'high' : null;
-  if (!view.scope && !level) return null;
+  if (!view.scope && !level && !view.why) return null;
   const high = view.risk === 'high' || level === 'high';
   const color = high ? 'var(--st-failed)' : 'var(--st-awaiting_approval)';
   return (
@@ -28,6 +36,8 @@ export function RiskNote({ view }: { view: ApprovalView }) {
         </span>
       )}
       {view.scope}
+      {/* Why the daemon asked instead of deciding: approvals are the exception, so say why. */}
+      {view.why && <span className="text-fg-3">{view.scope || level ? `· ${view.why}` : view.why}</span>}
     </p>
   );
 }
@@ -35,6 +45,9 @@ export function RiskNote({ view }: { view: ApprovalView }) {
 /** "承認しました · 14:03" — what remains after a decision (§3.2). */
 export function ResolvedLine({ approval }: { approval: Approval }) {
   const ok = approval.status === 'approved';
+  // What the daemon actually remembered (its rule), not what the click asked for.
+  const rules = usePermissionRules(ok && approval.kind === 'tool_use' ? approval.projectId : null).data;
+  const remembered = rules?.find((r) => r.approvalId === approval.id) ?? null;
   return (
     <motion.div
       initial={{ opacity: 0, height: 0 }}
@@ -44,6 +57,12 @@ export function ResolvedLine({ approval }: { approval: Approval }) {
     >
       {ok ? <Check size={13} strokeWidth={1.75} /> : <X size={13} strokeWidth={1.75} />}
       {ok ? '承認しました' : '拒否しました'}
+      {remembered && (
+        <span className="flex items-center gap-1" data-testid="remembered-scope">
+          · <Repeat size={11} strokeWidth={1.75} />
+          {REMEMBERED_TEXT[remembered.scope]}
+        </span>
+      )}
       {approval.resolvedAt && <span className="tabular">· {formatClock(approval.resolvedAt)}</span>}
       {approval.resolutionNote && <span className="truncate">· {approval.resolutionNote}</span>}
     </motion.div>
@@ -67,12 +86,16 @@ export function useApprovalControls(
   const rt = useRuntime();
   const connected = useConnectionState() === 'open';
   const [rejecting, setRejecting] = useState(false);
+  const [remembering, setRemembering] = useState(false);
   const [note, setNote] = useState('');
   const high = view?.risk === 'high';
+  const rememberable = !!approval && !!view && canRemember(approval, view);
+  const options = approval ? rememberOptions(approval) : [];
 
-  const doApprove = () => {
+  const doApprove = (remember?: RememberScope) => {
     if (!approval || !connected) return;
-    void approve(rt, approval);
+    setRemembering(false);
+    void approve(rt, approval, remember);
   };
   const doReject = () => {
     if (!approval || !connected) return;
@@ -89,6 +112,10 @@ export function useApprovalControls(
     } else if (matchShortcut(e, 'reject')) {
       e.preventDefault();
       if (claimKeyDecision(e)) setRejecting(true);
+    } else if (rememberable && matchShortcut(e, 'approveAlways')) {
+      // Opens the scope choice; approving still takes a second, deliberate key.
+      e.preventDefault();
+      if (!e.repeat) setRemembering(true);
     } else if (onExpand && matchShortcut(e, 'expand')) {
       e.preventDefault();
       onExpand();
@@ -96,6 +123,56 @@ export function useApprovalControls(
   };
 
   const disabledHint = connected ? undefined : 'Core Daemon に接続していないため操作できません';
+
+  const firstAvailable = options.findIndex((x) => x.available);
+  const rememberChooser = (
+    <motion.div
+      key="remember"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0, transition: { duration: 0.12 } }}
+      className="flex flex-col gap-1.5"
+      data-testid="remember-chooser"
+      onKeyDown={(e) => {
+        const opt = options.find((o) => o.available && matchShortcut(e, o.shortcut));
+        if (opt) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (claimKeyDecision(e)) doApprove(opt.scope);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          setRemembering(false);
+        } else if (e.key !== 'Tab' && e.key !== 'Enter' && e.key !== ' ' && !e.key.startsWith('Arrow') && !e.ctrlKey && !e.metaKey) {
+          // Nothing else means anything here (Y / N / j / k would act on the card or list).
+          e.stopPropagation();
+        }
+      }}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-meta text-fg-2">承認して、今後は確認しない範囲</span>
+        {options.map((o, i) => (
+          <Button
+            key={o.scope}
+            size="md"
+            variant={i === firstAvailable ? 'primary' : 'secondary'}
+            shortcut={o.shortcut}
+            autoFocus={i === firstAvailable}
+            disabled={!connected || !o.available}
+            hint={o.unavailable ?? disabledHint}
+            onClick={() => doApprove(o.scope)}
+            data-remember={o.scope}
+          >
+            {o.label}
+          </Button>
+        ))}
+        <Button size="md" variant="ghost" onClick={() => setRemembering(false)}>
+          キャンセル
+        </Button>
+      </div>
+      {view && <p className="text-meta text-fg-3">{rememberHint(view)}</p>}
+    </motion.div>
+  );
 
   const controls = approval ? (
     <AnimatePresence initial={false} mode="popLayout">
@@ -131,6 +208,8 @@ export function useApprovalControls(
             キャンセル
           </Button>
         </motion.form>
+      ) : remembering ? (
+        rememberChooser
       ) : (
         <motion.div
           key="buttons"
@@ -140,7 +219,7 @@ export function useApprovalControls(
           <Button
             variant={high ? 'danger' : 'primary'}
             shortcut={high ? 'approveDanger' : 'approve'}
-            onClick={doApprove}
+            onClick={() => doApprove()}
             disabled={!connected}
             hint={disabledHint}
           >
@@ -149,10 +228,57 @@ export function useApprovalControls(
           <Button shortcut="reject" onClick={() => setRejecting(true)} disabled={!connected} hint={disabledHint}>
             拒否
           </Button>
+          {rememberable && (
+            <Button
+              variant="ghost"
+              shortcut="approveAlways"
+              icon={<Repeat size={12} strokeWidth={1.75} />}
+              onClick={() => setRemembering(true)}
+              disabled={!connected}
+              hint={disabledHint ?? '承認して、この Run・Task・プロジェクトでは同じ操作を確認しないようにします'}
+              data-testid="approve-always"
+            >
+              今後も許可…
+            </Button>
+          )}
         </motion.div>
       )}
     </AnimatePresence>
   ) : null;
 
-  return { controls, onKeyDown, rejecting };
+  return { controls, onKeyDown, rejecting, remembering };
+}
+
+/**
+ * The approval card inside a flow (§5.2): the chat at the point it was requested, and the
+ * integration review for its test step. Y / N / A while it has focus.
+ */
+export function InlineApproval({ approval }: { approval: Approval }) {
+  const view = describeApproval(approval);
+  const pending = approval.status === 'pending';
+  const { controls, onKeyDown } = useApprovalControls(pending ? approval : null, view);
+  const barColor =
+    approval.status === 'pending'
+      ? 'var(--st-awaiting_approval)'
+      : approval.status === 'approved'
+        ? 'var(--border-strong)'
+        : 'var(--border-strong)';
+  return (
+    <div
+      tabIndex={pending ? 0 : -1}
+      onKeyDown={onKeyDown}
+      data-approval={approval.id}
+      className="relative flex flex-col gap-2 rounded-sm py-1 pl-4 outline-none focus-visible:bg-hover"
+    >
+      <span className="absolute top-0 bottom-0 left-0 w-0.5 rounded-full" style={{ background: barColor }} />
+      <div className={cn('text-ui font-medium', pending ? 'text-fg' : 'text-fg-3')}>{view.question}</div>
+      {view.target && (
+        <pre className="selectable overflow-x-auto rounded-sm border border-line-subtle bg-canvas px-2.5 py-1.5 font-mono text-code text-fg whitespace-pre-wrap">
+          {view.targetKind === 'command' ? `$ ${view.target}` : view.target}
+        </pre>
+      )}
+      {pending && <RiskNote view={view} />}
+      {pending ? controls : <ResolvedLine approval={approval} />}
+    </div>
+  );
 }

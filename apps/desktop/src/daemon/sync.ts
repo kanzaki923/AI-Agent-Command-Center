@@ -7,6 +7,7 @@ import {
   type Event,
   type Integration,
   type Message,
+  type PermissionRule,
   type Project,
   type Run,
   type Session,
@@ -15,7 +16,7 @@ import {
   isTerminalRunStatus,
 } from '@acc/protocol';
 import { type QueryClient, type QueryKey, notifyManager } from '@tanstack/react-query';
-import { type ToolLookup, describeTool } from '../lib/tools';
+import { type ToolLookup, describeTool, shorten } from '../lib/tools';
 import type { ActivityStore } from './activity';
 import type { DeltaStore } from './deltas';
 import type { EventLog } from './eventLog';
@@ -220,15 +221,23 @@ export function applyEvent(qc: QueryClient, streams: Streams, event: Event): voi
       return;
 
     case 'tool.decided':
-      // A denial is what the agent is reacting to right now: show it on its activity line
-      // (the Timeline keeps every decision).
+      // A block is what the agent is reacting to right now: say so on its activity line,
+      // quietly (the chat and the Timeline keep every decision).
       if (event.runId && event.payload.decision === 'denied') {
-        streams.activity.set(event.runId, `規則で拒否しました（${event.payload.toolName}）`);
+        streams.activity.set(
+          event.runId,
+          `ブロック: ${shorten(event.payload.summary ?? event.payload.toolName, 60)}`,
+        );
       }
       return;
 
-    case 'permission.rule_created':
+    case 'permission.rule_created': {
+      const rule = event.payload.rule;
+      upsertIn<PermissionRule>(qc, qk.permissionRules(rule.projectId), rule, byCreatedDesc);
+      return;
+    }
     case 'permission.rule_revoked':
+      removeFrom(qc, qk.permissionRules(event.payload.rule.projectId), event.payload.rule.id);
       return;
 
     case 'approval.requested':

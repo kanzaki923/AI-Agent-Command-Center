@@ -37,6 +37,8 @@ interface Saved {
   filters: TimelineFilters;
   groupByRun: boolean;
   showAll: boolean;
+  /** Routine automatic allows of agents' tool uses (off: blocks and asks only). */
+  showAutoAllowed: boolean;
 }
 
 const STORAGE_KEY = 'acc.timeline';
@@ -50,6 +52,7 @@ function readSaved(): Partial<Saved> {
     return {
       ...(typeof v.groupByRun === 'boolean' ? { groupByRun: v.groupByRun } : {}),
       ...(typeof v.showAll === 'boolean' ? { showAll: v.showAll } : {}),
+      ...(typeof v.showAutoAllowed === 'boolean' ? { showAutoAllowed: v.showAutoAllowed } : {}),
       ...(f
         ? {
             filters: {
@@ -85,6 +88,7 @@ export function initialTimelineState(search: string): Saved {
     filters: urlHasFilters ? fromUrl : (saved.filters ?? EMPTY_FILTERS),
     groupByRun: saved.groupByRun ?? true,
     showAll: saved.showAll ?? false,
+    showAutoAllowed: saved.showAutoAllowed ?? false,
   };
 }
 
@@ -95,6 +99,7 @@ interface TimelineState extends Saved {
   toggleRun: (runId: string, currentlyCollapsed: boolean) => void;
   setGroupByRun: (v: boolean) => void;
   setShowAll: (v: boolean) => void;
+  setShowAutoAllowed: (v: boolean) => void;
 }
 
 function writeUrl(f: TimelineFilters) {
@@ -105,8 +110,8 @@ function writeUrl(f: TimelineFilters) {
 
 export const useTimeline = create<TimelineState>((set, get) => {
   const persist = () => {
-    const { filters, groupByRun, showAll } = get();
-    writeSaved({ filters, groupByRun, showAll });
+    const { filters, groupByRun, showAll, showAutoAllowed } = get();
+    writeSaved({ filters, groupByRun, showAll, showAutoAllowed });
   };
   return {
     ...initialTimelineState(typeof window === 'undefined' ? '' : window.location.search),
@@ -131,6 +136,10 @@ export const useTimeline = create<TimelineState>((set, get) => {
     },
     setShowAll(showAll) {
       set({ showAll });
+      persist();
+    },
+    setShowAutoAllowed(showAutoAllowed) {
+      set({ showAutoAllowed });
       persist();
     },
   };

@@ -373,4 +373,51 @@ describe('<IntegrationView> conflict → Integrator', () => {
     expect(await screen.findByTestId('resolve-with-agent')).toBeInTheDocument();
     expect(screen.queryByTestId('resolving')).not.toBeInTheDocument();
   });
+
+  it('asks for the tests right in the review when the careful profile waits for a human', async () => {
+    const i = {
+      ...ready(),
+      status: 'verifying' as const,
+      steps: ready().steps.map((x) =>
+        x.kind === 'verify'
+          ? { ...x, status: 'running' as const, detail: 'エージェントが書いたコードを実行するため、テストの前に人間の承認を待っています', artifactId: null }
+          : x,
+      ),
+    };
+    let responded: unknown = null;
+    const ask = {
+      id: 'apr_00000000000000000000000001',
+      kind: 'integration' as const,
+      status: 'pending' as const,
+      title: '統合後のテストを実行',
+      detail: 'pnpm test',
+      payload: { action: 'verify', command: 'pnpm test' },
+      projectId: i.projectId,
+      sessionId: null,
+      runId: null,
+      taskId: null,
+      integrationId: i.id,
+      requestedBy: { kind: 'agent' as const, sessionId: 'ses_x', runId: 'run_x' },
+      resolvedBy: null,
+      resolutionNote: null,
+      createdAt: iso(T0),
+      resolvedAt: null,
+    };
+    mount(i, {
+      'approval.list': (p) => ({ items: (p.status as string[]).includes('pending') ? [ask] : [], nextCursor: null }),
+      'approval.respond': (p) => {
+        responded = p;
+        return { ...ask, status: 'approved' };
+      },
+    });
+    const card = await screen.findByTestId('verify-approval');
+    expect(within(card).getByText('統合後のテストを実行しますか？')).toBeInTheDocument();
+    expect(within(card).getByText(/慎重プロファイルでは/)).toBeInTheDocument();
+    // Not a tool use: nothing to remember.
+    expect(within(card).queryByTestId('approve-always')).not.toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(within(card).getByRole('button', { name: /承認/ }));
+    });
+    expect(responded).toMatchObject({ approvalId: ask.id, decision: 'approve' });
+  });
 });

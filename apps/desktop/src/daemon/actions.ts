@@ -1,4 +1,4 @@
-import { type Approval, type Run, type Session, type SessionKind, isTerminalRunStatus } from '@acc/protocol';
+import { type Approval, type ApprovalRemember, type PermissionRule, type Run, type Session, type SessionKind, isTerminalRunStatus } from '@acc/protocol';
 import { toast, toastError } from '../store/toast';
 import { useUi } from '../store/ui';
 import { qk } from './keys';
@@ -16,6 +16,8 @@ export async function respondApproval(
   approval: Approval,
   decision: 'approve' | 'reject',
   note?: string,
+  /** Approving a tool use: also allow matching uses for the rest of the run / task / project. */
+  remember: ApprovalRemember = 'once',
 ): Promise<boolean> {
   const qc = rt.queryClient;
   const resolved: Approval = {
@@ -32,12 +34,28 @@ export async function respondApproval(
       approvalId: approval.id,
       decision,
       ...(note ? { note } : {}),
+      ...(decision === 'approve' && remember !== 'once' ? { remember } : {}),
     });
     return true;
   } catch (err) {
     upsertIn(qc, qk.approvals, approval, (a, b) => a.createdAt.localeCompare(b.createdAt));
     qc.setQueryData<Approval[]>(qk.resolvedApprovals, (cur) => cur?.filter((x) => x.id !== approval.id));
     toastError(err, decision === 'approve' ? '承認できませんでした' : '拒否できませんでした');
+    return false;
+  }
+}
+
+/** Revoke a remembered approval (optimistic: it leaves the list at once). */
+export async function revokePermissionRule(rt: AppRuntime, rule: PermissionRule): Promise<boolean> {
+  const qc = rt.queryClient;
+  const key = qk.permissionRules(rule.projectId);
+  removeFrom(qc, key, rule.id);
+  try {
+    await rt.client.call('permissionRule.revoke', { ruleId: rule.id });
+    return true;
+  } catch (err) {
+    upsertIn(qc, key, rule, (a, b) => b.createdAt.localeCompare(a.createdAt));
+    toastError(err, '取り消せませんでした');
     return false;
   }
 }

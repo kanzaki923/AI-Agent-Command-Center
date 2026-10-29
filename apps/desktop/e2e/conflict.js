@@ -14,6 +14,8 @@
 //      done; README.md on the integration branch has both sections and no markers; main is
 //      unchanged until a human approves. In the default (autonomous) profile nothing asks
 //      before that: the integration tests after the fix run without an approval.
+//   5. Zero approvals for the project so far; the human applies (Ctrl+Enter → 反映する) and
+//      main fast-forwards to the integration head.
 //
 // Screenshots go to the OS temp dir (never the repo). Exit code 0 = pass.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -155,6 +157,34 @@ try {
   if (!JSON.stringify(message).includes('両方の節を残してください'))
     throw new Error('the guidance did not reach the integrator');
   log('resolved by the integrator: both sections kept, tests ran, main unchanged');
+
+  // 6. Nothing asked a human on the way (おまかせ): the Integrator's tool uses and the tests
+  //    after the fix ran without an approval. The one human decision is the apply.
+  const asked = (
+    await rpc.call('approval.list', {
+      status: ['pending', 'approved', 'rejected', 'expired', 'cancelled'],
+      projectId: project.id,
+    })
+  ).items;
+  if (asked.length > 0) throw new Error(`approvals before the apply: ${asked.map((a) => a.title).join(', ')}`);
+  const integratorDecisions = (await rpc.call('events.list', { sessionId: integrator, types: ['tool.decided'] })).events;
+  log(`zero approvals; the integrator's recorded decisions: ${integratorDecisions.length}`);
+  await page.keyboard.press('Control+Enter');
+  const apply = page.getByTestId('apply-dialog');
+  await apply.waitFor();
+  await page.getByRole('button', { name: '反映する' }).click();
+  const applied = await waitFor(
+    async () => {
+      const i = await rpc.call('integration.get', { integrationId: created.id });
+      return i.status === 'applied' ? i : null;
+    },
+    'the human apply to land',
+    30_000,
+  );
+  if (git(repo, 'rev-parse', 'main') !== applied.headSha) throw new Error('main did not move to the integration head');
+  await page.getByText(/に反映しました/).first().waitFor({ timeout: 15_000 });
+  await shot('applied');
+  log('applied by the human: main fast-forwarded to the resolved integration');
 
   if (pageErrors.length) throw new Error(`page errors:\n${pageErrors.join('\n')}`);
   log('PASS');

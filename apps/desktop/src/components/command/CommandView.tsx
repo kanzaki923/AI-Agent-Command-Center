@@ -372,13 +372,14 @@ export function CommandView() {
       if (view.risk === 'high' ? matchShortcut(e, 'approveDanger') : matchShortcut(e, 'approve')) {
         e.preventDefault();
         if (claimKeyDecision(e)) void approve(rt, selected.approval);
-      } else if (matchShortcut(e, 'reject')) {
+      } else if (matchShortcut(e, 'reject') || matchShortcut(e, 'approveAlways')) {
         e.preventDefault();
         if (e.repeat) return;
-        // Move focus onto the card, whose own handler opens the reason input.
+        // Move focus onto the card, whose own handler opens the reason input (N) or the
+        // remember choice (A).
         const el = document.querySelector<HTMLElement>(`[data-board-item="${CSS.escape(selected.id)}"]`);
         el?.focus();
-        el?.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', bubbles: true }));
+        el?.dispatchEvent(new KeyboardEvent('keydown', { key: e.key, bubbles: true }));
       }
     } else if (matchShortcut(e, 'retry') && selected.run && (selected.state === 'failed' || selected.state === 'interrupted')) {
       e.preventDefault();

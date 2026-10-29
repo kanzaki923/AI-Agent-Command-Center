@@ -27,6 +27,7 @@ import {
   Play,
   RotateCcw,
   Settings,
+  ShieldCheck,
   ShieldQuestion,
   Sparkles,
   Square,
@@ -239,6 +240,7 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
   const commandView = useUi((s) => s.commandView);
   const notifyOs = useUi((s) => s.notifyOs);
   const showAllEvents = useTimeline((s) => s.showAll);
+  const showAutoAllowed = useTimeline((s) => s.showAutoAllowed);
   // Actions only: read at call time so typing elsewhere never re-renders the palette.
   const ui = useUi.getState();
   const sessions = useSessions().data ?? [];
@@ -428,6 +430,17 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
     keywords: ['project add purojekuto tsuika repository git'],
     run: () => ui.setProjectDialog({ kind: 'new' }),
   });
+  const currentProject = projects.find((p) => p.id === ui.projectId);
+  if (currentProject) {
+    create.push({
+      id: 'project.settings',
+      label: 'プロジェクトの設定（権限・記憶した許可）…',
+      hint: currentProject.name,
+      icon: I(ShieldCheck),
+      keywords: ['project settings purojekuto settei permission kengen profile omakase shincho remembered kioku'],
+      run: () => ui.setProjectDialog({ kind: 'edit', projectId: currentProject.id }),
+    });
+  }
   // The chat in front (Focus) or selected on the board can be given the orchestrator grant.
   const grantTarget =
     focused?.kind === 'chat' ? focused : selected?.session?.kind === 'chat' ? selected.session : null;
@@ -495,6 +508,16 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
       keywords: ['timeline taimurain detail shousai events all'],
       run: () => {
         useTimeline.getState().setShowAll(!showAllEvents);
+        switchMode(rt, 'timeline');
+      },
+    },
+    {
+      id: 'view.timelineAutoAllowed',
+      label: showAutoAllowed ? 'タイムライン: 自動許可を隠す' : 'タイムライン: 自動許可も表示',
+      icon: I(ShieldCheck),
+      keywords: ['timeline taimurain auto allowed jidou kyoka permission kengen'],
+      run: () => {
+        useTimeline.getState().setShowAutoAllowed(!showAutoAllowed);
         switchMode(rt, 'timeline');
       },
     },

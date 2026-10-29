@@ -19,7 +19,7 @@ import {
   rerunIntegration,
   resolveWithAgent,
 } from '../../daemon/orchestration';
-import { useArtifact, useIntegrations, useProjects, useRun, useTasks } from '../../daemon/queries';
+import { useArtifact, useIntegrations, usePendingApprovals, useProjects, useRun, useTasks } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { useWindowKeydown } from '../../hooks/useWindowKeydown';
 import { cn } from '../../lib/cn';
@@ -43,6 +43,7 @@ import {
   stepDurationMs,
   stepState,
 } from '../../model/integration';
+import { InlineApproval } from '../approval/ApprovalControls';
 import { ActivityLine } from '../command/ActivityLine';
 import { useUi } from '../../store/ui';
 import { DiffStatText } from '../panel/DiffViewer';
@@ -205,6 +206,27 @@ function StepRow({
         )}
       </div>
     </li>
+  );
+}
+
+/**
+ * The careful profile asks before running the tests of an integration an agent started:
+ * the question sits right under the test result, so the review is where it is answered
+ * (other profiles never ask: the workers already ran the same code).
+ */
+function VerifyApproval({ integ }: { integ: Integration }) {
+  const pending = usePendingApprovals().data ?? NONE;
+  const ask = pending.find(
+    (a) =>
+      a.integrationId === integ.id &&
+      a.kind === 'integration' &&
+      (a.payload as { action?: unknown } | null)?.action === 'verify',
+  );
+  if (!ask) return null;
+  return (
+    <div className="mt-3" data-testid="verify-approval">
+      <InlineApproval approval={ask} />
+    </div>
   );
 }
 
@@ -736,6 +758,7 @@ function IntegrationReview({ integ, onClose }: { integ: Integration; onClose: ()
           </Section>
           <Section title="テスト結果">
             <TestResult integ={integ} />
+            <VerifyApproval integ={integ} />
           </Section>
           {files.length > 0 && (
             <Section

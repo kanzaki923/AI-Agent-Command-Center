@@ -2,6 +2,7 @@ import type { Actor, Event, Run, Session } from '@acc/protocol';
 import { RUN_STATUS_LABEL, TASK_STATUS_LABEL } from '../lib/status';
 import { type ToolLookup, describeTool, outputText, shorten } from '../lib/tools';
 import { INTEGRATION_STATUS_LABEL } from './integration';
+import { DECIDER, PROFILE_INFO, describeDecision, firstSentence } from './permissions';
 
 export type EventGroup =
   | 'run'
@@ -46,6 +47,7 @@ export type EventIcon =
   | 'budget'
   | 'grant'
   | 'denied'
+  | 'allowed'
   | 'message'
   | 'workspace'
   | 'artifact'
@@ -70,6 +72,15 @@ export interface EventView {
    * Timeline reads like a story of who did what.
    */
   noise: boolean;
+  /**
+   * A routine automatic allow (not notable): hidden unless "自動許可も表示" (or every event)
+   * is on. Blocks, asks and notable allows always show.
+   */
+  autoAllowed?: boolean;
+  /** Who decided a tool use (`ルール` / `Auto mode` / `記憶` ...), shown as a badge. */
+  decider?: { badge: string; tooltip: string };
+  /** A tool use the daemon blocked (neutral left bar: noticeable, nothing to do). */
+  blocked?: boolean;
 }
 
 /** Names the Timeline knows from the caches (session titles, task titles). */
@@ -87,14 +98,6 @@ function messageLine(text: string): string {
   const prose = text.replace(/```[\s\S]*?(?:```|$)/g, ' ').trim();
   return prose ? shorten(prose, 120) : text.includes('```') ? '（コード）' : '';
 }
-
-const TOOL_DECIDER_LABEL = {
-  rule: '規則',
-  remembered: '記憶した許可',
-  classifier: '安全判定',
-  runtime: 'エージェント',
-  human: 'あなた',
-} as const;
 
 function runSubject(e: Event, names: TimelineNames | undefined): string {
   const title = e.sessionId ? names?.sessionTitle?.(e.sessionId) : undefined;
@@ -228,31 +231,43 @@ export function describeEvent(e: Event, names?: TimelineNames): EventView {
     }
     case 'tool.decided': {
       const d = e.payload;
-      const by = TOOL_DECIDER_LABEL[d.decidedBy];
-      const what = `${describeTool(d.toolName, {}, names).label}${d.summary ? ` · ${shorten(d.summary, 80)}` : ''}`;
+      const v = describeDecision(d);
+      const what = d.summary ? shorten(d.summary, 100) : describeTool(d.toolName, {}, names).label;
       return {
         ...base,
-        group: d.decision === 'asked' ? 'approval' : d.decision === 'denied' ? 'error' : 'tool',
-        icon: d.decision === 'denied' ? 'denied' : d.decision === 'asked' ? 'approval' : 'tool',
-        label: d.decision === 'denied' ? `${by}が拒否` : d.decision === 'asked' ? '確認に回す' : `${by}が許可`,
+        group: d.decision === 'asked' ? 'approval' : 'grant',
+        icon: v.tone === 'blocked' ? 'denied' : v.tone === 'asked' ? 'approval' : 'allowed',
+        label: v.label,
         summary: what,
-        detail: d.reason,
-        isError: d.decision === 'denied',
-        // Allowed uses are shown on demand; denials and asks always.
-        noise: d.decision === 'allowed' && !d.notable,
+        detail: v.tone === 'allowed' ? null : v.reason,
+        decider: { badge: DECIDER[d.decidedBy].badge, tooltip: `${DECIDER[d.decidedBy].tooltip}（${PROFILE_INFO[d.profile].label}）` },
+        blocked: v.tone === 'blocked',
+        autoAllowed: v.tone === 'allowed' && !d.notable,
+        // An ask is told by its approval.requested row (which carries the same reason).
+        noise: v.tone === 'asked',
       };
     }
     case 'permission.rule_created':
     case 'permission.rule_revoked':
       return {
         ...base,
-        group: 'approval',
+        group: 'grant',
         icon: 'grant',
         label: e.type === 'permission.rule_created' ? '許可を記憶' : '記憶を取り消し',
         summary: e.payload.rule.description,
       };
-    case 'approval.requested':
-      return { ...base, group: 'approval', icon: 'approval', label: '承認を要求', summary: e.payload.approval.title };
+    case 'approval.requested': {
+      // Approvals are the exception: the second line says why this one was not decided.
+      const reason = (e.payload.approval.payload as { reason?: unknown } | null)?.reason;
+      return {
+        ...base,
+        group: 'approval',
+        icon: 'approval',
+        label: '承認を要求',
+        summary: e.payload.approval.title,
+        detail: typeof reason === 'string' ? firstSentence(reason) : null,
+      };
+    }
     case 'approval.resolved': {
       const a = e.payload.approval;
       return {
@@ -431,6 +446,8 @@ export type TimelineRow =
       runId: string;
       run: Run | null;
       count: number;
+      /** Blocked tool uses in this segment (kept visible on a folded run). */
+      blocked: number;
       collapsed: boolean;
       header: number;
     };
@@ -470,6 +487,8 @@ export function buildTimelineRows(input: {
   /** Explicit expand/collapse choices by run id (true = collapsed). */
   toggled: Record<string, boolean>;
   showAll?: boolean;
+  /** Also routine automatic allows (tool.decided), without the rest of the plumbing. */
+  showAutoAllowed?: boolean;
   names?: TimelineNames;
 }): TimelineRow[] {
   type Seg = { runId: string | null; items: { e: Event; v: EventView }[] };
@@ -477,6 +496,7 @@ export function buildTimelineRows(input: {
   for (const e of input.events) {
     const v = describeEvent(e, input.names);
     if (v.noise && !input.showAll) continue;
+    if (v.autoAllowed && !input.showAll && !input.showAutoAllowed) continue;
     if (!matchesFilters(e, v, input.filters)) continue;
     const runId = input.groupByRun ? e.runId : null;
     const last = segs[segs.length - 1];
@@ -500,7 +520,8 @@ export function buildTimelineRows(input: {
     }
     const run = input.runs.get(seg.runId) ?? null;
     const ended = run ? ['completed', 'cancelled'].includes(run.status) : false;
-    const collapsed = input.toggled[seg.runId] ?? ended;
+    // A run the filters single out is what the reader came for: open even when it ended.
+    const collapsed = input.toggled[seg.runId] ?? (ended && input.filters.runId !== seg.runId);
     if (seg.items.length === 1 && seen.has(seg.runId) && !collapsed) {
       const { e, v } = seg.items[0]!;
       rows.push(eventRow(e, v, -1, seg.runId));
@@ -514,6 +535,7 @@ export function buildTimelineRows(input: {
       runId: seg.runId,
       run,
       count: seg.items.length,
+      blocked: seg.items.filter((x) => x.v.blocked).length,
       collapsed,
       header,
     });

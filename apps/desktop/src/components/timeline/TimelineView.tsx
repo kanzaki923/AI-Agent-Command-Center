@@ -22,9 +22,11 @@ import {
   Search,
   Settings2,
   ShieldBan,
+  ShieldCheck,
   ShieldQuestion,
   User,
   Wrench,
+  X,
 } from 'lucide-react';
 import { DropdownMenu } from 'radix-ui';
 import { type ReactNode, useMemo, useRef } from 'react';
@@ -82,6 +84,7 @@ const ICONS: Record<EventIcon, ReactNode> = {
   budget: <Coins size={13} strokeWidth={1.75} />,
   grant: <KeyRound size={13} strokeWidth={1.75} />,
   denied: <ShieldBan size={13} strokeWidth={1.75} />,
+  allowed: <ShieldCheck size={13} strokeWidth={1.75} />,
   message: <MessageSquare size={13} strokeWidth={1.75} />,
   workspace: <GitBranch size={13} strokeWidth={1.75} />,
   artifact: <FileBox size={13} strokeWidth={1.75} />,
@@ -163,7 +166,7 @@ function FilterMenu<T extends string>({
         <button
           type="button"
           className={cn(
-            'flex h-7 items-center gap-1 rounded-sm border px-2 text-ui',
+            'flex h-7 shrink-0 items-center gap-1 rounded-sm border px-2 text-ui whitespace-nowrap',
             selected.length > 0 ? 'border-line-strong bg-selected text-fg' : 'border-line-subtle text-fg-2 hover:border-line hover:text-fg',
           )}
         >
@@ -246,7 +249,11 @@ function RunHeader({
         <span className="text-fg-3">{run?.kind === 'orchestrator' ? 'Orchestrator' : session?.kind === 'chat' ? 'チャット' : 'Worker'}</span>
         <span className="px-1 text-fg-4">·</span>
         <span className="text-fg">{session ? untitled(session) : '—'}</span>
-        {row.collapsed && <span className="ml-1.5 text-fg-3 tabular">（{row.count} 件）</span>}
+        {row.collapsed && (
+          <span className="ml-1.5 text-fg-3 tabular">
+            （{row.count} 件{row.blocked > 0 && ` · ブロック ${row.blocked}`}）
+          </span>
+        )}
       </span>
       {run && (
         <span className="flex items-center gap-2">
@@ -259,6 +266,91 @@ function RunHeader({
         </span>
       )}
     </button>
+  );
+}
+
+/**
+ * What else to show (`表示 ▾`): routine automatic allows of agents' tool uses, and the
+ * plumbing events. One menu instead of two switches keeps the header on one line beside the
+ * detail panel.
+ */
+function ViewMenu({
+  showAutoAllowed,
+  showAll,
+  onAutoAllowed,
+  onAll,
+}: {
+  showAutoAllowed: boolean;
+  showAll: boolean;
+  onAutoAllowed: (v: boolean) => void;
+  onAll: (v: boolean) => void;
+}) {
+  const on = Number(showAutoAllowed || showAll) + Number(showAll);
+  const item = (checked: boolean, set: (v: boolean) => void, label: string, hint: string, testId: string, disabled = false) => (
+    <DropdownMenu.CheckboxItem
+      checked={checked}
+      disabled={disabled}
+      onSelect={(e) => e.preventDefault()}
+      onCheckedChange={(c) => set(c === true)}
+      data-testid={testId}
+      className="flex items-start gap-2 rounded-sm px-2 py-1.5 text-ui text-fg outline-none data-[disabled]:opacity-60 data-[highlighted]:bg-selected"
+    >
+      <span className="mt-[3px] flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border border-line-strong">
+        <DropdownMenu.ItemIndicator>
+          <span className="block size-2 rounded-[1px] bg-accent" />
+        </DropdownMenu.ItemIndicator>
+      </span>
+      <span className="min-w-0">
+        <span className="block">{label}</span>
+        <span className="block text-meta text-fg-3">{hint}</span>
+      </span>
+    </DropdownMenu.CheckboxItem>
+  );
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <button
+          type="button"
+          data-testid="timeline-view-menu"
+          className={cn(
+            'flex h-7 shrink-0 items-center gap-1 rounded-sm border px-2 text-ui whitespace-nowrap',
+            on > 0 ? 'border-line-strong bg-selected text-fg' : 'border-line-subtle text-fg-2 hover:border-line hover:text-fg',
+          )}
+        >
+          表示
+          {on > 0 && <span className="tabular text-fg-3">{on}</span>}
+          <ChevronDown size={12} strokeWidth={1.75} className="text-fg-3" />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          align="end"
+          sideOffset={6}
+          className="z-[40] w-80 rounded-md border border-line bg-raised p-1 shadow-float data-[state=open]:animate-[acc-pop-in_180ms_var(--ease-out)]"
+        >
+          {item(
+            showAutoAllowed || showAll,
+            onAutoAllowed,
+            '自動許可も表示',
+            'エージェントのツール利用のうち、ルールや Auto mode が自動で許可したもの。ブロックと確認はいつも出ます。',
+            'show-auto-allowed',
+            showAll,
+          )}
+          {item(showAll, onAll, '詳細なイベントも表示', 'ロックの変更・使用量・ツールの結果など、細かな記録。', 'show-all-events')}
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  );
+}
+
+/** Who decided a tool use, as a quiet badge before the summary (`ルール` / `Auto mode` / `記憶`). */
+function DeciderBadge({ decider }: { decider: { badge: string; tooltip: string } }) {
+  return (
+    <Tooltip content={decider.tooltip}>
+      <span className="mr-2 inline-flex h-4 shrink-0 items-center rounded-xs border border-line-subtle px-1 text-micro text-fg-3" data-testid="decider-badge">
+        {decider.badge}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -296,11 +388,11 @@ function EventRow({
         selected ? 'bg-selected' : 'hover:bg-hover',
       )}
     >
-      {(view.isDecision || denied || selected) && (
+      {(view.isDecision || denied || view.blocked || selected) && (
         <span
           className={cn(
             'absolute top-0.5 bottom-0.5 left-0 w-0.5 rounded-full',
-            denied && !selected ? 'bg-st-failed' : 'bg-accent',
+            selected ? 'bg-accent' : denied ? 'bg-st-failed' : view.blocked ? 'bg-line-strong' : 'bg-accent',
           )}
         />
       )}
@@ -337,7 +429,10 @@ function EventRow({
             </>
           )}
         </span>
-        <span className="min-w-0 flex-1 truncate text-fg">{view.summary}</span>
+        <span className="flex min-w-0 flex-1 items-center">
+          {view.decider && <DeciderBadge decider={view.decider} />}
+          <span className={cn('min-w-0 truncate text-fg', view.decider && 'font-mono text-code')}>{view.summary}</span>
+        </span>
         {ctx && (
           <button
             type="button"
@@ -358,7 +453,7 @@ function EventRow({
       </div>
       {view.detail && (
         <div className="-mt-1 truncate pl-[390px] text-meta text-fg-3">
-          {view.isDecision ? `「${view.detail}」` : denied ? `理由: ${view.detail}` : view.detail}
+          {view.isDecision ? `「${view.detail}」` : denied || view.blocked ? `理由: ${view.detail}` : view.detail}
         </div>
       )}
     </div>
@@ -379,6 +474,8 @@ export function TimelineView() {
   const toggleRun = useTimeline((s) => s.toggleRun);
   const showAll = useTimeline((s) => s.showAll);
   const setShowAll = useTimeline((s) => s.setShowAll);
+  const showAutoAllowed = useTimeline((s) => s.showAutoAllowed);
+  const setShowAutoAllowed = useTimeline((s) => s.setShowAutoAllowed);
   const selectedKey = useUi((s) => s.timelineSelected);
   const setSelected = useUi((s) => s.setTimelineSelected);
   const setPanelOpen = useUi((s) => s.setPanelOpen);
@@ -390,10 +487,10 @@ export function TimelineView() {
   const runs = useMemo(() => new Map((runsQ.data ?? NONE).map((r) => [r.id, r])), [runsQ.data]);
   const events = rt.streams.events.events;
   const rows = useMemo(
-    () => buildTimelineRows({ events, filters, groupByRun, runs, toggled, showAll, names }),
+    () => buildTimelineRows({ events, filters, groupByRun, runs, toggled, showAll, showAutoAllowed, names }),
     // `version` changes whenever the (mutable) event log changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [version, events, filters, groupByRun, runs, toggled, showAll, names],
+    [version, events, filters, groupByRun, runs, toggled, showAll, showAutoAllowed, names],
   );
 
 
@@ -473,7 +570,7 @@ export function TimelineView() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-11 shrink-0 items-center gap-2 px-6">
-        <h1 className="mr-2 text-title text-fg">タイムライン</h1>
+        <h1 className="mr-2 shrink-0 text-title whitespace-nowrap text-fg">タイムライン</h1>
         <FilterMenu
           label="種類"
           options={EVENT_GROUPS.map((g) => ({ value: g, label: EVENT_GROUP_LABEL[g] }))}
@@ -492,7 +589,7 @@ export function TimelineView() {
           selected={filters.sessionId ? [filters.sessionId] : []}
           onChange={(ids) => setFilters({ sessionId: ids[ids.length - 1] ?? null, runId: null })}
         />
-        <label className="flex h-7 w-56 items-center gap-1.5 rounded-sm border border-line-subtle px-2 text-fg-3 focus-within:border-line-strong">
+        <label className="flex h-7 w-56 min-w-28 shrink items-center gap-1.5 rounded-sm border border-line-subtle px-2 text-fg-3 focus-within:border-line-strong">
           <Search size={13} strokeWidth={1.75} />
           <input
             ref={searchRef}
@@ -509,44 +606,34 @@ export function TimelineView() {
           />
           <Kbd id="filter" />
         </label>
+        {filters.runId && (
+          // "タイムラインで見る" from a run narrows to it: say which, and let it go in one click.
+          <button
+            type="button"
+            onClick={() => setFilters({ runId: null })}
+            className="flex h-7 shrink-0 items-center gap-1 rounded-sm border border-line-strong bg-selected px-2 text-ui whitespace-nowrap text-fg"
+            aria-label="Run の絞り込みを外す"
+          >
+            Run #{filters.runId.slice(-3)}
+            <X size={12} strokeWidth={1.75} className="text-fg-3" />
+          </button>
+        )}
         {filtersActive(filters) && (
-          <button type="button" onClick={clearFilters} className="h-7 px-1.5 text-ui text-fg-3 hover:text-fg">
+          <button type="button" onClick={clearFilters} className="h-7 shrink-0 px-1.5 text-ui whitespace-nowrap text-fg-3 hover:text-fg">
             クリア
           </button>
         )}
         <span className="flex-1" />
-        <Tooltip content="ロックの変更・使用量・ツールの結果など、細かな記録も並べます">
-          <button
-            type="button"
-            role="switch"
-            aria-checked={showAll}
-            onClick={() => setShowAll(!showAll)}
-            className={cn(
-              'flex h-7 items-center gap-1.5 rounded-sm px-2 text-meta',
-              showAll ? 'bg-selected text-fg' : 'text-fg-3 hover:text-fg-2',
-            )}
-          >
-            <span
-              className={cn(
-                'relative h-3 w-5 rounded-full transition-colors duration-[120ms]',
-                showAll ? 'bg-accent' : 'bg-line-strong',
-              )}
-              aria-hidden="true"
-            >
-              <span
-                className={cn(
-                  'absolute top-0.5 size-2 rounded-full bg-white transition-transform duration-[120ms]',
-                  showAll ? 'translate-x-2.5' : 'translate-x-0.5',
-                )}
-              />
-            </span>
-            詳細なイベントも表示
-          </button>
-        </Tooltip>
+        <ViewMenu
+          showAutoAllowed={showAutoAllowed}
+          showAll={showAll}
+          onAutoAllowed={setShowAutoAllowed}
+          onAll={setShowAll}
+        />
         <button
           type="button"
           onClick={() => stick.scrollToBottom()}
-          className={cn('flex items-center gap-1.5 text-meta', stick.following ? 'text-fg-2' : 'text-fg-3 hover:text-fg-2')}
+          className={cn('flex shrink-0 items-center gap-1.5 text-meta whitespace-nowrap', stick.following ? 'text-fg-2' : 'text-fg-3 hover:text-fg-2')}
         >
           <span
             className="size-1.5 rounded-full"

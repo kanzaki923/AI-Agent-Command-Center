@@ -3,6 +3,7 @@ import type {
   CapabilityGrant,
   Integration,
   IntegrationStep,
+  PermissionProfile,
   Project,
   Task,
 } from '@acc/protocol';
@@ -283,7 +284,12 @@ export async function inspectRepo(rt: AppRuntime, path: string): Promise<RepoIns
 export async function updateProject(
   rt: AppRuntime,
   project: Project,
-  patch: { name?: string; defaultBranch?: string | null; testCommand?: string | null },
+  patch: {
+    name?: string;
+    defaultBranch?: string | null;
+    testCommand?: string | null;
+    permissionProfile?: PermissionProfile | null;
+  },
 ): Promise<boolean> {
   const qc = rt.queryClient;
   patchIn<Project>(qc, qk.projects, project.id, (p) => ({ ...p, ...patch }));

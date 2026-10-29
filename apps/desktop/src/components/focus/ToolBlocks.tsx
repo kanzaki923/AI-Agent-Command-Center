@@ -1,10 +1,12 @@
-import { ChevronRight, CircleX, FileSearch, FilePen, Globe, Hourglass, Search, Terminal, Wrench, Workflow } from 'lucide-react';
+import { ChevronRight, CircleX, FileSearch, FilePen, Globe, Hourglass, Search, ShieldBan, Terminal, Wrench, Workflow } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { type ReactNode, useState } from 'react';
 import { cn } from '../../lib/cn';
 import type { ToolCategory } from '../../lib/tools';
 import { outputText } from '../../lib/tools';
-import { type ToolCallView, formatDuration, summarizeTools, toolDurationMs } from '../../model/chat';
+import { type ToolCallView, formatDuration, isBlocked, summarizeTools, toolDurationMs } from '../../model/chat';
+import { DECIDER, PROFILE_INFO, type ToolDecided, describeDecision } from '../../model/permissions';
+import { Tooltip } from '../ui/Tooltip';
 
 const ICON: Record<ToolCategory, ReactNode> = {
   read: <FileSearch size={14} strokeWidth={1.5} />,
@@ -71,21 +73,67 @@ function inputText(input: unknown): string {
   return JSON.stringify(input, null, 2);
 }
 
+/** `ブロック` — the daemon stopped this use. Neutral on purpose: nothing for a human to do. */
+export function BlockedChip() {
+  return (
+    <span className="shrink-0 rounded-xs border border-line px-1 text-micro text-fg-2" data-testid="blocked-chip">
+      ブロック
+    </span>
+  );
+}
+
+/**
+ * How a tool use was decided, at the right end of its line (`自動で許可 · ルール`). Quiet
+ * (`text-meta text-fg-3`, no colour): it is there to be found afterwards, not to be read while it runs.
+ */
+function DecisionNote({ decision }: { decision: ToolDecided }) {
+  const v = describeDecision(decision);
+  if (v.tone !== 'allowed') return null;
+  const text = v.decider === 'remembered' || v.decider === 'human' ? v.label : `${v.label} · ${DECIDER[v.decider].badge}`;
+  return (
+    <Tooltip content={DECIDER[v.decider].tooltip}>
+      <span className="shrink-0 text-meta text-fg-3" data-testid="decision-note">
+        {text}
+      </span>
+    </Tooltip>
+  );
+}
+
+/** The expanded "判断" pane: who decided, why, under which profile. */
+function DecisionPane({ decision }: { decision: ToolDecided }) {
+  const v = describeDecision(decision);
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="text-micro text-fg-3">判断</div>
+      <div className="rounded-sm bg-canvas px-2.5 py-2 text-meta text-fg-2">
+        <div>
+          {v.label} · {DECIDER[v.decider].tooltip}（{PROFILE_INFO[decision.profile].label}）
+        </div>
+        {v.fullReason && <div className="mt-0.5 whitespace-pre-wrap text-fg-3">{v.fullReason}</div>}
+      </div>
+    </div>
+  );
+}
+
 /** One tool call line (32px): `▸ icon 動詞+対象  補足  所要時間`. */
 export function ToolLine({ call, nested = false }: { call: ToolCallView; nested?: boolean }) {
   const [open, setOpen] = useState(false);
   const d = call.desc;
   const dur = formatDuration(toolDurationMs(call) || null);
   const out = outputText(call.output);
+  const blocked = isBlocked(call);
+  // A block is not the agent failing: it reads the reason and carries on.
+  const failed = call.isError && !blocked;
+  const reason = blocked && call.decision ? describeDecision(call.decision).reason : null;
   return (
-    <div className={cn(!nested && 'rounded-md border border-line-subtle bg-surface')}>
+    <div className={cn(!nested && 'rounded-md border border-line-subtle bg-surface')} data-blocked={blocked || undefined}>
       <button
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         className={cn(
           'flex h-8 w-full items-center gap-2 rounded-md px-2.5 text-left text-ui hover:bg-hover',
-          call.isError ? 'text-st-failed' : 'text-fg-2',
+          failed ? 'text-st-failed' : 'text-fg-2',
         )}
       >
         <ChevronRight
@@ -93,12 +141,14 @@ export function ToolLine({ call, nested = false }: { call: ToolCallView; nested?
           strokeWidth={1.75}
           className={cn('shrink-0 text-fg-4 transition-transform duration-[120ms]', open && 'rotate-90')}
         />
-        <span className={cn('shrink-0', call.isError ? 'text-st-failed' : 'text-fg-3')}>
-          {call.isError ? <CircleX size={14} strokeWidth={1.5} /> : ICON[d.category]}
+        <span className={cn('shrink-0', failed ? 'text-st-failed' : blocked ? 'text-fg-2' : 'text-fg-3')}>
+          {blocked ? <ShieldBan size={14} strokeWidth={1.5} /> : failed ? <CircleX size={14} strokeWidth={1.5} /> : ICON[d.category]}
         </span>
-        <span className="min-w-0 flex-1 truncate">
-          {d.label}
-          {call.isError && out && <span className="ml-2 text-st-failed">{out.split('\n')[0]}</span>}
+        <span className="flex min-w-0 flex-1 items-center gap-2">
+          <span className="min-w-0 shrink truncate">{d.label}</span>
+          {blocked && <BlockedChip />}
+          {blocked && reason && <span className="min-w-0 flex-1 truncate text-fg-3">{reason}</span>}
+          {failed && out && <span className="min-w-0 truncate text-st-failed">{out.split('\n')[0]}</span>}
         </span>
         {d.additions != null && d.deletions != null && (
           <span className="shrink-0 font-mono text-meta tabular">
@@ -106,13 +156,21 @@ export function ToolLine({ call, nested = false }: { call: ToolCallView; nested?
             <span className="text-st-failed">{`−${d.deletions}`}</span>
           </span>
         )}
+        {blocked && call.decision && (
+          <Tooltip content={DECIDER[call.decision.decidedBy].tooltip}>
+            <span className="shrink-0 text-meta text-fg-3">{DECIDER[call.decision.decidedBy].badge}</span>
+          </Tooltip>
+        )}
+        {!blocked && call.decision && <DecisionNote decision={call.decision} />}
         {!call.done && <span className="shrink-0 text-meta text-fg-3">実行中…</span>}
         {dur && <span className="w-10 shrink-0 text-right text-meta text-fg-3 tabular">{dur}</span>}
       </button>
       <Expand open={open}>
         <div className="flex flex-col gap-2 px-3 pt-1 pb-3">
           <Pane label="入力" text={inputText(call.input)} />
-          <Pane label={call.isError ? 'エラー' : '出力'} text={out} error={call.isError} />
+          {call.decision && <DecisionPane decision={call.decision} />}
+          {/* A block's output is the reason the agent got: the 判断 pane already shows it. */}
+          {!blocked && <Pane label={call.isError ? 'エラー' : '出力'} text={out} error={call.isError} />}
         </div>
       </Expand>
     </div>
@@ -123,7 +181,8 @@ export function ToolLine({ call, nested = false }: { call: ToolCallView; nested?
 export function ToolGroup({ calls }: { calls: ToolCallView[] }) {
   const [open, setOpen] = useState(false);
   if (calls.length === 1) return <ToolLine call={calls[0]!} />;
-  const failed = calls.filter((c) => c.isError);
+  const blocked = calls.filter(isBlocked);
+  const failed = calls.filter((c) => c.isError && !isBlocked(c));
   const total = calls.reduce((n, c) => n + (toolDurationMs(c) ?? 0), 0);
   const running = calls.some((c) => !c.done);
   return (
@@ -143,6 +202,11 @@ export function ToolGroup({ calls }: { calls: ToolCallView[] }) {
           <Wrench size={14} strokeWidth={1.5} />
         </span>
         <span className="min-w-0 flex-1 truncate">{summarizeTools(calls)}</span>
+        {blocked.length > 0 && (
+          <span className="shrink-0 rounded-xs border border-line px-1 text-micro text-fg-2 tabular">
+            ブロック {blocked.length}
+          </span>
+        )}
         {failed.length > 0 && <span className="shrink-0 text-meta text-st-failed">失敗 {failed.length}</span>}
         {running && <span className="shrink-0 text-meta text-fg-3">実行中…</span>}
         {total > 0 && <span className="w-10 shrink-0 text-right text-meta text-fg-3 tabular">{formatDuration(total)}</span>}

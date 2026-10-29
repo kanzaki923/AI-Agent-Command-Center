@@ -18,14 +18,20 @@ const VIEW: SettingsView = {
   llmCallReserveUsd: 0.25,
 };
 
-function mount() {
-  let current = VIEW;
+function mount(view: SettingsView = VIEW) {
+  let current = view;
   const updates: unknown[] = [];
   const fake = createFakeClient({
     'settings.get': () => current,
     'settings.update': (p) => {
       updates.push(p);
-      current = { ...current, ...(p as Partial<SettingsView>) };
+      const patch = p as Partial<SettingsView>;
+      // Like the daemon: autoMode is merged field by field.
+      current = {
+        ...current,
+        ...patch,
+        ...(patch.autoMode && current.autoMode ? { autoMode: { ...current.autoMode, ...patch.autoMode } } : {}),
+      };
       return current;
     },
     'system.info': () => ({
@@ -66,6 +72,46 @@ describe('parseReserveUsd', () => {
     expect(parseReserveUsd('-1')).toBeNull();
     expect(parseReserveUsd('101')).toBeNull();
     expect(parseReserveUsd('abc')).toBeNull();
+  });
+});
+
+describe('<SettingsDialog> agent permissions', () => {
+  const WITH_PROFILES: SettingsView = {
+    ...VIEW,
+    defaultPermissionProfile: 'autonomous',
+    autoMode: { enabled: true, classifierModel: null },
+  };
+
+  it('picks the default profile, each with one plain line of what runs without asking', async () => {
+    const { updates } = mount(WITH_PROFILES);
+    const group = await screen.findByRole('radiogroup', { name: '既定のプロファイル' });
+    await waitFor(() => expect(group.querySelector('[aria-checked="true"]')).toHaveTextContent('おまかせ（推奨）'));
+    expect(group).toHaveTextContent('worktree の中で完結する作業はすべて確認なしで進めます');
+    expect(screen.getAllByText(/push・worktree の外への書き込み/).length).toBeGreaterThan(0);
+    await act(async () => {
+      fireEvent.click(group.querySelector('[data-profile="careful"]')!);
+    });
+    await waitFor(() => expect(updates).toEqual([{ defaultPermissionProfile: 'careful' }]));
+  });
+
+  it('turns auto mode off and saves the classifier model on blur', async () => {
+    const { updates } = mount(WITH_PROFILES);
+    const input = await screen.findByLabelText('分類器のモデル（LiteLLM 経由のとき）');
+    fireEvent.change(input, { target: { value: 'claude-sonnet' } });
+    await act(async () => {
+      fireEvent.blur(input);
+    });
+    await waitFor(() => expect(updates).toEqual([{ autoMode: { classifierModel: 'claude-sonnet' } }]));
+    const group = screen.getByRole('radiogroup', { name: 'Claude Code の Auto mode' });
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole('radio', { name: 'オフ' }).find((b) => group.contains(b))!);
+    });
+    await waitFor(() => expect(updates).toContainEqual({ autoMode: { enabled: false } }));
+  });
+
+  it('says so when the daemon has no permission profiles', async () => {
+    mount();
+    expect(await screen.findByText('この Core Daemon は権限のプロファイルに対応していません。')).toBeInTheDocument();
   });
 });
 

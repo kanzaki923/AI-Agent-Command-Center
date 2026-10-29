@@ -1,8 +1,10 @@
-import type { Project } from '@acc/protocol';
+import type { PermissionProfile, Project } from '@acc/protocol';
 import { Check, FolderGit2, GitBranch, TestTube2, TriangleAlert } from 'lucide-react';
 import { type ReactNode, useRef, useState } from 'react';
 import { createProject, inspectRepo, updateProject } from '../../daemon/orchestration';
-import { useProjects } from '../../daemon/queries';
+import { useProjects, useSettings } from '../../daemon/queries';
+import { DEFAULT_PROFILE } from '../../model/permissions';
+import { HardRulesNote, ProfilePicker, RememberedRules } from '../permissions/Permissions';
 import { type RepoInspection, branchText, dirtyText, suggestedRoot } from '../../model/repo';
 import { useRuntime } from '../../daemon/runtime';
 import { toast } from '../../store/toast';
@@ -284,7 +286,10 @@ function EditProjectForm({ project, onDone }: { project: Project; onDone: () => 
   const [name, setName] = useState(project.name);
   const [branch, setBranch] = useState(project.defaultBranch ?? '');
   const [testCommand, setTestCommand] = useState(project.testCommand ?? '');
+  const [profile, setProfile] = useState<PermissionProfile | null>(project.permissionProfile ?? null);
+  const globalDefault = useSettings().data?.defaultPermissionProfile ?? DEFAULT_PROFILE;
   const dirty =
+    profile !== (project.permissionProfile ?? null) ||
     name.trim() !== project.name ||
     (branch.trim() || null) !== project.defaultBranch ||
     (testCommand.trim() || null) !== project.testCommand;
@@ -303,6 +308,7 @@ function EditProjectForm({ project, onDone }: { project: Project; onDone: () => 
           ...((testCommand.trim() || null) !== project.testCommand
             ? { testCommand: testCommand.trim() || null }
             : {}),
+          ...(profile !== (project.permissionProfile ?? null) ? { permissionProfile: profile } : {}),
         });
       }}
     >
@@ -342,6 +348,15 @@ function EditProjectForm({ project, onDone }: { project: Project; onDone: () => 
           spellCheck={false}
         />
         <Hint>統合のあとに実行します。空なら検証を省略します。</Hint>
+      </div>
+      <div>
+        <FieldLabel>エージェントの権限</FieldLabel>
+        <ProfilePicker label="エージェントの権限" value={profile} onChange={setProfile} inherit={globalDefault} />
+        <HardRulesNote />
+      </div>
+      <div>
+        <FieldLabel>記憶した許可</FieldLabel>
+        <RememberedRules projectId={project.id} />
       </div>
       <div className="mt-1 flex justify-end gap-2">
         <Button variant="ghost" onClick={onDone}>

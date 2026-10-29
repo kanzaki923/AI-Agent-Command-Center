@@ -19,6 +19,7 @@ import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '../ui/M
 import { Cost, ElapsedTime } from '../ui/Meta';
 import { StatusIcon } from '../ui/StatusIcon';
 import { Tooltip } from '../ui/Tooltip';
+import { RunDecisionsChip } from '../permissions/Permissions';
 import { ChatStream } from './ChatStream';
 import { Composer } from './Composer';
 
@@ -99,6 +100,8 @@ function FocusHeader({ session, run, runs }: { session: Session; run: Run | null
           </span>
         </Tooltip>
       )}
+      {/* How tool uses were decided (agent runs): visible afterwards instead of asked before. */}
+      {(run ?? latest)?.kind === 'agent' && <RunDecisionsChip run={(run ?? latest)!} />}
       {live && run && <ElapsedTime start={run.startedAt ?? run.createdAt} />}
       <span className="flex items-center gap-1">
         <Cost usd={usage.costUsd} source={usage.costSource} />

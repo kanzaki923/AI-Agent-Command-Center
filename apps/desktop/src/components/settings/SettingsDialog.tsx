@@ -18,6 +18,8 @@ import { toastError } from '../../store/toast';
 import { Button } from '../ui/Button';
 import { type MotionPref, type ThemePref, useUi } from '../../store/ui';
 import { Dialog, FieldLabel, inputClass } from '../ui/Dialog';
+import { DEFAULT_PROFILE } from '../../model/permissions';
+import { HardRulesNote, ProfilePicker } from '../permissions/Permissions';
 import { LiteLlmForm } from './LiteLlmForm';
 
 type SettingsPatch = ParamsInput<'settings.update'>;
@@ -146,6 +148,82 @@ function NotificationSettings() {
   );
 }
 
+/**
+ * The default permission profile (projects that do not choose one) and Claude Code's auto
+ * mode (§8.6). Saved on change; the classifier model field on blur.
+ */
+function AgentPermissionSettings({
+  profile,
+  autoMode,
+  supported,
+  update,
+}: {
+  profile: NonNullable<SettingsPatch['defaultPermissionProfile']>;
+  autoMode: { enabled: boolean; classifierModel: string | null };
+  /** The daemon knows permission profiles (older ones do not report them). */
+  supported: boolean;
+  update: (patch: SettingsPatch) => void;
+}) {
+  if (!supported) {
+    return <p className="text-ui text-fg-3">この Core Daemon は権限のプロファイルに対応していません。</p>;
+  }
+  return (
+    <div className="flex flex-col gap-4">
+      <div>
+        <div className="mb-1.5 text-ui text-fg">既定のプロファイル</div>
+        <ProfilePicker
+          label="既定のプロファイル"
+          value={profile}
+          onChange={(v) => v && v !== profile && update({ defaultPermissionProfile: v })}
+        />
+        <p className="mt-1.5 text-meta text-fg-3">プロジェクトごとの設定がないときに使います。</p>
+        <HardRulesNote />
+      </div>
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-ui text-fg">Claude Code の Auto mode</div>
+          <div className="text-meta text-fg-3">
+            使えるときは、ルールで決まらない操作の判断を Claude Code の安全性の分類器に任せます（おまかせ・標準のみ）。ご自身の
+            Claude ログインか、LiteLLM で下の分類器のモデルを指定したときに使えます。使えないときや分類器が答えられないときは、Core
+            Daemon のルールで判断します。
+          </div>
+        </div>
+        <Segmented<'on' | 'off'>
+          label="Claude Code の Auto mode"
+          value={autoMode.enabled ? 'on' : 'off'}
+          onChange={(v) => {
+            if ((v === 'on') !== autoMode.enabled) update({ autoMode: { enabled: v === 'on' } });
+          }}
+          options={[
+            { value: 'on', label: 'オン' },
+            { value: 'off', label: 'オフ' },
+          ]}
+        />
+      </div>
+      {autoMode.enabled && (
+        <div className="-mt-1">
+          <FieldLabel htmlFor="classifier-model">分類器のモデル（LiteLLM 経由のとき）</FieldLabel>
+          <input
+            id="classifier-model"
+            className={`${inputClass} font-mono`}
+            defaultValue={autoMode.classifierModel ?? ''}
+            key={`classifier-${autoMode.classifierModel ?? ''}`}
+            placeholder="LiteLLM のモデル名（Claude Sonnet 4.6 以降）"
+            spellCheck={false}
+            onBlur={(e) => {
+              const v = e.target.value.trim() || null;
+              if (v !== autoMode.classifierModel) update({ autoMode: { classifierModel: v } });
+            }}
+          />
+          <p className="mt-1 text-meta text-fg-3">
+            空のままなら、LiteLLM 経由の Run は Core Daemon のルールで判断します。分類器の費用はまだ予算に含まれません。
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function SettingsDialog() {
   const rt = useRuntime();
   const open = useUi((s) => s.settingsOpen);
@@ -213,6 +291,14 @@ export function SettingsDialog() {
       </Section>
       <Section title="通知">
         <NotificationSettings />
+      </Section>
+      <Section title="エージェントの権限">
+        <AgentPermissionSettings
+          profile={settings?.defaultPermissionProfile ?? DEFAULT_PROFILE}
+          autoMode={settings?.autoMode ?? { enabled: true, classifierModel: null }}
+          supported={!!settings && settings.defaultPermissionProfile !== undefined}
+          update={update}
+        />
       </Section>
       <Section title="実行の制約">
         <p className="mb-3 text-meta text-fg-3">Core Daemon が強制します。LLM への指示ではありません。</p>

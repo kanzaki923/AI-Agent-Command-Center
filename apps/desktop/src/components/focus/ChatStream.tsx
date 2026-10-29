@@ -1,4 +1,4 @@
-import { type Approval, type Run, type Session, isTerminalRunStatus } from '@acc/protocol';
+import { type Run, type Session, isTerminalRunStatus } from '@acc/protocol';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { AlertTriangle, ArrowDown, Bot, Brain, ChevronRight, Pencil, RotateCcw, Square } from 'lucide-react';
 import { type ReactNode, memo, useEffect, useMemo, useState } from 'react';
@@ -13,13 +13,14 @@ import {
   useSessionRuns,
   useStreaming,
   useTasks,
+  useToolDecisionHistory,
 } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import type { ChatMessage } from '../../daemon/sync';
 import type { StickToBottom } from '../../hooks/useStickToBottom';
 import { cn } from '../../lib/cn';
 import { headLines } from '../../lib/tools';
-import { describeApproval } from '../../model/approval';
+import { decisionsByToolCall } from '../../model/permissions';
 import {
   type ChatBlock,
   buildChatBlocks,
@@ -30,7 +31,7 @@ import {
 } from '../../model/chat';
 import { toast } from '../../store/toast';
 import { useUi } from '../../store/ui';
-import { ResolvedLine, RiskNote, useApprovalControls } from '../approval/ApprovalControls';
+import { InlineApproval } from '../approval/ApprovalControls';
 import { GrantLine, OrchestratorIntro, useSessionGrants } from '../grant/Grant';
 import { Button } from '../ui/Button';
 import { CopyButton } from '../ui/CopyButton';
@@ -219,36 +220,6 @@ function AssistantBlock({ block }: { block: ChatBlock & { kind: 'assistant' } })
   );
 }
 
-function InlineApproval({ approval }: { approval: Approval }) {
-  const view = describeApproval(approval);
-  const pending = approval.status === 'pending';
-  const { controls, onKeyDown } = useApprovalControls(pending ? approval : null, view);
-  const barColor =
-    approval.status === 'pending'
-      ? 'var(--st-awaiting_approval)'
-      : approval.status === 'approved'
-        ? 'var(--border-strong)'
-        : 'var(--border-strong)';
-  return (
-    <div
-      tabIndex={pending ? 0 : -1}
-      onKeyDown={onKeyDown}
-      data-approval={approval.id}
-      className="relative flex flex-col gap-2 rounded-sm py-1 pl-4 outline-none focus-visible:bg-hover"
-    >
-      <span className="absolute top-0 bottom-0 left-0 w-0.5 rounded-full" style={{ background: barColor }} />
-      <div className={cn('text-ui font-medium', pending ? 'text-fg' : 'text-fg-3')}>{view.question}</div>
-      {view.target && (
-        <pre className="selectable overflow-x-auto rounded-sm border border-line-subtle bg-canvas px-2.5 py-1.5 font-mono text-code text-fg whitespace-pre-wrap">
-          {view.targetKind === 'command' ? `$ ${view.target}` : view.target}
-        </pre>
-      )}
-      {pending && <RiskNote view={view} />}
-      {pending ? controls : <ResolvedLine approval={approval} />}
-    </div>
-  );
-}
-
 function RunError({ run }: { run: Run }) {
   const rt = useRuntime();
   const connected = useConnectionState() === 'open';
@@ -356,6 +327,7 @@ function blockMessageId(b: ChatBlock): string | null {
 }
 
 export function ChatStream({ session, stick }: { session: Session; stick: StickToBottom }) {
+  const rt = useRuntime();
   const messages = useMessages(session.id);
   const pending = usePendingApprovals().data ?? NONE;
   const resolved = useResolvedApprovals();
@@ -377,6 +349,15 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
     return { taskTitle: (id: string) => titles.get(id) };
   }, [tasks]);
 
+  // Agent sessions: how each tool use was decided (the event log holds tool.decided).
+  const agent = session.kind === 'agent';
+  const decisionVersion = useToolDecisionHistory(agent ? session.id : null);
+  const decisions = useMemo(
+    () => (agent ? decisionsByToolCall(rt.streams.events.events, session.id) : undefined),
+    // `decisionVersion` changes whenever an event of this session reaches the (mutable) log.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [agent, decisionVersion, session.id, rt],
+  );
   const blocks = useMemo(() => {
     const approvals = [...pending, ...resolved].filter((a) => a.sessionId === session.id);
     const unique = [...new Map(approvals.map((a) => [a.id, a])).values()];
@@ -389,9 +370,10 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
         runs,
         grants: grants.filter((g) => g.subject.kind === 'session'),
         lookup,
+        decisions,
       }),
     );
-  }, [previous, messages.data, pending, resolved, streaming, runs, session.id, grants, lookup]);
+  }, [previous, messages.data, pending, resolved, streaming, runs, session.id, grants, lookup, decisions]);
 
   // ↑-editable: the last human message nothing answered yet (an agent run in progress is
   // not interrupted from here; its own stop control does that).

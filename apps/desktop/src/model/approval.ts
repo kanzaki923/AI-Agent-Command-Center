@@ -1,5 +1,6 @@
 import type { Approval } from '@acc/protocol';
 import { displayPath, toolCategory } from '../lib/tools';
+import { firstSentence } from './permissions';
 
 export type Risk = 'normal' | 'high';
 
@@ -14,6 +15,11 @@ export interface ApprovalView {
   risk: Risk;
   /** The daemon's own risk rating (`payload.risk` of tool approvals), when it gave one. */
   riskLevel: 'low' | 'medium' | 'high' | null;
+  /**
+   * Why it was not decided automatically (`payload.reason`, e.g. "新しい依存の追加は
+   * このプロジェクトでは確認が必要"). Approvals are the exception, so the card says why.
+   */
+  why: string | null;
 }
 
 export const RISK_LABEL = { low: '危険度 低', medium: '危険度 中', high: '危険度 高' } as const;
@@ -33,6 +39,8 @@ interface ToolPayload {
   input?: unknown;
   risk?: unknown;
   outsideWorkspace?: unknown;
+  reason?: unknown;
+  action?: unknown;
 }
 
 function payloadOf(a: Approval): ToolPayload {
@@ -40,12 +48,19 @@ function payloadOf(a: Approval): ToolPayload {
 }
 
 export function describeApproval(a: Approval): ApprovalView {
-  const r = payloadOf(a).risk;
+  const p = payloadOf(a);
+  const r = p.risk;
   const riskLevel = r === 'low' || r === 'medium' || r === 'high' ? r : r === 'critical' ? 'high' : null;
-  return { ...describeBase(a), riskLevel };
+  const why =
+    typeof p.reason === 'string'
+      ? firstSentence(p.reason)
+      : a.kind === 'integration' && p.action === 'verify'
+        ? '慎重プロファイルでは、エージェントが始めた統合のテストを実行する前に確認します'
+        : null;
+  return { ...describeBase(a), riskLevel, why };
 }
 
-function describeBase(a: Approval): Omit<ApprovalView, 'riskLevel'> {
+function describeBase(a: Approval): Omit<ApprovalView, 'riskLevel' | 'why'> {
   const p = payloadOf(a);
   const input = (p.input && typeof p.input === 'object' ? p.input : {}) as Record<string, unknown>;
   const toolName = typeof p.toolName === 'string' ? p.toolName : null;

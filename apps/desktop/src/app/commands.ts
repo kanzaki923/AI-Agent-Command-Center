@@ -86,8 +86,12 @@ export function focusComposerSoon(): void {
   });
 }
 
-export async function approve(rt: AppRuntime, approval: Approval): Promise<void> {
-  await respondApproval(rt, approval, 'approve');
+export async function approve(
+  rt: AppRuntime,
+  approval: Approval,
+  remember?: 'run' | 'task' | 'project',
+): Promise<void> {
+  await respondApproval(rt, approval, 'approve', undefined, remember ?? 'once');
 }
 
 export async function reject(rt: AppRuntime, approval: Approval, note?: string): Promise<void> {

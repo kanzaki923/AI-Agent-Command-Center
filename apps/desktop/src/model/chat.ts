@@ -8,6 +8,7 @@ import {
   type ToolLookup,
   describeTool,
 } from '../lib/tools';
+import type { ToolDecided } from './permissions';
 
 export interface ToolCallView {
   id: string;
@@ -20,6 +21,8 @@ export interface ToolCallView {
   desc: ToolDescription;
   at: string;
   endedAt: string | null;
+  /** How the daemon decided this use, when it recorded it (routine uses only count). */
+  decision: ToolDecided | null;
 }
 
 export type ChatBlock =
@@ -52,6 +55,8 @@ export function buildChatBlocks(input: {
   grants?: CapabilityGrant[];
   /** Names for Control API tool calls (task titles). */
   lookup?: ToolLookup;
+  /** tool.decided payloads by tool call id. */
+  decisions?: ReadonlyMap<string, ToolDecided>;
 }): ChatBlock[] {
   const results = new Map<string, { output: unknown; isError: boolean; at: string }>();
   for (const m of input.messages) {
@@ -115,6 +120,7 @@ export function buildChatBlocks(input: {
           desc: describeTool(p.name, p.input, input.lookup),
           at: m.createdAt,
           endedAt: r?.at ?? null,
+          decision: input.decisions?.get(p.toolCallId) ?? null,
         });
       }
     }
@@ -158,6 +164,7 @@ function sameCalls(a: ToolCallView[], b: ToolCallView[]): boolean {
         c.isError === d.isError &&
         c.output === d.output &&
         c.endedAt === d.endedAt &&
+        c.decision === d.decision &&
         c.desc.label === d.desc.label
       );
     })
@@ -224,6 +231,11 @@ export function messageText(m: { content: ChatMessage['content'] }): string {
     .filter((p) => p.type === 'text')
     .map((p) => p.text)
     .join('\n\n');
+}
+
+/** A tool use the daemon's rules (or the classifier) blocked: not a failure of the agent. */
+export function isBlocked(c: ToolCallView): boolean {
+  return c.decision?.decision === 'denied';
 }
 
 /** `ツール実行 6 件 · 読み取り 4 · 検索 2` */

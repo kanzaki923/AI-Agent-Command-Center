@@ -6,7 +6,7 @@ import { branchText, dirtyText, failedInspection, suggestedRoot } from '../../mo
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
 import { TooltipProvider } from '../ui/Tooltip';
-import { NewProjectForm } from './ProjectDialog';
+import { NewProjectForm, ProjectDialog } from './ProjectDialog';
 
 const PROJECT = {
   id: 'prj_00000000000000000000000001',
@@ -173,5 +173,85 @@ describe('<NewProjectForm> with project.inspectRepo', () => {
     });
     expect(screen.getByText('リポジトリのルート（.git があるフォルダ）を絶対パスで指定します。')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'プロジェクトを追加' })).toBeEnabled();
+  });
+});
+
+describe('<ProjectDialog> agent permissions', () => {
+  const RULE = {
+    id: 'prl_00000000000000000000000001',
+    projectId: PROJECT.id,
+    scope: 'project' as const,
+    runId: null,
+    taskId: null,
+    toolName: 'Bash',
+    commandKeys: ['pnpm add'],
+    pathPrefix: null,
+    description: 'コマンド「pnpm add」を許可',
+    approvalId: null,
+    createdBy: { kind: 'human' as const, client: 'test' },
+    createdAt: '2026-10-29T05:00:00.000Z',
+    revokedAt: null,
+    revokedBy: null,
+  };
+
+  function mountEdit() {
+    const calls: { method: string; params: unknown }[] = [];
+    const fake = createFakeClient({
+      'project.list': () => ({ items: [{ ...PROJECT, permissionProfile: null }], nextCursor: null }),
+      'settings.get': () => ({
+        litellm: { baseUrl: null, hasApiKey: false, apiKeyMasked: null },
+        defaultModel: null,
+        defaultRuntime: null,
+        maxConcurrentRuns: 10,
+        maxDelegationDepth: 1,
+        defaultPermissionProfile: 'autonomous',
+      }),
+      'permissionRule.list': () => ({ items: [RULE] }),
+      'permissionRule.revoke': (p) => {
+        calls.push({ method: 'permissionRule.revoke', params: p });
+        return { ...RULE, revokedAt: '2026-10-29T06:00:00.000Z' };
+      },
+      'project.update': (p) => {
+        calls.push({ method: 'project.update', params: p });
+        return { ...PROJECT, permissionProfile: (p as { permissionProfile?: unknown }).permissionProfile ?? null };
+      },
+    });
+    useUi.setState({ projectDialog: { kind: 'edit', projectId: PROJECT.id } });
+    render(
+      <RuntimeProvider runtime={createRuntime(fake.client)}>
+        <TooltipProvider>
+          <ProjectDialog />
+        </TooltipProvider>
+      </RuntimeProvider>,
+    );
+    return calls;
+  }
+
+  it('follows the global default until a profile is chosen, then saves it', async () => {
+    const calls = mountEdit();
+    const group = await screen.findByRole('radiogroup', { name: 'エージェントの権限' });
+    await waitFor(() =>
+      expect(group.querySelector('[aria-checked="true"]')).toHaveTextContent('全体の既定に従う（おまかせ）'),
+    );
+    fireEvent.click(group.querySelector('[data-profile="careful"]')!);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    });
+    expect(calls).toContainEqual({
+      method: 'project.update',
+      params: { projectId: PROJECT.id, permissionProfile: 'careful' },
+    });
+  });
+
+  it('lists remembered approvals and takes one back', async () => {
+    const calls = mountEdit();
+    const list = await screen.findByTestId('remembered-rules');
+    expect(list).toHaveTextContent('コマンド「pnpm add」を許可');
+    expect(list).toHaveTextContent('プロジェクト全体');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '「コマンド「pnpm add」を許可」を取り消す' }));
+    });
+    expect(calls).toContainEqual({ method: 'permissionRule.revoke', params: { ruleId: RULE.id } });
+    await waitFor(() => expect(screen.getByTestId('no-remembered-rules')).toBeInTheDocument());
   });
 });

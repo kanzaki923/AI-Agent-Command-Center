@@ -8,7 +8,9 @@
 //   2. Command Mode → T opens the task board: the ready task is under 着手可能 and the
 //      waiting one under 未着手（依存待ち）.
 //   3. j selects the ready task, R starts its worker (task.spawnWorker): the UI moves to the
-//      worker's conversation and the daemon reports the task as no longer ready.
+//      worker's conversation and the daemon reports the task as no longer ready. The worker
+//      finishes without a single approval (default おまかせ profile) and its header shows the
+//      automatic decisions (自動判断 N 件).
 //   4. Ctrl+K, typing a word from an earlier chat message: the palette lists the message
 //      (session.search) with the word marked; Enter opens that conversation.
 //
@@ -120,6 +122,29 @@ try {
   // The UI follows into the worker's conversation (Focus).
   await page.getByRole('button', { name: /停止|再試行/ }).or(page.getByLabel('メッセージ')).first().waitFor({ timeout: 15_000 });
   await shot('worker-opened');
+
+  // The worker finishes on its own in the default おまかせ profile: no approval on the way,
+  // and its header says what was decided automatically instead.
+  const workerRun = await waitFor(
+    async () => {
+      const r = (await rpc.call('run.list', { sessionId: started.assigneeSessionId })).items[0];
+      return r && ['completed', 'failed', 'cancelled'].includes(r.status) ? r : null;
+    },
+    'the worker run to end',
+    60_000,
+  );
+  if (workerRun.status !== 'completed') throw new Error(`worker run ${workerRun.status}`);
+  const asked = (
+    await rpc.call('approval.list', {
+      status: ['pending', 'approved', 'rejected', 'expired', 'cancelled'],
+      projectId: project.id,
+    })
+  ).items;
+  if (asked.length > 0) throw new Error(`the worker asked: ${asked.map((a) => a.title).join(', ')}`);
+  const chipText = await page.getByTestId('decisions-chip').innerText({ timeout: 15_000 });
+  if (!/自動判断 [1-9]\d* 件/.test(chipText)) throw new Error(`decision chip says "${chipText}"`);
+  await shot('worker-done-zero-approvals');
+  log(`worker completed without approvals; header: ${chipText}`);
 
   // 4. message search in the palette
   await page.keyboard.press('Control+1');

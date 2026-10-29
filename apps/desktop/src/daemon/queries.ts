@@ -6,6 +6,7 @@ import type {
   CapabilityGrant,
   Integration,
   ModelInfo,
+  PermissionRule,
   Project,
   Run,
   Session,
@@ -395,4 +396,50 @@ export function useSessionEventVersion(sessionId: string): number {
   const log = rt.streams.events;
   // The counter lives beside the store and is updated before each store change.
   return useStore(log.store, () => log.sessionVersion(sessionId));
+}
+
+/**
+ * Remembered tool approvals of a project (active ones, newest first). rule_created /
+ * rule_revoked events keep the list current (sync.ts). An older daemon without the method
+ * shows none.
+ */
+export function usePermissionRules(projectId: string | null | undefined) {
+  const rt = useRuntime();
+  return useQuery<PermissionRule[]>({
+    queryKey: qk.permissionRules(projectId ?? ''),
+    queryFn: () =>
+      rt.callOr('permissionRule.list', { projectId: projectId! }, { items: [] }).then((r) => r.items),
+    enabled: !!projectId,
+  });
+}
+
+/**
+ * Load a session's tool decisions (tool.decided) into the shared event log, so the chat can
+ * show how each tool use was decided after a reload too; live ones arrive by the
+ * subscription. Returns the session's event-log version (changes when one of its events
+ * arrives).
+ */
+export function useToolDecisionHistory(sessionId: string | null | undefined): number {
+  const rt = useRuntime();
+  useQuery<number>({
+    queryKey: qk.toolDecisions(sessionId ?? ''),
+    queryFn: async () => {
+      let since = 0;
+      for (let page = 0; page < 10; page++) {
+        const r = await rt.client.call('events.list', {
+          sessionId: sessionId!,
+          types: ['tool.decided'],
+          since,
+          limit: 1000,
+        });
+        rt.streams.events.addMany(r.events);
+        since = r.lastSeq;
+        if (!r.hasMore || r.events.length === 0) break;
+      }
+      return since;
+    },
+    enabled: !!sessionId,
+  });
+  const log = rt.streams.events;
+  return useStore(log.store, () => (sessionId ? log.sessionVersion(sessionId) : 0));
 }
