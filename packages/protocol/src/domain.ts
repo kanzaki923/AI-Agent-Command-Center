@@ -518,6 +518,11 @@ export const ToolApprovalPayload = z.object({
   category: z.string().optional(),
   /** Why it was not decided automatically (Japanese). */
   reason: z.string().optional(),
+  /**
+   * What `approval.respond({ remember })` would remember, shown before the human picks a
+   * scope (e.g. "コマンド「node scripts/test.js」を許可"). Null: it cannot be remembered.
+   */
+  rememberAs: z.string().nullable().optional(),
 });
 export type ToolApprovalPayload = z.infer<typeof ToolApprovalPayload>;
 

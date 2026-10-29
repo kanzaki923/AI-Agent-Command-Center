@@ -20,6 +20,12 @@ export interface ApprovalView {
    * このプロジェクトでは確認が必要"). Approvals are the exception, so the card says why.
    */
   why: string | null;
+  /**
+   * What remembering would allow (`payload.rememberAs`, e.g. "コマンド「node scripts/test.js」を
+   * 許可"), shown before the human picks a scope. Null: the daemon cannot remember it;
+   * undefined: the daemon did not say.
+   */
+  rememberAs?: string | null;
 }
 
 export const RISK_LABEL = { low: '危険度 低', medium: '危険度 中', high: '危険度 高' } as const;
@@ -41,6 +47,7 @@ interface ToolPayload {
   outsideWorkspace?: unknown;
   reason?: unknown;
   action?: unknown;
+  rememberAs?: unknown;
 }
 
 function payloadOf(a: Approval): ToolPayload {
@@ -57,7 +64,9 @@ export function describeApproval(a: Approval): ApprovalView {
       : a.kind === 'integration' && p.action === 'verify'
         ? '慎重プロファイルでは、エージェントが始めた統合のテストを実行する前に確認します'
         : null;
-  return { ...describeBase(a), riskLevel, why };
+  const rememberAs =
+    typeof p.rememberAs === 'string' ? p.rememberAs : p.rememberAs === null ? null : undefined;
+  return { ...describeBase(a), riskLevel, why, ...(rememberAs !== undefined ? { rememberAs } : {}) };
 }
 
 function describeBase(a: Approval): Omit<ApprovalView, 'riskLevel' | 'why'> {

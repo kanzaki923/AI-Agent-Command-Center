@@ -16,6 +16,7 @@ import { ToolGate } from './gate';
 import { classifyToolRisk } from './risk';
 import { RuntimeSessionStore } from './state';
 import { approvalDetailFor, approvalTitleFor, truncate } from './tools';
+import { ruleMatcher } from './rules';
 
 /**
  * The "agent" RunExecutor: runs a coding-agent runtime in the run's workspace and turns its
@@ -97,6 +98,7 @@ async function executeAgentRun(
           risk: classifyToolRisk({ toolName: req.toolName, input: req.input, cwd: workspace.path }),
           ...(req.category ? { category: req.category } : {}),
           ...(req.reason ? { reason: req.reason } : {}),
+          rememberAs: ruleMatcher(req.toolName, req.input, workspace.path)?.description ?? null,
         } satisfies ToolApprovalPayload,
       }),
   });

@@ -65,6 +65,27 @@ const SUBCOMMAND_PROGRAMS = new Set([
   'make',
 ]);
 
+/**
+ * Interpreters: the program says nothing about what runs, so a rule names the script too
+ * ("node scripts/test.js"). Inline code (`node -e`, `python -c`) is never remembered.
+ */
+const INTERPRETERS = new Set([
+  'node',
+  'python',
+  'python3',
+  'py',
+  'ruby',
+  'perl',
+  'php',
+  'bash',
+  'sh',
+  'zsh',
+  'pwsh',
+  'powershell',
+  'tsx',
+  'ts-node',
+]);
+
 function programName(word: string): string {
   return word
     .replace(/^.*[\\/]/, '')
@@ -88,8 +109,17 @@ export function commandKeys(
     for (const c of parsed.commands) {
       if (c.argv.length > 0) {
         const prog = programName(c.argv[0]!);
-        const sub = c.argv.slice(1).find((a) => !a.startsWith('-'));
-        keys.add(SUBCOMMAND_PROGRAMS.has(prog) && sub ? `${prog} ${sub}` : prog);
+        const args = c.argv.slice(1);
+        if (INTERPRETERS.has(prog)) {
+          // Flags before the script may run or load other code (`-e`, `-c`, `--require`):
+          // only "<interpreter> <script>" is generalized.
+          const script = args[0];
+          if (!script || script.startsWith('-')) return false;
+          keys.add(`${prog} ${script.replace(/\\/g, '/')}`);
+        } else {
+          const sub = args.find((a) => !a.startsWith('-'));
+          keys.add(SUBCOMMAND_PROGRAMS.has(prog) && sub ? `${prog} ${sub}` : prog);
+        }
       }
       for (const s of c.substitutions) if (!visit(s, depth + 1)) return false;
     }

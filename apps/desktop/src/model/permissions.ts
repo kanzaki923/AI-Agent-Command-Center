@@ -197,8 +197,8 @@ export const REMEMBERED_TEXT: Record<RememberScope, string> = {
  * Whether an approval can be remembered at all: only tool uses (the daemon turns them into a
  * rule), and never high-risk ones (§7.2: `A` is disabled there).
  */
-export function canRemember(approval: Approval, view: Pick<ApprovalView, 'risk'>): boolean {
-  return approval.kind === 'tool_use' && !!approval.projectId && view.risk !== 'high';
+export function canRemember(approval: Approval, view: Pick<ApprovalView, 'risk' | 'rememberAs'>): boolean {
+  return approval.kind === 'tool_use' && !!approval.projectId && view.risk !== 'high' && view.rememberAs !== null;
 }
 
 export function rememberOptions(approval: Approval): RememberOption[] {
@@ -216,9 +216,10 @@ export function rememberOptions(approval: Approval): RememberOption[] {
 }
 
 /** One sentence under the remember chooser: what changes, and that hard rules still apply. */
-export function rememberHint(view: Pick<ApprovalView, 'targetKind'>): string {
+export function rememberHint(view: Pick<ApprovalView, 'targetKind' | 'rememberAs'>): string {
   const what = view.targetKind === 'command' ? '同じ種類のコマンド' : view.targetKind === 'file' ? '同じ場所への同じ操作' : '同じ操作';
-  return `${what}を、選んだ範囲では確認なしで進めます。Core Daemon のルールで止める操作は対象外です。このプロジェクトを選んだ場合は、プロジェクトの設定から取り消せます。`;
+  const lead = view.rememberAs ? `覚える内容：${view.rememberAs}。` : '';
+  return `${lead}${what}を、選んだ範囲では確認なしで進めます。Core Daemon のルールで止める操作は対象外です。このプロジェクトを選んだ場合は、プロジェクトの設定から取り消せます。`;
 }
 
 /** `この Run` / `Task「…」` / `プロジェクト全体` for the remembered-rules list. */

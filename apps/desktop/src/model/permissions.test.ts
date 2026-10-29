@@ -12,6 +12,7 @@ import {
   effectiveProfile,
   firstSentence,
   recentBlocks,
+  rememberHint,
   rememberOptions,
   summarizeDecisions,
 } from './permissions';
@@ -148,6 +149,17 @@ describe('remembering an approval', () => {
     expect(canRemember(push, describeApproval(push))).toBe(false);
     const verify = approval(r, { kind: 'integration', payload: { action: 'verify', command: 'pnpm test' } });
     expect(canRemember(verify, describeApproval(verify))).toBe(false);
+  });
+
+  it('shows what would be remembered, and offers nothing the daemon cannot remember', () => {
+    const a = approval(r, {
+      payload: { toolName: 'Bash', input: { command: 'node scripts/test.js' }, rememberAs: 'コマンド「node scripts/test.js」を許可' },
+    });
+    const view = describeApproval(a);
+    expect(canRemember(a, view)).toBe(true);
+    expect(rememberHint(view)).toMatch(/^覚える内容：コマンド「node scripts\/test\.js」を許可。/);
+    const inline = approval(r, { payload: { toolName: 'Bash', input: { command: 'node -e "x()"' }, rememberAs: null } });
+    expect(canRemember(inline, describeApproval(inline))).toBe(false);
   });
 
   it('says why the daemon asked', () => {

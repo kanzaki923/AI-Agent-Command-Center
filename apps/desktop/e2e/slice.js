@@ -256,13 +256,18 @@ try {
   );
   log(`careful profile asked: ${ask.title} (${ask.payload?.reason ?? 'no reason'})`);
   await page.getByRole('heading', { name: '司令室' }).waitFor();
-  await page.keyboard.press('Control+j');
+  // The RPC can see the approval before the UI does: jump only once the card is on the board.
   const card = page.getByRole('option', { name: /慎重な Worker · 承認待ち/ });
   await card.waitFor();
+  await page.keyboard.press('Control+j');
   await page.getByTestId('approve-always').first().waitFor();
+  // Keys act on the selected card: wait for the board to select it, not just render it.
+  await page.locator('[role="option"][aria-selected="true"]', { hasText: '慎重な Worker' }).waitFor();
   await shot('careful-approval-card');
   await page.keyboard.press('a');
   await page.getByTestId('remember-chooser').waitFor();
+  // The card says what will be remembered before a scope is picked.
+  await page.getByText('覚える内容：コマンド「node scripts/test.js」を許可').waitFor();
   await page.waitForTimeout(250); // the buttons cross-fade (120ms)
   await shot('careful-remember-chooser');
   await page.keyboard.press('3');

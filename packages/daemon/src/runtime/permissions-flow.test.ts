@@ -31,14 +31,14 @@ const PLAN = [
   'テストを動かして',
   '```acc-mock',
   JSON.stringify([
-    { type: 'run', command: 'node', args: ['-e', 'process.exit(0)'], onReject: 'continue' },
+    { type: 'run', command: 'node', args: ['scripts/check.js'], onReject: 'continue' },
     { type: 'run', command: 'git', args: ['push', 'origin', 'HEAD'] },
   ]),
   '```',
 ].join('\n');
 
 async function setup(profile?: 'careful' | 'standard' | 'autonomous') {
-  repo = await createTempRepo();
+  repo = await createTempRepo({ 'scripts/check.js': 'process.exit(0);\n' });
   d = await createTestDaemon();
   const fast = new MockAgentRuntime({ stepDelayMs: 0, typingDelayMs: 0 });
   vi.spyOn(d.ctx.service('runtimes').get('mock'), 'run').mockImplementation((input) =>
@@ -97,7 +97,7 @@ describe('tool permissions through the daemon', () => {
     expect(run.toolDecisions).toEqual({ allowed: 1, denied: 1, asked: 0 });
     const decided = s.decided(runId);
     expect(decided.map((x) => [x.decision, x.decidedBy, x.category, x.rule])).toEqual([
-      ['allowed', 'rule', 'command_other', null],
+      ['allowed', 'rule', 'build_test', null],
       ['denied', 'rule', 'command_other', 'publish_remote'],
     ]);
     // Events carry the run's refs so the Timeline can filter them.
@@ -111,7 +111,12 @@ describe('tool permissions through the daemon', () => {
     // 1st run: the command is asked; the human approves it for the project.
     const first = await s.send();
     const ap = await s.pending(first);
-    expect(ap.payload).toMatchObject({ toolName: 'Bash', category: 'command_other' });
+    expect(ap.payload).toMatchObject({
+      toolName: 'Bash',
+      category: 'build_test',
+      // Shown on the card before the human picks a scope.
+      rememberAs: 'コマンド「node scripts/check.js」を許可',
+    });
     await s.d.call(HUMAN, 'approval.respond', {
       approvalId: ap.id,
       decision: 'approve',
@@ -123,7 +128,7 @@ describe('tool permissions through the daemon', () => {
       expect.objectContaining({
         scope: 'project',
         toolName: 'Bash',
-        commandKeys: ['node'],
+        commandKeys: ['node scripts/check.js'],
         approvalId: ap.id,
         revokedAt: null,
       }),

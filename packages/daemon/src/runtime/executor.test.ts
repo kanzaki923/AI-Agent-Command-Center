@@ -320,6 +320,8 @@ describe('agent executor', () => {
           risk: 'medium',
           category: 'command_other',
           reason: expect.stringContaining('確認が必要') as string,
+          // Inline code is never remembered, so the card offers no "今後も許可".
+          rememberAs: null,
         },
       },
     ]);

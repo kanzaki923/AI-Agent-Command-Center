@@ -433,6 +433,23 @@ describe('remembered approvals', () => {
     expect(ruleMatches(rule, 'PowerShell', { command: 'pnpm add x' }, WS)).toBe(false);
   });
 
+  it('name the script for interpreters and never remember inline code', () => {
+    expect(commandKeys('node scripts/test.js')).toEqual(['node scripts/test.js']);
+    expect(commandKeys('python .\\tools\\gen.py --out x', 'powershell')).toEqual([
+      'python ./tools/gen.py',
+    ]);
+    expect(commandKeys('node -e "require(1)"')).toBeNull();
+    expect(commandKeys('python -c "print(1)"')).toBeNull();
+    expect(commandKeys('node --require ./hook.js scripts/test.js')).toBeNull();
+    expect(commandKeys('bash')).toBeNull();
+    const rule = ruleMatcher('Bash', { command: 'node scripts/test.js' }, WS)!;
+    expect(rule.description).toBe('コマンド「node scripts/test.js」を許可');
+    expect(ruleMatches(rule, 'Bash', { command: 'node scripts/test.js --watch' }, WS)).toBe(true);
+    expect(ruleMatches(rule, 'Bash', { command: 'node scripts/other.js' }, WS)).toBe(false);
+    expect(ruleMatches(rule, 'Bash', { command: 'node -e "x()"' }, WS)).toBe(false);
+    expect(ruleMatcher('Bash', { command: 'node -e "x()"' }, WS)).toBeNull();
+  });
+
   it('match paths under the approved directory', () => {
     // Host paths: rules are matched where the daemon runs.
     const ws = path.resolve('/work/ws');
