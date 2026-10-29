@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type AccClient, createClient } from '@acc/client';
 import { DaemonInfo } from '@acc/protocol';
+import { createTempRepo, isolateGitConfig } from './workspace/git-fixture';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const pkgDir = join(import.meta.dirname, '..');
@@ -98,12 +99,18 @@ describe('daemon bundle', () => {
       reconnect: false,
     });
     await client.ready();
+    const restoreGit = isolateGitConfig();
+    const repo = await createTempRepo().finally(restoreGit);
     try {
       // A Claude Code run fails with the locator's reason (not "SDK を読み込めませんでした").
-      const demo = await client.call('system.setupDemo', {});
-      const [main] = (await client.call('workspace.list', { projectId: demo.project.id })).items;
+      const project = await client.call('project.create', {
+        name: 'bundle',
+        repoPath: repo.path,
+        defaultBranch: 'main',
+      });
+      const [main] = (await client.call('workspace.list', { projectId: project.id })).items;
       const session = await client.call('session.create', {
-        projectId: demo.project.id,
+        projectId: project.id,
         kind: 'agent',
         runtime: 'claude-agent-sdk',
         workspaceId: main!.id,
@@ -127,6 +134,7 @@ describe('daemon bundle', () => {
       client.close();
     }
     expect(await first.exited).toBe(0);
+    await repo.cleanup();
     expect(existsSync(join(home, 'daemon.json'))).toBe(false);
   }, 60_000);
 });

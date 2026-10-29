@@ -354,6 +354,10 @@ export interface InboxDeliverInput {
   kind: InboxItemKind;
   refs?: InboxItemRefs;
   actor: Actor;
+  /** Messages to a busy agent: stop its current run (`superseded`) and start a new one now. */
+  interrupt?: boolean;
+  /** Model override of the run a message starts (session.send `model`). */
+  model?: string | null;
 }
 
 export interface InboxDeliverResult {

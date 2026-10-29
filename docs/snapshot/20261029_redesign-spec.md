@@ -914,3 +914,23 @@ T0 で仕様から足した・変えたもの（各トラックはこれを前�
 | T3-6 | 早送りできなかった採用は `awaiting_approval` ＋ `error.code: apply_failed` ＋ 出番 review（子の会話） | 人が反映先を片付けてから `integration.approve` で続けられる |
 | T3-7 | `redo` は `task.retry` を依頼者の actor で呼ぶ。agent は `task.spawnWorker` の権限で判定される（`assertCanSpawnWorker`） | T2 が `session.spawn` の子の判定（`assertCanSpawnChild`）に揃えるまでの継ぎ目。T1 の指揮役プリセットで redo するには T2 側の対応が要る |
 | T3-8 | `done` の Task の成果物を redo すると Task を `review` に戻してから再実行する | 既定で人の確認が要らない成果物（`reviewBy: none`）も依頼者がやり直せるように |
+
+### 7.7 T1 Supervisor で入れた差分（T1 の実装時に追記）
+
+| # | 差分 | 理由 |
+|---|---|---|
+| S1 | `session.grantOrchestration` はまだ `session.delegate` の別名にしない。旧プリセット（`task.*` と待機）のまま残し、`task.wait` / `integration.wait` は `tool: false` にしたうえで、旧プリセットのセッションにだけ Executor がツールとして足す（`lendSlot` もそのため残す）。`mock/orchestrator` も `session.spawn` がツールにあるときだけ新しい状態機械、なければ旧の流れ | T1 のブランチでは `session.spawn` が T2 のスタブなので、別名にするとコードの縦の流れ（e2e:slice、統合の e2e）が動く経路を失う。コードの流れが `session.spawn` に移った時点で `orchestrator/index.ts` の 1 か所を別名に替える |
+| S2 | 旧 mock の「判断の記録つきの報告」を「記録だけの返事 → ツールなしの報告」に分けた | 旧 mock は報告に記録を付けていたため、結果のたびに同じ報告を繰り返し、ターン上限（80）で黙って止まっていた（ループ検出で表に出た） |
+| S3 | `InboxDeliverInput += { interrupt?, model? }`（contracts.ts） | `session.send` の `interrupt` と `model` を inbox に渡すため（追加のみ） |
+| S4 | `drain` が渡すのは発言（`user_message` / メッセージ付きの `answer`）だけ。子の更新・予算・再開は実行中の Run に差し込まず、Run の終了後の起床にまとめる | 起床のメッセージ（`meta.wake`）を 1 か所で作り、ツールの結果の並びを崩さない |
+| S5 | 子の更新は T7 の `recompute` に頼らず、Run の終了・`task.updated`・`attention.*`・`session.state_changed` のたびに `deriveSessionState` で読む（状態と最新 Run の組で 1 回）。`stopped` は `session.stop` が直接知らせる | T7 の前でも動き、T7 の状態イベントが来ても重ならない |
+| S6 | 起床のメッセージは system（`meta.wake`）で保存し、モデルには `[状況の更新]` で始まる user のターンとして送る | LiteLLM 経由の Anthropic は途中の system メッセージを system prompt に寄せるため、順序が崩れる |
+| S7 | `session.stop` は止めた会話すべてを `supervision: paused` にし、Task を先に `paused` にしてから Run を止める。人間の発言は止まった会話を `active` に戻す | 「止めた」を指揮役以外でも同じ意味にし、Run の終了を追う側（旧 Worker、T2 の完了）に失敗と読ませない |
+| S8 | 1 実行のモデル呼び出しの上限とループ検出は普通の会話の Run にも効かせる（`maxModelCallsPerRun`）。`turn_limit` / `loop_detected` の出番 `stuck` は会話の種類を問わず `supervision: paused` を伴う | D11 は Run 一般の暴走防止のため |
+| S9 | 普通の会話への差し込みは、今の回答の後に同じ Run で続ける（新しい Run は作らない）。エージェントに溜まった発言は 1 通ずつ順に Run にする | 1 回のモデル呼び出しで済み、エージェントの Runtime には 1 回 1 プロンプトしか渡せない |
+| S10 | プロジェクトなしの `session.delegate` は Grant の scope を `{}`（会話の木のスコープだけが効く）。もう一度 `delegate` すると Grant を作り直し、会話の有効な予算はそのまま使う | `projectIds: []` だとプロジェクトのない子の操作がすべて拒否される |
+| S11 | 一時的なエラーの再起床のタイマーはメモリ上だけ（再起動で消える） | 再起動では中断の `resume` が別に起こす。失敗した Run の再試行までは持ち越さない |
+| S12 | 再起動後の子の自動再開は「再開の Run 自身が中断されたら、もう自動では再開しない」で 1 回に限る。旧プリセットの Worker は対象外（旧の流れが `task.retry` で再開する）。旧プリセットの通知は `autoResumeOrchestrators` と `autoResume` の両方が true のとき | 再起動のループで費用を使い続けない。二重の再開を避ける |
+| S13 | `system.setupDemo` の `name` の既定を `launch-demo` にし（api.ts）、結果の `repoPath` はデモのフォルダ。週次レポートは定期実行のメソッドがあるときだけ作る。旧デモの Node プロジェクトは `DEMO_FILES` として scene スクリプト用に残す | git なしのデモ（§3.13）。T6 の前でも setupDemo が失敗しない |
+| S14 | `toChatMessages` は、ツール呼び出しの結果がそろう前に保存された発言を結果の後ろに回す | 差し込みの発言が履歴の中で呼び出しと結果の間に入り、次の Run で結果が欠けたことにされていた |
+| S15 | モックの指揮役は、コードの子の統合（`integration.create`）までは自分でしない。最終報告で人の確認を求める | 統合に要る Task の ID が指揮役から見えない（`session.tree` にない）。複数の子の統合は本物のモデルか T3 の流れで |

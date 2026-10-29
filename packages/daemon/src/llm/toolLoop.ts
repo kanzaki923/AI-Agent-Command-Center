@@ -1,4 +1,4 @@
-import { type ContentPart, EMPTY_USAGE, type Usage } from '@acc/protocol';
+import { type ContentPart, EMPTY_USAGE, type RunStopReason, type Usage } from '@acc/protocol';
 import type { ApprovalRequest, RunController } from '../contracts';
 import type { DaemonContext } from '../core/context';
 import { ApiError } from '../core/errors';
@@ -16,6 +16,23 @@ export interface ToolLoopOptions {
   tools?: LoopTool[];
   /** Max model calls (default 20). The loop stops with stopReason "max_turns" after that. */
   maxTurns?: number;
+  /**
+   * Fail the run instead (RunStopError `turn_limit`) when the model wants more than
+   * `maxTurns` calls. Runs use this (spec 20261029 §3.2); plain loop users get a result.
+   */
+  failOnTurnLimit?: boolean;
+  /**
+   * Stop with RunStopError `loop_detected` when the model makes the same tool calls (same
+   * arguments) or writes the same text in `LOOP_REPEATS` consecutive replies. Default true.
+   */
+  detectLoops?: boolean;
+  /**
+   * Messages that arrived while the loop ran (a user writing to a busy session). Called at
+   * each step boundary — after a turn's tool results, before the next model call — and once
+   * after the model answered without tools; what it returns is added to the conversation
+   * and the loop continues instead of ending (spec 20261029 §3.2).
+   */
+  inject?: () => ChatMessage[];
   temperature?: number;
   /**
    * Called before each tool execution. Return an ApprovalRequest to require a decision
@@ -46,6 +63,67 @@ export function addUsage(a: Usage, b: Partial<Usage>): Usage {
     costUsd: a.costUsd + (b.costUsd ?? 0),
     costSource: b.costSource ?? a.costSource,
   };
+}
+
+/** Same tool calls or same text this many replies in a row → loop_detected. */
+export const LOOP_REPEATS = 3;
+
+const STOP_MESSAGES: Record<'turn_limit' | 'loop_detected', (n: number) => string> = {
+  turn_limit: (n) => `モデルの呼び出しが 1 回の実行の上限（${n} 回）に達したため止めました`,
+  loop_detected: () => '同じ操作か同じ返事を繰り返していたため止めました',
+};
+
+/**
+ * Thrown when the daemon stops a run on its own (turn limit, loop). `code` becomes the run's
+ * statusReason and error code (runs/manager.ts).
+ */
+export class RunStopError extends Error {
+  constructor(
+    readonly code: RunStopReason,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'RunStopError';
+  }
+}
+
+/** Counts how often the same value came in a row. */
+class RepeatCounter {
+  private last: string | null = null;
+  private n = 0;
+
+  /** Record a value (null breaks the streak) and return the length of the current streak. */
+  push(value: string | null): number {
+    if (value === null) {
+      this.last = null;
+      this.n = 0;
+      return 0;
+    }
+    this.n = value === this.last ? this.n + 1 : 1;
+    this.last = value;
+    return this.n;
+  }
+}
+
+function callSignature(calls: ChatToolCall[]): string | null {
+  if (calls.length === 0) return null;
+  const parts = calls.map((c) => {
+    const parsed = parseArguments(c.arguments);
+    return `${c.name}:${parsed.ok ? stableJson(parsed.value) : c.arguments}`;
+  });
+  return parts.sort().join('\n');
+}
+
+function stableJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableJson).join(',')}]`;
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${stableJson(o[k])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(v) ?? 'null';
 }
 
 function parseArguments(raw: string): { ok: true; value: unknown } | { ok: false } {
@@ -90,9 +168,19 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
   const messages = [...opts.messages];
   let usage: Usage = { ...EMPTY_USAGE };
   let text = '';
+  const sameCalls = new RepeatCounter();
+  const sameText = new RepeatCounter();
+  const injected = (): boolean => {
+    const more = opts.inject?.() ?? [];
+    messages.push(...more);
+    return more.length > 0;
+  };
 
   for (let turn = 0; ; turn++) {
     if (turn >= maxTurns) {
+      if (opts.failOnTurnLimit) {
+        throw new RunStopError('turn_limit', STOP_MESSAGES.turn_limit(maxTurns));
+      }
       return { messages, text, turns: turn, stopReason: 'max_turns', usage };
     }
     if (ctl.signal.aborted) throw abortError(ctl.signal);
@@ -162,7 +250,16 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
       // Sent back with the tool results (Anthropic thinking requires it); not persisted.
       ...(result.thinkingBlocks.length > 0 ? { thinkingBlocks: result.thinkingBlocks } : {}),
     });
+    if (opts.detectLoops !== false) {
+      const callRepeats = sameCalls.push(callSignature(result.toolCalls));
+      const textRepeats = sameText.push(result.text.trim() || null);
+      if (callRepeats >= LOOP_REPEATS || textRepeats >= LOOP_REPEATS) {
+        throw new RunStopError('loop_detected', STOP_MESSAGES.loop_detected(LOOP_REPEATS));
+      }
+    }
     if (calls.length === 0) {
+      // About to end: a message that arrived meanwhile keeps the loop going.
+      if (injected()) continue;
       return { messages, text, turns: turn + 1, stopReason: 'done', usage };
     }
 
@@ -174,6 +271,8 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
         content: stringifyToolOutput(output.value),
       });
     }
+    // Step boundary: every tool result of this turn is in; hand over what arrived.
+    injected();
   }
 }
 

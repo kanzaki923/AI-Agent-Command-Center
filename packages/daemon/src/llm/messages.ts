@@ -53,12 +53,21 @@ export function toChatMessages(
   if (opts.systemPrompt) out.push({ role: 'system', content: opts.systemPrompt });
 
   let open: Map<string, true> | null = null; // tool calls awaiting results
+  // User / system messages written while tool calls were running (a message injected into a
+  // busy run): the model saw them after the results, so they go after the results here too.
+  let held: ChatMessage[] = [];
+  const flushHeld = () => {
+    out.push(...held);
+    held = [];
+  };
   const closeOpen = () => {
-    if (!open) return;
-    for (const id of open.keys()) {
-      out.push({ role: 'tool', toolCallId: id, content: MISSING_RESULT });
+    if (open) {
+      for (const id of open.keys()) {
+        out.push({ role: 'tool', toolCallId: id, content: MISSING_RESULT });
+      }
+      open = null;
     }
-    open = null;
+    flushHeld();
   };
 
   for (const m of history) {
@@ -73,15 +82,20 @@ export function toChatMessages(
           content: stringifyToolOutput(p.output),
         });
       }
-      if (open?.size === 0) open = null;
+      if (open?.size === 0) {
+        open = null;
+        flushHeld();
+      }
+      continue;
+    }
+    if (m.role === 'user' || m.role === 'system') {
+      const text = textOfParts(m.content);
+      if (!text) continue;
+      if (open) held.push({ role: m.role, content: text });
+      else out.push({ role: m.role, content: text });
       continue;
     }
     closeOpen();
-    if (m.role === 'user' || m.role === 'system') {
-      const text = textOfParts(m.content);
-      if (text) out.push({ role: m.role, content: text });
-      continue;
-    }
     // assistant
     const text = textOfParts(m.content);
     const toolCalls: ChatToolCall[] = m.content

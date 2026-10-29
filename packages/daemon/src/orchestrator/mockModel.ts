@@ -3,6 +3,7 @@ import type { MockReply, MockResponder } from '../llm/mock';
 import { methodForToolName, toolNameForMethod } from '../llm/tools';
 import type { ChatMessage, ChatRequest } from '../llm/types';
 import { ORCHESTRATOR_RESUME_NOTICE, PROJECT_ID_LABEL } from './executor';
+import { mockSupervisor } from './mockSupervisor';
 
 /** Offline scripted orchestrator (demo mode and the vertical-slice tests). */
 export const MOCK_ORCHESTRATOR_MODEL = 'mock/orchestrator';
@@ -22,7 +23,19 @@ interface PastCall {
 }
 
 /**
- * `mock/orchestrator`: a deterministic model that drives the whole Vertical Slice
+ * `mock/orchestrator`: a deterministic model for both orchestrator presets. A supervisor
+ * (session.delegate: `session.spawn` among its tools) gets the event-driven state machine of
+ * mockSupervisor.ts; a session with the older preset (task.create / task.spawnWorker) the
+ * blocking flow below.
+ */
+export const mockOrchestrator: MockResponder = (req, info) => {
+  const tools = new Set((req.tools ?? []).map((t) => methodForToolName(t.name)));
+  if (tools.has('session.spawn')) return mockSupervisor(req, info);
+  return legacyMockOrchestrator(req, info);
+};
+
+/**
+ * The older preset's mock: a deterministic model that drives the whole Vertical Slice
  * (concept §12.1) through the same Control API tools a real model gets — no shortcuts:
  *
  *   goal → task.create ×2 (independent, acceptance criteria, acc-mock plans for the mock
@@ -36,7 +49,31 @@ interface PastCall {
  * failed worker or integration leads to a report instead of the next step. Decisions are
  * recorded with orchestrator.recordDecision when that tool is available.
  */
-export const mockOrchestrator: MockResponder = (req, info) => {
+export const legacyMockOrchestrator: MockResponder = (req, info) => {
+  const reply = legacyReply(req, info);
+  const calls = reply.toolCalls ?? [];
+  const decisionOnly =
+    calls.length > 0 &&
+    calls.every((c) => methodForToolName(c.name) === 'orchestrator.recordDecision');
+  if (!decisionOnly || !reply.text) return reply;
+  // A report with its decision: record the decision first, then answer without tools — the
+  // answer ends the run (a report that carried a tool call would be produced again and
+  // again after each tool result).
+  return previousWasDecisionOnly(req) ? { text: reply.text } : { toolCalls: calls };
+};
+
+/** The reply right before the trailing tool results called only orchestrator.recordDecision. */
+function previousWasDecisionOnly(req: ChatRequest): boolean {
+  const msgs = req.messages;
+  let i = msgs.length - 1;
+  while (i >= 0 && msgs[i]!.role === 'tool') i--;
+  if (i === msgs.length - 1) return false;
+  const m = msgs[i];
+  if (m?.role !== 'assistant' || !m.toolCalls?.length) return false;
+  return m.toolCalls.every((tc) => methodForToolName(tc.name) === 'orchestrator.recordDecision');
+}
+
+function legacyReply(req: ChatRequest, info: Parameters<MockResponder>[1]): MockReply {
   const tools = new Set((req.tools ?? []).map((t) => methodForToolName(t.name)));
   if (!tools.has('task.create') || !tools.has('task.spawnWorker')) {
     return {
@@ -292,7 +329,7 @@ export const mockOrchestrator: MockResponder = (req, info) => {
         text: '作業の流れを判断できませんでした。状況を確認してから、もう一度指示してください。',
       };
   }
-};
+}
 
 // ---------------------------------------------------------------------------
 // Plans
