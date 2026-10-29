@@ -694,13 +694,14 @@ describe('how a child ends (§3.4)', () => {
     });
     const task = await taskSettles(h, r.session.id, 'failed');
     expect(task.statusReason).toBe('budget_exhausted');
+    // One item, opened by the cost module for the exhausted budget.
     expect(h.opened).toEqual([
-      expect.objectContaining({
-        kind: 'budget',
-        title: '「長い調査」の予算が尽きました',
-        refs: expect.objectContaining({ budgetId: r.budgetId }),
-      }),
+      expect.objectContaining({ kind: 'budget', refs: { budgetId: r.budgetId } }),
     ]);
+    // The exhausted budget is kept (not returned), so the item stays open for a person.
+    await new Promise((res) => setTimeout(res, 50));
+    expect(d.ctx.repos.attention.require(h.opened[0]!.id).status).toBe('open');
+    expect(d.ctx.repos.budgets.require(r.budgetId!).status).toBe('active');
     expect(stateOf(d, r.session.id)).toBe('needs_you');
   });
 
@@ -874,6 +875,33 @@ describe('driving its children', () => {
     expect(
       await codeOf(d.call(theirs.actor, 'session.send', { sessionId: c.session.id, content: 'x' })),
     ).toBe('forbidden');
+  });
+});
+
+describe('budget of a redo', () => {
+  it('a person redoing a child whose budget went back carves the same amount again', async () => {
+    const h = await setup();
+    const { d } = h;
+    const sup = await supervisor(d, { budgetUsd: 1 });
+    const c = await d.call(sup.actor, 'session.spawn', {
+      title: '要約',
+      goal: `要約する${plan([{ type: 'write', path: 'summary.md', content: 'v1\n' }])}`,
+      reviewBy: 'human',
+      budgetUsd: 0.2,
+    });
+    const t = await taskSettles(h, c.session.id, 'review');
+    // In review, the child's unused budget goes back to its parent (cost/returns.ts).
+    await until(() => d.ctx.repos.budgets.require(c.budgetId!).status === 'released');
+    const retried = await d.call(HUMAN, 'task.retry', { taskId: t.id, feedback: 'もっと短く' });
+    const run = d.ctx.repos.runs.require(retried.runId);
+    expect(run.budgetId).not.toBeNull();
+    expect(run.budgetId).not.toBe(c.budgetId);
+    expect(d.ctx.repos.budgets.require(run.budgetId!)).toMatchObject({
+      status: 'active',
+      parentId: sup.budget!.id,
+      limitUsd: 0.2,
+    });
+    await d.ctx.service('runs').waitForEnd(retried.runId);
   });
 });
 

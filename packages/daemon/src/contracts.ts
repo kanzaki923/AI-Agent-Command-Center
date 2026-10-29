@@ -466,6 +466,15 @@ export interface AttentionService {
   open(input: OpenAttentionInput): Attention | null;
   /** Resolve every open item whose refs match all given refs (the cause went away). */
   resolveWhere(refs: AttentionRefs, resolution: AttentionResolutionInput): Attention[];
+  /**
+   * Close one open item by id (for causes no ref names, e.g. the daily limit). Throws
+   * conflict when it is no longer open.
+   */
+  close(
+    attentionId: string,
+    status: 'resolved' | 'dismissed',
+    resolution: AttentionResolutionInput,
+  ): Attention;
   /** Act on an item (attention.respond): routes to approval / retry / stop / review / budget. */
   respond(
     attentionId: string,

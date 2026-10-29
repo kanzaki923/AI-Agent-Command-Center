@@ -22,6 +22,11 @@ const usd = (n: number) => `$${Number(n.toFixed(2))}`;
  * (one per budget: +$1 / +$5 / stop), and LiteLLM's own key budget (one for everything).
  * The daily limit notifies itself when it refuses (UsageLedger.assertDailyLeft).
  */
+/** A settings change that can move the daily limit (`limits` / `limits.dailyUsd`). */
+function isLimitChange(key: string): boolean {
+  return key === 'limits' || key.startsWith('limits.');
+}
+
 function watchSpendFailures(ctx: DaemonContext, ledger: UsageLedger): () => void {
   return ctx.bus.subscribe({ types: ['run.status_changed'] }, (e) => {
     if (e.type !== 'run.status_changed' || e.payload.to !== 'failed') return;
@@ -138,6 +143,14 @@ CREATE TABLE cost_notices (
         const sessions = recomputeSessionCosts(ctx);
         if (rows > 0 || sessions > 0) ctx.log.info('usage ledger backfilled', { rows, sessions });
         ctx.onClose(watchSpendFailures(ctx, ledger));
+        // A daily limit changed in the settings may give today room again.
+        ctx.onClose(
+          ctx.bus.subscribe({ types: ['settings.updated'] }, (e) => {
+            if (e.type === 'settings.updated' && e.payload.changes.some(isLimitChange)) {
+              ledger.resolveDailyNotices(e.actor);
+            }
+          }),
+        );
         returns.start();
       },
     };

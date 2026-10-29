@@ -9,6 +9,10 @@ export interface RespondInput {
   text?: string | null;
 }
 
+/** Choices of the daily-limit item (protocol COST_ATTENTION_CHOICES.daily). */
+const DAILY_RAISE = { id: 'raise_today_10', addUsd: 10 } as const;
+const DAILY_SETTINGS = 'open_settings';
+
 /** `add_1` → 1, `add_2.5` → 2.5 (the budget choices). */
 const ADD_CHOICE = /^add_(\d+(?:\.\d+)?)$/;
 
@@ -26,6 +30,7 @@ const ADD_CHOICE = /^add_(\d+(?:\.\d+)?)$/;
  * | review   | accept           | integration.approve (an integration) or artifact.review     |
  * | review   | redo / text      | artifact.review redo, else task.retry, else integration.reject |
  * | budget   | add_N            | budget.raise (+$N)                                          |
+ * | budget   | raise_today_10   | cost.raiseDaily (+$10 today); open_settings is the UI's     |
  * | stuck    | continue         | session.resume                                              |
  * | *        | stop             | session.stop                                                |
  * | *        | text only        | session.send (an instruction to the session)                |
@@ -143,6 +148,17 @@ async function route(
       return;
     }
     case 'budget': {
+      if (id === DAILY_RAISE.id) {
+        // The daily limit (spec R10): +$10 for today only. The item closes once today has
+        // room (cost module); resolving it here as well is harmless.
+        await ctx.call(actor, 'cost.raiseDaily', { addUsd: DAILY_RAISE.addUsd });
+        return;
+      }
+      if (id === DAILY_SETTINGS) {
+        // A screen to open, not something the daemon does: the UI navigates to the settings,
+        // and the item closes when the limit there gives today room again.
+        throw conflict('設定画面で今日の上限を変更してください（上限に余裕ができると自動で閉じます）');
+      }
       const add = ADD_CHOICE.exec(id);
       if (!add) break;
       if (!refs.budgetId) throw conflict('この出番には増やせる予算がありません');

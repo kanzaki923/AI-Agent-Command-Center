@@ -75,9 +75,16 @@ CREATE INDEX inbox_items_session ON inbox_items(session_id, status);
         if (sessionId) inbox.evaluateChild(sessionId);
       },
     );
+    // A budget item closed (e.g. today's limit was raised): wake what waited for room.
+    const offBudget = ctx.bus.subscribe({ types: ['attention.resolved'] }, (e) => {
+      if (e.type === 'attention.resolved' && e.payload.attention.kind === 'budget') {
+        inbox.pokeAll();
+      }
+    });
     ctx.onClose(() => {
       offRuns();
       offChildren();
+      offBudget();
       inbox.stop();
     });
 

@@ -425,6 +425,48 @@ describe('the daily limit (§5.7-4)', () => {
       raisedTodayUsd: 10,
     });
     expect((await end(ctx, startChat(ctx, chat, 'mock/fast'))).status).toBe('completed');
+    // Today has room again, so the daily item closed itself.
+    await vi.waitFor(() =>
+      expect(
+        ctx.repos.attention
+          .find({ where: { kind: 'budget' } })
+          .find((x) => x.choices[0]?.id === 'raise_today_10')?.status,
+      ).toBe('resolved'),
+    );
+  });
+
+  it('the daily item routes "今日だけ +$10" and closes when the settings give today room', async () => {
+    const { ctx } = await daemon();
+    await dd(HUMAN, 'settings.update', { limits: { dailyUsd: 0.3 } });
+    const chat = await dd(HUMAN, 'session.create', { model: 'mock/fast' });
+    const spend = await agentSession(ctx);
+    await end(ctx, startAgent(ctx, spend, plan([{ type: 'usage', costUsd: 0.4 }])));
+    const daily = () =>
+      ctx.repos.attention
+        .find({ where: { kind: 'budget' } })
+        .filter((x) => x.choices[0]?.id === 'raise_today_10');
+    await end(ctx, startChat(ctx, chat, 'mock/fast'));
+    await vi.waitFor(() => expect(daily()).toHaveLength(1));
+    const item = daily()[0]!;
+    // The settings choice is a screen to open: refused here, the item stays.
+    await expect(
+      dd(HUMAN, 'attention.respond', { attentionId: item.id, choiceId: 'open_settings' }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    expect(ctx.repos.attention.require(item.id).status).toBe('open');
+    expect(
+      await dd(HUMAN, 'attention.respond', { attentionId: item.id, choiceId: 'raise_today_10' }),
+    ).toMatchObject({ status: 'resolved', resolution: { choiceId: 'raise_today_10' } });
+    expect(ctx.service('ledger').dailyLeft()).toBeCloseTo(9.9, 6);
+
+    // Reached again tomorrow-style: raising the limit in the settings closes the new item.
+    await end(ctx, startAgent(ctx, spend, plan([{ type: 'usage', costUsd: 10 }])));
+    await end(ctx, startChat(ctx, chat, 'mock/fast'));
+    await vi.waitFor(() => expect(daily().filter((x) => x.status === 'open')).toHaveLength(1));
+    await dd(HUMAN, 'settings.update', { limits: { dailyUsd: 50 } });
+    expect(daily().filter((x) => x.status === 'open')).toEqual([]);
+    expect(daily().map((x) => x.resolution?.choiceId ?? null)).toEqual(
+      expect.arrayContaining(['raise_today_10', null]),
+    );
   });
 
   it('passes the run its spend cap: the lower of the budget room and what is left today', async () => {

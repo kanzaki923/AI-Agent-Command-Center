@@ -16,7 +16,7 @@ const ENDED: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
 /**
  * Returns a child's unused budget to its parent once its work ended: the task it works on is
  * done / failed / cancelled / review and no run of its session is still going (spec 20261029
- * §3.8-5). Only carved budgets (with a parent) of the child's session are released; a
+ * §3.8-5), except a task that failed because this budget ran out (its budget item stays). Only carved budgets (with a parent) of the child's session are released; a
  * session's own root budget (set by a human) stays. A retry carves again
  * (`BudgetService.reallocate`).
  *
@@ -84,6 +84,9 @@ export class BudgetReturns {
       (session?.taskId ? ctx.repos.tasks.get(session.taskId) : undefined) ??
       ctx.repos.tasks.findOne({ where: { assignee_session_id: sessionId }, direction: 'desc' });
     if (!task || !ENDED.has(task.status)) return 0;
+    // Stopped by this very budget: nothing is left to return, and releasing it would close the
+    // budget item a person still has to answer (raise it, or give up).
+    if (task.status === 'failed' && task.statusReason === 'budget_exhausted') return 0;
     let released = 0;
     for (const b of budgets) {
       try {

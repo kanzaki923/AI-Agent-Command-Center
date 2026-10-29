@@ -488,8 +488,12 @@ export class WorkerService {
         author: actor,
       });
       const kept = sessionBudgetId(ctx, child.id);
+      // Its unused budget went back to the parent when it ended (cost/returns.ts): a redo by
+      // someone without a budget of their own (a person) carves the same amount again.
+      const returned = kept || callerRun?.budgetId ? null : this.returnedBudgetOf(child.id);
       const budgetId =
         kept ??
+        (returned ? ctx.service('budget').reallocate(returned, actor)?.id : undefined) ??
         carveChildBudget(ctx, {
           budgetUsd: undefined,
           callerRun,
@@ -822,9 +826,9 @@ export class WorkerService {
         const why = run.error?.message ?? 'Run が失敗しました';
         const reason = run.statusReason ?? run.error?.code ?? null;
         const failed = { ...base, status: 'failed' as const, summary: truncate(why, MAX_SUMMARY) };
-        if (reason && BUDGET_REASONS.has(reason)) {
-          return { ...failed, reason, attention: 'budget', detail: why };
-        }
+        // A run stopped by its budget gets the cost module's budget item (refs budgetId, for
+        // every kind of run), so this end opens none of its own.
+        if (reason && BUDGET_REASONS.has(reason)) return { ...failed, reason, detail: why };
         if (reason && STUCK_REASONS.has(reason)) {
           return { ...failed, reason, attention: 'stuck', detail: why };
         }
@@ -851,6 +855,15 @@ export class WorkerService {
         // (the supervisor track resumes it once, spec §3.10).
         return { ...base, status: 'ready', reason: INTERRUPTED, summary, notifyParent: false };
     }
+  }
+
+  /** The latest carved (parented) budget of a session that was released, if any. */
+  private returnedBudgetOf(sessionId: string): string | null {
+    const b = this.ctx.repos.budgets.findOne({
+      where: { subject_kind: 'session', subject_id: sessionId, status: 'released' },
+      direction: 'desc',
+    });
+    return b?.parentId ? b.id : null;
   }
 
   /** The child's own run left committed code changes (a non-empty diff of this run). */

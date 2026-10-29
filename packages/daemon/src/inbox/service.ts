@@ -230,6 +230,21 @@ export class Inbox implements InboxService {
     if (this.pending(sessionId).some((i) => !isMessageItem(i))) this.scheduleWake(sessionId);
   }
 
+  /** Wake every session that kept items while it could not be woken (e.g. the daily limit). */
+  pokeAll(): void {
+    if (this.closed) return;
+    const rows = this.ctx.db.all<{ session_id: string }>(
+      "SELECT DISTINCT session_id FROM inbox_items WHERE status = 'pending'",
+    );
+    for (const { session_id: id } of rows) this.poke(id);
+  }
+
+  private dailyLimitReached(): boolean {
+    if (!this.ctx.hasService('ledger')) return false;
+    const left = this.ctx.service('ledger').dailyLeft();
+    return left !== null && left <= 0;
+  }
+
   /**
    * Messages for a run at a step boundary, as model turns. Marks them delivered; used by the
    * chat and supervisor executors as the tool loop's `inject`.
@@ -287,6 +302,9 @@ export class Inbox implements InboxService {
           return run;
         }
         if (pending.length === 0) return null;
+        // Today's spend limit is reached: the run could not call the model. Keep the items
+        // until today has room again (pokeAll on the budget item's resolution).
+        if (this.dailyLimitReached()) return null;
         if (!isSupervisor(ctx, session.id)) {
           // Nobody to wake (not, or no longer, a supervisor): do not keep its work unsettled.
           this.drop(pending);

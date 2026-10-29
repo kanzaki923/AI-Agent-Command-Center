@@ -194,7 +194,45 @@ describe('inbox items', () => {
       status: 'failed',
       statusReason: 'budget_exhausted',
     });
-    expect(open).not.toHaveBeenCalled();
+    // Only the cost module's budget item: no failure or stuck item, no retry.
+    expect(open.mock.calls.map(([input]) => [input.kind, input.actor])).toEqual([
+      ['budget', { kind: 'system', component: 'cost' }],
+    ]);
+  });
+
+  it('keeps wakes while the daily limit is reached and wakes once a budget item closes', async () => {
+    d = await createTestDaemon();
+    setSupervisorLimits(d.ctx, { wakeDebounceMs: 0 });
+    const lead = await d.call(HUMAN, 'session.create', {
+      kind: 'chat',
+      model: MOCK_ORCHESTRATOR_MODEL,
+    });
+    await d.call(HUMAN, 'session.delegate', { sessionId: lead.id });
+    const ledger = d.ctx.service('ledger');
+    const left = vi.spyOn(ledger, 'dailyLeft').mockReturnValue(0);
+    const inbox = d.ctx.service('inbox');
+    const { item } = inbox.deliver(lead.id, { kind: 'resume', refs: {}, actor: SYSTEM });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(d.ctx.repos.inboxItems.require(item!.id).status).toBe('pending');
+    expect(d.ctx.repos.runs.find({ where: { session_id: lead.id } })).toEqual([]);
+
+    left.mockRestore();
+    const attention = d.ctx.service('attention');
+    const daily = attention.open({
+      kind: 'budget',
+      sessionId: lead.id,
+      title: '今日の費用が上限に達しました',
+      refs: {},
+      actor: SYSTEM,
+    })!;
+    attention.close(daily.id, 'resolved', { by: HUMAN });
+    const run = await until(() => d!.ctx.repos.runs.findOne({ where: { session_id: lead.id } }));
+    expect(run.trigger).toBe('wake');
+    expect(d.ctx.repos.inboxItems.require(item!.id)).toMatchObject({
+      status: 'consumed',
+      consumedByRunId: run.id,
+    });
+    await d.ctx.service('runs').waitForEnd(run.id);
   });
 
   it('classifies transient LLM errors (429 / 5xx / timeouts) for the retry', () => {

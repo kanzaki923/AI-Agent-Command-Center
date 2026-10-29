@@ -191,7 +191,32 @@ export class UsageLedger implements LedgerService {
          updated_at = excluded.updated_at`,
       [day, toMicro(addUsd), ctx.clock.iso()],
     );
+    // After the caller is done: attention.respond resolves its own item with the choice.
+    setImmediate(() => this.resolveDailyNotices(actor));
     return this.daily();
+  }
+
+  /**
+   * Today's limit has room again (raised for today, or changed in the settings): close the
+   * daily-limit items still open. No-op while the limit is still reached.
+   */
+  resolveDailyNotices(actor: Actor): number {
+    const { ctx } = this;
+    if (this.closed || this.dailyExhausted() || !ctx.hasService('attention')) return 0;
+    const rows = ctx.db.all<{ attention_id: string | null }>(
+      "SELECT attention_id FROM cost_notices WHERE key LIKE 'daily:%' AND attention_id IS NOT NULL",
+    );
+    let n = 0;
+    for (const { attention_id: id } of rows) {
+      if (!id || ctx.repos.attention.get(id)?.status !== 'open') continue;
+      try {
+        ctx.service('attention').close(id, 'resolved', { by: actor });
+        n += 1;
+      } catch (err) {
+        ctx.log.warn('failed to close a daily-limit item', { attentionId: id, err });
+      }
+    }
+    return n;
   }
 
   /**
