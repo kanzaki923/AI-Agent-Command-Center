@@ -1,42 +1,39 @@
-import { type Run, type Session, isTerminalRunStatus } from '@acc/protocol';
+import { type Run, type Session, type SessionCard, isTerminalRunStatus } from '@acc/protocol';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { AlertTriangle, ArrowDown, Bot, Brain, ChevronRight, Pencil, RotateCcw, Square } from 'lucide-react';
-import { type ReactNode, memo, useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, ArrowDown, Brain, ChevronRight, Clock, Diamond, Pencil, RotateCcw, Square } from 'lucide-react';
+import { type ReactNode, createContext, memo, use, useEffect, useMemo, useState } from 'react';
 import { focusComposerSoon, retry } from '../../app/commands';
 import { sendMessage } from '../../daemon/actions';
+import { useAttention } from '../../daemon/home';
 import {
-  useGrants,
   useMessages,
   usePendingApprovals,
   useResolvedApprovals,
   useRunFromList,
   useSessionRuns,
+  useSessions,
   useStreaming,
-  useTasks,
   useToolDecisionHistory,
 } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import type { ChatMessage } from '../../daemon/sync';
 import type { StickToBottom } from '../../hooks/useStickToBottom';
 import { cn } from '../../lib/cn';
+import { formatClock } from '../../lib/format';
+import { sessionTitle } from '../../lib/states';
 import { headLines } from '../../lib/tools';
 import { decisionsByToolCall } from '../../model/permissions';
-import {
-  type ChatBlock,
-  buildChatBlocks,
-  contentKey,
-  lastUnanswered,
-  messageText,
-  stabilizeBlocks,
-} from '../../model/chat';
+import { type ChatBlock, contentKey, lastUnanswered, messageText, stabilizeBlocks } from '../../model/chat';
 import { toast } from '../../store/toast';
 import { useUi } from '../../store/ui';
 import { InlineApproval } from '../approval/ApprovalControls';
-import { GrantLine, OrchestratorIntro, useSessionGrants } from '../grant/Grant';
 import { Button } from '../ui/Button';
 import { CopyButton } from '../ui/CopyButton';
 import { Kbd } from '../ui/Kbd';
 import { Skeleton, TimeStamp } from '../ui/Meta';
+import { Tooltip } from '../ui/Tooltip';
+import { ApprovalLine, BriefCard, FromLine, WakeCard } from './Cards';
+import { type ConversationBlock, buildBaseBlocks, stripMachineBlocks, toConversationBlocks } from './conversation';
 import { Markdown } from './Markdown';
 import { ToolGroup } from './ToolBlocks';
 
@@ -68,12 +65,45 @@ function MessageActions({ children }: { children: ReactNode }) {
   );
 }
 
-function UserBlock({ message, fromAgent, editable }: { message: ChatMessage; fromAgent: boolean; editable: boolean }) {
+/** What the screen shows of a message the person (or the leading conversation) wrote. */
+function displayText(message: ChatMessage): string {
+  const text = messageText(message);
+  if (message.meta?.kind === 'answer') return message.meta.choiceLabel ?? text.replace(/^回答[:：]\s*/, '');
+  return stripMachineBlocks(text);
+}
+
+/** Who sent a message that was not typed here (the leading conversation, a schedule). */
+function Origin({ message }: { message: ChatMessage }) {
+  const { titleOf } = use(ConversationContext);
+  if (message.meta?.kind === 'schedule') {
+    return (
+      <FromLine icon={<Clock size={12} strokeWidth={1.75} aria-label="繰り返し" />}>
+        <span className="tabular">{formatClock(message.meta.scheduledFor)}</span>
+      </FromLine>
+    );
+  }
+  if (message.author.kind !== 'agent') return null;
+  const title = titleOf(message.author.sessionId);
+  return (
+    <FromLine icon={<Diamond size={11} strokeWidth={1.75} fill="currentColor" className="text-st-supervising" aria-hidden />}>
+      <button
+        type="button"
+        className="truncate hover:text-fg hover:underline"
+        onClick={() => message.author.kind === 'agent' && useUi.getState().openSession(message.author.sessionId)}
+      >
+        {title ?? '任せた会話'}
+      </button>
+    </FromLine>
+  );
+}
+
+function UserBlock({ message, editable }: { message: ChatMessage; editable: boolean }) {
   const rt = useRuntime();
   const setEditing = useUi((s) => s.setEditing);
   const superseded = useUi((s) => !!s.superseded[message.id]);
-  const text = messageText(message);
+  const text = displayText(message);
   const failed = message.local?.status === 'failed';
+  const queued = message.delivery === 'queued' && !message.local;
   const long = text.length > FOLD_CHARS || text.split('\n').length > FOLD_LINES;
   const [expanded, setExpanded] = useState(false);
   if (superseded) {
@@ -87,23 +117,28 @@ function UserBlock({ message, fromAgent, editable }: { message: ChatMessage; fro
   }
   const folded = long && !expanded;
   return (
-    <div className="group/msg relative flex flex-col gap-1">
-      {fromAgent && (
-        <div className="flex items-center gap-1.5 text-micro text-fg-3">
-          <Bot size={12} strokeWidth={1.75} />
-          Orchestrator から
+    <div className="group/msg relative flex flex-col gap-1" data-delivery={message.delivery}>
+      <Origin message={message} />
+      <div className="flex items-end gap-1.5">
+        <div
+          className={cn(
+            'selectable relative min-w-0 flex-1 overflow-hidden rounded-md border bg-surface px-3.5 py-2.5 text-chat whitespace-pre-wrap text-fg',
+            failed ? 'border-[color-mix(in_oklch,var(--st-failed)_45%,transparent)]' : 'border-line',
+            queued && 'border-dashed text-fg-2',
+            folded && 'max-h-[312px]',
+          )}
+        >
+          {text}
+          {folded && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-[var(--bg-surface)] to-transparent" />
+          )}
         </div>
-      )}
-      <div
-        className={cn(
-          'selectable relative overflow-hidden rounded-md border bg-surface px-3.5 py-2.5 text-chat whitespace-pre-wrap text-fg',
-          failed ? 'border-[color-mix(in_oklch,var(--st-failed)_45%,transparent)]' : 'border-line',
-          folded && 'max-h-[312px]',
-        )}
-      >
-        {text}
-        {folded && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-[var(--bg-surface)] to-transparent" />
+        {queued && (
+          <Tooltip content="送信待ち">
+            <span role="img" aria-label="送信待ち" data-testid="queued-mark" className="mb-2 inline-flex shrink-0 text-fg-3">
+              <Clock size={13} strokeWidth={1.75} aria-hidden />
+            </span>
+          </Tooltip>
         )}
       </div>
       {failed && (
@@ -119,7 +154,6 @@ function UserBlock({ message, fromAgent, editable }: { message: ChatMessage; fro
           </button>
         </div>
       )}
-      {message.local?.status === 'sending' && <div className="text-meta text-fg-3">送信中…</div>}
       {long && (
         <button
           type="button"
@@ -223,6 +257,8 @@ function AssistantBlock({ block }: { block: ChatBlock & { kind: 'assistant' } })
 function RunError({ run }: { run: Run }) {
   const rt = useRuntime();
   const connected = useConnectionState() === 'open';
+  // The open failure (its row above the composer) offers 再試行: not twice.
+  const { failureOpen } = use(ConversationContext);
   const msg = run.error?.message ?? 'エラーで停止しました';
   return (
     <div
@@ -234,17 +270,19 @@ function RunError({ run }: { run: Run }) {
     >
       <div className="flex items-center gap-2 text-ui text-st-failed">
         <AlertTriangle size={14} strokeWidth={1.5} />
-        {headLines(msg, 1)}
+        <span className="min-w-0 flex-1">{headLines(msg, 1)}</span>
+        <CopyButton text={msg} iconOnly label="エラーをコピー" />
       </div>
       {msg.includes('\n') && (
         <pre className="font-mono text-code text-fg-2 whitespace-pre-wrap">{headLines(msg.split('\n').slice(1).join('\n'), 2)}</pre>
       )}
-      <div className="flex gap-2">
-        <Button size="sm" shortcut="retry" onClick={() => void retry(rt, run)} disabled={!connected}>
-          再試行
-        </Button>
-        <CopyButton text={msg} label="エラーをコピー" />
-      </div>
+      {!failureOpen && (
+        <div className="flex gap-2">
+          <Button size="sm" shortcut="retry" onClick={() => void retry(rt, run)} disabled={!connected}>
+            再試行
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -275,24 +313,51 @@ function RunStopped({ run }: { run: Run }) {
   );
 }
 
-const Block = memo(function Block({ block, editableId }: { block: ChatBlock; editableId: string | null }) {
+/** What every row of one conversation shares (no prop churn through the memoized rows). */
+interface ConversationCtx {
+  session: Session | null;
+  card: SessionCard | null;
+  titleOf: (sessionId: string) => string | undefined;
+  /** An open failure of this conversation: its row above the composer offers 再試行. */
+  failureOpen: boolean;
+}
+const ConversationContext = createContext<ConversationCtx>({
+  session: null,
+  card: null,
+  titleOf: () => undefined,
+  failureOpen: false,
+});
+
+function Brief({ block }: { block: ConversationBlock & { kind: 'brief' } }) {
+  const { session, card } = use(ConversationContext);
+  return <BriefCard brief={block.brief} card={card} workspaceId={session?.workspaceId ?? null} />;
+}
+
+const Block = memo(function Block({ block, editableId }: { block: ConversationBlock; editableId: string | null }) {
   switch (block.kind) {
     case 'user':
-      return (
-        <UserBlock message={block.message} fromAgent={block.fromAgent} editable={block.message.id === editableId} />
-      );
+      return <UserBlock message={block.message} editable={block.message.id === editableId} />;
+    case 'brief':
+      return <Brief block={block} />;
+    case 'wake':
+      return <WakeCard items={block.items} />;
     case 'assistant':
       return <AssistantBlock block={block} />;
     case 'tools':
       return <ToolGroup calls={block.calls} />;
     case 'approval':
-      return <InlineApproval approval={block.approval} />;
+      // Pending ones without an attention row (older daemons) keep their inline card.
+      return block.approval.status === 'pending' ? (
+        <InlineApproval approval={block.approval} />
+      ) : (
+        <ApprovalLine approval={block.approval} />
+      );
     case 'streaming':
       // Joined mid-stream: a fragment would render as broken markdown. Show progress and
       // let message.created bring the full text.
       return block.stream.partial ? (
         <div className="text-chat text-fg-3">
-          回答を生成中…<span className="acc-caret" aria-hidden="true" />
+          <span className="acc-caret" aria-hidden="true" />
         </div>
       ) : (
         <div className="flex flex-col gap-1.5">
@@ -304,50 +369,58 @@ const Block = memo(function Block({ block, editableId }: { block: ChatBlock; edi
       );
     case 'run-error':
       return <RunError run={block.run} />;
-    case 'grant':
-      return <GrantLine grant={block.grant} change={block.change} />;
     case 'run-stopped':
       return <RunStopped run={block.run} />;
   }
 });
 
 /** Vertical rhythm: tighter between consecutive tool blocks, roomier around turns. */
-function gapBefore(prev: ChatBlock | undefined, cur: ChatBlock): number {
+function gapBefore(prev: ConversationBlock | undefined, cur: ConversationBlock): number {
   if (!prev) return 24;
   if (prev.kind === 'tools' && cur.kind === 'tools') return 6;
-  if (cur.kind === 'grant' || prev.kind === 'grant') return 18;
-  if (cur.kind === 'user' || prev.kind === 'user') return 24;
+  if (cur.kind === 'approval' && prev.kind === 'tools') return 6;
+  if (cur.kind === 'user' || prev.kind === 'user' || prev.kind === 'brief') return 24;
   return 14;
 }
 
 /** The message a block shows (jump targets). */
-function blockMessageId(b: ChatBlock): string | null {
-  if (b.kind === 'user' || b.kind === 'assistant') return b.message.id;
+function blockMessageId(b: ConversationBlock): string | null {
+  if (b.kind === 'user' || b.kind === 'assistant' || b.kind === 'brief' || b.kind === 'wake') return b.message.id;
   return null;
 }
 
-export function ChatStream({ session, stick }: { session: Session; stick: StickToBottom }) {
+export function ChatStream({
+  session,
+  card = null,
+  stick,
+}: {
+  session: Session;
+  /** The session's card in its tree (state, outputs, budget): the request card reads it. */
+  card?: SessionCard | null;
+  stick: StickToBottom;
+}) {
   const rt = useRuntime();
   const messages = useMessages(session.id);
   const pending = usePendingApprovals().data ?? NONE;
   const resolved = useResolvedApprovals();
   // Only this session's runs: run.updated of other sessions' runs must not rebuild the chat.
   const runs = useSessionRuns(session.id);
-  const tasks = useTasks().data;
   const streaming = useStreaming(session.id);
-  const grants = useGrants(session.id).data ?? NONE;
-  const activeOrchestrator = useSessionGrants(session.kind === 'chat' ? session.id : null).orchestrator;
+  const attention = useAttention({ sessionId: session.id });
+  const sessions = useSessions().data;
   const jumpTo = useUi((s) => (s.jumpTo?.sessionId === session.id ? s.jumpTo : null));
   const clearJump = useUi((s) => s.clearJump);
   const landJump = useUi((s) => s.landJump);
   const flashId = useUi((s) => (s.flash?.sessionId === session.id ? s.flash.messageId : null));
-  // Previous blocks by id (structural sharing). A cache, not state: writing it never renders.
+  // Previous blocks by id (structural sharing) and their mapped rows. Caches, not state:
+  // writing them never renders.
   const [previous] = useState(() => new Map<string, ChatBlock>());
+  const [mapped] = useState(() => new WeakMap<ChatBlock, ConversationBlock>());
 
-  const lookup = useMemo(() => {
-    const titles = new Map((tasks ?? NONE).map((t) => [t.id, t.title]));
-    return { taskTitle: (id: string) => titles.get(id) };
-  }, [tasks]);
+  const titleOf = useMemo(() => {
+    const byId = new Map((sessions ?? NONE).map((s) => [s.id, sessionTitle(s)]));
+    return (id: string) => byId.get(id);
+  }, [sessions]);
 
   // Agent sessions: how each tool use was decided (the event log holds tool.decided).
   const agent = session.kind === 'agent';
@@ -358,22 +431,27 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [agent, decisionVersion, session.id, rt],
   );
-  const blocks = useMemo(() => {
+  const base = useMemo(() => {
     const approvals = [...pending, ...resolved].filter((a) => a.sessionId === session.id);
     const unique = [...new Map(approvals.map((a) => [a.id, a])).values()];
     return stabilizeBlocks(
       previous,
-      buildChatBlocks({
+      buildBaseBlocks({
         messages: messages.data ?? NONE,
         approvals: unique,
         streaming,
         runs,
-        grants: grants.filter((g) => g.subject.kind === 'session'),
-        lookup,
         decisions,
+        attention,
       }),
     );
-  }, [previous, messages.data, pending, resolved, streaming, runs, session.id, grants, lookup, decisions]);
+  }, [previous, messages.data, pending, resolved, streaming, runs, session.id, decisions, attention]);
+  const blocks = useMemo(() => toConversationBlocks(base, mapped, titleOf), [base, mapped, titleOf]);
+  const failureOpen = attention.some((a) => a.kind === 'failure');
+  const ctx = useMemo<ConversationCtx>(
+    () => ({ session, card, titleOf, failureOpen }),
+    [session, card, titleOf, failureOpen],
+  );
 
   // ↑-editable: the last human message nothing answered yet (an agent run in progress is
   // not interrupted from here; its own stop control does that).
@@ -389,7 +467,7 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
   const virt = useVirtualizer({
     count: blocks.length,
     getScrollElement: stick.getElement,
-    estimateSize: (i) => (blocks[i]?.kind === 'tools' ? 34 : 96),
+    estimateSize: (i) => (blocks[i]?.kind === 'tools' || blocks[i]?.kind === 'wake' ? 34 : 96),
     getItemKey: (i) => blocks[i]?.id ?? i,
     overscan: 8,
   });
@@ -417,13 +495,10 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
     const settle = setTimeout(recheck, 80);
     return () => clearTimeout(settle);
   }, [jumpTo, jumpIndex, loaded, virt, clearJump, landJump, release, recheck]);
-  const working = runs.some(
-    (r) => r.sessionId === session.id && ['created', 'queued', 'running'].includes(r.status),
-  );
 
   if (messages.isPending) {
     return (
-      <div className="mx-auto flex w-full max-w-[760px] flex-col gap-4 px-6 pt-8">
+      <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col gap-4 px-6 pt-8">
         <Skeleton className="h-11 w-2/3" />
         <Skeleton className="h-20 w-full" />
         <Skeleton className="h-8 w-1/2" />
@@ -432,10 +507,8 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
   }
 
   const items = virt.getVirtualItems();
-  // Nothing said yet: an orchestrator chat introduces its role instead of a blank page.
-  const conversationStarted = blocks.some((b) => b.kind !== 'grant');
-  const orchestrator = session.kind === 'chat' ? activeOrchestrator : null;
   return (
+    <ConversationContext value={ctx}>
     <div className="relative min-h-0 flex-1">
       <div
         ref={stick.scrollRef}
@@ -443,29 +516,10 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
         className="h-full overflow-y-auto outline-none"
         data-region="main"
       >
-        {!conversationStarted && orchestrator ? (
-          <OrchestratorIntro session={session} grant={orchestrator} />
-        ) : blocks.length === 0 ? (
-          <div className="mx-auto flex h-full max-w-[760px] flex-col items-center justify-center px-6 text-center">
-            <div className="text-title text-fg-2">
-              {session.kind === 'agent'
-                ? working
-                  ? '作業を始めています…'
-                  : '作業内容を伝えてください'
-                : '何でも聞いてください'}
-            </div>
-            <div className="mt-1 text-ui text-fg-3">
-              {session.kind === 'agent'
-                ? working
-                  ? 'ファイルの読み取りや編集、コマンドの実行がここに順に表示されます。変更は右の「変更」タブで確認できます。'
-                  : 'エージェントは worktree の中で作業し、変更は右の「変更」タブに表示されます。'
-                : 'Enter で送信、Shift+Enter で改行します。'}
-            </div>
-          </div>
-        ) : (
+        {blocks.length > 0 && (
           <div
             ref={stick.contentRef}
-            data-content-key={contentKey(blocks)}
+            data-content-key={contentKey(base)}
             className="relative mx-auto w-full max-w-[760px] px-6"
             style={{ height: virt.getTotalSize() + 32 }}
           >
@@ -501,5 +555,6 @@ export function ChatStream({ session, stick }: { session: Session; stick: StickT
         </button>
       )}
     </div>
+    </ConversationContext>
   );
 }

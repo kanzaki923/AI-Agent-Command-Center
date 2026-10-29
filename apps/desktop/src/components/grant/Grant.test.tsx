@@ -7,7 +7,7 @@ import { createFakeClient } from '../../test/fakeClient';
 import { T0, event, iso, session } from '../../test/fixtures';
 import { Composer } from '../focus/Composer';
 import { TooltipProvider } from '../ui/Tooltip';
-import { GrantDialog } from './Grant';
+import { GrantChip, GrantDialog } from './Grant';
 
 const project = {
   id: 'prj_00000000000000000000000001',
@@ -82,6 +82,8 @@ function mount(s: Session, extra: Parameters<typeof createFakeClient>[0] = {}) {
     <RuntimeProvider runtime={rt}>
       <TooltipProvider>
         <Composer session={s} activeRun={null} onSent={() => {}} />
+        {/* The conversation's composer no longer carries the chip (ui-redesign §5): render it alone. */}
+        <GrantChip session={s} />
         <GrantDialog />
       </TooltipProvider>
     </RuntimeProvider>,
