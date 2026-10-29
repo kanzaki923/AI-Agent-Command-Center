@@ -18,6 +18,7 @@ import {
   type PolicyEngine,
   grantAllows,
   grantAppliesTo,
+  grantTreeRoot,
 } from '../api/policy';
 import type { CallScope } from '../api/registry';
 import type { DaemonContext } from '../core/context';
@@ -200,30 +201,89 @@ export class PolicyService implements PolicyEngine {
 
   /**
    * Agents start runs outside task.spawnWorker / task.retry (session.send, run.retry) only
-   * in chat sessions they delegated (`parentSessionId` = their session) that hold no session
-   * grants. Otherwise a weak agent would drive a stronger session with that session's
-   * grants and budget, or start worker runs that skip the delegation and maxWorkers rules.
+   * in sessions below their own whose grants they gave: a child they spawned
+   * (`session.spawn`, spec 20261029 §3.3) whose session grants are the children's baseline
+   * or delegated from the agent's own grants, or a chat session they delegated
+   * (`parentSessionId` = their session) that holds no session grants. Otherwise a weak agent
+   * would drive a stronger session with that session's grants and budget, or start worker
+   * runs that skip the delegation and child limits. Restarting an agent child that is not
+   * running takes a child slot (`maxChildren`).
    */
   assertAgentMayStartRun(actor: Actor, session: Session, method: string): void {
     if (actor.kind !== 'agent') return;
-    const deny = (message: string): never => {
-      const error = forbidden(message);
-      this.recordDenial(actor, method, message, {
+    const deny = (error: ApiError): never => {
+      this.recordDenial(actor, method, error.message, {
         projectIds: session.projectId ? [session.projectId] : [],
       });
       throw error;
     };
+    if (this.isDelegatedChild(actor, session)) {
+      if (session.kind === 'agent' && !this.hasActiveRun(session.id)) {
+        const limit = this.childLimitFor(actor);
+        const active = session.parentSessionId ? this.activeChildCount(session.parentSessionId) : 0;
+        if (limit !== undefined && active >= limit) {
+          deny(
+            limitExceeded(
+              `child limit reached: ${active} of ${limit} children are working; wait until one finishes`,
+              { active, maxChildren: limit },
+            ),
+          );
+        }
+      }
+      return;
+    }
     if (session.kind === 'agent') {
       deny(
-        'Worker のやり直しは task.retry で行ってください（権限・上限・予算の規則が適用されます）',
+        forbidden(
+          'Worker のやり直しは task.retry で行ってください（権限・上限・予算の規則が適用されます）',
+        ),
       );
     }
     if (session.parentSessionId !== actor.sessionId) {
-      deny('エージェントが Run を始められるのは、自分が作ったセッションだけです');
+      deny(forbidden('エージェントが Run を始められるのは、自分が作ったセッションだけです'));
     }
     if (this.hasSessionGrants(session.id)) {
-      deny('権限を持つセッションでは、エージェントは Run を始められません');
+      deny(forbidden('権限を持つセッションでは、エージェントは Run を始められません'));
     }
+  }
+
+  /**
+   * A child spawned below the agent's session (session.spawn: it carries a brief) whose
+   * active session grants are either the children's baseline (`CHILD_GRANT_REASON`) or
+   * delegated from one of the agent's own grants: the agent may drive it (send, resume,
+   * retry) because everything the child can do came from the agent or the daemon.
+   */
+  isDelegatedChild(actor: AgentActor, session: Session): boolean {
+    if (!session.brief || session.id === actor.sessionId) return false;
+    if (!this.isInSessionTree(session.id, actor.sessionId)) return false;
+    const own = new Set(this.grantsFor(actor).map((g) => g.id));
+    const now = this.ctx.clock.iso();
+    const grants = this.ctx.repos.grants
+      .find({ where: { revoked_at: null, subject_kind: 'session', subject_id: session.id } })
+      .filter((g) => this.isActive(g, now));
+    return grants.every(
+      (g) =>
+        (g.reason === CHILD_GRANT_REASON && g.grantedBy.kind === 'system') ||
+        this.delegatedFrom(g, own),
+    );
+  }
+
+  /** Whether `grant` was delegated (directly or transitively) from one of `ancestors`. */
+  private delegatedFrom(grant: CapabilityGrant, ancestors: ReadonlySet<string>): boolean {
+    let cur: CapabilityGrant | undefined = grant;
+    for (let i = 0; cur?.parentGrantId && i < 16; i++) {
+      if (ancestors.has(cur.parentGrantId)) return true;
+      cur = this.ctx.repos.grants.get(cur.parentGrantId);
+    }
+    return false;
+  }
+
+  private hasActiveRun(sessionId: string): boolean {
+    return (
+      this.ctx.repos.runs.count({
+        where: { session_id: sessionId, status: [...NON_TERMINAL_RUN_STATUSES] },
+      }) > 0
+    );
   }
 
   /** Whether the session holds any active session-subject grant. */
@@ -711,6 +771,130 @@ export class PolicyService implements PolicyEngine {
   }
 
   // -------------------------------------------------------------------------
+  // session.spawn (spec 20261029 §3.3)
+  // -------------------------------------------------------------------------
+
+  /** Children of `parentSessionId` with a run that has not ended (they hold a child slot). */
+  activeChildCount(parentSessionId: string): number {
+    return this.ctx.repos.runs.count({
+      where: { status: [...NON_TERMINAL_RUN_STATUSES] },
+      sql: {
+        clause: 'session_id IN (SELECT id FROM sessions WHERE parent_session_id = ?)',
+        params: [parentSessionId],
+      },
+    });
+  }
+
+  /** Children of `parentSessionId` whose work waits to start (dependencies or a free slot). */
+  waitingChildCount(parentSessionId: string): number {
+    return this.ctx.repos.tasks.count({
+      where: { status: ['pending', 'ready'] },
+      sql: {
+        clause:
+          'assignee_session_id IN (SELECT id FROM sessions WHERE parent_session_id = ? AND archived_at IS NULL)',
+        params: [parentSessionId],
+      },
+    });
+  }
+
+  /**
+   * How many children may work at once under the agent's spawn grants (`limits.maxChildren`,
+   * else `maxWorkers`; the smallest when several apply). Undefined: no limit.
+   */
+  childLimitFor(actor: AgentActor): number | undefined {
+    const limits = this.grantsFor(actor)
+      .filter((g) => matchAnyPattern(g.permissions, 'session.spawn'))
+      .map(childLimitOf)
+      .filter((n): n is number => n !== undefined);
+    return limits.length > 0 ? Math.min(...limits) : undefined;
+  }
+
+  /**
+   * Child limit of a session for children started later by the daemon (`after`, a freed
+   * slot): the smallest limit among its active spawn grants. Undefined: no limit (a human
+   * spawned them, or the grant is gone; they were allowed when they were spawned).
+   */
+  childLimitOfSession(sessionId: string): number | undefined {
+    const limits = this.sessionGrantsAllowing(sessionId, 'session.spawn')
+      .map(childLimitOf)
+      .filter((n): n is number => n !== undefined);
+    return limits.length > 0 ? Math.min(...limits) : undefined;
+  }
+
+  /**
+   * Called by session.spawn (synchronously right before the child's run starts, like
+   * assertCanSpawnWorker). Humans / system: no limits. Agents: an active grant allowing
+   * `session.spawn` (in the project, when given) whose delegation depth leaves room for a
+   * child at `parentSessionId` (default depth 1: only directly below the agent's own
+   * session, and children cannot spawn), with `maxChildren` > 0. Returns the grant and
+   * whether a child slot is free now; without one the child waits (at most
+   * `MAX_WAITING_CHILDREN` of them).
+   */
+  assertCanSpawnChild(
+    actor: Actor,
+    opts: { parentSessionId: string; projectId?: string | null },
+  ): { grant: CapabilityGrant | null; slotFree: boolean } {
+    if (actor.kind !== 'agent') return { grant: null, slotFree: true };
+    const permission = 'session.spawn';
+    const scope: CallScope = {
+      projectIds: opts.projectId ? [opts.projectId] : [],
+      sessionIds: [opts.parentSessionId],
+    };
+    const now = this.ctx.clock.iso();
+    const tree = { actor, inTree: (s: string, r: string) => this.isInSessionTree(s, r) };
+    const candidates = this.grantsFor(actor).filter(
+      (g) => grantAllows(g, permission, scope, now, tree).ok,
+    );
+    const deny = (error: ApiError): never => {
+      this.recordDenial(actor, permission, error.message, scope);
+      throw error;
+    };
+    if (candidates.length === 0) {
+      deny(forbidden(`no capability grant allows "${permission}" here`));
+    }
+    const maxDepth = this.ctx.settings.get().maxDelegationDepth;
+    let firstError: ApiError | null = null;
+    for (const g of candidates) {
+      const below = this.distanceBelow(opts.parentSessionId, grantTreeRoot(g, actor));
+      const depth = g.depth + 1 + below;
+      if (depth > maxDepth || (g.limits.maxDepth !== undefined && g.limits.maxDepth < 1 + below)) {
+        firstError ??= limitExceeded(
+          `cannot start a child here: delegation depth ${depth} exceeds the maximum (${maxDepth}); children cannot start children of their own`,
+          { depth, maxDepth },
+        );
+        continue;
+      }
+      const limit = childLimitOf(g);
+      if (limit === 0) {
+        firstError ??= limitExceeded('this grant allows no children (maxChildren 0)', {
+          maxChildren: 0,
+        });
+        continue;
+      }
+      const slotFree = limit === undefined || this.activeChildCount(opts.parentSessionId) < limit;
+      if (!slotFree && this.waitingChildCount(opts.parentSessionId) >= MAX_WAITING_CHILDREN) {
+        firstError ??= limitExceeded(
+          `too many children are waiting to start (${MAX_WAITING_CHILDREN}); wait until some finish`,
+          { waiting: MAX_WAITING_CHILDREN, maxChildren: limit },
+        );
+        continue;
+      }
+      return { grant: g, slotFree };
+    }
+    return deny(firstError!);
+  }
+
+  /** Generations from `rootSessionId` down to `sessionId` (0 when equal; large when unrelated). */
+  private distanceBelow(sessionId: string, rootSessionId: string): number {
+    let cur = this.ctx.repos.sessions.get(sessionId);
+    for (let i = 0; cur && i < 64; i++) {
+      if (cur.id === rootSessionId) return i;
+      cur = cur.parentSessionId ? this.ctx.repos.sessions.get(cur.parentSessionId) : undefined;
+    }
+    return 64;
+  }
+
+  // -------------------------------------------------------------------------
 
   /** Envelope refs for a grant subject (so grant events show up under the run/session). */
   refsFor(subject: GrantSubject): Partial<EventRefs> {
@@ -726,6 +910,26 @@ export class PolicyService implements PolicyEngine {
       taskId: run?.taskId ?? null,
     };
   }
+}
+
+/**
+ * `reason` of the baseline grant every spawned child gets from the daemon (system actor):
+ * publish its outputs, ask a human, read itself. Not delegated from the parent, so a parent
+ * without `artifact.publish` still has children that can publish.
+ */
+export const CHILD_GRANT_REASON = 'child';
+export const CHILD_DEFAULT_PERMISSIONS = [
+  'artifact.publish',
+  'human.ask',
+  'session.get',
+  'artifact.list',
+] as const;
+/** Children that may wait for a free slot under one parent (beyond them, spawn is refused). */
+export const MAX_WAITING_CHILDREN = 16;
+
+/** How many children a grant lets work at once (`maxChildren`, else the older `maxWorkers`). */
+function childLimitOf(g: CapabilityGrant): number | undefined {
+  return g.limits.maxChildren ?? g.limits.maxWorkers;
 }
 
 interface Requested {

@@ -19,7 +19,6 @@ afterEach(async () => {
 
 /** Methods of the redesign the Core track ships as placeholders. */
 const STUBS = [
-  'session.spawn',
   'session.stop',
   'session.resume',
   'session.delegate',
@@ -43,7 +42,6 @@ const STUBS = [
   'schedule.runNow',
   'schedule.preview',
   'home.get',
-  'project.inspectFolder',
 ] as const;
 
 describe('contract placeholders', () => {
@@ -73,12 +71,10 @@ describe('contract placeholders', () => {
 
   it('a stub with valid params says not_implemented', async () => {
     d = await createTestDaemon();
-    const err = (await d
-      .call(HUMAN, 'session.spawn', { title: 't', goal: 'g' })
-      .catch((e: unknown) => e)) as ApiError;
+    const err = (await d.call(HUMAN, 'home.get', {}).catch((e: unknown) => e)) as ApiError;
     expect(err).toMatchObject({ code: 'not_found', data: { reason: 'not_implemented' } });
     const info = await d.call(HUMAN, 'system.info', {});
-    expect(info.methods).not.toContain('session.spawn');
+    expect(info.methods).not.toContain('home.get');
     expect(info.methods).toContain('session.send');
   });
 
@@ -123,11 +119,11 @@ describe('contract placeholders', () => {
     ] as const) {
       expect(d.ctx.hasService(name), name).toBe(true);
     }
-    await expect(
-      d.ctx
-        .service('spawner')
-        .spawn(api['session.spawn'].params.parse({ title: 't', goal: 'g' }), HUMAN),
-    ).rejects.toMatchObject({ data: { reason: 'not_implemented' } });
+    // T2 implemented the spawner: a human can start a child without a parent.
+    const spawned = await d.ctx
+      .service('spawner')
+      .spawn(api['session.spawn'].params.parse({ title: 't', goal: 'g', start: false }), HUMAN);
+    expect(spawned.session).toMatchObject({ title: 't', brief: { goal: 'g' } });
   });
 });
 

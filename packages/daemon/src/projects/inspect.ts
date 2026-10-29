@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, isAbsolute, join, resolve } from 'node:path';
-import type { RepoInspection } from '@acc/protocol';
+import type { FolderInspection, RepoInspection } from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
 import { branchExists, currentBranch, git, gitOut, repoRoot, statusLines } from '../workspace/git';
 
@@ -56,6 +56,52 @@ export async function inspectRepo(ctx: DaemonContext, path: string): Promise<Rep
     isDirty: dirty,
     suggestedName: basename(resolve(path)) || null,
     suggestedTestCommand: detectTestCommand(path),
+    existingProjectId: existing?.id ?? null,
+  };
+}
+
+/**
+ * project.inspectFolder (spec 20261029 §2.2): can this folder back a project? Any existing
+ * folder can (git is optional); for a folder inside a git repository it names the repository
+ * root and suggests its default branch and test command. Read-only.
+ */
+export async function inspectFolder(ctx: DaemonContext, path: string): Promise<FolderInspection> {
+  const fail = (reason: string): FolderInspection => ({
+    ok: false,
+    reason,
+    path: null,
+    isGitRepo: false,
+    repoRoot: null,
+    defaultBranch: null,
+    suggestedName: null,
+    suggestedTestCommand: null,
+    existingProjectId: null,
+  });
+  if (!isAbsolute(path)) return fail('フォルダは絶対パスで指定してください');
+  if (!existsSync(path)) return fail('フォルダが見つかりません');
+  if (!statSync(path).isDirectory()) return fail('ファイルではなくフォルダを指定してください');
+  const abs = resolve(path);
+  const root = await repoRoot(abs).catch(() => null);
+  const rootPath = root ? resolve(root) : null;
+  const defaultBranch = rootPath
+    ? await detectDefaultBranch(rootPath, await currentBranch(rootPath)).catch(() => null)
+    : null;
+  const existing = ctx.repos.projects
+    .find({ where: {} })
+    .find(
+      (p) =>
+        (p.folderPath && samePath(p.folderPath, abs)) ||
+        (p.repoPath && (samePath(p.repoPath, abs) || (rootPath && samePath(p.repoPath, rootPath)))),
+    );
+  return {
+    ok: true,
+    reason: null,
+    path: abs,
+    isGitRepo: rootPath !== null,
+    repoRoot: rootPath,
+    defaultBranch,
+    suggestedName: basename(abs) || null,
+    suggestedTestCommand: detectTestCommand(rootPath ?? abs),
     existingProjectId: existing?.id ?? null,
   };
 }

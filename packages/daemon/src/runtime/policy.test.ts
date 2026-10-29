@@ -272,3 +272,79 @@ describe('child env', () => {
     expect(normalizeAnthropicBaseUrl('https://llm.example.com/v1')).toBe('https://llm.example.com');
   });
 });
+
+describe('read roots (spec 20261029 §3.3: the project folder is readable, not writable)', () => {
+  const ws = '/acc/scratch/ses_1';
+  const folder = '/home/me/docs';
+  const decideIn = (toolName: string, input: unknown, extra: object = {}) =>
+    decideToolPermission({
+      toolName,
+      input,
+      cwd: ws,
+      platform: 'linux',
+      profile: 'autonomous',
+      protectedPaths: ['/acc'],
+      readRoots: [folder],
+      ...extra,
+    });
+
+  it('reads inside a read root count as reads inside the workspace', () => {
+    expect(decideIn('Read', { file_path: '/home/me/docs/pricing.md' })).toMatchObject({
+      decision: 'allow',
+      category: 'read',
+    });
+    expect(decideIn('Grep', { pattern: '980', path: folder }).decision).toBe('allow');
+    // Without the root the same read is outside (denied in the autonomous profile).
+    expect(
+      decideToolPermission({
+        toolName: 'Read',
+        input: { file_path: '/home/me/docs/pricing.md' },
+        cwd: ws,
+        platform: 'linux',
+        profile: 'autonomous',
+      }).category,
+    ).toBe('outside_read');
+    // A read the runtime flagged as outside its directories is fine there too.
+    expect(
+      decideIn('Read', { file_path: '/home/me/docs/a.md' }, { blockedPath: '/home/me/docs/a.md' })
+        .decision,
+    ).toBe('allow');
+  });
+
+  it('writes into a read root stay outside_write, in tools and commands', () => {
+    expect(decideIn('Write', { file_path: '/home/me/docs/x.md', content: '' })).toMatchObject({
+      decision: 'deny',
+      rule: 'outside_write',
+    });
+    expect(decideIn('Bash', { command: 'cp faq.md /home/me/docs/faq.md' })).toMatchObject({
+      decision: 'deny',
+      rule: 'outside_write',
+    });
+    expect(decideIn('Bash', { command: 'cat /home/me/docs/pricing.md' })).toMatchObject({
+      decision: 'allow',
+      category: 'command_readonly',
+    });
+    expect(
+      decideIn('Bash', { command: 'wc -l /home/me/docs/pricing.md > counts.txt' }).decision,
+    ).toBe('allow');
+  });
+
+  it('credentials inside a read root and roots that hold daemon data stay off limits', () => {
+    expect(decideIn('Read', { file_path: '/home/me/docs/.ssh/id_rsa' }).rule).toBe('credentials');
+    expect(decideIn('Bash', { command: 'cat /home/me/docs/.aws/credentials' }).rule).toBe(
+      'credentials',
+    );
+    // A root that holds ACC_HOME is ignored (it would expose the token and the database).
+    expect(decideIn('Read', { file_path: '/acc/daemon.json' }, { readRoots: ['/'] }).rule).toBe(
+      'credentials',
+    );
+    expect(
+      decideIn('Read', { file_path: '/home/me/notes.md' }, { readRoots: ['/'] }).category,
+    ).toBe('outside_read');
+    // One inside ACC_HOME (a demo repository) is fine.
+    expect(
+      decideIn('Read', { file_path: '/acc/demo/repo/README.md' }, { readRoots: ['/acc/demo/repo'] })
+        .decision,
+    ).toBe('allow');
+  });
+});

@@ -1,6 +1,6 @@
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import {
   type Actor,
   type DiffFileStat,
@@ -12,6 +12,7 @@ import {
 import type { WorkspaceLock, WorkspacesService } from '../contracts';
 import type { DaemonContext } from '../core/context';
 import { conflict, invalidParams } from '../core/errors';
+import { isInside } from '../runtime/policy';
 import { computeDiff } from './diff';
 import {
   GitError,
@@ -236,6 +237,115 @@ export class WorkspaceService implements WorkspacesService {
     });
   }
 
+  // -------------------------------------------------------------------------
+  // scratch / folder workspaces (spec 20261029 §3.3)
+  // -------------------------------------------------------------------------
+
+  /** `<ACC_HOME>/scratch`: daemon-managed folders of agents that need no particular place. */
+  get scratchRoot(): string {
+    return join(this.ctx.paths.home, 'scratch');
+  }
+
+  /**
+   * A fresh scratch folder `<ACC_HOME>/scratch/<sessionId>` for an agent session ("作業場所:
+   * なし"). Synchronous (no git), so it fits in the caller's transaction.
+   */
+  createScratch(input: { sessionId: string; projectId: string | null; actor: Actor }): Workspace {
+    const { ctx } = this;
+    const path = join(this.scratchRoot, input.sessionId);
+    mkdirSync(path, { recursive: true });
+    return ctx.db.transaction(() => {
+      const now = ctx.clock.iso();
+      const workspace = ctx.repos.workspaces.insert({
+        id: ctx.ids.next('workspace'),
+        projectId: input.projectId,
+        kind: 'scratch',
+        status: 'ready',
+        path,
+        branch: null,
+        baseRef: null,
+        taskId: null,
+        lockedByRunId: null,
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      ctx.bus.emit({ type: 'workspace.created', actor: input.actor, payload: { workspace } });
+      return workspace;
+    });
+  }
+
+  /**
+   * The workspace of a folder of the user's (`directory`): written in place, no git. One
+   * record per folder, so the write lock (one writing run at a time) covers every session
+   * working there. The daemon's own data directory is refused.
+   */
+  ensureDirectory(input: { path: string; projectId: string | null; actor: Actor }): Workspace {
+    const { ctx } = this;
+    const path = checkFolder(input.path, ctx.paths.home);
+    return ctx.db.transaction(() => {
+      const existing = ctx.repos.workspaces
+        .find({
+          where: { status: 'ready' },
+          sql: { clause: "json_extract(data, '$.kind') = 'directory'" },
+          direction: 'asc',
+        })
+        .find((w) => samePath(w.path, path));
+      if (existing) return existing;
+      const now = ctx.clock.iso();
+      const workspace = ctx.repos.workspaces.insert({
+        id: ctx.ids.next('workspace'),
+        projectId: input.projectId,
+        kind: 'directory',
+        status: 'ready',
+        path,
+        branch: null,
+        baseRef: null,
+        taskId: null,
+        lockedByRunId: null,
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      ctx.bus.emit({ type: 'workspace.created', actor: input.actor, payload: { workspace } });
+      return workspace;
+    });
+  }
+
+  /** Recreate a scratch folder that disappeared (e.g. deleted by hand) before a run uses it. */
+  ensureScratchDir(ws: Workspace): void {
+    if (ws.kind === 'scratch' && !existsSync(ws.path)) mkdirSync(ws.path, { recursive: true });
+  }
+
+  /**
+   * Delete scratch folders of sessions archived more than `SCRATCH_RETENTION_DAYS` ago (and
+   * of sessions that no longer exist). Returns the removed workspace ids.
+   */
+  async sweepScratch(): Promise<string[]> {
+    const { ctx } = this;
+    const cutoff = new Date(ctx.clock.now() - SCRATCH_RETENTION_DAYS * 86_400_000).toISOString();
+    const removed: string[] = [];
+    const scratch = ctx.repos.workspaces.find({
+      where: { status: 'ready' },
+      sql: { clause: "json_extract(data, '$.kind') = 'scratch'" },
+      direction: 'asc',
+    });
+    for (const ws of scratch) {
+      const session = ctx.repos.sessions.findOne({
+        sql: { clause: "json_extract(data, '$.workspaceId') = ?", params: [ws.id] },
+      });
+      if (session && (!session.archivedAt || session.archivedAt > cutoff)) continue;
+      if (this.isLocked(ws.id)) continue;
+      try {
+        await this.remove(ws.id, { force: true, actor: SWEEPER });
+        removed.push(ws.id);
+      } catch (err) {
+        ctx.log.warn('failed to remove an old scratch folder', { workspaceId: ws.id, err });
+      }
+    }
+    return removed;
+  }
+
   private setStatus(
     id: string,
     status: Workspace['status'],
@@ -288,6 +398,28 @@ export class WorkspaceService implements WorkspacesService {
 
   private async removeHeld(ws: Workspace, opts: { force: boolean; actor: Actor }): Promise<void> {
     const workspaceId = ws.id;
+    if (ws.kind === 'scratch' || ws.kind === 'directory') {
+      // Scratch folders are the daemon's own and go away; a user's folder is never deleted,
+      // only forgotten.
+      if (ws.kind === 'scratch' && isInside(ws.path, this.scratchRoot)) {
+        await rm(ws.path, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+      }
+      this.ctx.db.transaction(() => {
+        this.ctx.repos.workspaces.update(workspaceId, (w) => ({
+          ...w,
+          status: 'removed',
+          error: null,
+          updatedAt: this.ctx.clock.iso(),
+        }));
+        this.ctx.bus.emit({
+          type: 'workspace.removed',
+          actor: opts.actor,
+          payload: { workspaceId },
+          refs: { projectId: ws.projectId, taskId: ws.taskId },
+        });
+      });
+      return;
+    }
     if (!ws.projectId)
       throw invalidParams('プロジェクトに属さないワークスペースは git で削除できません');
     const project = this.ctx.repos.projects.require(ws.projectId);
@@ -532,6 +664,47 @@ export class WorkspaceService implements WorkspacesService {
     }
     return ws;
   }
+}
+
+/** Days a scratch folder is kept after its session was archived. */
+export const SCRATCH_RETENTION_DAYS = 30;
+
+const SWEEPER: Actor = { kind: 'system', component: 'workspace' };
+
+/**
+ * Validate a user's folder for a `directory` workspace: an absolute path of an existing
+ * folder that neither is, contains nor lies inside the daemon's data directory. Returns the
+ * resolved path. Throws invalid_params with a Japanese reason.
+ */
+export function checkFolder(path: string, daemonHome: string): string {
+  if (!isAbsolute(path)) throw invalidParams(`フォルダは絶対パスで指定してください: ${path}`);
+  const abs = resolve(path);
+  let isDir: boolean;
+  try {
+    isDir = statSync(abs).isDirectory();
+  } catch {
+    throw invalidParams(`フォルダが見つかりません: ${path}`);
+  }
+  if (!isDir) throw invalidParams(`ファイルではなくフォルダを指定してください: ${path}`);
+  if (isInside(abs, daemonHome) || isInside(daemonHome, abs)) {
+    throw invalidParams('アプリのデータフォルダは作業場所にできません');
+  }
+  return abs;
+}
+
+/** Same directory, ignoring separators, case on Windows/macOS, and symlinks. */
+export function samePath(a: string, b: string): boolean {
+  const norm = (p: string) => {
+    let r = resolve(p);
+    try {
+      r = realpathSync.native(r);
+    } catch {
+      // keep the resolved path
+    }
+    r = r.replace(/[\\/]+$/, '');
+    return process.platform === 'linux' ? r : r.toLowerCase();
+  };
+  return norm(a) === norm(b);
 }
 
 /**

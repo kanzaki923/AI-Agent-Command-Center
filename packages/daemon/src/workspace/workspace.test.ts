@@ -1,4 +1,12 @@
-import { existsSync, readFileSync, truncateSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  truncateSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Project } from '@acc/protocol';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -9,10 +17,11 @@ import {
   createTestDaemon,
   insertTestTask,
 } from '../testing';
+import { createManualClock } from '../core/clock';
 import { mergeStats, parseNameStatusZ, parseNumstatZ } from './diff';
 import { GitError, git, gitOut } from './git';
 import { type TempRepo, createTempRepo, isolateGitConfig } from './git-fixture';
-import { slugify } from './service';
+import { SCRATCH_RETENTION_DAYS, checkFolder, slugify } from './service';
 
 // Real git on Windows costs ~50 ms per call; leave headroom under parallel load.
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -394,5 +403,58 @@ describe('workspace worktrees', () => {
     const { d, project } = await setup({ 'lf.txt': 'a\nb\n' });
     const ws = await d.call(HUMAN, 'workspace.create', { projectId: project.id });
     expect(readFileSync(join(ws.path, 'lf.txt'), 'utf8')).toBe('a\nb\n');
+  });
+});
+
+describe('scratch and folder workspaces (no git)', () => {
+  it('scratch folders live under ACC_HOME/scratch and go 30 days after the session is archived', async () => {
+    const clock = createManualClock(Date.UTC(2026, 9, 1));
+    d = await createTestDaemon({ clock });
+    const manager = d.ctx.service('workspaceManager');
+    const keep = await d.call(HUMAN, 'session.create', {
+      kind: 'agent',
+      workspace: { kind: 'none' },
+    });
+    const old = await d.call(HUMAN, 'session.create', {
+      kind: 'agent',
+      workspace: { kind: 'none' },
+    });
+    const wsOld = d.ctx.repos.workspaces.require(old.workspaceId!);
+    expect(wsOld.path).toBe(join(manager.scratchRoot, old.id));
+    expect(existsSync(wsOld.path)).toBe(true);
+    // A deleted folder comes back before a run uses it.
+    rmSync(wsOld.path, { recursive: true });
+    manager.ensureScratchDir(wsOld);
+    expect(existsSync(wsOld.path)).toBe(true);
+
+    await d.call(HUMAN, 'session.archive', { sessionId: old.id });
+    clock.advance((SCRATCH_RETENTION_DAYS - 1) * 86_400_000);
+    expect(await manager.sweepScratch()).toEqual([]);
+    clock.advance(2 * 86_400_000);
+    expect(await manager.sweepScratch()).toEqual([wsOld.id]);
+    expect(existsSync(wsOld.path)).toBe(false);
+    expect(d.ctx.repos.workspaces.require(wsOld.id).status).toBe('removed');
+    expect(d.ctx.repos.workspaces.require(keep.workspaceId!).status).toBe('ready');
+  });
+
+  it("a folder of the user's is one workspace per folder and is never deleted", async () => {
+    d = await createTestDaemon();
+    const dir = mkdtempSync(join(tmpdir(), 'acc-userdir-'));
+    try {
+      const manager = d.ctx.service('workspaceManager');
+      const a = manager.ensureDirectory({ path: dir, projectId: null, actor: HUMAN });
+      const b = manager.ensureDirectory({ path: `${dir}/`, projectId: null, actor: HUMAN });
+      expect(b.id).toBe(a.id);
+      expect(a).toMatchObject({ kind: 'directory', status: 'ready', branch: null });
+      await d.call(HUMAN, 'workspace.remove', { workspaceId: a.id });
+      expect(existsSync(dir)).toBe(true);
+      expect(d.ctx.repos.workspaces.require(a.id).status).toBe('removed');
+      expect(() => checkFolder('relative', d!.home)).toThrow(/絶対パス/);
+      expect(() => checkFolder(join(dir, 'missing'), d!.home)).toThrow(/見つかりません/);
+      expect(() => checkFolder(d!.home, d!.home)).toThrow(/データフォルダ/);
+      expect(() => checkFolder(join(d!.home, '..'), d!.home)).toThrow(/データフォルダ/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

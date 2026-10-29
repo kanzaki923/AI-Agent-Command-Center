@@ -51,6 +51,11 @@ export interface CommandContext {
   exists?(path: string): boolean;
   /** Port of the Control API; a command naming it on a loopback host is denied. */
   daemonPort?: number | undefined;
+  /**
+   * Outside but readable (the project's folder / repository): reading it is a read inside,
+   * writing it is still `outside_write`. Default: nothing.
+   */
+  readable?(path: string): boolean;
 }
 
 export interface CommandVerdict {
@@ -650,7 +655,7 @@ class Analyzer {
     // The strict read-only allowlist first (also what the careful profile allows).
     if (
       dialect === 'posix' &&
-      readOnlyCommandReason(whole, { inside: (p) => this.ctx.inside(p) })
+      readOnlyCommandReason(whole, { inside: (p) => this.readsInside(p) })
     ) {
       this.cat('command_readonly');
       return;
@@ -921,10 +926,18 @@ class Analyzer {
 
   /** A PowerShell env write (`$env:NAME=...`, `Set-Item Env:NAME ...`) to a hijacking var. */
   private powershellEnvWrite(word: string): void {
-    const m = /^\$env:([A-Za-z_][A-Za-z0-9_]*)=/i.exec(word) ?? /^env:([A-Za-z_][A-Za-z0-9_]*)$/i.exec(word);
+    const m =
+      /^\$env:([A-Za-z_][A-Za-z0-9_]*)=/i.exec(word) ??
+      /^env:([A-Za-z_][A-Za-z0-9_]*)$/i.exec(word);
     if (!m) return;
     const rule = envAssignmentRule(m[1]!);
     if (rule) this.hard(rule, `$env:${m[1]}`);
+  }
+
+  /** Inside the workspace, or in a read root (for read-only commands; credentials excluded). */
+  private readsInside(p: string): boolean {
+    if (this.ctx.inside(p)) return true;
+    return !homeish(p) && (this.ctx.readable?.(p) ?? false) && !this.ctx.sensitive(p);
   }
 
   private outside(p: string): boolean {
@@ -943,6 +956,7 @@ class Analyzer {
       }
       if (!homeish(p) && this.ctx.allowedOutside(p)) return;
       if (mode === 'write') this.hard('outside_write', p);
+      else if (!homeish(p) && this.ctx.readable?.(p)) return;
       else {
         this.v.outsideReads.push(p);
         this.cat('outside_read');
@@ -982,7 +996,10 @@ class Analyzer {
         continue;
       }
       if (looksLikePath(w)) this.pathArg(w, mode);
-      else if (mode === 'write' && (this.ctx.touchesGit(w) || (this.ctx.isSettings ?? isClaudeSettings)(w)))
+      else if (
+        mode === 'write' &&
+        (this.ctx.touchesGit(w) || (this.ctx.isSettings ?? isClaudeSettings)(w))
+      )
         this.pathArg(w, 'write');
     }
   }
@@ -1145,7 +1162,7 @@ class Analyzer {
       const line = ['git', ...args].map(quoteWord);
       return (
         line.every((w) => w !== null) &&
-        !!readOnlyCommandReason(line.join(' '), { inside: (p) => this.ctx.inside(p) })
+        !!readOnlyCommandReason(line.join(' '), { inside: (p) => this.readsInside(p) })
       );
     };
     switch (sub) {

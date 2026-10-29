@@ -3,7 +3,15 @@ import { invalidParams } from '../core/errors';
 import { defineModule } from '../module';
 import { WorkspaceService } from './service';
 
-export { WorkspaceService, DEFAULT_COMMIT_AUTHOR, slugify, shortId } from './service';
+export {
+  WorkspaceService,
+  DEFAULT_COMMIT_AUTHOR,
+  SCRATCH_RETENTION_DAYS,
+  checkFolder,
+  samePath,
+  slugify,
+  shortId,
+} from './service';
 export type { WorkspaceDiffResult, CreateWorktreeInput } from './service';
 export { GitError, git, gitOut } from './git';
 
@@ -109,10 +117,28 @@ export const workspaceModule = defineModule({
       }),
     );
 
+    // Scratch folders of long-archived sessions go away (spec 20261029 §3.3): at startup and
+    // once a day.
+    let sweepTimer: NodeJS.Timeout | null = null;
+    const sweep = () => {
+      void service
+        .sweepScratch()
+        .then((removed) => {
+          if (removed.length > 0) ctx.log.info('old scratch folders removed', { removed });
+        })
+        .catch((err: unknown) => ctx.log.warn('scratch sweep failed', { err }));
+    };
+
     return {
       start() {
         const cleared = service.clearStaleLocks();
         if (cleared.length > 0) ctx.log.warn('cleared stale workspace locks', { cleared });
+        sweep();
+        sweepTimer = setInterval(sweep, 24 * 60 * 60 * 1000);
+        sweepTimer.unref?.();
+      },
+      stop() {
+        if (sweepTimer) clearInterval(sweepTimer);
       },
     };
   },

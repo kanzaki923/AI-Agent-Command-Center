@@ -55,6 +55,12 @@ export interface ToolPolicyInput {
    * holds other programs' files; agents keep temporary files in their worktree).
    */
   allowedOutside?: readonly string[] | undefined;
+  /**
+   * Folders the agent may read but not write (the project's folder / repository): reads
+   * inside them count as reads inside the workspace; writes are still `outside_write`.
+   * Credentials inside them stay off limits. Roots holding the daemon's data are ignored.
+   */
+  readRoots?: readonly string[] | undefined;
   /** Control API port: commands naming it on a loopback address are denied. */
   daemonPort?: number | undefined;
   /** For tests; defaults to the host platform (decides path semantics and case folding). */
@@ -257,9 +263,33 @@ export function decideToolPermission(req: ToolPolicyInput): ToolPolicyResult {
         isInside(target, r, platform) && isInside(resolveFrom(cwd, target, platform), r, platform),
     );
   const protectedRoots = req.protectedPaths ?? [];
-  const sensitive = (target: string) =>
-    SENSITIVE.test(target.replace(/\\/g, '/')) ||
-    protectedRoots.some((r) => isInside(resolveFrom(cwd, target, platform), r, platform));
+  // A read root must not open up the daemon's data: one that is or holds a protected root is
+  // ignored (one inside it, like a demo repository under ACC_HOME, is fine).
+  const readRoots = (req.readRoots ?? []).filter(
+    (r) => !protectedRoots.some((pr) => isInside(pr, r, platform)),
+  );
+  const readRootOf = (target: string): string | undefined =>
+    homeLike(target)
+      ? undefined
+      : readRoots.find(
+          (r) =>
+            isInside(target, r, platform) &&
+            (!real || isInside(real(resolveFrom(cwd, target, platform)), real(r), platform)),
+        );
+  const sensitive = (target: string) => {
+    const root = readRootOf(target);
+    if (root !== undefined) {
+      // Inside a read root only credentials by name count (the root itself was vetted).
+      const p = platform === 'win32' ? path.win32 : path.posix;
+      const rel = p.relative(p.resolve(root), resolveFrom(cwd, target, platform));
+      return SENSITIVE.test(rel.replace(/\\/g, '/'));
+    }
+    return (
+      SENSITIVE.test(target.replace(/\\/g, '/')) ||
+      protectedRoots.some((r) => isInside(resolveFrom(cwd, target, platform), r, platform))
+    );
+  };
+  const readable = (target: string) => readRootOf(target) !== undefined && !sensitive(target);
   // Resolve symlinks before deciding `.git` / settings: an in-repo link named `x` pointing at
   // `.git` stays inside the worktree, so `inside()` passes, but writing through it would touch
   // git metadata (e.g. install a hook the daemon runs when it commits). Check the real path.
@@ -304,7 +334,13 @@ export function decideToolPermission(req: ToolPolicyInput): ToolPolicyResult {
       ? 'edit'
       : 'read';
 
-  if (req.blockedPath && !inside(req.blockedPath) && !allowedOutside(req.blockedPath)) {
+  const readsOnly = !isEditTool && !COMMAND_TOOLS.has(toolName);
+  if (
+    req.blockedPath &&
+    !inside(req.blockedPath) &&
+    !allowedOutside(req.blockedPath) &&
+    !(readsOnly && readable(req.blockedPath))
+  ) {
     const p = req.blockedPath;
     if (sensitive(p)) return hard('credentials', baseCategory, p);
     if (isEditTool || COMMAND_TOOLS.has(toolName)) return hard('outside_write', baseCategory, p);
@@ -319,7 +355,16 @@ export function decideToolPermission(req: ToolPolicyInput): ToolPolicyResult {
     if (!command.trim()) return gray('command_other', 'command without text');
     const verdict = analyzeCommand(
       command,
-      { inside, allowedOutside, sensitive, touchesGit, isSettings, exists, daemonPort: req.daemonPort },
+      {
+        inside,
+        allowedOutside,
+        sensitive,
+        touchesGit,
+        isSettings,
+        exists,
+        daemonPort: req.daemonPort,
+        readable,
+      },
       toolName === 'PowerShell' ? 'powershell' : 'posix',
     );
     if (verdict.hard) return hard(verdict.hard.rule, 'command_other', verdict.hard.detail);
@@ -357,6 +402,7 @@ export function decideToolPermission(req: ToolPolicyInput): ToolPolicyResult {
     if (sensitive(p)) return hard('credentials', baseCategory, p);
     if (allowedOutside(p)) continue;
     if (isEditTool) return hard('outside_write', 'edit', p);
+    if (readable(p)) continue;
     return gray('outside_read', `path outside workspace: ${p}`, p);
   }
   if (isEditTool) {
@@ -375,6 +421,11 @@ export function decideToolPermission(req: ToolPolicyInput): ToolPolicyResult {
  */
 const SENSITIVE =
   /(^|\/)(\.ssh|\.aws|\.azure|\.gnupg|\.kube|\.docker|\.config\/(gh|gcloud|hub|git)|\.netrc|_netrc|\.git-credentials|\.npmrc|\.yarnrc(\.yml)?|\.pypirc|\.gem\/credentials|\.cargo\/credentials(\.toml)?|\.claude(\.json)?|\.codex|\.acc|daemon\.json|acc\.sqlite|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?)(\/|$)|^\/etc\/(shadow|sudoers)/i;
+
+/** "~" paths: expanded by shells and tools, never by path.resolve (never inside anything). */
+function homeLike(target: string): boolean {
+  return target.startsWith('~');
+}
 
 /** Whether `target` (absolute, or relative to `root`) resolves to `root` or below it. */
 export function isInside(
