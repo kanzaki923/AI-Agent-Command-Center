@@ -239,7 +239,19 @@ Orchestrator は**セッション種別ではなく役割**（concept §3.1）�
 
 ### 2.18 定期実行（T6）
 
-§1.9・§3.11。契約は `SchedulerService`（`rearm` / `fire`）、型は `ext/schedule.ts`、表は `schedules`。サービスとメソッドはスタブ。
+§1.9・§3.11。契約は `SchedulerService`（`rearm` / `fire`）、型は `ext/schedule.ts`、表は `schedules`（絞り込み列 `session_id` / `enabled` / `next_run_at`）。実装は `schedules/`：`time.ts`（いつ発火するか。純関数）、`scheduler.ts`（タイマーと発火）、`methods.ts`（`schedule.*`）。
+
+- **時刻**：cron は 5 欄＋IANA タイムゾーン（`croner`、`mode: 5-part`。省略時は `settings.limits.timezone`）。`once` は 1 回だけ。作成・変更時に式・タイムゾーンを検証し、一度も実行されない設定（過去の `once`、過ぎた `expiresAt`）は `invalid_params`。`nextRunAt` は次の発火（`expiresAt` を越えたら null）。無効にすると null、有効に戻すと「いま」から次を計算する（止めていた間の分は取り戻さない）。
+- **時計**：有効な定期実行のうち最も近い `nextRunAt` に setTimeout を 1 本だけ張る（unref、最長 2^31−1 ms で張り直す）。作成・変更・削除・発火のたびに張り直す。ポーリングしない。テストはタイマー（`TimerHost`）と spawner を `createSchedulesModule({ timers, spawner })` で差し替える。
+- **取りこぼし**（`planDue`）：期限の来た定期実行ごとに、`nextRunAt` から「いま」までの発火のうち最新の 1 回だけを数える。遅れが `maxLatenessMin` 以内（`catchUp: latest`）／5 分未満（`skip`）なら実行、越えていれば `lastRun.outcome: missed`。起動時（モジュールの `start`）とタイマーの発火時（スリープ明けに遅れて来ても）に同じ規則を当てる。発火の前に `nextRunAt` を進めて保存する（途中で落ちても二重に走らせない）。
+- **発火**（`fire`。発火と取りこぼしの処理は 1 本の列で順に行い、重なりの判定と子の作成が交錯しない）：
+  1. 持ち主の会話がない・アーカイブ済み → `failed_to_start`。
+  2. 重なり：直近の発火の子（`Session.scheduleId`）とその子孫に、終わっていない Run（created / queued / running / awaiting_approval）か、始まる前・実行中の Task（pending / ready / running）があれば `skipped_overlap`。終わった子（完了・失敗・人の出番待ち）は次の発火を止めない。
+  3. 予算：人が作ったものは毎回 `run.budgetUsd` の根の予算。AI が作ったものは作った AI の会話の予算から毎回切り出す（空きが足りなければ `failed_to_start`＋出番 budget、予算が閉じていれば `failed_to_start`。AI の会話に予算が一度もなければ根の予算）。日次上限（`ledger.assertDailyLeft`）に達していれば `failed_to_start`。
+  4. `spawner.spawn` を actor `system:scheduler` で呼ぶ：題 `<title> · 11/5 9:00`（定期実行のタイムゾーン）、依頼 = prompt（`includePrevious` なら直近の子の最新の成果物の題と冒頭 4,000 字を添える）、`mode` / `workspace`（agent のときだけ）/ `model` / `budgetUsd`、`opts` = `{ scheduleId, scheduledFor, trigger: 'schedule', budget, supervise }`。子の `scheduleId`・最初のメッセージの `meta.schedule`・予算の作成は spawner が行う。
+  5. `lastRun` を保存し `schedule.updated`（`["lastRun"]`）と `schedule.fired` を出す。
+- **AI による作成**：permission `schedule.create`（ディスパッチャ）、持ち主の会話は自分の木の中（`CallScope.sessionIds`）、生きている（有効で次回のある）自分の定期実行は Grant の `limits.maxSchedules`（既定 5）まで（`limit_exceeded`）、`run.supervise: true` は `forbidden`、`createdBy` に agent を記録。agent は人が作った定期実行を変更・実行・削除できない（根の予算を使わせないため。読むのは可）。フィルタなしの `schedule.list` は自分の木の分だけ返す。人間はどれでも止める・消すことができる。
+- `schedule.runNow` は今すぐ 1 回発火する（`nextRunAt` は変えない）。始められなければエラー（重なりは `conflict`、予算は `budget_exceeded`）。`schedule.preview` は次の `count` 回（既定 5）。`schedule.delete` は発火で作った会話を残す。
 
 ### 2.19 ホームと状態（T7）
 

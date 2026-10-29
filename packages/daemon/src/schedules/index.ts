@@ -1,27 +1,41 @@
-import type { ScheduleOutcome } from '@acc/protocol';
-import { stubMethod } from '../api/registry';
-import type { SchedulerService } from '../contracts';
 import { defineModule } from '../module';
+import { scheduleMethods } from './methods';
+import { Scheduler, type SchedulerOptions } from './scheduler';
 
-/** Placeholder of the scheduler (T6, architecture.md §2.18): no timer, nothing fires. */
-export class StubScheduler implements SchedulerService {
-  rearm(): void {}
+export {
+  Scheduler,
+  SCHEDULER_ACTOR,
+  PREVIOUS_OUTPUT_CHARS,
+  artifactExcerpt,
+  realTimers,
+  type FireResult,
+  type SchedulerOptions,
+  type TimerHost,
+} from './scheduler';
+export { DEFAULT_MAX_SCHEDULES, defaultTitle } from './methods';
+export {
+  SKIP_LATENESS_MS,
+  firingLabel,
+  latestFireAtOrBefore,
+  nextFireAfter,
+  nextFires,
+  nextRunAfter,
+  normalizeTrigger,
+  planDue,
+} from './time';
 
-  fire(
-    _scheduleId: string,
-    _scheduledFor: string,
-  ): Promise<{ sessionId: string | null; outcome: ScheduleOutcome }> {
-    return Promise.resolve({ sessionId: null, outcome: 'failed_to_start' });
-  }
-}
-
-/** Schedules attached to sessions (T6, spec 20261029 §1.9, §3.11). */
-export const schedulesModule = defineModule({
-  name: 'schedules',
-  migrations: [
-    {
-      id: 'schedules/0001_init',
-      sql: `
+/**
+ * Schedules attached to sessions (T6, architecture.md §2.18, spec 20261029 §1.9, §3.11).
+ * `createSchedulesModule({ spawner, timers })` lets tests drive firings with a fake spawner
+ * and a manual timer.
+ */
+export function createSchedulesModule(opts: SchedulerOptions = {}) {
+  return defineModule({
+    name: 'schedules',
+    migrations: [
+      {
+        id: 'schedules/0001_init',
+        sql: `
 CREATE TABLE schedules (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL,
@@ -33,18 +47,19 @@ CREATE TABLE schedules (
 CREATE INDEX schedules_next ON schedules(enabled, next_run_at);
 CREATE INDEX schedules_session ON schedules(session_id);
 `,
+      },
+    ],
+    register(ctx) {
+      const scheduler = new Scheduler(ctx, opts);
+      ctx.provide('scheduler', scheduler);
+      ctx.methods.register(...scheduleMethods(ctx, scheduler));
+      return {
+        // Startup: run the latest missed firing (if still on time), then arm the timer.
+        start: () => scheduler.start(),
+        stop: () => scheduler.stop(),
+      };
     },
-  ],
-  register(ctx) {
-    ctx.provide('scheduler', new StubScheduler());
-    ctx.methods.register(
-      stubMethod('schedule.create'),
-      stubMethod('schedule.list'),
-      stubMethod('schedule.get'),
-      stubMethod('schedule.update'),
-      stubMethod('schedule.delete'),
-      stubMethod('schedule.runNow'),
-      stubMethod('schedule.preview'),
-    );
-  },
-});
+  });
+}
+
+export const schedulesModule = createSchedulesModule();

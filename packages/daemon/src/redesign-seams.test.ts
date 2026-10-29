@@ -35,13 +35,6 @@ const STUBS = [
   'artifact.review',
   'cost.summary',
   'budget.raise',
-  'schedule.create',
-  'schedule.list',
-  'schedule.get',
-  'schedule.update',
-  'schedule.delete',
-  'schedule.runNow',
-  'schedule.preview',
   'home.get',
   'project.inspectFolder',
 ] as const;
