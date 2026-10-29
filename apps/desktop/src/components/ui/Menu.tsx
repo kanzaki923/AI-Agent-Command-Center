@@ -82,11 +82,17 @@ export function PopoverContent({
   className,
   align = 'start',
   side = 'bottom',
+  focusInput = true,
 }: {
   children: ReactNode;
   className?: string;
   align?: 'start' | 'end' | 'center';
   side?: 'top' | 'bottom';
+  /**
+   * Focus the first input on open (default). false: focus the popover itself, for one whose
+   * fields hold values a stray keystroke must not change (Tab still reaches them).
+   */
+  focusInput?: boolean;
 }) {
   return (
     <P.Portal>
@@ -96,6 +102,11 @@ export function PopoverContent({
         sideOffset={6}
         className={cn(LAYER, 'p-0', className)}
         onOpenAutoFocus={(e) => {
+          if (!focusInput) {
+            e.preventDefault();
+            (e.currentTarget as HTMLElement | null)?.focus();
+            return;
+          }
           // cmdk inputs inside take focus themselves.
           const input = (e.currentTarget as HTMLElement | null)?.querySelector('input');
           if (input) {

@@ -1,12 +1,13 @@
 import type { SettingsView } from '@acc/protocol';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
 import { useConfirm } from '../../store/confirm';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
 import { TooltipProvider } from '../ui/Tooltip';
-import { SettingsDialog, parseReserveUsd } from './SettingsDialog';
+import { connectionStatus, SettingsDialog } from './SettingsDialog';
+import { parseUsd } from './controls';
 
 const VIEW: SettingsView = {
   litellm: { baseUrl: 'http://127.0.0.1:4000', hasApiKey: true, apiKeyMasked: 'sk-…a1b2' },
@@ -16,6 +17,12 @@ const VIEW: SettingsView = {
   maxDelegationDepth: 1,
   autoResumeOrchestrators: true,
   llmCallReserveUsd: 0.25,
+  defaultPermissionProfile: 'autonomous',
+  autoMode: { enabled: true, judge: 'server', classifierModel: null },
+  maxConcurrentAgents: 10,
+  maxConcurrentChats: 16,
+  limits: { dailyUsd: 20, timezone: 'Asia/Tokyo' },
+  autoResume: true,
 };
 
 function mount(view: SettingsView = VIEW) {
@@ -26,11 +33,12 @@ function mount(view: SettingsView = VIEW) {
     'settings.update': (p) => {
       updates.push(p);
       const patch = p as Partial<SettingsView>;
-      // Like the daemon: autoMode is merged field by field.
+      // Like the daemon: autoMode and limits are merged field by field.
       current = {
         ...current,
         ...patch,
         ...(patch.autoMode && current.autoMode ? { autoMode: { ...current.autoMode, ...patch.autoMode } } : {}),
+        ...(patch.limits && current.limits ? { limits: { ...current.limits, ...patch.limits } } : {}),
       };
       return current;
     },
@@ -46,7 +54,7 @@ function mount(view: SettingsView = VIEW) {
       methods: ['system.shutdown'],
       stats: { projects: 0, sessions: 0, activeRuns: 0, lastEventSeq: 0 },
     }),
-    'models.list': () => ({ models: [], source: 'config' }),
+    'models.list': () => ({ models: [{ id: 'claude-sonnet', label: null, provider: null }], source: 'litellm' }),
   });
   render(
     <RuntimeProvider runtime={createRuntime(fake.client)}>
@@ -58,127 +66,200 @@ function mount(view: SettingsView = VIEW) {
   return { fake, updates };
 }
 
+const openDetails = async () => {
+  await act(async () => {
+    fireEvent.click(await screen.findByRole('button', { name: '詳細' }));
+  });
+};
+
 beforeEach(() => {
-  useUi.setState({ settingsOpen: true });
+  useUi.setState({ settingsOpen: true, shortcutsOpen: false, theme: 'dark', reduceMotion: 'system' });
   useConfirm.setState({ request: null });
 });
 
-describe('parseReserveUsd', () => {
-  it('accepts 0–100 USD rounded to cents', () => {
-    expect(parseReserveUsd('0.5')).toBe(0.5);
-    expect(parseReserveUsd('0')).toBe(0);
-    expect(parseReserveUsd('0.333')).toBe(0.33);
-    expect(parseReserveUsd('')).toBeNull();
-    expect(parseReserveUsd('-1')).toBeNull();
-    expect(parseReserveUsd('101')).toBeNull();
-    expect(parseReserveUsd('abc')).toBeNull();
+describe('parseUsd', () => {
+  it('reads an amount in dollars, rounded to cents', () => {
+    expect(parseUsd('20')).toBe(20);
+    expect(parseUsd('$2.505')).toBe(2.51);
+    expect(parseUsd('1,000')).toBe(1000);
+    expect(parseUsd('')).toBeUndefined();
+    expect(parseUsd('', { allowEmpty: true })).toBeNull();
+    expect(parseUsd('0')).toBeUndefined();
+    expect(parseUsd('0', { allowZero: true })).toBe(0);
+    expect(parseUsd('-1')).toBeUndefined();
+    expect(parseUsd('101', { max: 100 })).toBeUndefined();
+    expect(parseUsd('abc')).toBeUndefined();
   });
 });
 
-describe('<SettingsDialog> agent permissions', () => {
-  const WITH_PROFILES: SettingsView = {
-    ...VIEW,
-    defaultPermissionProfile: 'autonomous',
-    autoMode: { enabled: true, judge: 'server', classifierModel: null },
-  };
+describe('connectionStatus', () => {
+  it('names the endpoint and how many models it serves, or モック without one', () => {
+    expect(connectionStatus(VIEW, { models: [1, 2], source: 'litellm' }, false)).toEqual({
+      tone: 'ok',
+      text: '127.0.0.1:4000 · 2 モデル',
+    });
+    expect(connectionStatus(VIEW, undefined, true).tone).toBe('error');
+    expect(connectionStatus({ ...VIEW, litellm: { baseUrl: null, hasApiKey: false, apiKeyMasked: null } }, undefined, false)).toEqual({
+      tone: 'off',
+      text: 'モック',
+    });
+  });
+});
 
-  it('picks the default profile, each with one plain line of what runs without asking', async () => {
-    const { updates } = mount(WITH_PROFILES);
-    const group = await screen.findByRole('radiogroup', { name: '既定のプロファイル' });
-    await waitFor(() => expect(group.querySelector('[aria-checked="true"]')).toHaveTextContent('おまかせ（推奨）'));
-    expect(group).toHaveTextContent('worktree の中で完結する作業はすべて確認なしで進めます');
-    expect(screen.getAllByText(/push・worktree の外への書き込み/).length).toBeGreaterThan(0);
+describe('<SettingsDialog> up front', () => {
+  it('shows only connection, 任せ方, the daily limit and appearance; the rest is folded', async () => {
+    mount();
+    await waitFor(() => expect(screen.getByTestId('connection-status')).toHaveTextContent('127.0.0.1:4000 · 1 モデル'));
+    expect(screen.getByRole('radiogroup', { name: '任せ方' })).toBeInTheDocument();
+    expect(screen.getByLabelText('1 日の上限')).toHaveValue('20');
+    expect(screen.getByRole('radiogroup', { name: 'テーマ' })).toBeInTheDocument();
+    expect(screen.queryByTestId('settings-details')).toBeNull();
+    expect(screen.queryByRole('radiogroup', { name: '自動判定' })).toBeNull();
+    expect(screen.getByRole('button', { name: '詳細' })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('has no explanation paragraphs', async () => {
+    mount();
+    await screen.findByTestId('connection-status');
+    await openDetails();
+    const dialog = screen.getByRole('dialog', { name: '設定' });
+    // Every visible text is a name, a value or a button: none is a sentence.
+    expect(within(dialog).queryAllByText(/。/)).toHaveLength(0);
+    expect(dialog).not.toHaveTextContent(/Orchestrator|Worker|Task|Run /);
+  });
+
+  it('changes 任せ方 with one press', async () => {
+    const { updates } = mount();
+    const group = await screen.findByRole('radiogroup', { name: '任せ方' });
     await act(async () => {
-      fireEvent.click(group.querySelector('[data-profile="careful"]')!);
+      fireEvent.click(within(group).getByRole('radio', { name: '慎重' }));
     });
     await waitFor(() => expect(updates).toEqual([{ defaultPermissionProfile: 'careful' }]));
   });
 
-  it('turns auto mode off and saves the classifier model on blur', async () => {
-    const { updates } = mount(WITH_PROFILES);
-    const input = await screen.findByLabelText('分類器のモデル（LiteLLM 経由のとき）');
+  it('changes the daily limit in place, and an empty field removes it', async () => {
+    const { updates } = mount();
+    await waitFor(() => expect(screen.getByLabelText('1 日の上限')).toHaveValue('20'));
+    const input = screen.getByLabelText('1 日の上限');
+    fireEvent.change(input, { target: { value: '35' } });
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 'Enter' });
+    });
+    await waitFor(() => expect(updates).toContainEqual({ limits: { dailyUsd: 35 } }));
+    await waitFor(() => expect(screen.getByLabelText('1 日の上限')).toHaveValue('35'));
+    const again = screen.getByLabelText('1 日の上限');
+    fireEvent.change(again, { target: { value: '' } });
+    await act(async () => {
+      fireEvent.blur(again);
+    });
+    await waitFor(() => expect(updates).toContainEqual({ limits: { dailyUsd: null } }));
+  });
+
+  it('ignores an invalid amount and puts the value back', async () => {
+    const { updates } = mount();
+    await waitFor(() => expect(screen.getByLabelText('1 日の上限')).toHaveValue('20'));
+    const input = screen.getByLabelText('1 日の上限');
+    fireEvent.change(input, { target: { value: '-3' } });
+    fireEvent.blur(input);
+    expect(updates).toEqual([]);
+    expect(input).toHaveValue('20');
+  });
+
+  it('switches the theme from the icons', async () => {
+    mount();
+    const group = await screen.findByRole('radiogroup', { name: 'テーマ' });
+    fireEvent.click(within(group).getByRole('radio', { name: 'ライト' }));
+    expect(useUi.getState().theme).toBe('light');
+  });
+
+  it('opens the connection form with 変更 and folds it with 取り消し', async () => {
+    mount();
+    fireEvent.click(await screen.findByRole('button', { name: '変更' }));
+    expect(screen.getByLabelText('LiteLLM Proxy の URL')).toHaveValue('http://127.0.0.1:4000');
+    expect(screen.getByRole('button', { name: '確かめる' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '取り消し' }));
+    expect(screen.queryByLabelText('LiteLLM Proxy の URL')).toBeNull();
+  });
+});
+
+describe('<SettingsDialog> 詳細', () => {
+  it('turns auto mode off, chooses where it judges and saves the model on blur', async () => {
+    const { updates } = mount();
+    await openDetails();
+    const judge = screen.getByRole('radiogroup', { name: '判定する場所' });
+    await act(async () => {
+      fireEvent.click(within(judge).getByRole('radio', { name: '手元' }));
+    });
+    await waitFor(() => expect(updates).toEqual([{ autoMode: { judge: 'client' } }]));
+    const input = screen.getByLabelText('判定モデル');
     fireEvent.change(input, { target: { value: 'claude-sonnet' } });
     await act(async () => {
       fireEvent.blur(input);
     });
-    await waitFor(() => expect(updates).toEqual([{ autoMode: { classifierModel: 'claude-sonnet' } }]));
-    const group = screen.getByRole('radiogroup', { name: 'Claude Code の Auto mode' });
+    await waitFor(() => expect(updates).toContainEqual({ autoMode: { classifierModel: 'claude-sonnet' } }));
+    const auto = screen.getByRole('radiogroup', { name: '自動判定' });
     await act(async () => {
-      fireEvent.click(screen.getAllByRole('radio', { name: 'オフ' }).find((b) => group.contains(b))!);
+      fireEvent.click(within(auto).getByRole('radio', { name: 'オフ' }));
     });
     await waitFor(() => expect(updates).toContainEqual({ autoMode: { enabled: false } }));
+    await waitFor(() => expect(screen.queryByLabelText('判定モデル')).toBeNull());
   });
 
-  it('chooses where auto mode judges, with one line of cost each', async () => {
-    const { updates } = mount(WITH_PROFILES);
-    const group = await screen.findByRole('radiogroup', { name: '判定する場所' });
-    await waitFor(() => expect(group.querySelector('[aria-checked="true"]')).toHaveTextContent('サーバーで判定（推奨）'));
-    expect(group).toHaveTextContent('追加のリクエストなし');
-    expect(group).toHaveTextContent('1 回約 $0.01、キャッシュが冷えると約 $0.13');
-    // With the server judge, the classifier model is the fallback.
-    expect(screen.getByText(/サーバー判定を使えない上流のときの予備です/)).toBeInTheDocument();
-    expect(screen.getByLabelText('分類器のモデル（LiteLLM 経由のとき）')).toHaveAttribute(
-      'placeholder',
-      expect.stringContaining('Claude Sonnet 5') as string,
-    );
-    await act(async () => {
-      fireEvent.click(group.querySelector('[data-judge="client"]')!);
-    });
-    await waitFor(() => expect(updates).toEqual([{ autoMode: { judge: 'client' } }]));
-    expect(await screen.findByText(/^空なら Claude Code の既定（Claude Sonnet 5）を使い/)).toBeInTheDocument();
-  });
-
-  it('hides the judge choice for a daemon that does not report it', async () => {
-    mount({ ...WITH_PROFILES, autoMode: { enabled: true, classifierModel: null } });
-    await screen.findByLabelText('分類器のモデル（LiteLLM 経由のとき）');
-    expect(screen.queryByRole('radiogroup', { name: '判定する場所' })).toBeNull();
-  });
-
-  it('says so when the daemon has no permission profiles', async () => {
-    mount();
-    expect(await screen.findByText('この Core Daemon は権限のプロファイルに対応していません。')).toBeInTheDocument();
-  });
-});
-
-describe('<SettingsDialog> daemon settings', () => {
-  it('turns automatic orchestrator resume off through settings.update', async () => {
+  it('steps how many agents and conversations run at once', async () => {
     const { updates } = mount();
-    const group = await screen.findByRole('radiogroup', { name: '再起動のあと Orchestrator を再開' });
-    await waitFor(() =>
-      expect(group.querySelector('[aria-checked="true"]')).toHaveTextContent('オン'),
-    );
+    await openDetails();
+    const agents = screen.getByRole('group', { name: '同時に動くエージェント' });
     await act(async () => {
-      fireEvent.click(screen.getAllByRole('radio', { name: 'オフ' }).find((b) => group.contains(b))!);
+      fireEvent.click(within(agents).getByRole('button', { name: '増やす' }));
     });
-    await waitFor(() => expect(updates).toEqual([{ autoResumeOrchestrators: false }]));
-    await waitFor(() =>
-      expect(group.querySelector('[aria-checked="true"]')).toHaveTextContent('オフ'),
-    );
+    await waitFor(() => expect(updates).toEqual([{ maxConcurrentAgents: 11 }]));
+    const chats = screen.getByRole('group', { name: '同時に動く会話' });
+    await act(async () => {
+      fireEvent.click(within(chats).getByRole('button', { name: '減らす' }));
+    });
+    await waitFor(() => expect(updates).toContainEqual({ maxConcurrentChats: 15 }));
   });
 
-  it('saves the per-call LLM reserve, and ignores an invalid amount', async () => {
+  it('saves the per-call reserve (0 allowed) and the resume after a restart', async () => {
     const { updates } = mount();
-    const input = await screen.findByLabelText('LLM 呼び出しごとの予約額（USD）');
-    await waitFor(() => expect(input).toHaveValue(0.25));
-    expect(screen.getByText(/確保できない呼び出しは/)).toBeInTheDocument();
-    fireEvent.change(input, { target: { value: '-3' } });
-    fireEvent.blur(input);
-    expect(updates).toEqual([]);
-    const again = screen.getByLabelText('LLM 呼び出しごとの予約額（USD）');
-    fireEvent.change(again, { target: { value: '0.5' } });
+    await openDetails();
+    const reserve = screen.getByLabelText('1 回の呼び出しの予約');
+    fireEvent.change(reserve, { target: { value: '0' } });
     await act(async () => {
-      fireEvent.blur(again);
+      fireEvent.blur(reserve);
     });
-    await waitFor(() => expect(updates).toEqual([{ llmCallReserveUsd: 0.5 }]));
+    await waitFor(() => expect(updates).toEqual([{ llmCallReserveUsd: 0 }]));
+    const resume = screen.getByRole('radiogroup', { name: '再起動のあと再開' });
+    await act(async () => {
+      fireEvent.click(within(resume).getByRole('radio', { name: 'オフ' }));
+    });
+    await waitFor(() => expect(updates).toContainEqual({ autoResume: false }));
   });
 
-  it('stops the daemon from the browser (system.shutdown) after a confirmation', async () => {
+  it('opens the shortcut list and stops the daemon after a confirmation', async () => {
     mount();
-    const button = await screen.findByTestId('shutdown-daemon');
-    expect(button).toHaveTextContent('Core Daemon を停止');
+    await openDetails();
+    fireEvent.click(screen.getByRole('button', { name: /一覧/ }));
+    expect(useUi.getState().shortcutsOpen).toBe(true);
+    expect(await screen.findByTestId('diagnostics')).toHaveTextContent('pid 42');
     await act(async () => {
-      fireEvent.click(button);
+      fireEvent.click(screen.getByTestId('shutdown-daemon'));
     });
     await waitFor(() => expect(useConfirm.getState().request?.title).toBe('Core Daemon を停止しますか？'));
+  });
+
+  it('works with an older daemon that reports no profiles, limits or auto mode', async () => {
+    mount({
+      litellm: { baseUrl: null, hasApiKey: false, apiKeyMasked: null },
+      defaultModel: null,
+      defaultRuntime: null,
+      maxConcurrentRuns: 8,
+      maxDelegationDepth: 1,
+    });
+    expect(await screen.findByTestId('connection-status')).toHaveTextContent('モック');
+    expect(screen.queryByRole('radiogroup', { name: '任せ方' })).toBeNull();
+    await openDetails();
+    expect(within(screen.getByRole('group', { name: '同時に動くエージェント' })).getByText('8')).toBeInTheDocument();
+    expect(screen.queryByRole('radiogroup', { name: '自動判定' })).toBeNull();
   });
 });

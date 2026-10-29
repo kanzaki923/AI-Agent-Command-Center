@@ -3,7 +3,6 @@ import { useState } from 'react';
 import { useStore } from 'zustand';
 import { GlobalShortcuts } from './app/GlobalShortcuts';
 import { FocusView } from './components/focus/FocusView';
-import { GrantDialog } from './components/grant/Grant';
 import { HomeView } from './components/home/HomeView';
 import { IntegrationView } from './components/integration/IntegrationView';
 import { ProjectDialog } from './components/project/ProjectDialog';
@@ -85,7 +84,6 @@ export function App() {
         <SettingsDialog />
         <ShortcutsDialog />
         <ConfirmDialog />
-        <GrantDialog />
         <ProjectDialog />
         <Onboarding />
         <Toaster />
