@@ -171,6 +171,9 @@ export async function runScenario(
   const input: AgentRunInput = {
     runId: 'run_contract',
     cwd: sb.repo,
+    writeRoot: sb.repo,
+    readRoots: [],
+    maxBudgetUsd: null,
     prompt: o.prompt,
     model: o.model ?? 'claude-sonnet-4-5',
     resumeSessionId: o.resumeSessionId ?? null,

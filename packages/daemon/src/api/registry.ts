@@ -1,6 +1,7 @@
 import { type Actor, type MethodName, type Params, type Result, api } from '@acc/protocol';
 import type { z } from 'zod';
 import type { DaemonContext } from '../core/context';
+import { ApiError } from '../core/errors';
 import type { Connection } from './connection';
 
 /** Per-call information handed to handlers. */
@@ -13,9 +14,14 @@ export interface CallContext {
   signal: AbortSignal;
 }
 
-/** Projects a call touches, for capability scope checks. */
+/** What a call touches, for capability scope checks. */
 export interface CallScope {
   projectIds: string[];
+  /**
+   * Sessions the call reads or changes. Agents may only touch their own session and its
+   * descendants (the subtree under their grant's subject); omitted = no session involved.
+   */
+  sessionIds?: string[];
 }
 
 export type ResultInput<M extends MethodName> = z.input<(typeof api)[M]['result']>;
@@ -29,6 +35,25 @@ export interface MethodImpl<M extends MethodName = MethodName> {
    */
   scope?: (params: Params<M>, call: CallContext) => CallScope;
   handler: (params: Params<M>, call: CallContext) => ResultInput<M> | Promise<ResultInput<M>>;
+  /**
+   * A placeholder registered by the Core track until the owning track implements the method:
+   * calls fail with not_found (`reason: not_implemented`), it is left out of `names()` (so
+   * out of system.info and LLM tools), and a real implementation may replace it.
+   */
+  stub?: boolean;
+}
+
+/** Placeholder for a contract method whose track has not implemented it yet. */
+export function stubMethod<M extends MethodName>(name: M): MethodImpl<M> {
+  return {
+    name,
+    stub: true,
+    handler: () => {
+      throw new ApiError('not_found', `Method not implemented yet: ${name}`, {
+        reason: 'not_implemented',
+      });
+    },
+  };
 }
 
 /**
@@ -53,7 +78,8 @@ export class MethodRegistry {
       if (!Object.hasOwn(api, impl.name)) {
         throw new Error(`Method "${impl.name}" is not declared in @acc/protocol api`);
       }
-      if (this.impls.has(impl.name)) {
+      if (this.impls.has(impl.name) && !this.impls.get(impl.name)!.stub) {
+        if (impl.stub) continue;
         throw new Error(`Method "${impl.name}" is already registered`);
       }
       this.impls.set(impl.name, impl);
@@ -64,12 +90,18 @@ export class MethodRegistry {
     return this.impls.get(name);
   }
 
+  /** Implemented (stubs do not count). */
   has(name: string): boolean {
-    return this.impls.has(name);
+    const impl = this.impls.get(name);
+    return !!impl && !impl.stub;
   }
 
+  /** Implemented methods, sorted (stubs left out). */
   names(): MethodName[] {
-    return [...this.impls.keys()].sort() as MethodName[];
+    return [...this.impls.values()]
+      .filter((i) => !i.stub)
+      .map((i) => i.name)
+      .sort();
   }
 }
 

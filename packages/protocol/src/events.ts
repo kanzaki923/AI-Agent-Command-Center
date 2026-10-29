@@ -32,6 +32,13 @@ import {
   ToolDecisionKind,
   Workspace,
 } from './domain';
+import { attentionEvents } from './ext/attention';
+import { costEvents } from './ext/cost';
+import { homeEvents } from './ext/home';
+import { outputsEvents } from './ext/outputs';
+import { scheduleEvents } from './ext/schedule';
+import { spawnEvents } from './ext/spawn';
+import { supervisorEvents } from './ext/supervisor';
 
 /**
  * Payload schema per event type. This map is the single source of truth for event types:
@@ -49,6 +56,8 @@ export const eventPayloads = {
   'session.archived': z.object({ sessionId: SessionId, archived: z.boolean() }),
 
   'message.created': z.object({ message: Message }),
+  /** A message changed after it was created (e.g. `delivery` queued -> delivered). */
+  'message.updated': z.object({ message: Message, changes: z.array(z.string()) }),
 
   'run.created': z.object({ run: Run }),
   'run.status_changed': z.object({
@@ -154,6 +163,15 @@ export const eventPayloads = {
   }),
 
   'settings.updated': z.object({ changes: z.array(z.string()) }),
+
+  // ---- redesign tracks (ext/<track>.ts) ----
+  ...supervisorEvents,
+  ...spawnEvents,
+  ...outputsEvents,
+  ...attentionEvents,
+  ...costEvents,
+  ...scheduleEvents,
+  ...homeEvents,
 } as const;
 
 export type EventPayloads = typeof eventPayloads;

@@ -24,8 +24,17 @@ export const T0 = Date.UTC(2026, 9, 29, 5, 0, 0);
 export const iso = (ms: number) => new Date(ms).toISOString();
 
 export function session(over: Partial<Session> = {}): Session {
+  const sid = over.id ?? id('ses');
   return {
-    id: id('ses'),
+    id: sid,
+    rootSessionId: over.parentSessionId ? over.parentSessionId : sid,
+    state: 'idle',
+    stateSince: null,
+    now: null,
+    cost: { ownUsd: 0, treeUsd: 0, source: 'unknown' },
+    brief: null,
+    scheduleId: null,
+    supervision: 'active',
     projectId: null,
     kind: 'agent',
     title: 'セッション',
@@ -63,6 +72,7 @@ export function run(s: Session, over: Partial<Run> = {}): Run {
     attempt: 1,
     budgetId: null,
     triggerMessageId: null,
+    trigger: 'user',
     usage: { inputTokens: 0, outputTokens: 0, costUsd: 0.1, costSource: 'reported' },
     error: null,
     createdBy: HUMAN,
@@ -115,6 +125,7 @@ export function task(over: Partial<Task> = {}): Task {
     createdAt: iso(T0),
     updatedAt: iso(T0),
     completedAt: null,
+    autoStart: true,
     ...over,
   };
 }
@@ -155,6 +166,9 @@ export function message(s: Session, over: Partial<Message> = {}): Message {
     author: HUMAN,
     model: null,
     createdAt: iso(T0),
+    delivery: 'delivered',
+    meta: null,
+    usage: null,
     ...over,
   };
 }

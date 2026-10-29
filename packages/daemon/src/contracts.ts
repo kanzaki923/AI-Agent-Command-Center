@@ -10,13 +10,29 @@ import type {
   Actor,
   Approval,
   ApprovalKind,
+  Attention,
+  AttentionChoice,
+  AttentionKind,
+  AttentionRefs,
   BudgetAllocation,
   BudgetSubject,
   ContentPart,
+  CostSource,
+  InboxItem,
+  InboxItemKind,
+  InboxItemRefs,
+  LedgerComponent,
   MethodName,
+  Params,
+  Result,
   Run,
   RunKind,
   RunPermission,
+  RunTrigger,
+  ScheduleOutcome,
+  SendDelivery,
+  Session,
+  StreamingMessage,
   Usage,
   Workspace,
 } from '@acc/protocol';
@@ -128,6 +144,8 @@ export interface StartRunInput {
   runtime?: string | null;
   budgetId?: string | null;
   triggerMessageId?: string | null;
+  /** What started the run (default 'user'). */
+  trigger?: RunTrigger;
 }
 
 export interface RunsService {
@@ -234,7 +252,12 @@ export type AgentEvent =
   | { type: 'tool_call'; toolCallId: string; name: string; input: unknown }
   | { type: 'tool_result'; toolCallId: string; name: string; output: unknown; isError?: boolean }
   | { type: 'activity'; text: string | null }
-  | { type: 'usage'; usage: Partial<Usage> }
+  /**
+   * Usage of one model call. `estimate`: counted while the call runs (from token counts and a
+   * price table); `final`: the runtime's own figure, which replaces the estimates (absent =
+   * final, as before the ledger).
+   */
+  | { type: 'usage'; usage: Partial<Usage>; phase?: 'estimate' | 'final' }
   | { type: 'session'; runtimeSessionId: string }
   /**
    * How the runtime itself decided a tool use (Claude Code: the auto mode classifier's
@@ -258,6 +281,15 @@ export interface AgentRunInput {
   runId: string;
   /** Working directory (the worktree). */
   cwd: string;
+  /** Where the agent may write (its workspace; usually `cwd`). */
+  writeRoot: string;
+  /** Extra folders it may read (the project's folder / repository, attachments). */
+  readRoots: string[];
+  /**
+   * Spend cap for this run in USD (min of the budget's free amount and what is left today),
+   * passed to runtimes that can stop themselves (Claude: `maxBudgetUsd`). Null: no cap.
+   */
+  maxBudgetUsd: number | null;
   prompt: string;
   systemPrompt?: string;
   model?: string | null;
@@ -312,8 +344,159 @@ export interface RuntimesService {
   defaultId(): string;
 }
 
+// ---------------------------------------------------------------------------
+// Redesign services (spec 20261029 §3.1). Core fixes the contracts and ships no-op stubs;
+// each track implements its own. architecture.md §2.13-§2.19.
+// ---------------------------------------------------------------------------
+
+/** inbox (src/inbox, T1): the only entry point that starts, injects or queues work. */
+export interface InboxDeliverInput {
+  kind: InboxItemKind;
+  refs?: InboxItemRefs;
+  actor: Actor;
+}
+
+export interface InboxDeliverResult {
+  /** The stored item; null when nothing was stored. */
+  item: InboxItem | null;
+  /** started: a new run; injected: the running run takes it at its next step; queued: later. */
+  delivery: SendDelivery;
+  runId: string | null;
+}
+
+export interface InboxService {
+  /** Decide whether the item starts a run, is injected at the next step, or waits (§3.2). */
+  deliver(sessionId: string, input: InboxDeliverInput): InboxDeliverResult;
+  /** Pending items to hand to a running run at a step boundary; marks them consumed by it. */
+  drain(runId: string): InboxItem[];
+}
+
+/** Extra inputs of a spawn that only the daemon sets (schedules). */
+export interface SpawnOptions {
+  scheduleId?: string | null;
+  /** Firing time, for the first message's `meta.schedule`. */
+  scheduledFor?: string | null;
+  trigger?: RunTrigger;
+}
+
+/** spawner (src/sessions/spawn.ts, T2): `session.spawn` and schedule firings. */
+export interface SpawnerService {
+  spawn(
+    params: Params<'session.spawn'>,
+    actor: Actor,
+    opts?: SpawnOptions,
+  ): Promise<Result<'session.spawn'>>;
+}
+
+/** outputs (src/outputs + integration/artifacts.ts, T3). */
+export interface FinalizeResult {
+  /** The outputs need a human's (or the requester's) decision before the work is done. */
+  needsReview: boolean;
+  artifactIds: string[];
+}
+
+export interface OutputsService {
+  /** Settle a child's outputs when its run ended (§3.4): published > diff > writes > final text. */
+  finalize(run: Run): Promise<FinalizeResult>;
+}
+
+/** attention (src/attention, T4). */
+export interface OpenAttentionInput {
+  kind: AttentionKind;
+  sessionId: string;
+  /** One line, no ids or JSON. */
+  title: string;
+  detail?: string | null;
+  /** Default: the kind's choices (ATTENTION_DEFAULT_CHOICES). */
+  choices?: AttentionChoice[];
+  allowText?: boolean;
+  refs: AttentionRefs;
+  actor: Actor;
+}
+
+export interface AttentionResolutionInput {
+  choiceId?: string | null;
+  text?: string | null;
+  by: Actor;
+}
+
+export interface AttentionService {
+  /** Open an item; an open item with the same refs is returned instead of a duplicate. */
+  open(input: OpenAttentionInput): Attention | null;
+  /** Resolve every open item whose refs match all given refs (the cause went away). */
+  resolveWhere(refs: AttentionRefs, resolution: AttentionResolutionInput): Attention[];
+  /** Act on an item (attention.respond): routes to approval / retry / stop / review / budget. */
+  respond(
+    attentionId: string,
+    input: { choiceId?: string | null; text?: string | null },
+    actor: Actor,
+  ): Promise<Attention>;
+}
+
+/** One row of the usage ledger (spec §1.10). */
+export interface LedgerEntry {
+  /** Default: now. */
+  ts?: string;
+  sessionId: string | null;
+  runId: string | null;
+  projectId?: string | null;
+  model?: string | null;
+  component: LedgerComponent;
+  /** USD; negative only for `adjust`. */
+  costUsd: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  source: CostSource;
+}
+
+/** ledger (src/cost, T5): the only writer of Session.cost. */
+export interface LedgerService {
+  /** Record usage (inside the caller's transaction) and add it to Session.cost up the tree. */
+  record(entry: LedgerEntry): void;
+  /** USD recorded today (settings.limits.timezone). */
+  usedToday(): number;
+  /** Throw budget_exceeded (`daily_limit`) when the daily limit is used up. */
+  assertDailyLeft(): void;
+}
+
+/** scheduler (src/schedules, T6). */
+export interface SchedulerService {
+  /** Re-arm the single timer for the nearest nextRunAt. */
+  rearm(): void;
+  fire(
+    scheduleId: string,
+    scheduledFor: string,
+  ): Promise<{ sessionId: string | null; outcome: ScheduleOutcome }>;
+}
+
+/** sessionState (src/home, T7): the only writer of Session.state / stateSince / now. */
+export interface SessionStateService {
+  /** Re-derive the session's state (§3.7) and its ancestors'; returns the session. */
+  recompute(sessionId: string): Session | null;
+  /**
+   * Whether the session's tree below it has settled (§1.8): no active run, open attention,
+   * unfinished task or pending inbox item in the session or its descendants. Grants with
+   * lifetime `work` end then.
+   */
+  isWorkSettled(sessionId: string): boolean;
+}
+
+/** streams (src/home/streams.ts, T7): text being streamed, for session.messages `streaming`. */
+export interface StreamsService {
+  append(runId: string, messageId: string, kind: 'text' | 'reasoning', text: string): void;
+  snapshot(sessionId: string): StreamingMessage | null;
+}
+
 declare module './core/context' {
   interface Services {
+    inbox: InboxService;
+    spawner: SpawnerService;
+    outputs: OutputsService;
+    attention: AttentionService;
+    ledger: LedgerService;
+    scheduler: SchedulerService;
+    sessionState: SessionStateService;
+    streams: StreamsService;
     runs: RunsService;
     budget: BudgetService;
     workspaces: WorkspacesService;

@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import type { Db } from './db';
 
 /**
@@ -9,6 +10,12 @@ import type { Db } from './db';
 export interface Migration {
   id: string;
   sql: string;
+  /**
+   * The migration rebuilds tables (CREATE new → copy → DROP → RENAME). Before the first such
+   * pending migration runs on an existing database, `runMigrations` calls `beforeRebuild`
+   * (the daemon copies acc.sqlite to acc.sqlite.bak-<version>; downgrades are unsupported).
+   */
+  rebuildsTables?: boolean;
 }
 
 /**
@@ -176,13 +183,71 @@ CREATE INDEX events_project ON events(project_id, seq);
 CREATE INDEX events_type ON events(type, seq);
 `,
   },
+  {
+    // Work outside any project (spawned children, scratch folders): project_id becomes NULL-able.
+    id: 'core/0002_nullable_project',
+    rebuildsTables: true,
+    sql: `
+CREATE TABLE tasks_new (
+  id TEXT PRIMARY KEY,
+  project_id TEXT,
+  parent_task_id TEXT,
+  status TEXT NOT NULL,
+  assignee_session_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  data TEXT NOT NULL
+);
+INSERT INTO tasks_new (id, project_id, parent_task_id, status, assignee_session_id, created_at, updated_at, data)
+  SELECT id, project_id, parent_task_id, status, assignee_session_id, created_at, updated_at, data FROM tasks;
+DROP TABLE tasks;
+ALTER TABLE tasks_new RENAME TO tasks;
+CREATE INDEX tasks_project ON tasks(project_id, status);
+CREATE INDEX tasks_parent ON tasks(parent_task_id);
+CREATE INDEX tasks_assignee ON tasks(assignee_session_id);
+
+CREATE TABLE workspaces_new (
+  id TEXT PRIMARY KEY,
+  project_id TEXT,
+  task_id TEXT,
+  status TEXT NOT NULL,
+  locked_by_run_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  data TEXT NOT NULL
+);
+INSERT INTO workspaces_new (id, project_id, task_id, status, locked_by_run_id, created_at, updated_at, data)
+  SELECT id, project_id, task_id, status, locked_by_run_id, created_at, updated_at, data FROM workspaces;
+DROP TABLE workspaces;
+ALTER TABLE workspaces_new RENAME TO workspaces;
+CREATE INDEX workspaces_project ON workspaces(project_id);
+CREATE INDEX workspaces_task ON workspaces(task_id);
+`,
+  },
+  {
+    // Session trees: every session knows its root; the daemon keeps a derived state.
+    // Existing rows are filled by the startup backfill (core/backfills.ts).
+    id: 'core/0003_session_tree',
+    sql: `
+ALTER TABLE sessions ADD COLUMN root_session_id TEXT;
+ALTER TABLE sessions ADD COLUMN state TEXT;
+CREATE INDEX sessions_root ON sessions(root_session_id);
+CREATE INDEX sessions_parent ON sessions(parent_session_id);
+`,
+  },
 ];
+
+export interface RunMigrationsOptions {
+  /** Called once, outside any transaction, before the first pending table rebuild. */
+  beforeRebuild?: () => void;
+}
 
 /** Apply pending migrations. Returns the ids applied in this call. */
 export function runMigrations(
   db: Db,
   migrations: readonly Migration[],
   nowIso: () => string,
+  opts: RunMigrationsOptions = {},
 ): string[] {
   db.exec(
     'CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)',
@@ -192,10 +257,16 @@ export function runMigrations(
   );
   const seen = new Set<string>();
   const ran: string[] = [];
+  let backedUp = false;
   for (const m of migrations) {
     if (seen.has(m.id)) throw new Error(`Duplicate migration id: ${m.id}`);
     seen.add(m.id);
     if (applied.has(m.id)) continue;
+    // A fresh database has nothing to lose; an existing one is copied before tables are rebuilt.
+    if (m.rebuildsTables && !backedUp && applied.size > 0) {
+      backedUp = true;
+      opts.beforeRebuild?.();
+    }
     db.transaction(() => {
       db.exec(m.sql);
       db.run('INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)', [m.id, nowIso()]);
@@ -203,4 +274,15 @@ export function runMigrations(
     ran.push(m.id);
   }
   return ran;
+}
+
+/**
+ * Copy the database to `<path>.bak-<version>` (`-2`, `-3`, ... when taken) with
+ * `VACUUM INTO`, which writes a consistent snapshot including the WAL. Returns the path.
+ */
+export function backupDatabase(db: Db, dbPath: string, version: string): string {
+  let target = `${dbPath}.bak-${version}`;
+  for (let n = 2; existsSync(target); n++) target = `${dbPath}.bak-${version}-${n}`;
+  db.run('VACUUM INTO ?', [target]);
+  return target;
 }

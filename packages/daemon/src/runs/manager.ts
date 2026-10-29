@@ -2,8 +2,6 @@ import {
   type Actor,
   type AgentActor,
   type Approval,
-  type BudgetAllocation,
-  type CostSource,
   type ErrorInfo,
   type Run,
   type RunKind,
@@ -12,15 +10,12 @@ import {
   type Session,
   type SystemActor,
   type ToolDecisionCounts,
-  type Usage,
   isTerminalRunStatus,
 } from '@acc/protocol';
 import type {
   ApprovalDecision,
   ApprovalRequest,
-  BudgetHold,
   BudgetReservation,
-  BudgetService,
   RunController,
   RunExecutor,
   RunsService,
@@ -28,13 +23,10 @@ import type {
   WorkspaceLock,
 } from '../contracts';
 import type { DaemonContext } from '../core/context';
-import { ApiError, budgetExceeded, conflict, forbidden } from '../core/errors';
+import { ApiError, conflict, forbidden } from '../core/errors';
+import { UsageAccountant } from './usage';
 
-/** Unallocated, unreserved, unspent amount of a budget, in integer micro-dollars. */
-function remainingMicroUsd(b: BudgetAllocation): number {
-  const micro = (usd: number) => Math.round(usd * 1_000_000);
-  return micro(b.limitUsd) - micro(b.allocatedUsd) - micro(b.reservedUsd) - micro(b.spentUsd);
-}
+export { mergeUsage } from './usage';
 
 /** Statuses of a run that has not ended (at most one per session). */
 export const ACTIVE_RUN_STATUSES = [
@@ -104,28 +96,6 @@ export function toErrorInfo(err: unknown): ErrorInfo {
   return { code: 'internal', message: String(err) };
 }
 
-const COST_RANK: Record<CostSource, number> = { unknown: 0, estimated: 1, reported: 2 };
-
-/**
- * Sum usage. The cost source of the total is the weakest of its parts (one unknown call
- * makes the total a lower bound), except that the first report replaces the empty default.
- */
-export function mergeUsage(cur: Usage, delta: Partial<Usage>, first: boolean): Usage {
-  let costSource = cur.costSource;
-  if (delta.costSource) {
-    costSource =
-      first || COST_RANK[delta.costSource] < COST_RANK[cur.costSource]
-        ? delta.costSource
-        : cur.costSource;
-  }
-  return {
-    inputTokens: cur.inputTokens + Math.max(0, Math.round(delta.inputTokens ?? 0)),
-    outputTokens: cur.outputTokens + Math.max(0, Math.round(delta.outputTokens ?? 0)),
-    costUsd: cur.costUsd + Math.max(0, delta.costUsd ?? 0),
-    costSource,
-  };
-}
-
 /**
  * Run lifecycle (architecture.md §2.6):
  * created → queued → running ⇄ awaiting_approval → completed | failed | cancelled | interrupted.
@@ -153,6 +123,8 @@ export class RunManager implements RunsService {
   private pumpAgain = false;
   private readonly cancelGraceMs: number;
   private readonly shutdownGraceMs: number;
+  /** Usage, budget and ledger accounting of active runs (runs/usage.ts, T5). */
+  private readonly usage: UsageAccountant;
 
   constructor(
     private readonly ctx: DaemonContext,
@@ -160,6 +132,13 @@ export class RunManager implements RunsService {
   ) {
     this.cancelGraceMs = opts.cancelGraceMs ?? 10_000;
     this.shutdownGraceMs = opts.shutdownGraceMs ?? 5_000;
+    this.usage = new UsageAccountant(ctx, {
+      isDetached: () => this.detached,
+      stopForBudget: (runId) => {
+        const a = this.active.get(runId);
+        if (a) this.stopForBudget(a);
+      },
+    });
   }
 
   // ------------------------------------------------------------------ RunsService
@@ -215,6 +194,7 @@ export class RunManager implements RunsService {
         attempt,
         budgetId: input.budgetId ?? null,
         triggerMessageId: input.triggerMessageId ?? null,
+        trigger: input.trigger ?? 'user',
         usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, costSource: 'unknown' },
         error: null,
         activity: null,
@@ -721,6 +701,9 @@ export class RunManager implements RunsService {
         if (ended() || !text) return;
         const index = a.deltaIndex.get(messageId) ?? 0;
         a.deltaIndex.set(messageId, index + 1);
+        // Kept for session.messages `streaming` (a client that opens the chat mid-stream).
+        if (ctx.hasService('streams'))
+          ctx.service('streams').append(a.runId, messageId, kind, text);
         ctx.bus.publishDelta({
           runId: a.runId,
           sessionId: a.run.sessionId,
@@ -812,26 +795,12 @@ export class RunManager implements RunsService {
 
       reportUsage: (delta) => {
         if (!live()) return;
-        const run = this.recordUsage(a, delta, actor);
-        const cost = delta.costUsd ?? 0;
-        if (cost > 0 && run.budgetId && ctx.hasService('budget')) {
-          this.spend(a, run.budgetId, (budget, id) => budget.recordSpend(id, cost));
-        }
+        this.usage.report(a, delta, actor);
       },
 
-      reserveBudget: (estimateUsd) => this.reserveBudget(a, actor, estimateUsd),
+      reserveBudget: (estimateUsd) => this.usage.reserve(a, actor, estimateUsd),
 
-      assertBudgetLeft: () => {
-        const budgetId = a.run.budgetId;
-        if (!budgetId || !ctx.hasService('budget')) return;
-        const budget = ctx.service('budget').get(budgetId);
-        if (budget.status !== 'active') {
-          throw budgetExceeded('予算が返却されているため、これ以上実行できません', { budgetId });
-        }
-        if (remainingMicroUsd(budget) <= 0) {
-          throw budgetExceeded('予算の上限に達したため、これ以上実行できません', { budgetId });
-        }
-      },
+      assertBudgetLeft: () => this.usage.assertBudgetLeft(a),
 
       setActivity: (text) => {
         if (!live() || ended()) return;
@@ -907,128 +876,11 @@ export class RunManager implements RunsService {
 
   // ------------------------------------------------------------------ usage & budget
 
-  /** Add usage to the run (run.updated `["usage"]`). */
-  private recordUsage(a: ActiveRun, delta: Partial<Usage>, actor: Actor): Run {
-    const { ctx } = this;
-    const first = !a.usageReported;
-    a.usageReported = true;
-    const run = ctx.db.transaction(() => {
-      const next = ctx.repos.runs.update(a.runId, (r) => ({
-        ...r,
-        usage: mergeUsage(r.usage, delta, first),
-        updatedAt: ctx.clock.iso(),
-      }));
-      ctx.bus.emit({ type: 'run.updated', actor, payload: { run: next, changes: ['usage'] } });
-      return next;
-    });
-    a.run = run;
-    return run;
-  }
-
-  /**
-   * Book spend on the run's budget and stop the run once nothing is left. Spending keeps the
-   * fact even past the limit (it does not throw for that), so exhaustion is judged from what
-   * is left afterwards.
-   */
-  private spend(
-    a: ActiveRun,
-    budgetId: string,
-    book: (budget: BudgetService, budgetId: string) => void,
-  ): void {
-    const budget = this.ctx.service('budget');
-    let exhausted: boolean;
-    try {
-      book(budget, budgetId);
-      exhausted = remainingMicroUsd(budget.get(budgetId)) <= 0;
-    } catch (err) {
-      // Fail closed: a run whose spend cannot be booked (budget released, gone) must not go
-      // on spending unaccounted. Its usage is already on the run.
-      exhausted = true;
-      if (!(err instanceof ApiError && err.code === 'budget_exceeded')) {
-        this.ctx.log.error('failed to record run spend; stopping the run', { runId: a.runId, err });
-      }
-    }
-    if (exhausted) this.stopForBudget(a);
-  }
-
   private stopForBudget(a: ActiveRun): void {
     if (isTerminalRunStatus(a.run.status) || a.abortKind || a.settled) return;
     a.abortKind = 'budget';
     this.rejectApprovalWaiters(a.runId, abortErr('Budget exhausted'));
     a.abort.abort(abortErr('Budget exhausted'));
-  }
-
-  private reserveBudget(a: ActiveRun, actor: Actor, estimateUsd?: number): BudgetHold {
-    const { ctx } = this;
-    const report = (usage: Partial<Usage>) => {
-      if (this.detached) return null;
-      return this.recordUsage(a, usage, actor);
-    };
-    const budgetId = a.run.budgetId;
-    if (!budgetId || !ctx.hasService('budget')) {
-      return { amountUsd: 0, settle: (u) => void report(u), cancel: () => {} };
-    }
-    const budget = ctx.service('budget');
-    const left = remainingMicroUsd(budget.get(budgetId));
-    if (left <= 0) {
-      throw budgetExceeded('予算の上限に達したため、LLM を呼び出せません', { budgetId });
-    }
-    const amount = Math.max(0, estimateUsd ?? ctx.settings.get().llmCallReserveUsd);
-    if (Math.round(amount * 1_000_000) <= 0) {
-      // Reservations switched off: book the cost afterwards like reportUsage.
-      return {
-        amountUsd: 0,
-        settle: (u) => {
-          const cost = u.costUsd ?? 0;
-          if (report(u) && cost > 0) this.spend(a, budgetId, (b, id) => b.recordSpend(id, cost));
-        },
-        cancel: () => {},
-      };
-    }
-    let reservation: BudgetReservation;
-    try {
-      reservation = budget.reserve(budgetId, amount);
-    } catch (err) {
-      if (err instanceof ApiError && err.code === 'budget_exceeded') {
-        throw budgetExceeded(
-          `予算の残り（$${(left / 1_000_000).toFixed(4)}）が、LLM の 1 回の呼び出しに確保する額（$${amount}）に足りないため呼び出せません`,
-          { budgetId, freeUsd: left / 1_000_000, reserveUsd: amount },
-        );
-      }
-      throw err;
-    }
-    a.reservations.add(reservation);
-    let done = false;
-    const take = (): boolean => {
-      if (done) return false;
-      done = true;
-      // Already cancelled when the run ended before its executor settled.
-      return a.reservations.delete(reservation) && !this.detached;
-    };
-    return {
-      amountUsd: reservation.amountUsd,
-      settle: (u) => {
-        if (done || this.detached) return;
-        const cost = Math.max(0, u.costUsd ?? 0);
-        if (!take()) {
-          // The run was force-cleaned up (its reservation cancelled) while this call was in
-          // flight. The provider still charged it: book the fact on the run and the budget.
-          report(u);
-          if (cost > 0) this.spend(a, budgetId, (b, id) => b.recordSpend(id, cost));
-          return;
-        }
-        report(u);
-        this.spend(a, budgetId, (b) => b.settle(reservation, cost));
-      },
-      cancel: () => {
-        if (!take()) return;
-        try {
-          budget.cancelReservation(reservation);
-        } catch (err) {
-          ctx.log.error('failed to cancel budget reservation', { runId: a.runId, err });
-        }
-      },
-    };
   }
 
   // ------------------------------------------------------------------ shutdown

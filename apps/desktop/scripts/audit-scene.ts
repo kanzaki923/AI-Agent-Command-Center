@@ -290,7 +290,7 @@ async function main(): Promise<void> {
     const r = await call('session.send', { sessionId: s.id, content });
     return { session: s, runId: r.runId };
   };
-  const ended = (runId: string) => daemon.ctx.service('runs').waitForEnd(runId);
+  const ended = (runId: string | null) => daemon.ctx.service('runs').waitForEnd(runId!);
 
   // ---------------------------------------------------------------- everyday chats
   await ended(

@@ -842,3 +842,28 @@ SessionCard = {
 | Q6 | コネクタ（GitLab・ブラウザ）がないと「毎朝の確認」の価値が限られる | 範囲外。定期実行の `run` に将来 `connectors` を足せる形にしておく |
 | Q7 | 非コードの成果物も人が「採用」したいか | 既定は採用不要（`reviewBy: none`）。依頼時に `human` を選べる。使ってみて決める |
 | Q8 | 日次上限の既定値（$20）とタイムゾーン | 初回起動で確認する UI を UI フェーズで用意 |
+
+### 7.3 リードの決定と T0 で入れた差分（T0 Core の実装時に追記）
+
+リードの決定：Q1 は既存の偽 Anthropic API の契約テスト（`runtime/claude/contract/`）だけで確かめる（実 API は呼ばない。T5）。Q3 は深さ 1。Q5 は `croner` の追加を承認。Q8 は初回の確認を出さず、既定 $20 のまま黙って適用し、後で費用メーターに出す。
+
+T0 で仕様から足した・変えたもの（各トラックはこれを前提にする）：
+
+| # | 差分 | 理由 |
+|---|---|---|
+| C1 | `SessionStateService.isWorkSettled(sessionId)` を契約に足し、Core が実装（`home/tree.ts`）。「終わっていない Task」は子孫が担当、または子孫が作成した Task | `work` の失効（§1.8）を T0 で動かすため。T7 は差し替えてよい |
+| C2 | `work` の失効の判定は Run の終了（その会話と祖先）と `session.state_changed` のとき。起動時はしない | 再起動で失効させない（D17）。T7 の状態イベントが来れば自動で効く |
+| C3 | イベント `artifact.updated { artifact, changes }` を足した（`ext/outputs.ts`） | `review` の変化を UI が追えるように |
+| C4 | `AttentionRefs.taskId` を足した | 失敗 / レビュー待ちの Task から作る出番の重複除け |
+| C5 | diff 成果物の `source` の既定は `workspace_diff`（他は `published`） | 既存の diff はすべて worktree から記録したもの |
+| C6 | `AgentEvent.usage.phase` は省略可（省略 = `final`） | 既存のランタイムを壊さない |
+| C7 | `task.wait` / `integration.wait` の `tool: false` は T1 が mock の指揮役を書き直すときに `api.ts` の 2 行で行う | 今外すと現行の `mock/orchestrator` と e2e が壊れる |
+| C8 | `maxConcurrentRuns` / `autoResumeOrchestrators` は残し、新しい名前（`maxConcurrentAgents` / `autoResume`）は無ければ旧値を読む（`core/config.ts`） | 実行枠の 2 系統化（T1）まで RunManager は旧設定で動く |
+| C9 | §3.7 の導出は `home/state.ts` の `deriveSessionState`（純関数）として Core が書き、起動時に一度だけ全会話へ適用 | §1.12 の「state は一度だけ計算」に必要。T7 が引き継ぐ |
+| C10 | 一度だけのバックフィルは `schema_migrations` に `backfill/<module>/<name>` で記録（`runOnce`）。バックアップは `VACUUM INTO` で `acc.sqlite.bak-<DAEMON_VERSION>`（重複は `-2`…）、既存の DB で作り直しのマイグレーションが未適用のときだけ | WAL を含む一貫した複製。新規の DB には不要 |
+| C11 | `Session.cost.source` は `treeUsd` に含めた行のうち最も弱いもの | `ownUsd` と `treeUsd` に 1 つの source しかないため |
+| C12 | `ledger.record` は T5 まで何もしない。台帳のバックフィルは毎回の起動で冪等に走るので、終わった Run は次の起動で台帳に入る | 呼び出し位置（`runs/usage.ts`）だけ先に固定 |
+| C13 | `outputs` モジュール（スタブ）を Core が足した。`project.inspectFolder` も projects にスタブ登録 | 全サービス・全メソッドがそろった状態でトラックを始めるため |
+| C14 | `SpawnerService.spawn(params, actor, opts?)` の `opts` = `{ scheduleId, scheduledFor, trigger }`。`StartRunInput.trigger` を足した | 定期実行（T6）が spawner を通るため |
+| C15 | `CallScope.sessionIds` は agent すべてに効く（`session.*` の scope が返す）。人間・system は対象外 | §1.8 の「agent は自分か子孫」 |
+| C16 | `session.list` の `rootsOnly` / `parentSessionId`、`session.messages` の `streaming`（streams のスタブ経由）、`Project.folderPath` の保存は Core が配線済み | 引数を受けて黙って無視しないため |

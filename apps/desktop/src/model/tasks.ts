@@ -33,7 +33,8 @@ export interface TaskGroup {
   id: string;
   goal: string;
   orchestrator: Session | null;
-  projectId: string;
+  /** Null for work outside any project (session-tree children). */
+  projectId: string | null;
   roots: TaskNode[];
   counts: { total: number; done: number; running: number; review: number; failed: number };
   /** Latest change in the group (ordering, "finished a while ago" collapse). */
@@ -58,6 +59,8 @@ export function taskState(status: TaskStatus): DisplayState {
       return 'failed';
     case 'cancelled':
       return 'cancelled';
+    case 'paused':
+      return 'interrupted';
   }
 }
 
@@ -93,6 +96,7 @@ const ORDER: Record<TaskStatus, number> = {
   pending: 5,
   done: 6,
   cancelled: 7,
+  paused: 8,
 };
 
 export function buildTaskGroups(input: TaskTreeInput): TaskGroup[] {

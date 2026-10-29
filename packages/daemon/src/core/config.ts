@@ -51,13 +51,34 @@ export function resolvePort(
   return config.port ?? DEFAULT_PORT;
 }
 
+/**
+ * Settings renamed by the session-tree redesign read their older names when the new one is
+ * absent: maxConcurrentRuns → maxConcurrentAgents, autoResumeOrchestrators → autoResume.
+ */
+export function withLegacySettings(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const r = raw as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...r };
+  if (r.maxConcurrentAgents === undefined && r.maxConcurrentRuns !== undefined) {
+    out.maxConcurrentAgents = r.maxConcurrentRuns;
+  }
+  if (r.autoResume === undefined && r.autoResumeOrchestrators !== undefined) {
+    out.autoResume = r.autoResumeOrchestrators;
+  }
+  return out;
+}
+
 export type SettingsPatch = {
   litellm?: { baseUrl?: string | null | undefined; apiKey?: string | null | undefined } | undefined;
   defaultModel?: string | null | undefined;
   defaultRuntime?: string | null | undefined;
   maxConcurrentRuns?: number | undefined;
+  maxConcurrentAgents?: number | undefined;
+  maxConcurrentChats?: number | undefined;
+  limits?: { dailyUsd?: number | null | undefined; timezone?: string | undefined } | undefined;
   maxDelegationDepth?: number | undefined;
   autoResumeOrchestrators?: boolean | undefined;
+  autoResume?: boolean | undefined;
   llmCallReserveUsd?: number | undefined;
   defaultPermissionProfile?: PermissionProfile | undefined;
   autoMode?:
@@ -65,6 +86,7 @@ export type SettingsPatch = {
         enabled?: boolean | undefined;
         judge?: AutoModeJudge | undefined;
         classifierModel?: string | null | undefined;
+        classifierCostUsd?: number | undefined;
       }
     | undefined;
 };
@@ -92,7 +114,7 @@ export class SettingsStore {
         throw new Error(`Failed to read ${path}: ${(err as Error).message}`, { cause: err });
       }
     }
-    return ConfigFile.parse(raw);
+    return ConfigFile.parse(withLegacySettings(raw));
   }
 
   /** Effective settings including env overrides. Contains secrets: never return to clients. */
@@ -142,6 +164,24 @@ export class SettingsStore {
     set('maxConcurrentRuns', next.maxConcurrentRuns, patch.maxConcurrentRuns, () => {
       next.maxConcurrentRuns = patch.maxConcurrentRuns!;
     });
+    set('maxConcurrentAgents', next.maxConcurrentAgents, patch.maxConcurrentAgents, () => {
+      next.maxConcurrentAgents = patch.maxConcurrentAgents!;
+    });
+    set('maxConcurrentChats', next.maxConcurrentChats, patch.maxConcurrentChats, () => {
+      next.maxConcurrentChats = patch.maxConcurrentChats!;
+    });
+    if (patch.limits) {
+      const l = patch.limits;
+      set('limits.dailyUsd', next.limits.dailyUsd, l.dailyUsd, () => {
+        next.limits.dailyUsd = l.dailyUsd ?? null;
+      });
+      set('limits.timezone', next.limits.timezone, l.timezone, () => {
+        next.limits.timezone = l.timezone!;
+      });
+    }
+    set('autoResume', next.autoResume, patch.autoResume, () => {
+      next.autoResume = patch.autoResume!;
+    });
     set('maxDelegationDepth', next.maxDelegationDepth, patch.maxDelegationDepth, () => {
       next.maxDelegationDepth = patch.maxDelegationDepth!;
     });
@@ -175,6 +215,14 @@ export class SettingsStore {
       set('autoMode.classifierModel', next.autoMode.classifierModel, a.classifierModel, () => {
         next.autoMode.classifierModel = a.classifierModel ?? null;
       });
+      set(
+        'autoMode.classifierCostUsd',
+        next.autoMode.classifierCostUsd,
+        a.classifierCostUsd,
+        () => {
+          next.autoMode.classifierCostUsd = a.classifierCostUsd!;
+        },
+      );
     }
     if (changes.length === 0) return changes;
     const valid = ConfigFile.parse(next);
@@ -201,14 +249,20 @@ export function toSettingsView(s: Settings): SettingsView {
     defaultModel: s.defaultModel,
     defaultRuntime: s.defaultRuntime,
     maxConcurrentRuns: s.maxConcurrentRuns,
+    maxConcurrentAgents: s.maxConcurrentAgents,
+    maxConcurrentChats: s.maxConcurrentChats,
+    limits: { dailyUsd: s.limits.dailyUsd, timezone: s.limits.timezone },
     maxDelegationDepth: s.maxDelegationDepth,
     autoResumeOrchestrators: s.autoResumeOrchestrators,
+    autoResume: s.autoResume,
+    supervisor: { ...s.supervisor },
     llmCallReserveUsd: s.llmCallReserveUsd,
     defaultPermissionProfile: s.defaultPermissionProfile,
     autoMode: {
       enabled: s.autoMode.enabled,
       judge: s.autoMode.judge,
       classifierModel: s.autoMode.classifierModel,
+      classifierCostUsd: s.autoMode.classifierCostUsd,
     },
   };
 }

@@ -1,12 +1,9 @@
-import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { ContentPart } from '@acc/protocol';
 import type { AgentEvent, AgentRunInput, AgentRuntime, ApprovalDecision } from '../../contracts';
-import { abortError, sleep, throwIfAborted } from '../async';
-import { allowlistedEnv } from '../env';
+import { sleep, throwIfAborted } from '../async';
 import { askReason, ToolGate } from '../gate';
 import { isInside } from '../policy';
 import { MOCK_RUNTIME_ID } from '../registry';
@@ -16,11 +13,12 @@ import {
   type DenyAction,
   type MockPlan,
   type MockStep,
-  type ResolveStrategy,
   parseMockPlan,
-  resolveConflictMarkers,
   stripMockPlan,
 } from './plan';
+import { type Permit, STEP_HANDLERS, type StepContext, type StepOutcome } from './steps';
+
+export { execCommand } from './steps';
 
 export interface MockRuntimeOptions {
   /** Pause between steps (ms). Default 350. */
@@ -36,7 +34,6 @@ export interface MockRuntimeOptions {
 }
 
 const DEFAULT_PRICE = { inputPerMTok: 3, outputPerMTok: 15 };
-const OUTPUT_TAIL = 4000;
 
 /**
  * Deterministic, offline coding agent for demos and tests. It really works on the
@@ -63,24 +60,16 @@ export class MockAgentRuntime implements AgentRuntime {
   }
 }
 
-type StepOutcome = 'next' | 'stop';
-
-/** What the gate said about a tool use. */
-type Permit =
-  | { kind: 'allowed' }
-  | { kind: 'denied'; message: string }
-  | { kind: 'answered'; decision: ApprovalDecision };
-
-class MockRun {
+class MockRun implements StepContext {
   private seq = 0;
   private contextChars: number;
-  private readonly changed = new Map<string, 'created' | 'updated'>();
+  readonly changed = new Map<string, 'created' | 'updated'>();
   private scale = 1;
-  private readonly gate: ToolGate;
+  readonly gate: ToolGate;
 
   constructor(
-    private readonly opts: MockRuntimeOptions,
-    private readonly input: AgentRunInput,
+    readonly opts: MockRuntimeOptions,
+    readonly input: AgentRunInput,
   ) {
     this.contextChars = input.prompt.length + (input.systemPrompt?.length ?? 0);
     this.gate = input.gate ?? new ToolGate({ cwd: input.cwd, profile: 'careful' });
@@ -116,205 +105,18 @@ class MockRun {
     yield* this.say(plan.summary ?? this.summary(stopped));
   }
 
-  // ---- steps ---------------------------------------------------------------
-
-  private async *step(step: MockStep): AsyncGenerator<AgentEvent, StepOutcome, undefined> {
-    switch (step.type) {
-      case 'say':
-        yield* this.say(step.text);
-        return 'next';
-      case 'write':
-      case 'append':
-        return yield* this.editFile(step.type, step.path, step.content, step.onDeny);
-      case 'check':
-        yield* this.check(step.path, step.contains);
-        return 'next';
-      case 'run':
-        return yield* this.runCommand(step);
-      case 'resolve':
-        return yield* this.resolve(step.strategy, step.paths);
-      case 'ask': {
-        yield* this.say(`確認が必要です: ${step.title}`);
-        const askInput = { title: step.title, ...(step.detail ? { detail: step.detail } : {}) };
-        this.gate.asked({ toolName: step.toolName, input: askInput, reason: step.title });
-        const decision = await this.input.canUseTool({
-          toolName: step.toolName,
-          input: { title: step.title, ...(step.detail ? { detail: step.detail } : {}) },
-          title: step.title,
-        });
-        if (decision.decision === 'approved') {
-          yield* this.say('承認されました。続けます。');
-          return 'next';
-        }
-        return yield* this.rejected(step.onReject, decision);
-      }
-      case 'sleep':
-        yield { type: 'activity', text: '待機中' };
-        await sleep(step.ms, this.input.signal);
-        return 'next';
-      case 'fail':
-        yield* this.say(`問題が発生しました: ${step.message}`);
-        throw new Error(step.message);
-    }
+  /** One plan step, by its handler in `steps/` (STEP_HANDLERS). */
+  private step(step: MockStep): AsyncGenerator<AgentEvent, StepOutcome, undefined> {
+    const handler = STEP_HANDLERS[step.type] as (
+      ctx: StepContext,
+      s: MockStep,
+    ) => AsyncGenerator<AgentEvent, StepOutcome, undefined>;
+    return handler(this, step);
   }
 
-  private async *editFile(
-    kind: 'write' | 'append',
-    relPath: string,
-    content: string,
-    onDeny: DenyAction = 'continue',
-  ): AsyncGenerator<AgentEvent, StepOutcome, undefined> {
-    const rel = toPosix(relPath);
-    const exists = existsSync(this.abs(relPath));
-    const toolName = kind === 'write' ? 'Write' : 'Edit';
-    const toolInput =
-      kind === 'write' ? { file_path: rel, content } : { file_path: rel, append: content };
-    const verb = kind === 'append' ? '追記' : exists ? '書き換え' : '作成';
-    const call = yield* this.toolCall(`${rel} を${verb}します。`, toolName, toolInput);
+  // ---- primitives (StepContext) -------------------------------------------
 
-    const permit = await this.permit(toolName, toolInput, call);
-    if (permit.kind === 'denied') return yield* this.denied(call, toolName, permit, onDeny);
-    if (permit.kind === 'answered' && permit.decision.decision === 'rejected') {
-      yield this.result(call, toolName, '承認されなかったため変更しませんでした', true);
-      return yield* this.rejected('stop', permit.decision);
-    }
-
-    const abs = this.abs(relPath);
-    await mkdir(path.dirname(abs), { recursive: true });
-    if (kind === 'write') await writeFile(abs, content, 'utf8');
-    else await appendFile(abs, content, 'utf8');
-    if (!this.changed.has(rel)) this.changed.set(rel, exists ? 'updated' : 'created');
-    const lines = content.split('\n').length - (content.endsWith('\n') ? 1 : 0);
-    yield this.result(
-      call,
-      toolName,
-      kind === 'write'
-        ? `${rel} に ${lines} 行を書き込みました`
-        : `${rel} に ${lines} 行を追記しました`,
-    );
-    return 'next';
-  }
-
-  private async *check(
-    relPath: string,
-    contains: string | undefined,
-  ): AsyncGenerator<AgentEvent, void, undefined> {
-    const rel = toPosix(relPath);
-    const toolName = contains ? 'Grep' : 'Read';
-    const toolInput = contains ? { pattern: contains, path: rel } : { file_path: rel };
-    const call = yield* this.toolCall(`${rel} の内容を確認します。`, toolName, toolInput);
-    const permit = await this.permit(toolName, toolInput, call);
-    if (permit.kind === 'denied') {
-      yield this.result(call, toolName, permit.message, true);
-      throw new Error(`確認できませんでした（規則で拒否）: ${rel}`);
-    }
-    if (permit.kind === 'answered' && permit.decision.decision === 'rejected') {
-      yield this.result(call, toolName, '承認されなかったため確認できませんでした', true);
-      throw new Error(`確認が承認されませんでした: ${rel}`);
-    }
-    let text: string | null;
-    try {
-      text = await readFile(this.abs(relPath), 'utf8');
-    } catch {
-      text = null;
-    }
-    if (text === null) {
-      yield this.result(call, toolName, `${rel} が見つかりません`, true);
-      throw new Error(`確認に失敗しました: ${rel} が見つかりません`);
-    }
-    if (contains && !text.includes(contains)) {
-      yield this.result(call, toolName, `「${contains}」は見つかりませんでした`, true);
-      throw new Error(`確認に失敗しました: ${rel} に「${truncate(contains, 40)}」がありません`);
-    }
-    const lines = text.split('\n').length;
-    yield this.result(
-      call,
-      toolName,
-      contains
-        ? `${rel}: 「${truncate(contains, 40)}」を確認しました`
-        : `${rel}（${lines} 行）を確認しました`,
-    );
-  }
-
-  /** Rewrite every conflicted file without markers (Read, then Write — both in the workspace). */
-  private async *resolve(
-    strategy: ResolveStrategy,
-    paths: string[] | undefined,
-  ): AsyncGenerator<AgentEvent, StepOutcome, undefined> {
-    const files = paths ?? (await conflictedFiles(this.input.cwd).catch(() => []));
-    if (files.length === 0) {
-      yield* this.say('解消が必要なコンフリクトは見つかりませんでした。');
-      return 'next';
-    }
-    const how =
-      strategy === 'ours+theirs'
-        ? '両方の変更を残す形'
-        : strategy === 'ours'
-          ? '統合ブランチ側を残す形'
-          : 'マージする側を残す形';
-    yield* this.say(`${files.length} ファイルのコンフリクトを、${how}で解消します。`);
-    for (const f of files) {
-      const rel = toPosix(f);
-      const readInput = { file_path: rel };
-      const call = yield* this.toolCall(`${rel} のコンフリクトを確認します。`, 'Read', readInput);
-      const permit = await this.permit('Read', readInput, call);
-      if (permit.kind === 'denied') return yield* this.denied(call, 'Read', permit, 'stop');
-      if (permit.kind === 'answered' && permit.decision.decision === 'rejected') {
-        yield this.result(call, 'Read', '承認されなかったため確認できませんでした', true);
-        return yield* this.rejected('stop', permit.decision);
-      }
-      let text: string;
-      try {
-        text = await readFile(this.abs(f), 'utf8');
-      } catch {
-        yield this.result(call, 'Read', `${rel} が見つかりません`, true);
-        continue;
-      }
-      const resolved = resolveConflictMarkers(text, strategy);
-      yield this.result(call, 'Read', `${rel}: コンフリクト ${resolved.hunks} 箇所`);
-      if (resolved.hunks === 0) continue;
-      const outcome = yield* this.editFile('write', f, resolved.text);
-      if (outcome === 'stop') return 'stop';
-    }
-    return 'next';
-  }
-
-  private async *runCommand(
-    step: Extract<MockStep, { type: 'run' }>,
-  ): AsyncGenerator<AgentEvent, StepOutcome, undefined> {
-    const display = [step.command, ...step.args.map(quoteArg)].join(' ');
-    const toolInput = { command: display, ...(step.title ? { description: step.title } : {}) };
-    const intro = step.title
-      ? `${step.title}ため、コマンドを実行します。`
-      : 'コマンドを実行します。';
-    const call = yield* this.toolCall(intro, 'Bash', toolInput);
-
-    const permit = await this.permit('Bash', toolInput, call);
-    if (permit.kind === 'denied')
-      return yield* this.denied(call, 'Bash', permit, step.onDeny ?? 'continue');
-    if (permit.kind === 'answered' && permit.decision.decision === 'rejected') {
-      yield this.result(call, 'Bash', '承認されなかったため実行しませんでした', true);
-      return yield* this.rejected(step.onReject, permit.decision);
-    }
-
-    yield { type: 'activity', text: describeToolActivity('Bash', toolInput, this.input.cwd) };
-    const { code, output } = await execCommand(step.command, step.args, {
-      cwd: this.input.cwd,
-      env: allowlistedEnv(this.opts.parentEnv ?? process.env),
-      timeoutMs: step.timeoutMs,
-      signal: this.input.signal,
-    });
-    const failed = code !== 0;
-    const summary = `終了コード: ${code ?? '不明'}${output ? `\n${output}` : ''}`;
-    yield this.result(call, 'Bash', summary, failed);
-    if (failed && !step.allowFailure) {
-      yield* this.say(`コマンドが失敗しました（終了コード ${code ?? '不明'}）。`);
-      throw new Error(`コマンドが失敗しました（終了コード ${code ?? '不明'}）: ${display}`);
-    }
-    return 'next';
-  }
-
-  private async *rejected(
+  async *rejected(
     action: 'stop' | 'continue' | 'fail',
     decision: ApprovalDecision,
   ): AsyncGenerator<AgentEvent, StepOutcome, undefined> {
@@ -332,10 +134,7 @@ class MockRun {
     }
   }
 
-  // ---- primitives ----------------------------------------------------------
-
-  /** The gate's answer; asks a human only when the gate says so. */
-  private async permit(toolName: string, toolInput: unknown, toolCallId: string): Promise<Permit> {
+  async permit(toolName: string, toolInput: unknown, toolCallId: string): Promise<Permit> {
     const r = this.gate.check({ toolName, input: toolInput, toolUseId: toolCallId });
     if (r.action === 'allow' || r.action === 'defer') return { kind: 'allowed' };
     if (r.action === 'deny') return { kind: 'denied', message: r.message ?? r.policy.reason };
@@ -349,8 +148,7 @@ class MockRun {
     return { kind: 'answered', decision };
   }
 
-  /** A denied tool use: the reason goes back as the tool's error, then the agent adapts. */
-  private async *denied(
+  async *denied(
     toolCallId: string,
     toolName: string,
     permit: Extract<Permit, { kind: 'denied' }>,
@@ -375,8 +173,7 @@ class MockRun {
     }
   }
 
-  /** Narrate, then announce a tool call (streamed text + message with the tool_call part). */
-  private async *toolCall(
+  async *toolCall(
     text: string,
     name: string,
     toolInput: unknown,
@@ -396,16 +193,20 @@ class MockRun {
     return toolCallId;
   }
 
-  private result(toolCallId: string, name: string, output: string, isError = false): AgentEvent {
+  result(toolCallId: string, name: string, output: string, isError = false): AgentEvent {
     this.contextChars += output.length;
     return { type: 'tool_result', toolCallId, name, output, isError };
   }
 
-  private async *say(text: string): AsyncGenerator<AgentEvent, void, undefined> {
+  async *say(text: string): AsyncGenerator<AgentEvent, void, undefined> {
     const messageId = this.nextId('msg');
     yield* this.stream(messageId, text);
     yield { type: 'message', messageId, role: 'assistant', content: [{ type: 'text', text }] };
     yield this.usage(text.length);
+  }
+
+  abs(relPath: string): string {
+    return path.resolve(this.input.cwd, relPath);
   }
 
   private async *stream(
@@ -442,10 +243,6 @@ class MockRun {
   private nextId(kind: string): string {
     this.seq += 1;
     return `mock_${kind}_${this.input.runId}_${this.seq}`;
-  }
-
-  private abs(relPath: string): string {
-    return path.resolve(this.input.cwd, relPath);
   }
 
   private summary(stopped: boolean): string {
@@ -576,71 +373,4 @@ function stripSection(body: string, heading: string): string {
 
 function truncateBlock(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max)}\n…（省略）`;
-}
-
-function toPosix(p: string): string {
-  return p.split('\\').join('/');
-}
-
-function quoteArg(a: string): string {
-  return /^[\w./:=@-]+$/.test(a) ? a : JSON.stringify(a);
-}
-
-// ---- command execution -----------------------------------------------------------
-
-/** Run a command without a shell. `node` means this daemon's Node binary. */
-export function execCommand(
-  command: string,
-  args: string[],
-  opts: { cwd: string; env: Record<string, string>; timeoutMs: number; signal: AbortSignal },
-): Promise<{ code: number | null; output: string }> {
-  if (opts.signal.aborted) return Promise.reject(abortError(opts.signal));
-  const exe = command === 'node' ? process.execPath : command;
-  return new Promise((resolve, reject) => {
-    let output = '';
-    let settled = false;
-    const collect = (chunk: Buffer) => {
-      output += chunk.toString('utf8');
-      if (output.length > OUTPUT_TAIL * 4) output = output.slice(-OUTPUT_TAIL * 2);
-    };
-    const child = spawn(exe, args, {
-      cwd: opts.cwd,
-      env: opts.env,
-      shell: false,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    child.stdout.on('data', collect);
-    child.stderr.on('data', collect);
-
-    const finish = (r: { code: number | null; output: string } | Error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      opts.signal.removeEventListener('abort', onAbort);
-      if (r instanceof Error) reject(r);
-      else resolve(r);
-    };
-    const tail = () => {
-      const t = output.trimEnd();
-      return t.length > OUTPUT_TAIL ? `…${t.slice(-OUTPUT_TAIL)}` : t;
-    };
-    const onAbort = () => {
-      child.kill();
-      finish(abortError(opts.signal));
-    };
-    const timer = setTimeout(() => {
-      child.kill();
-      finish({
-        code: null,
-        output: `${tail()}\nタイムアウトしました（${opts.timeoutMs}ms）`.trim(),
-      });
-    }, opts.timeoutMs);
-    opts.signal.addEventListener('abort', onAbort, { once: true });
-
-    child.on('error', (err) =>
-      finish({ code: null, output: `コマンドを起動できません: ${err.message}` }),
-    );
-    child.on('close', (code) => finish({ code, output: tail() }));
-  });
 }

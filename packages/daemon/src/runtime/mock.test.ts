@@ -25,6 +25,9 @@ function input(prompt: string, over: Partial<AgentRunInput> = {}) {
   const base: AgentRunInput = {
     runId: 'run_test',
     cwd: dir,
+    writeRoot: dir,
+    readRoots: [],
+    maxBudgetUsd: null,
     prompt,
     signal: new AbortController().signal,
     canUseTool: async (req) => {

@@ -361,6 +361,23 @@ export function describeEvent(e: Event, names?: TimelineNames): EventView {
       };
     case 'settings.updated':
       return { ...base, group: 'other', icon: 'settings', label: '設定', summary: `更新（${e.payload.changes.join(', ')}）` };
+    // Session-tree redesign events: the UI phase gives them their own views (spec 20261029 §6.1).
+    case 'message.updated':
+    case 'inbox.added':
+    case 'inbox.consumed':
+    case 'artifact.updated':
+    case 'attention.opened':
+    case 'attention.resolved':
+    case 'session.cost_updated':
+    case 'budget.threshold':
+    case 'cost.limit_reached':
+    case 'schedule.created':
+    case 'schedule.updated':
+    case 'schedule.deleted':
+    case 'schedule.fired':
+    case 'session.state_changed':
+    case 'session.now_changed':
+      return { ...base, group: 'other', icon: 'settings', label: '更新', summary: e.type, noise: true };
   }
 }
 

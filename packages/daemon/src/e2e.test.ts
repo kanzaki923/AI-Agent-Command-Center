@@ -65,14 +65,14 @@ describe('vertical slice', () => {
       sessionId: session.id,
       content: 'ノートを書いて',
     });
-    const run: Run = await d.ctx.service('runs').waitForEnd(runId);
+    const run: Run = await d.ctx.service('runs').waitForEnd(runId!);
     expect(run).toMatchObject({ status: 'completed', workspaceId: ws.id, taskId: task.id });
     expect(d.ctx.service('workspaces').isLocked(ws.id)).toBe(false);
 
     // The executor committed and recorded the diff through the artifacts service.
     const branchLog = await repo.git('log', '--format=%s', `main..${ws.branch}`);
     expect(branchLog).toBe('Write notes');
-    const arts = await d.call(HUMAN, 'artifact.list', { runId });
+    const arts = await d.call(HUMAN, 'artifact.list', { runId: runId! });
     expect(arts.items).toHaveLength(1);
     expect(arts.items[0]).toMatchObject({
       kind: 'diff',
@@ -107,13 +107,13 @@ describe('vertical slice', () => {
     ].join('\n');
     const { runId } = await d.call(HUMAN, 'session.send', { sessionId: session.id, content: plan });
     const runs = d.ctx.service('runs');
-    for (let i = 0; i < 400 && d.ctx.repos.runs.require(runId).status !== 'running'; i++) {
+    for (let i = 0; i < 400 && d.ctx.repos.runs.require(runId!).status !== 'running'; i++) {
       await new Promise((r) => setTimeout(r, 10));
     }
     expect(d.ctx.service('workspaces').isLocked(ws.id)).toBe(true);
 
     await d.call(HUMAN, 'task.cancel', { taskId: task.id });
-    await expect(runs.waitForEnd(runId)).resolves.toMatchObject({
+    await expect(runs.waitForEnd(runId!)).resolves.toMatchObject({
       status: 'cancelled',
       statusReason: 'task_cancelled',
     });

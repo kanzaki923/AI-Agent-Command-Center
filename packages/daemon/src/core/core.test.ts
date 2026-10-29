@@ -1,4 +1,4 @@
-import { ProjectId, SessionId, type Session } from '@acc/protocol';
+import { ProjectId, Session, SessionId } from '@acc/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createManualClock } from './clock';
 import { type Db, openDb } from './db';
@@ -33,7 +33,7 @@ function makeSession(
   iso: string,
   patch: Partial<Session> = {},
 ): Session {
-  return {
+  return Session.parse({
     id: ids.next('session'),
     projectId: null,
     kind: 'chat',
@@ -52,7 +52,7 @@ function makeSession(
     lastActivityAt: iso,
     archivedAt: null,
     ...patch,
-  };
+  });
 }
 
 describe('ids', () => {

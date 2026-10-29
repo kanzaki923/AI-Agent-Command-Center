@@ -453,6 +453,9 @@ function input(over: Partial<AgentRunInput> = {}): AgentRunInput {
   return {
     runId: 'run_1',
     cwd: CWD,
+    writeRoot: CWD,
+    readRoots: [],
+    maxBudgetUsd: null,
     prompt: 'README を直して',
     signal: new AbortController().signal,
     canUseTool: async () => ({ decision: 'approved' }),

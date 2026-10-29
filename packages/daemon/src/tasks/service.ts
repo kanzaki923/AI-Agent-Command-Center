@@ -340,7 +340,7 @@ export class TaskService {
    * existing task) not lead back to it.
    */
   private validateDeps(
-    projectId: string,
+    projectId: string | null,
     deps: readonly string[],
     selfId: string | null,
   ): string[] {

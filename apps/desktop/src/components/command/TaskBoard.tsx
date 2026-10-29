@@ -361,7 +361,8 @@ export function TaskBoard() {
     collapsed[`tasks.section.${s.status}`] ?? s.collapsedByDefault;
   const visible = sections.flatMap((s) => (isCollapsed(s) ? [] : s.tasks));
   const selected = visible.find((n) => n.task.id === selectedId) ?? null;
-  const projectOf = (id: string) => (projectId ? null : (projects.find((p) => p.id === id) ?? null));
+  const projectOf = (id: string | null) =>
+    projectId || !id ? null : (projects.find((p) => p.id === id) ?? null);
   const total = sections.reduce((n, s) => n + s.tasks.length, 0);
 
   const move = (to: number) => {

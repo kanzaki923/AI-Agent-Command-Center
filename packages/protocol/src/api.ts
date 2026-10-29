@@ -55,29 +55,27 @@ import {
   TaskStatus,
   Workspace,
   WorkspaceKind,
+  WorkspaceSpec,
+  ArtifactRole,
 } from './domain';
 import { Event, EventFilter } from './events';
+import { attentionMethods } from './ext/attention';
+import { costMethods } from './ext/cost';
+import { StreamingMessage, homeMethods } from './ext/home';
+import { outputsMethods } from './ext/outputs';
+import { scheduleMethods } from './ext/schedule';
+import { spawnMethods } from './ext/spawn';
+import { SendDelivery, supervisorMethods } from './ext/supervisor';
+import { type MethodDef, Ok, empty, params } from './method';
+
+export type { MethodDef } from './method';
 
 /**
  * Control API contract. One entry per method; the daemon registers a handler per entry and
  * the dispatcher validates params/results against these schemas. Humans (UI/CLI) and LLMs
- * (orchestrators/workers) call the exact same methods.
- *
- * - `permission`: capability string checked for agent actors (defaults to the method name).
- * - `description`: English, LLM-facing. Also used to generate LLM tool definitions.
- * - `tool`: whether the method may be exposed as an LLM tool at all (still subject to grants).
- * - `mutates`: whether the method changes state.
- * - `longPoll`: the method blocks up to `params.timeoutMs`; clients extend their timeout.
+ * (orchestrators/workers) call the exact same methods. Methods of the redesign tracks are
+ * declared in `ext/<track>.ts` and spread in at the end (see `MethodDef` for the fields).
  */
-export interface MethodDef {
-  params: z.ZodType;
-  result: z.ZodType;
-  description: string;
-  permission?: string;
-  tool?: boolean;
-  mutates?: boolean;
-  longPoll?: boolean;
-}
 
 export interface MethodSpec<
   N extends string = string,
@@ -115,10 +113,6 @@ function defineApi<T extends Record<string, MethodDef>>(defs: T): Specs<T> {
   return out as Specs<T>;
 }
 
-const params = z.strictObject;
-const empty = () => z.strictObject({});
-const Ok = z.object({ ok: z.literal(true) });
-
 // ---------------------------------------------------------------------------
 // Shared param/result shapes
 // ---------------------------------------------------------------------------
@@ -148,6 +142,7 @@ export const SETTLED_TASK_STATUSES = [
   'failed',
   'cancelled',
   'blocked',
+  'paused',
 ] as const satisfies TaskStatus[];
 
 /** Compact view of a task for supervisors (what `task.wait` returns per task). */
@@ -311,8 +306,15 @@ export const api = defineApi({
       defaultModel: z.string().min(1).nullable().optional(),
       defaultRuntime: z.string().min(1).nullable().optional(),
       maxConcurrentRuns: z.int().min(1).max(64).optional(),
+      maxConcurrentAgents: z.int().min(1).max(64).optional(),
+      maxConcurrentChats: z.int().min(1).max(64).optional(),
+      limits: params({
+        dailyUsd: z.number().min(0).nullable().optional().describe('null removes the daily limit'),
+        timezone: z.string().min(1).max(100).optional(),
+      }).optional(),
       maxDelegationDepth: z.int().min(0).max(4).optional(),
       autoResumeOrchestrators: z.boolean().optional(),
+      autoResume: z.boolean().optional(),
       llmCallReserveUsd: z.number().min(0).max(100).optional(),
       defaultPermissionProfile: PermissionProfile.optional(),
       autoMode: params({
@@ -324,6 +326,7 @@ export const api = defineApi({
           .nullable()
           .optional()
           .describe('LiteLLM model name of a Claude model (Sonnet 4.6 or later); null clears it'),
+        classifierCostUsd: z.number().min(0).max(10).optional(),
       }).optional(),
     }),
     result: SettingsView,
@@ -346,6 +349,11 @@ export const api = defineApi({
       name: z.string().min(1).max(200),
       description: z.string().max(10_000).optional(),
       repoPath: z.string().min(1).optional().describe('Absolute path of a local git repository'),
+      folderPath: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Absolute path of an ordinary folder the agents may read (no git needed)'),
       defaultBranch: z.string().min(1).optional(),
       defaultModel: z.string().min(1).optional(),
       testCommand: z
@@ -360,7 +368,8 @@ export const api = defineApi({
       ),
     }),
     result: Project,
-    description: 'Create a project (a repository plus settings).',
+    description:
+      'Create a project. Only a name is needed; a code repository (repoPath) and a folder (folderPath) are optional.',
     mutates: true,
   },
   'project.inspectRepo': {
@@ -388,6 +397,7 @@ export const api = defineApi({
       name: z.string().min(1).max(200).optional(),
       description: z.string().max(10_000).nullable().optional(),
       repoPath: z.string().min(1).nullable().optional(),
+      folderPath: z.string().min(1).nullable().optional(),
       defaultBranch: z.string().min(1).nullable().optional(),
       defaultModel: z.string().min(1).nullable().optional(),
       testCommand: z.string().min(1).max(2000).nullable().optional(),
@@ -414,6 +424,9 @@ export const api = defineApi({
       workspaceId: WorkspaceId.optional(),
       taskId: TaskId.optional(),
       parentSessionId: SessionId.optional(),
+      workspace: WorkspaceSpec.optional().describe(
+        'Where an agent session works: none (scratch), folder or worktree',
+      ),
     }),
     result: Session,
     description:
@@ -424,6 +437,10 @@ export const api = defineApi({
     params: params({
       projectId: ProjectId.optional(),
       kind: SessionKind.optional(),
+      parentSessionId: SessionId.nullable()
+        .optional()
+        .describe('Children of this session; null lists roots only'),
+      rootsOnly: z.boolean().optional().describe('Only sessions without a parent'),
       includeArchived: z.boolean().default(false),
       limit: Limit(200, 50),
       cursor: Cursor.optional(),
@@ -468,6 +485,9 @@ export const api = defineApi({
     result: z.object({
       items: z.array(Message).describe('Oldest first'),
       hasMore: z.boolean().describe('Older messages exist'),
+      streaming: StreamingMessage.nullable()
+        .default(null)
+        .describe('Assistant text being streamed right now (not yet a message)'),
     }),
     description: 'Read messages of a session (latest page by default, oldest first).',
   },
@@ -476,10 +496,20 @@ export const api = defineApi({
       sessionId: SessionId,
       content: ContentInput,
       model: z.string().min(1).optional().describe('Override the session model for this run'),
+      interrupt: z
+        .boolean()
+        .optional()
+        .describe('Agent sessions: stop the current run and hand the message over now'),
     }),
-    result: z.object({ messageId: MessageId, runId: RunId }),
+    result: z.object({
+      messageId: MessageId,
+      runId: RunId.nullable().describe('Run that received the message; null while queued'),
+      delivery: SendDelivery.describe(
+        'started: a new run; injected: handed to the running run; queued: after the current run',
+      ),
+    }),
     description:
-      'Send a user message to a session. Starts a run and returns immediately; follow progress via events or run.get.',
+      'Send a user message to a session. Never refused for being busy: it starts a run, is handed to the running one at its next step, or waits for it. Returns immediately.',
     mutates: true,
   },
   'session.search': {
@@ -753,11 +783,14 @@ export const api = defineApi({
       taskId: TaskId.optional(),
       workspaceId: WorkspaceId.optional(),
       kind: ArtifactKind.optional(),
+      role: ArtifactRole.optional().describe('output: what the work produced; evidence: checks'),
+      rootSessionId: SessionId.optional().describe('Artifacts of every session of this tree'),
       limit: Limit(200, 50),
       cursor: Cursor.optional(),
     }),
     result: page(Artifact),
-    description: 'List artifacts (diffs, commits, test results, files, notes), newest first.',
+    description:
+      'List artifacts (documents, data, links, files, code changes, commits, test results), newest first.',
   },
   'artifact.get': {
     params: params({ artifactId: ArtifactId }),
@@ -990,6 +1023,15 @@ export const api = defineApi({
     description: 'Cancel an event subscription.',
     tool: false,
   },
+
+  // ---- redesign tracks (ext/<track>.ts) ----
+  ...supervisorMethods,
+  ...spawnMethods,
+  ...outputsMethods,
+  ...attentionMethods,
+  ...costMethods,
+  ...scheduleMethods,
+  ...homeMethods,
 });
 
 export type Api = typeof api;

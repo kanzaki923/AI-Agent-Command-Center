@@ -6,7 +6,14 @@ import { BudgetManager } from './budget';
 import { PolicyService, isRunEndEvent } from './grants';
 
 export { BudgetManager, freeUsd } from './budget';
-export { PolicyService, RUN_ENDED, type CreateGrantInput, type CreateGrantOptions } from './grants';
+export {
+  PolicyService,
+  RUN_ENDED,
+  WORK_SETTLED,
+  endsWithWork,
+  type CreateGrantInput,
+  type CreateGrantOptions,
+} from './grants';
 export { anyPatternContains, patternContains } from './patterns';
 
 /**
@@ -40,7 +47,7 @@ CREATE INDEX budget_reservations_budget ON budget_reservations(budget_id, status
     // Keep an engine injected through createDaemon({ policy }) (tests); replace the default.
     if (ctx.policy instanceof GrantPolicyEngine) ctx.policy = policy;
 
-    // Run-lifetime grants end with their run.
+    // Run grants end with their run; `work` grants once their session's tree settles.
     const unsubscribe = ctx.bus.subscribe({ types: ['run.*'] }, (e) => {
       const to = e.type === 'run.status_changed' ? e.payload.to : undefined;
       if (!isRunEndEvent(e.type, to) || !e.runId) return;
@@ -48,6 +55,10 @@ CREATE INDEX budget_reservations_budget ON budget_reservations(budget_id, status
       policy.expireForRun(e.runId, sessionId);
     });
     ctx.onClose(unsubscribe);
+    const unsubscribeState = ctx.bus.subscribe({ types: ['session.state_changed'] }, (e) => {
+      if (e.type === 'session.state_changed') policy.expireSettledWork(e.payload.sessionId);
+    });
+    ctx.onClose(unsubscribeState);
 
     ctx.methods.register(
       defineMethod('grant.create', {

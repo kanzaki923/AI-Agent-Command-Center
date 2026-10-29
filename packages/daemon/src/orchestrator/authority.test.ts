@@ -208,8 +208,8 @@ describe('agent authority', () => {
       parentSessionId: orch.session.id,
     });
     const sent = await d.call(r.actor, 'session.send', { sessionId: mine.id, content: 'go' });
-    await d.call(HUMAN, 'run.cancel', { runId: sent.runId });
-    await d.ctx.service('runs').waitForEnd(sent.runId);
+    await d.call(HUMAN, 'run.cancel', { runId: sent.runId! });
+    await d.ctx.service('runs').waitForEnd(sent.runId!);
 
     // A worker session is driven through task.retry only.
     const task = await d.call(r.actor, 'task.create', { projectId: p.id, title: 'w' });
@@ -313,7 +313,7 @@ describe('agent authority', () => {
     ).toThrow(ApiError);
   });
 
-  it('a session run-lifetime grant ends with the run a crash interrupted, as on a clean stop', async () => {
+  it('a session run-lifetime grant (read as work) survives the run a crash interrupted', async () => {
     const d1 = await setup();
     const p = await project(d1, 'a');
     const session = await d1.call(HUMAN, 'session.create', { projectId: p.id, title: 'orch' });
@@ -353,12 +353,11 @@ describe('agent authority', () => {
     await d1.close();
 
     const d2 = await setup(home);
-    expect(d2.ctx.repos.grants.require(grant.id).revokedAt).not.toBeNull();
-    // No new orchestrator run on a grant that was for the interrupted run only.
-    await new Promise((r) => setTimeout(r, 200));
-    expect(
-      d2.ctx.repos.runs.count({ where: { session_id: session.id, kind: 'orchestrator' } }),
-    ).toBe(1);
+    // D17: a restart ends no work; the interrupted orchestrator keeps its authority.
+    expect(d2.ctx.repos.grants.require(grant.id).revokedAt).toBeNull();
+    const runs = d2.ctx.repos.runs.find({ where: { session_id: session.id } });
+    expect(runs.find((r) => r.status === 'interrupted')?.statusReason).toBe('daemon_restart');
+    await d2.close();
   });
 
   it("a session's workspace and task stay in the session's project", async () => {

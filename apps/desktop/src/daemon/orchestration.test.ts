@@ -171,6 +171,7 @@ describe('createProject', () => {
     name: 'repo',
     description: null,
     repoPath: 'C:\\work\\repo',
+    folderPath: null,
     defaultBranch: null,
     defaultModel: null,
     testCommand: null,

@@ -199,7 +199,7 @@ describe('vertical slice (concept §12.1)', () => {
       sessionId: s.sessionId,
       content: GOAL,
     });
-    expect((await client.call('run.get', { runId: orchRunId })).kind).toBe('orchestrator');
+    expect((await client.call('run.get', { runId: orchRunId! })).kind).toBe('orchestrator');
 
     // The test worker runs its tests without asking; its push is denied by a hard rule and it
     // carries on (the reason went back to it as the tool's error).
@@ -242,7 +242,7 @@ describe('vertical slice (concept §12.1)', () => {
     ).toEqual(['artifact.get', 'artifact.list', 'task.get', 'workspace.diff', 'workspace.get']);
 
     s.releaseWorkers();
-    const orchRun: Run = await d.ctx.service('runs').waitForEnd(orchRunId);
+    const orchRun: Run = await d.ctx.service('runs').waitForEnd(orchRunId!);
     expect(orchRun.status).toBe('completed');
 
     // Two tasks, both in review, each in its own worktree with a recorded diff.
@@ -294,7 +294,7 @@ describe('vertical slice (concept §12.1)', () => {
     // Agents can never approve an integration — not even the orchestrator with its grant.
     expect(
       await codeOf(
-        d.call(agentActor(s.sessionId, orchRunId), 'integration.approve', {
+        d.call(agentActor(s.sessionId, orchRunId!), 'integration.approve', {
           integrationId: integ.id,
         }),
       ),
@@ -385,7 +385,7 @@ describe('vertical slice (concept §12.1)', () => {
       sessionId: s.sessionId,
       content: `${GOAL}。どちらも README から辿れるようにして`,
     });
-    expect((await d.ctx.service('runs').waitForEnd(orchRunId)).status).toBe('completed');
+    expect((await d.ctx.service('runs').waitForEnd(orchRunId!)).status).toBe('completed');
     expect(s.approvals).toEqual([]);
 
     const integ = (await client.call('integration.list', { projectId: s.projectId })).items[0]!;
@@ -468,7 +468,7 @@ describe('vertical slice (concept §12.1)', () => {
       note: '今はテストを実行しない',
     });
 
-    expect((await d.ctx.service('runs').waitForEnd(runId)).status).toBe('completed');
+    expect((await d.ctx.service('runs').waitForEnd(runId!)).status).toBe('completed');
     const tasks = (await client.call('task.list', { projectId: s.projectId })).items;
     const failed = tasks.find((t) => t.id === approval.taskId)!;
     expect(failed).toMatchObject({ status: 'failed', statusReason: 'worker_failed' });
@@ -489,8 +489,9 @@ describe('vertical slice (concept §12.1)', () => {
           e.actor.kind === 'agent',
       ),
     ).toBe(true);
-    // A run-lifetime grant ended with the orchestrator run.
+    // The session's run-lifetime grant reads as `work` (D17): it outlives the orchestrator
+    // run while a task of its tree still waits for review.
     const grants = await client.call('grant.list', { sessionId: s.sessionId });
-    expect(grants.items).toEqual([]);
+    expect(grants.items.map((g) => g.lifetime)).toEqual(['run']);
   });
 });

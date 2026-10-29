@@ -57,6 +57,7 @@ export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
   failed: '失敗',
   cancelled: '中止',
   blocked: '依存待ち',
+  paused: '停止中',
 };
 
 export function runStatusToState(s: RunStatus): DisplayState {

@@ -136,13 +136,13 @@ describe('session.send', () => {
     const s = await d.call(HUMAN, 'session.create', {});
     expect(s.model).toBeNull();
     const first = await d.call(HUMAN, 'session.send', { sessionId: s.id, content: 'ゆっくり' });
-    expect(d.ctx.repos.runs.require(first.runId).model).toBe('mock/echo');
+    expect(d.ctx.repos.runs.require(first.runId!).model).toBe('mock/echo');
     await expect(
       d.call(HUMAN, 'session.send', { sessionId: s.id, content: '割り込み' }),
     ).rejects.toMatchObject({ code: 'conflict' });
     // The refused message was rolled back.
     expect(d.ctx.repos.messages.count({ where: { session_id: s.id } })).toBe(1);
-    await d.ctx.service('runs').waitForEnd(first.runId);
+    await d.ctx.service('runs').waitForEnd(first.runId!);
   });
 
   it('keeps the partial reply when cancelled mid-stream', async () => {
@@ -159,17 +159,17 @@ describe('session.send', () => {
     d.ctx.bus.subscribeDeltas({ sessionId: s.id }, () => deltas++);
     const { runId } = await d.call(HUMAN, 'session.send', { sessionId: s.id, content: '長く' });
     await until(() => deltas >= 3);
-    await d.call(HUMAN, 'run.cancel', { runId });
+    await d.call(HUMAN, 'run.cancel', { runId: runId! });
     await until(() => d.ctx.repos.messages.count({ where: { run_id: runId } }) === 1);
     const [partial] = d.ctx.repos.messages.find({ where: { run_id: runId } });
     const text = partial!.content[0]!.type === 'text' ? partial!.content[0]!.text : '';
     expect(text.length).toBeGreaterThan(0);
     expect(text.length).toBeLessThan(100);
-    expect(d.ctx.repos.runs.require(runId).status).toBe('cancelled');
+    expect(d.ctx.repos.runs.require(runId!).status).toBe('cancelled');
     // The session is free again.
     d.ctx.service('llm').mock.define('mock/long', () => ({ text: 'ok' }), { chunkDelayMs: 0 });
     const next = await d.call(HUMAN, 'session.send', { sessionId: s.id, content: '続けて' });
-    expect((await d.ctx.service('runs').waitForEnd(next.runId)).status).toBe('completed');
+    expect((await d.ctx.service('runs').waitForEnd(next.runId!)).status).toBe('completed');
   });
 
   it('fails with a clear message when LiteLLM is configured but no model is set', async () => {
@@ -177,7 +177,7 @@ describe('session.send', () => {
     await d.call(HUMAN, 'settings.update', { litellm: { baseUrl: 'http://127.0.0.1:9' } });
     const s = await d.call(HUMAN, 'session.create', {});
     const { runId } = await d.call(HUMAN, 'session.send', { sessionId: s.id, content: 'hi' });
-    const run = await d.ctx.service('runs').waitForEnd(runId);
+    const run = await d.ctx.service('runs').waitForEnd(runId!);
     expect(run).toMatchObject({ status: 'failed', error: { code: 'invalid_params' } });
     expect(run.error?.message).toContain('モデルが設定されていません');
   });
@@ -190,7 +190,7 @@ describe('session.send', () => {
       seen = ctl.run.triggerMessageId;
     });
     const sent = await d.call(HUMAN, 'session.send', { sessionId: s.id, content: 'build it' });
-    const run = await d.ctx.service('runs').waitForEnd(sent.runId);
+    const run = await d.ctx.service('runs').waitForEnd(sent.runId!);
     expect(run).toMatchObject({ kind: 'agent', runtime: 'mock', status: 'completed' });
     expect(seen).toBe(sent.messageId);
   });
@@ -225,7 +225,7 @@ describe('session.send', () => {
     });
     const s = await d.call(HUMAN, 'session.create', { systemPrompt: '丁寧に' });
     const { runId } = await d.call(HUMAN, 'session.send', { sessionId: s.id, content: '質問' });
-    const run = await d.ctx.service('runs').waitForEnd(runId);
+    const run = await d.ctx.service('runs').waitForEnd(runId!);
     expect(run).toMatchObject({
       status: 'completed',
       model: 'gpt-fake',
@@ -266,7 +266,7 @@ describe('tool loop', () => {
     const s = await d.call(HUMAN, 'session.create', { model: 'mock/ops' });
     grantSession(d, s.id, ['session.list', 'session.get']);
     const { runId } = await d.call(HUMAN, 'session.send', { sessionId: s.id, content: '一覧' });
-    const run = await d.ctx.service('runs').waitForEnd(runId);
+    const run = await d.ctx.service('runs').waitForEnd(runId!);
     expect(run.status).toBe('completed');
 
     const msgs = (await d.call(HUMAN, 'session.messages', { sessionId: s.id })).items;
@@ -282,7 +282,7 @@ describe('tool loop', () => {
       ['assistant', '3 件の結果: OK,NG,NG'],
     ]);
     const toolEvents = d.ctx.bus
-      .list({ runId, types: ['tool.*'] })
+      .list({ runId: runId!, types: ['tool.*'] })
       .events.map((e) =>
         e.type === 'tool.result' ? `${e.payload.name}:${e.payload.isError}` : e.type,
       );

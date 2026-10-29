@@ -27,6 +27,8 @@ packages/cli      `acc` コマンド（Control API クライアント）
 - 停止は `system.shutdown`（人間だけ。`tool: false`。実行中の Run があれば `force` なしでは `conflict`）。応答を返してからサーバ・モジュール・DB を閉じ、`daemon.json` を消してプロセスを終える（`ctx.requestShutdown()` → `Daemon.closed`）。CLI は `acc daemon stop`。
 - 再起動時、`running` / `queued` / `awaiting_approval` のまま残った Run は `interrupted`（`statusReason: "daemon_restart"`）にし、イベントを残す。あわせてその Run の pending Approval を `cancelled`、ワークスペースロックと `session.activeRunId` を解放する（`core/recovery.ts`）。その後の各モジュールの照合（中断された Worker の Task、統合、Orchestrator の再開）は §2.8・§2.12。
 - DB は Node 組み込みの `node:sqlite`（WAL）。ドライバは `core/db.ts` の `Db` インターフェースの裏に隠す。エンティティのテーブルは「絞り込み用のインデックス列 + `data`（エンティティ全体の JSON、読み書き時に zod で検証）」の形。フィールド追加にマイグレーションは要らず、絞り込み列を足すときだけ要る。
+- テーブルを作り直すマイグレーション（`rebuildsTables`。例 `core/0002_nullable_project`）が既存の DB に未適用なら、適用の前に `VACUUM INTO` で `acc.sqlite.bak-<version>`（あれば `-2`…）を作る。新しい enum 値を古いデーモンは読めないので、ダウングレードはこのバックアップに戻して行う。
+- 起動時のバックフィル（冪等）：マイグレーション直後に `core/backfills.ts` が全会話の `rootSessionId`（列と JSON）を親をたどって埋め直す。各モジュールの `start` で、cost が終端 Run から使用量台帳を埋めて `Session.cost` を再集計し、attention が承認待ち・失敗 / レビュー待ちの Task から出番を作り（1 回だけ、`runOnce`）、home が会話の状態を一度だけ導出する。一度だけの手順は `schema_migrations` に `backfill/<module>/<name>` として記録する。
 - `config.json` の設定（`Settings`）は `settings.get` / `settings.update` で読み書きする。API キーは API・イベント・ログに平文で出さない（`hasApiKey` / `apiKeyMasked` だけ返す）。環境変数 `ACC_LITELLM_BASE_URL` / `ACC_LITELLM_API_KEY` が設定値より優先される。
 
 ### 2.2 プロトコル（WebSocket 上の JSON-RPC 風）
@@ -67,6 +69,15 @@ packages/cli      `acc` コマンド（Control API クライアント）
 | `tasks/` | Task・依存 DAG・スケジューラ |
 | `orchestrator/` | Orchestrator Run、Worker の起動と追従（`task.spawnWorker`）、待機（`task.wait` / `integration.wait`）、`mock/orchestrator`、デモモード |
 | `integration/` | 統合ブランチ、順次マージ、検証、承認後の反映 |
+| `inbox/` | 受信箱と起床（§2.13） |
+| `attention/` | 出番と質問（§2.16） |
+| `outputs/` | 成果物の公開・読み取り・確認（§2.15） |
+| `cost/` | 使用量の台帳と集計（§2.17） |
+| `schedules/` | 定期実行（§2.18） |
+| `home/` | 会話の状態・「いま何してる」・ホーム（§2.19） |
+
+- `sessions/` のメソッドは `sessions/methods/<method>.ts` に 1 つずつ置く（トラックごとに自分のファイルだけを触るため）。
+- 作り直し（`docs/snapshot/20261029_redesign-spec.md`）のメソッド・型・イベントは `packages/protocol/src/ext/<track>.ts` に置き、`api.ts` / `events.ts` が取り込む。モジュール間のサービス契約は `contracts.ts`。トラックが実装するまでの間、メソッドは `stubMethod`（`not_found`・`data.reason: "not_implemented"`、`system.info` と LLM のツールには出ない。本物を登録すると置き換わる）、サービスは何もしないスタブ。
 
 ### 2.4 Control API と Capability
 
@@ -81,7 +92,8 @@ packages/cli      `acc` コマンド（Control API クライアント）
 - agent が `task.spawnWorker` / `task.retry` 以外で Run を始められるのは（`session.send`・`run.retry`）、自分が作ったチャットセッション（`parentSessionId` = 自分のセッション）で、Session Grant を持たないものだけ（`policy.assertAgentMayStartRun`）。強いセッションをその Grant と予算で動かしたり、Worker を委譲・上限の外で増やしたりさせない。
 - セッションのワークスペースと Task は、セッションにプロジェクトがあればそのプロジェクトのものに限る（`session.create` / `session.update`。移動でずれる場合も拒否）。
 - LLM に見せるツールの一覧づくりは呼び出しではないので、外したメソッドを `policy.denied` に記録しない（`PolicyEngine.peek`）。
-- Grant の有効範囲：`run`（その Run の終了で失効）、`session`（期限 `expiresAt` まで）。Session に付けた `lifetime: run` の Grant は「そのセッションの次の Run が終わるまで」有効（クラッシュで中断された Run も同じ：起動時のスイープが、Grant の後に終わった Run があるセッションの `lifetime: run` Grant を失効させる）。剥奪は委譲先へ連鎖する。付与・剥奪は `grant.created` / `grant.revoked`、使用は `tool.called`、agent の拒否は `policy.denied` として残る。
+- Grant の有効範囲：`run`（その Run の終了で失効）、`session`（期限 `expiresAt` まで）、`work`（その会話と子孫の作業が落ち着くまで：実行中の Run・開いた出番・終わっていない Task（子孫が担当、または子孫が作成）・未処理の受信箱が 0。判定は `sessionState.isWorkSettled`）。Session に付けた `lifetime: run` の Grant は `work` として扱う（データは書き換えない）。`work` の失効は Run の終了（その会話と祖先を確かめる）と `session.state_changed` で判定し、デーモンの停止・再起動では失効しない（中断された指揮役が権限を持ったまま再開できるように）。Run を subject にした Grant は従来どおりその Run の終了で失効し、起動時のスイープも Run の Grant だけを扱う。剥奪は委譲先へ連鎖する。付与・剥奪は `grant.created` / `grant.revoked`（`work` の失効は reason `work_settled`）、使用は `tool.called`、agent の拒否は `policy.denied` として残る。
+- 会話のスコープ：メソッドの `scope` は触る会話を `sessionIds` で返せる（`session.*` は対象の会話）。agent は Grant の subject の会話（Run の Grant なら自分の会話）を根とする部分木の中しか触れない（親をたどって判定。兄弟の木・親は `forbidden`）。
 - Control API の Capability とは別に、エージェントの**ツールの使用**（ファイル・コマンド・Web）はデーモンの権限ゲートが決める（§2.10）。どこまで任せるか（`Project.permissionProfile`、`settings.defaultPermissionProfile` / `autoMode`、覚えた許可 `permissionRule.*`、`approval.respond` の `remember`）を変えられるのは人間だけ（agent が `project.update` で `permissionProfile` を変える、`remember` を付けて回答するのは Grant があっても `forbidden`）。
 
 ### 2.5 Budget
@@ -110,6 +122,7 @@ packages/cli      `acc` コマンド（Control API クライアント）
   - Agent Runtime は使用量を事後に `reportUsage` で報告し、そのたびに `recordSpend` する。始める前に空きがなければ（または返却済みなら）`ctl.assertBudgetLeft()` で拒否する。消費を Budget に記録できなかった Run は、上限なしに続けさせず予算切れとして止める（使用量は Run に残る）。
   - 残り（limit − allocated − reserved − spent）が 0 以下になった Run、予約できずに拒否された Run は `failed`（`statusReason: budget_exhausted`、エラー `budget_exceeded`）。
 - 終了時に実行枠とロックを返し、その Run に紐づく `lifetime: run` の Grant は policy モジュールが失効させる（`grant.revoked`）。
+- 使用量と予算の処理は `runs/usage.ts`（`UsageAccountant`）：`reportUsage`・`reserveBudget` / `BudgetHold.settle`・`assertBudgetLeft`。Run に記録した使用量は同じトランザクションで `ledger.record` にも渡す（`Session.cost` の唯一の入口。§2.17）。`emitDelta` の断片は `streams.append` にも渡す（§2.19）。`Run.trigger`（`user` / `wake` / `spawn` / `schedule` / `resume` / `retry` / `system`）は `StartRunInput.trigger`（既定 `user`）。
 
 ### 2.7 イベント
 
@@ -172,7 +185,7 @@ packages/cli      `acc` コマンド（Control API クライアント）
   - 失敗の理由は assistant の `error`（`SDKAssistantMessageError` の全値）→ `terminal_reason` → result の subtype の順に日本語にし、`api_error_status` と CLI の詳細を添える（LiteLLM が包んだエラー文は上流のメッセージだけにし、LiteLLM にないモデル（400）はそう説明する。§2.11）。
 - **Control API ツール**：Executor は Run の Grant が許すメソッド（`apiTools`。Orchestrator が起動した Worker なら読み取りのプリセット、人間が起動した Run は Grant がないのでなし）を `AgentRunInput.tools` で渡す。Claude ランタイムはこれを in-process MCP サーバ `acc`（`createSdkMcpServer`、`claude/mcp.ts`）にし、ツール名は `mcp__acc__task_get` のようにメソッドの `.` を `_` にしたもの、入力スキーマは契約の params。呼び出しはディスパッチャを Run の agent actor で通る（Grant 外は `forbidden` をツールのエラーとして返す）ので、ポリシーは `mcp__acc__*` を許可する（承認なし）。
 - 再開と費用：Runtime 自身のセッション ID を `runtime_sessions`（Session × Runtime）に保存し、次の Run に渡す（`Session.runtimeSessionId` にも反映）。SDK の使用量は SDK セッション単位の累積値（再開すると CLI が transcript に保存した累計から続く）なので、`runtime_usage_baselines` との差分を Run の使用量として報告する。基準値は result を受け取った時点で保存する（その時点で CLI は累計を保存済み。直後に強制終了しても二重計上にならない）。ただし累計が全部 0 のエラー result（起動直後の中断など）では基準値を変えない。費用は CLI の価格表による見積もりなので `costSource: 'estimated'`、CLI が価格を知らないモデル（gateway の別名など。`costBasis: 'unknown'`）なら `'unknown'`。ストリーム途中で中断した API 呼び出しは CLI 自身が数えないため、どこにも計上されない。
-- mock：プロンプト中の ` ```acc-mock ` JSON ブロック（`mock/plan.ts`。`say` / `write` / `append` / `run` / `ask` / `check` / `sleep` / `fail` / `resolve`）に従ってワークスペースを実際に変更する。ツールの使用は本物と同じゲートを通り、承認になったものは `onReject`、拒否されたものは理由をツールのエラーとして返して `onDeny`（既定 `continue`：本物のエージェントのように続ける）に従う。`ask` は常に人間に尋ねる（承認 UI の確認用）。ブロックがなければ、マージ中の未解決ファイルがあれば `resolve`（各コンフリクトを ours + theirs の順に連結）、なければ `notes/<タスク名>.md` を作って確認する。デモと E2E はこれを使う。
+- mock：プロンプト中の ` ```acc-mock ` JSON ブロック（`mock/plan.ts`。`say` / `write` / `append` / `run` / `ask` / `check` / `sleep` / `fail` / `resolve`）に従ってワークスペースを実際に変更する。手順ごとの処理は `mock/steps/<name>.ts`、表は `STEP_HANDLERS`（手順を足すときは plan.ts のスキーマ・ファイル・表の 1 行）。ツールの使用は本物と同じゲートを通り、承認になったものは `onReject`、拒否されたものは理由をツールのエラーとして返して `onDeny`（既定 `continue`：本物のエージェントのように続ける）に従う。`ask` は常に人間に尋ねる（承認 UI の確認用）。ブロックがなければ、マージ中の未解決ファイルがあれば `resolve`（各コンフリクトを ours + theirs の順に連結）、なければ `notes/<タスク名>.md` を作って確認する。デモと E2E はこれを使う。
 
 ### 2.11 LLM Gateway とチャット Run
 
@@ -198,11 +211,39 @@ Orchestrator は**セッション種別ではなく役割**（concept §3.1）�
   - 予算：呼び出し元の Run に Budget があれば、そこから `budgetUsd`（省略時は空き ÷（残りの Worker 枠 + 1）。1 つ分は呼び出し元が自分の LLM 呼び出しのために残す）を切り出して Worker セッションの Budget にする。
 - **`task.retry({ taskId, feedback?, integrationId? })`**：元の Worker に差し戻す。「元の Worker」は担当セッションのうち、その Task のために作られ（`session.taskId`）、同じプロジェクトで、Session Grant を持たない `agent` セッションだけ（それ以外なら新しい Worker を起動する）。前の Run の Budget を使い続けるのも、それがそのセッションに切り出したものであるときだけ。agent は `task.update` で担当セッションをその Task のセッション以外に向けられない（別プロジェクトのセッションは誰でも不可）。`review` / `failed` / `ready` / 人間待ちの `blocked` の Task で、Worker セッションと worktree が残っていれば、そのセッションに差し戻しメッセージ（指摘＋ `integrationId` があればその統合のエラー・テストコマンド・出力の末尾 4000 文字）を足し、同じ worktree・ブランチで新しい `agent` Run（`retryOfRunId` = 前の Run、Runtime は自分のセッションを再開）を始めて Task を `running` にする。権限・上限・委譲 Grant は spawn と同じで、Budget は前の Run のものがまだ有効なら使い続ける。Worker が一度もいない Task は `task.spawnWorker` と同じ（指摘は追加の指示になる）。
 - **Worker の終了**（`run.status_changed` の終端を orchestrator モジュールが購読）：その Task を担当中（`running` かつ担当セッション）なら、`completed` → `review`（変更なしは `statusReason: no_changes`、`resultSummary` に最後の発言）、`failed` / `cancelled` → `failed`（`worker_failed` / `worker_cancelled`）、`interrupted`（デーモンの停止・再起動）→ `ready`（`statusReason: interrupted`。`task.retry` で同じ worktree から再開できる）。worktree とブランチは残す。人間がキャンセルした Task などはそのまま。起動時にも同じ照合をする。
-- **Orchestrator の再開**（concept §8.4、`orchestrator/resume.ts`）：起動時（全モジュールの start の後）、`daemon_restart` / `daemon_shutdown` で `interrupted` になり、まだセッションの最新 Run である `orchestrator` Run ごとに、そのセッションへ system メッセージ（`ORCHESTRATOR_RESUME_NOTICE` で始まり、中断した Run の ID・そのセッションが作った Task と統合の状態）を 1 回だけ投稿する。`settings.autoResumeOrchestrators`（既定 true）かつセッションの Orchestrator Grant がまだ有効なら、そのメッセージを起点に新しい `orchestrator` Run を始める（`lifetime: run` の Grant は中断で失効しているので、通知だけになる）。モデルは `task.list` で状態を読み直し、中断された Task を `task.retry` で再開して計画を続ける。
+- **Orchestrator の再開**（concept §8.4、`orchestrator/resume.ts`）：起動時（全モジュールの start の後）、`daemon_restart` / `daemon_shutdown` で `interrupted` になり、まだセッションの最新 Run である `orchestrator` Run ごとに、そのセッションへ system メッセージ（`ORCHESTRATOR_RESUME_NOTICE` で始まり、中断した Run の ID・そのセッションが作った Task と統合の状態）を 1 回だけ投稿する。`settings.autoResumeOrchestrators`（既定 true）かつセッションの Orchestrator Grant がまだ有効なら、そのメッセージを起点に新しい `orchestrator` Run を始める（`lifetime: run` の Grant は `work` として扱われ、中断では失効しない）。モデルは `task.list` で状態を読み直し、中断された Task を `task.retry` で再開して計画を続ける。
 - **待機**：`task.wait({ taskIds, mode: any|all, until: settled|review_or_terminal|terminal, timeoutMs })` は状態を確かめてから `bus.waitFor` で眠り（ポーリングしない）、`call.signal` で打ち切る。返すのは `reached`（ID）と全 Task の `TaskSnapshot`（状態・理由・ブランチ・最新 Run と activity・承認待ち数・diff 統計・要約）。`integration.wait` は統合が `awaiting_approval` / `conflict` / `failed` / 確定状態になるまで待つ。LLM のループは「spawn → task.wait(all) → integration.create → run → integration.wait → 報告」だけで済む。
 - **判断の記録**：`orchestrator.decision` イベント。LLM は `orchestrator.recordDecision` で残し、デーモンも自分の判断（Worker を起動した・Task をレビュー待ち / 失敗にした）を `system` actor で残す。参照は呼び出し元（Orchestrator）のセッションと Run に付ける。
 - **`mock/orchestrator`**（`orchestrator/mockModel.ts`）：ツール結果だけを見て次の手を決める決定的なモデル。目標 → `task.create` ×2（ドキュメントとテスト、完了条件と mock Worker 用の `acc-mock` 計画つき。テスト側はテストを実行し、続く `git push` は絶対ルールで拒否されて、理由を読んでコミットだけして終える。おまかせでは統合の反映まで承認は 0。慎重ではテストの実行が承認になり、却下されたら失敗）→ `task.spawnWorker` ×2 → `task.wait` → `integration.*` → 日本語の報告。途中で失敗があれば統合せず報告する。統合が `conflict` なら `integration.resolveWithAgent` を 1 回だけ呼んで待ち直し、まだ `conflict` なら人間に相談する。テスト失敗では `task.retry`（`integrationId` つき）を対応案として示す。再開メッセージの後は `task.list` → 中断 Task の `task.retry` → 通常の流れ（作成済みの統合があれば作り直さず `integration.run`）。目標に「README」を含むと両 Task が README.md に追記する（コンフリクトの再現用）。本物のモデルと同じツールしか使わない。
 - **デモモード**：`system.setupDemo({ name='auth-demo' })`（冪等）。`<ACC_HOME>/demo/<name>` に `node --test` が通る小さな Node プロジェクトの git リポジトリを作り、プロジェクト（`testCommand: node --test`）と、`mock/orchestrator` の「デモ: 設計チャット」に `lifetime: session` の Orchestrator 権限を用意する。UI の「デモモードで試す」がこれを呼び、目標を下書きに入れてチャットを開く。
+
+### 2.13 受信箱と起床（T1 Supervisor）
+
+会話の木の作り直し（`docs/snapshot/20261029_redesign-spec.md` §3.2）。契約は `contracts.ts` の `InboxService`（`deliver` / `drain`）、型は `protocol/src/ext/supervisor.ts`、表は `inbox_items`。現状はスタブ（何も保存しない）。`session.stop` / `resume` / `delegate` / `undelegate` は `sessions/methods/` のスタブ。
+
+### 2.14 子を起こす・作業場所・完了（T2）
+
+§3.3・§3.4。契約は `SpawnerService.spawn`（`sessions/spawn.ts`）、型は `ext/spawn.ts`。`Task.projectId` / `Workspace.projectId` は NULL 可、`WorkspaceKind` に `scratch`、`AgentRunInput.writeRoot` / `readRoots`（現状は作業場所だけ）、`Project.folderPath`（保存だけ。読み取り root にするのは T2）。`session.spawn`・spawner・`project.inspectFolder` はスタブ。
+
+### 2.15 成果物とコードの工程（T3）
+
+§1.5・§3.4・§3.5。契約は `OutputsService.finalize`、型は `ext/outputs.ts`。Artifact に `document` / `data` / `link` / `files`、`role` / `summary` / `review` / `source`（旧 `note` / `file` はそのまま読める）。`artifact.publish` / `read` / `review` と finalize はスタブ。
+
+### 2.16 出番と質問（T4）
+
+§1.6・§3.6。契約は `AttentionService`（`open` / `resolveWhere` / `respond`）、型は `ext/attention.ts`、表は `attention`。起動時のバックフィル（1 回）が、承認待ちと失敗 / レビュー待ちの Task（アーカイブされていない会話、直近 7 日）から出番を作る（既定の choices は `ATTENTION_DEFAULT_CHOICES`、並び順は `attention/priority.ts`）。サービスとメソッドはスタブ。
+
+### 2.17 費用と予算（T5）
+
+§1.10・§3.8。契約は `LedgerService`（`record` / `usedToday` / `assertDailyLeft`）、型は `ext/cost.ts`、表は `usage_ledger`（金額は整数マイクロドル、`day` は `settings.limits.timezone` の日付）。呼び出し位置は `runs/usage.ts`。起動時、使用量があって台帳の行がない終端 Run を 1 行ずつ足し、`Session.cost`（`ownUsd`・子孫を含む `treeUsd`・最も弱い `source`）を台帳から再集計する。現状 `record` は何もしない（終了した Run は次の起動で台帳に入る）、`usedToday` は台帳から読む、日次上限は効かない。`cost.summary` / `budget.raise` / `session.setBudget` はスタブ。
+
+### 2.18 定期実行（T6）
+
+§1.9・§3.11。契約は `SchedulerService`（`rearm` / `fire`）、型は `ext/schedule.ts`、表は `schedules`。サービスとメソッドはスタブ。
+
+### 2.19 ホームと状態（T7）
+
+§3.7・§2.2（home）。契約は `SessionStateService`（`recompute` / `isWorkSettled`）と `StreamsService`（`append` / `snapshot`）、型は `ext/home.ts`。`Session.state` の導出表は `home/state.ts` の `deriveSessionState`（起動時に一度だけ全会話に適用）、`isWorkSettled` は `home/tree.ts`（`work` の Grant が使う。実装済み）。`recompute` と streams、`home.get` / `session.tree` はスタブ。`session.list` の `rootsOnly` / `parentSessionId` は実装済み。
 
 ## 3. Desktop UI
 

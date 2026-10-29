@@ -99,6 +99,8 @@ packages/protocol   @acc/protocol  zod スキーマと型だけ。node の impor
                       Integration / Approval / CapabilityGrant / BudgetAllocation / Settings
   src/events.ts       eventPayloads（イベント型の唯一の定義）・Event・EventFilter・Delta
   src/api.ts          Control API 契約（メソッド → params / result / permission / description）
+  src/method.ts       MethodDef と params ヘルパ（ext から使う）
+  src/ext/<track>.ts  作り直しのトラックごとの型・メソッド・イベント（api.ts / events.ts が取り込む）
   src/wire.ts         JSON-RPC 封筒・エラーコード・定数
   src/patterns.ts     "task.*" 形式のパターン照合・イベントフィルタ
 packages/client     @acc/client    型付き WebSocket クライアント（ブラウザ / Node 共通）
@@ -119,7 +121,7 @@ packages/cli        @acc/cli       `acc` コマンド
 
 ## 3. メソッドを追加・実装する
 
-1. **契約**：`packages/protocol/src/api.ts` にエントリを足す（既にあれば不要）。
+1. **契約**：`packages/protocol/src/api.ts` にエントリを足す（既にあれば不要。作り直しのトラックは `src/ext/<track>.ts` の `<track>Methods`）。
    - `params` は `z.strictObject`（ヘルパ `params(...)`）。省略可能な値は `.default()` で既定を決める。
    - `description` は英語で、LLM が読んで使い方がわかる文にする。
    - LLM に出したくないもの（設定変更、WS 専用）は `tool: false`。状態を変えるものは `mutates: true`。ブロックするものは `longPoll: true`（クライアントがタイムアウトを延ばす）。
@@ -142,6 +144,8 @@ packages/cli        @acc/cli       `acc` コマンド
    - 失敗は `core/errors.ts` のヘルパ（`notFound` / `invalidParams` / `conflict` / `forbidden` / `limitExceeded` / `budgetExceeded`）で投げる。それ以外の例外は `internal` になる。
    - 状態変更は `ctx.db.transaction(() => { 更新; ctx.bus.emit(...) })` にまとめる。トランザクション内で `await` しない。
    - 長くブロックするハンドラは `call.signal`（切断・停止で abort）を見る。
+   - 会話に関わるメソッドは `scope` に `sessionIds` も返す（agent は自分の会話の木の中だけ）。
+   - 契約だけ先に入れたメソッドは `stubMethod(name)` で登録しておく（`not_implemented`、ツール一覧と `system.info` には出ない）。実装を登録すると置き換わる。
 3. **テスト**：同じコミットで足す（下記 §6）。
 
 ## 4. モジュールを追加する
@@ -163,7 +167,8 @@ packages/cli        @acc/cli       `acc` コマンド
 ## 5. イベント・テーブルを追加する
 
 - **イベント**：`protocol/src/events.ts` の `eventPayloads` に 1 行足すだけで union・型・検証が揃う。payload は「変化後のエンティティ全体 + `changes`」を基本形にする（UI が差分を当てやすい）。CLI の `format.ts` の `summarizeEvent` も更新する（switch が網羅性チェックで落ちる）。
-- **テーブル / 絞り込み列**：モジュールの `migrations` に `{ id: '<module>/0002_xxx', sql }` を追加。出荷済みのマイグレーションは書き換えない。既存エンティティの列なら `core/repos.ts` の `columns` も足す。
+- **テーブル / 絞り込み列**：モジュールの `migrations` に `{ id: '<module>/0002_xxx', sql }` を追加。出荷済みのマイグレーションは書き換えない。既存エンティティの列なら `core/repos.ts` の `columns` も足す。テーブルを作り直すもの（列の NOT NULL を外すなど。CREATE new → INSERT SELECT → DROP → RENAME → インデックス再作成）は `rebuildsTables: true` を付ける（既存の DB は適用前に `acc.sqlite.bak-<version>` に複製される）。
+- **既存データの埋め直し**：冪等な処理はモジュールの `start` で毎回、一度だけのものは `runOnce(db, 'backfill/<module>/<name>', …)`（`core/backfills.ts`）。イベントは出さない。
 - **エンティティのフィールド**：`protocol/src/domain.ts` に足すだけ（JSON 列なのでマイグレーション不要）。古い行のために `.default()` か `.nullable()` を付ける。
 
 ## 6. テスト

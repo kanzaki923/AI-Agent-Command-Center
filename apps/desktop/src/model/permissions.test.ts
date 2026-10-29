@@ -101,6 +101,9 @@ describe('decisions', () => {
       author: { kind: 'agent' as const, sessionId: s.id, runId: 'run_1' },
       model: null,
       createdAt: new Date().toISOString(),
+      delivery: 'delivered' as const,
+      meta: null,
+      usage: null,
     };
     const blocks = buildChatBlocks({ messages: [msg], approvals: [], streaming: [], runs: [], decisions: map });
     const calls = blocks[0]!.kind === 'tools' ? blocks[0]!.calls : [];

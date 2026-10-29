@@ -406,9 +406,11 @@ export async function cancelTask(rt: AppRuntime, task: Task): Promise<boolean> {
 /** Create an integration candidate for tasks (in merge order) and start merging + testing. */
 export async function startIntegration(
   rt: AppRuntime,
-  projectId: string,
+  projectId: string | null,
   taskIds: string[],
 ): Promise<Integration | null> {
+  // Work outside any project has no code to integrate.
+  if (!projectId) return null;
   try {
     const created = await rt.client.call('integration.create', { projectId, taskIds });
     upsertIn(rt.queryClient, qk.integrations, created);

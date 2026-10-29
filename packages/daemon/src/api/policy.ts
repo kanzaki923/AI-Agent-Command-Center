@@ -22,12 +22,27 @@ export interface PolicyEngine {
   peek?(actor: Actor, permission: string, scope: CallScope | undefined): PolicyDecision;
 }
 
-/** Pure check of one grant against a permission + scope at time `nowIso`. */
+/** Whether `sessionId` is `rootSessionId` or one of its descendants. */
+export type SessionTreeCheck = (sessionId: string, rootSessionId: string) => boolean;
+
+/**
+ * The session whose subtree a grant lets its agent touch (`CallScope.sessionIds`): the
+ * subject session, or for a run grant the run's session (the agent's own).
+ */
+export function grantTreeRoot(grant: CapabilityGrant, actor: AgentActor): string {
+  return grant.subject.kind === 'session' ? grant.subject.sessionId : actor.sessionId;
+}
+
+/**
+ * Pure check of one grant against a permission + scope at time `nowIso`. With `tree`
+ * (actor + subtree check), sessions in `scope.sessionIds` must lie in the grant's subtree.
+ */
 export function grantAllows(
   grant: CapabilityGrant,
   permission: string,
   scope: CallScope | undefined,
   nowIso: string,
+  tree?: { actor: AgentActor; inTree: SessionTreeCheck },
 ): { ok: true } | { ok: false; reason: string } {
   if (grant.revokedAt) return { ok: false, reason: 'grant revoked' };
   if (grant.expiresAt && grant.expiresAt <= nowIso) return { ok: false, reason: 'grant expired' };
@@ -42,6 +57,16 @@ export function grantAllows(
     const outside = scope.projectIds.filter((p) => !allowedProjects.includes(p));
     if (outside.length > 0) {
       return { ok: false, reason: `project(s) outside grant scope: ${outside.join(', ')}` };
+    }
+  }
+  if (tree && scope?.sessionIds && scope.sessionIds.length > 0) {
+    const root = grantTreeRoot(grant, tree.actor);
+    const outside = scope.sessionIds.filter((id) => !tree.inTree(id, root));
+    if (outside.length > 0) {
+      return {
+        ok: false,
+        reason: `session(s) outside this agent's own session tree: ${outside.join(', ')}`,
+      };
     }
   }
   return { ok: true };
@@ -62,6 +87,8 @@ export class GrantPolicyEngine implements PolicyEngine {
   constructor(
     private readonly grantsFor: (actor: AgentActor) => CapabilityGrant[],
     private readonly clock: Clock,
+    /** Enforces `CallScope.sessionIds` when given (the policy module passes one). */
+    private readonly inTree?: SessionTreeCheck,
   ) {}
 
   check(actor: Actor, permission: string, scope: CallScope | undefined): PolicyDecision {
@@ -72,8 +99,9 @@ export class GrantPolicyEngine implements PolicyEngine {
       return { allowed: false, reason: `no capability grant for this run (needs "${permission}")` };
     }
     const reasons: string[] = [];
+    const tree = this.inTree ? { actor, inTree: this.inTree } : undefined;
     for (const g of grants) {
-      const r = grantAllows(g, permission, scope, now);
+      const r = grantAllows(g, permission, scope, now, tree);
       if (r.ok) return { allowed: true, grantId: g.id };
       reasons.push(r.reason);
     }

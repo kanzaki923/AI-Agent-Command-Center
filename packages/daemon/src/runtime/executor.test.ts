@@ -212,6 +212,7 @@ async function setup(
     attempt: 1,
     budgetId: null,
     triggerMessageId,
+    trigger: 'user',
     usage: EMPTY_USAGE,
     error: null,
     createdBy: HUMAN,

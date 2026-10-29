@@ -340,6 +340,24 @@ export function applyEvent(qc: QueryClient, streams: Streams, event: Event): voi
       // The orchestrator's latest judgement doubles as its "what is it doing" line.
       if (event.runId) streams.activity.set(event.runId, event.payload.decision);
       return;
+
+    // Session-tree redesign events: shown by the UI phase (spec 20261029 §6), ignored here.
+    case 'message.updated':
+    case 'inbox.added':
+    case 'inbox.consumed':
+    case 'artifact.updated':
+    case 'attention.opened':
+    case 'attention.resolved':
+    case 'session.cost_updated':
+    case 'budget.threshold':
+    case 'cost.limit_reached':
+    case 'schedule.created':
+    case 'schedule.updated':
+    case 'schedule.deleted':
+    case 'schedule.fired':
+    case 'session.state_changed':
+    case 'session.now_changed':
+      return;
     default: {
       // A new event type must be handled (or deliberately ignored) above.
       const _exhaustive: never = event;

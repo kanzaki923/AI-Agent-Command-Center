@@ -20,6 +20,9 @@ export const ID_PREFIXES = {
   event: 'evt',
   subscription: 'sub',
   connection: 'con',
+  inboxItem: 'inb',
+  attention: 'atn',
+  schedule: 'sch',
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;
@@ -51,6 +54,9 @@ export const GrantId = idSchema('grant');
 export const BudgetId = idSchema('budget');
 export const EventId = idSchema('event');
 export const SubscriptionId = idSchema('subscription');
+export const InboxItemId = idSchema('inboxItem');
+export const AttentionId = idSchema('attention');
+export const ScheduleId = idSchema('schedule');
 
 /** ISO-8601 UTC timestamp with milliseconds, e.g. `2026-01-01T00:00:00.000Z`. Sorts lexicographically. */
 export const Timestamp = z.iso.datetime({ offset: false });

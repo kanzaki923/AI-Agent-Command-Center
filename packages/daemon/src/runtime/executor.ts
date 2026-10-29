@@ -80,6 +80,10 @@ async function executeAgentRun(
   const events = runtime.run({
     runId: run.id,
     cwd: workspace.path,
+    // T2 adds the project's folder / repository as read roots; T5 the spend cap.
+    writeRoot: workspace.path,
+    readRoots: [],
+    maxBudgetUsd: null,
     prompt,
     systemPrompt: session.systemPrompt ?? undefined,
     model,
@@ -183,25 +187,24 @@ function createToolGate(
   ctx: DaemonContext,
   ctl: RunController,
   cwd: string,
-  projectId: string,
+  workspaceProjectId: string | null,
 ): ToolGate {
   const settings = ctx.settings.get();
   const { run } = ctl;
+  const projectId = run.projectId ?? workspaceProjectId;
   const gate = new ToolGate({
     cwd,
-    profile: resolvePermissionProfile(ctx, run.projectId ?? projectId),
+    profile: resolvePermissionProfile(ctx, projectId),
     autoMode: settings.autoMode.enabled
       ? { classifierModel: settings.autoMode.classifierModel, judge: settings.autoMode.judge }
       : null,
     policy: { protectedPaths: [ctx.paths.home], ...(ctx.port ? { daemonPort: ctx.port } : {}) },
-    ...(ctx.hasService('permissionRules')
+    // Remembered approvals are per project; a workspace outside any project has none.
+    ...(ctx.hasService('permissionRules') && projectId
       ? {
           remembered: ctx
             .service('permissionRules')
-            .matcher(
-              { projectId: run.projectId ?? projectId, runId: run.id, taskId: run.taskId },
-              cwd,
-            ),
+            .matcher({ projectId, runId: run.id, taskId: run.taskId }, cwd),
         }
       : {}),
     record: (d) => ctl.recordToolDecision(d),

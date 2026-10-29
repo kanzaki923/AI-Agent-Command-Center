@@ -1,17 +1,17 @@
 import { existsSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import type { Actor, Project } from '@acc/protocol';
-import { defineMethod } from '../api/registry';
+import { defineMethod, stubMethod } from '../api/registry';
 import { forbidden, invalidParams } from '../core/errors';
 import { defineModule } from '../module';
 import { inspectRepo } from './inspect';
 
 export { detectTestCommand, inspectRepo } from './inspect';
 
-function checkRepoPath(path: string | null | undefined): void {
+function checkRepoPath(path: string | null | undefined, field = 'repoPath'): void {
   if (path == null) return;
-  if (!isAbsolute(path)) throw invalidParams(`repoPath must be an absolute path: ${path}`);
-  if (!existsSync(path)) throw invalidParams(`repoPath does not exist: ${path}`);
+  if (!isAbsolute(path)) throw invalidParams(`${field} must be an absolute path: ${path}`);
+  if (!existsSync(path)) throw invalidParams(`${field} does not exist: ${path}`);
 }
 
 /**
@@ -34,11 +34,14 @@ export const projectsModule = defineModule({
       defineMethod('project.inspectRepo', {
         handler: (p) => inspectRepo(ctx, p.path),
       }),
+      // T2 (spec 20261029 §2.2): inspect any folder, git or not.
+      stubMethod('project.inspectFolder'),
 
       defineMethod('project.create', {
         handler: (p, call) =>
           db.transaction(() => {
             checkRepoPath(p.repoPath);
+            checkRepoPath(p.folderPath, 'folderPath');
             checkProfileChange(p.permissionProfile, call.actor);
             const now = ctx.clock.iso();
             const project = repos.projects.insert({
@@ -46,6 +49,7 @@ export const projectsModule = defineModule({
               name: p.name.trim(),
               description: p.description ?? null,
               repoPath: p.repoPath ?? null,
+              folderPath: p.folderPath ?? null,
               defaultBranch: p.defaultBranch ?? null,
               defaultModel: p.defaultModel ?? null,
               testCommand: p.testCommand?.trim() ?? null,
@@ -82,6 +86,7 @@ export const projectsModule = defineModule({
         handler: (p, call) =>
           db.transaction(() => {
             checkRepoPath(p.repoPath);
+            checkRepoPath(p.folderPath, 'folderPath');
             checkProfileChange(p.permissionProfile, call.actor);
             const changes: string[] = [];
             const project = repos.projects.update(p.projectId, (cur) => {
@@ -94,6 +99,7 @@ export const projectsModule = defineModule({
               assign('name', p.name?.trim());
               assign('description', p.description);
               assign('repoPath', p.repoPath);
+              assign('folderPath', p.folderPath);
               assign('defaultBranch', p.defaultBranch);
               assign('defaultModel', p.defaultModel);
               assign('permissionProfile', p.permissionProfile);

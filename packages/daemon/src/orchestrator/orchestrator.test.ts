@@ -393,13 +393,13 @@ describe('orchestrator role', () => {
 
     // The next message runs as an orchestrator with the session budget.
     const { runId } = await d.call(HUMAN, 'session.send', { sessionId: chat.id, content: 'hi' });
-    const run = d.ctx.repos.runs.require(runId);
+    const run = d.ctx.repos.runs.require(runId!);
     expect(run).toMatchObject({ kind: 'orchestrator', budgetId: budget!.id });
-    await d.ctx.service('runs').waitForEnd(runId);
+    await d.ctx.service('runs').waitForEnd(runId!);
     // lifetime "run": afterwards it is a plain chat again.
     const next = await d.call(HUMAN, 'session.send', { sessionId: chat.id, content: 'again' });
-    expect(d.ctx.repos.runs.require(next.runId).kind).toBe('chat');
-    await d.ctx.service('runs').waitForEnd(next.runId);
+    expect(d.ctx.repos.runs.require(next.runId!).kind).toBe('chat');
+    await d.ctx.service('runs').waitForEnd(next.runId!);
 
     const agentSession = await d.call(HUMAN, 'session.create', {
       projectId: project.id,
@@ -461,7 +461,7 @@ describe('orchestrator role', () => {
       model: MOCK_ORCHESTRATOR_MODEL,
     });
     const { runId } = await d.call(HUMAN, 'session.send', { sessionId: s.id, content: 'やって' });
-    expect((await d.ctx.service('runs').waitForEnd(runId)).kind).toBe('chat');
+    expect((await d.ctx.service('runs').waitForEnd(runId!)).kind).toBe('chat');
     const msgs = await d.call(HUMAN, 'session.messages', { sessionId: s.id });
     const reply = msgs.items.at(-1)!.content[0];
     expect(reply?.type === 'text' && reply.text).toContain('Orchestrator の権限がない');
@@ -494,7 +494,7 @@ describe('real path (no network)', () => {
     const s = await d.call(HUMAN, 'session.create', { projectId: project.id, model: 'gpt-real' });
     await d.call(HUMAN, 'session.grantOrchestration', { sessionId: s.id });
     const { runId } = await d.call(HUMAN, 'session.send', { sessionId: s.id, content: '進めて' });
-    const run = await d.ctx.service('runs').waitForEnd(runId);
+    const run = await d.ctx.service('runs').waitForEnd(runId!);
     expect(run).toMatchObject({ status: 'completed', kind: 'orchestrator', model: 'gpt-real' });
 
     const sent = JSON.parse(bodies[0]!) as {

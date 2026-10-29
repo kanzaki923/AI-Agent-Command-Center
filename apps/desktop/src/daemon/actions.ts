@@ -73,6 +73,9 @@ function optimisticMessage(sessionId: string, text: string): ChatMessage {
     author: { kind: 'human', client: 'desktop' },
     model: null,
     createdAt: new Date().toISOString(),
+    delivery: 'delivered',
+    meta: null,
+    usage: null,
     local: { status: 'sending', text },
   };
 }

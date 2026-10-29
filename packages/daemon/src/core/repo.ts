@@ -27,11 +27,12 @@ export interface Page<T> {
   nextCursor: string | null;
 }
 
-export interface EntityTableDef<T> {
+export interface EntityTableDef<T, I = T> {
   table: string;
   /** Human-readable kind used in not_found errors, e.g. "session". */
   kind: string;
-  schema: z.ZodType<T>;
+  /** Validates on write and read; `I` is what callers may insert (defaults optional). */
+  schema: z.ZodType<T, I>;
   /** Indexed columns (besides `id` and `data`) and how to derive them from the entity. */
   columns: Record<string, (entity: T) => SqlValue>;
 }
@@ -41,14 +42,14 @@ export interface EntityTableDef<T> {
  * Entities are validated with zod on write and on read (so defaults added to schemas later
  * apply to old rows).
  */
-export class EntityRepo<T extends { id: string }> {
+export class EntityRepo<T extends { id: string }, I extends { id: string } = T> {
   private readonly columnNames: string[];
   private readonly insertSql: string;
   private readonly updateSql: string;
 
   constructor(
     private readonly db: Db,
-    readonly def: EntityTableDef<T>,
+    readonly def: EntityTableDef<T, I>,
   ) {
     this.columnNames = Object.keys(def.columns);
     const cols = ['id', ...this.columnNames, 'data'];
@@ -84,7 +85,8 @@ export class EntityRepo<T extends { id: string }> {
     return e;
   }
 
-  insert(entity: T): T {
+  /** Insert (fields with schema defaults may be omitted). Returns the parsed entity. */
+  insert(entity: I): T {
     const valid = this.def.schema.parse(entity);
     this.db.run(this.insertSql, [valid.id, ...this.values(valid), JSON.stringify(valid)]);
     return valid;

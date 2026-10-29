@@ -119,7 +119,7 @@ describe('daemon restart in the middle of an orchestration', () => {
     const testTask = d2.ctx.repos.tasks.require(o.testTaskId);
     expect(testTask).toMatchObject({ status: 'ready', statusReason: 'interrupted' });
     expect(d2.ctx.repos.runs.require(o.workerRunId).status).toBe('interrupted');
-    expect(d2.ctx.repos.runs.require(o.orchRunId)).toMatchObject({
+    expect(d2.ctx.repos.runs.require(o.orchRunId!)).toMatchObject({
       status: 'interrupted',
       statusReason: 'daemon_shutdown',
     });

@@ -112,10 +112,10 @@ describe('daemon bundle', () => {
         sessionId: session.id,
         content: 'README を読んで',
       });
-      let run = await client.call('run.get', { runId });
+      let run = await client.call('run.get', { runId: runId! });
       for (let i = 0; i < 200 && !['failed', 'completed'].includes(run.status); i++) {
         await new Promise((r) => setTimeout(r, 50));
-        run = await client.call('run.get', { runId });
+        run = await client.call('run.get', { runId: runId! });
       }
       expect(run.status).toBe('failed');
       expect(run.error?.message).toContain('ACC_CLAUDE_CODE_PATH');

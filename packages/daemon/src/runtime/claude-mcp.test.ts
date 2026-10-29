@@ -150,6 +150,9 @@ describe('acc MCP server for the Claude runtime', () => {
         for await (const _ of rt.run({
           runId: 'run_1',
           cwd: process.cwd(),
+          writeRoot: process.cwd(),
+          readRoots: [],
+          maxBudgetUsd: null,
           prompt: 'x',
           signal: new AbortController().signal,
           canUseTool: async () => ({ decision: 'approved' }),

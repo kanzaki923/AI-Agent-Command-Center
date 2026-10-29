@@ -384,7 +384,7 @@ describe('board', () => {
     const t = task({ status: 'review' });
     const s = session({ taskId: t.id });
     const r = run(s, { status: 'completed', endedAt: iso(T0 + 5) });
-    const i = integration({ status: 'awaiting_approval', taskIds: [t.id], projectId: t.projectId });
+    const i = integration({ status: 'awaiting_approval', taskIds: [t.id], projectId: t.projectId! });
     const without = buildBoard({
       sessions: [s],
       runs: [r],

@@ -288,6 +288,8 @@ export class WorkspaceService implements WorkspacesService {
 
   private async removeHeld(ws: Workspace, opts: { force: boolean; actor: Actor }): Promise<void> {
     const workspaceId = ws.id;
+    if (!ws.projectId)
+      throw invalidParams('プロジェクトに属さないワークスペースは git で削除できません');
     const project = this.ctx.repos.projects.require(ws.projectId);
     const repo = this.requireRepo(project);
     const exists = existsSync(ws.path);
@@ -456,12 +458,15 @@ export class WorkspaceService implements WorkspacesService {
   // git content
   // -------------------------------------------------------------------------
 
-  commitAuthor(projectId: string): { name: string; email: string } {
-    return this.ctx.repos.projects.get(projectId)?.commitAuthor ?? DEFAULT_COMMIT_AUTHOR;
+  commitAuthor(projectId: string | null): { name: string; email: string } {
+    return (
+      (projectId ? this.ctx.repos.projects.get(projectId)?.commitAuthor : null) ??
+      DEFAULT_COMMIT_AUTHOR
+    );
   }
 
   /** Author/committer environment for commits and merges made by the daemon. */
-  identityEnv(projectId: string): Record<string, string> {
+  identityEnv(projectId: string | null): Record<string, string> {
     const a = this.commitAuthor(projectId);
     return {
       GIT_AUTHOR_NAME: a.name,
@@ -492,7 +497,7 @@ export class WorkspaceService implements WorkspacesService {
       env: this.identityEnv(ws.projectId),
     });
     const sha = await gitOut(ws.path, ['rev-parse', 'HEAD']);
-    if (ws.kind === 'main') {
+    if (ws.kind === 'main' && ws.projectId) {
       // The main checkout may have switched branches; keep the record fresh.
       await this.ensureMain(ws.projectId, actor);
     }

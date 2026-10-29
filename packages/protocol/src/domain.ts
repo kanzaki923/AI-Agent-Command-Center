@@ -7,10 +7,12 @@ import {
   ErrorInfo,
   GrantId,
   IntegrationId,
+  AttentionId,
   MessageId,
   PermissionRuleId,
   ProjectId,
   RunId,
+  ScheduleId,
   SessionId,
   TaskId,
   Timestamp,
@@ -44,9 +46,14 @@ export const Project = z.object({
   id: ProjectId,
   name: z.string().min(1),
   description: z.string().nullable(),
-  /** Absolute path of the main git repository on this machine (null for chat-only projects). */
+  /** Absolute path of the main git repository on this machine (null for projects without code). */
   repoPath: z.string().nullable(),
-  /** Branch integrations target, e.g. "main". */
+  /**
+   * Absolute path of an ordinary folder (no git needed) the project's agents may read, e.g.
+   * documents to work from. Null when the project has none.
+   */
+  folderPath: z.string().nullable().default(null),
+  /** Branch integrations target, e.g. "main" (meaningful only with repoPath). */
   defaultBranch: z.string().nullable(),
   /** Default model for new sessions in this project. */
   defaultModel: z.string().nullable(),
@@ -69,8 +76,13 @@ export type Project = z.infer<typeof Project>;
 // Workspace
 // ---------------------------------------------------------------------------
 
-/** `main`: the project's own repository checkout (registered lazily, never removed). */
-export const WorkspaceKind = z.enum(['worktree', 'directory', 'main']);
+/**
+ * `worktree`: a git worktree of a code project. `directory`: a folder of the user's (no git
+ * operations). `main`: the project's own repository checkout (registered lazily, never
+ * removed). `scratch`: a daemon-managed folder `<ACC_HOME>/scratch/<sessionId>` for agents
+ * that need no particular place to work.
+ */
+export const WorkspaceKind = z.enum(['worktree', 'directory', 'main', 'scratch']);
 export type WorkspaceKind = z.infer<typeof WorkspaceKind>;
 export const WorkspaceStatus = z.enum(['creating', 'ready', 'removing', 'removed', 'error']);
 export type WorkspaceStatus = z.infer<typeof WorkspaceStatus>;
@@ -78,7 +90,8 @@ export type WorkspaceStatus = z.infer<typeof WorkspaceStatus>;
 /** File-system environment where agents work (usually a git worktree). */
 export const Workspace = z.object({
   id: WorkspaceId,
-  projectId: ProjectId,
+  /** Null for workspaces outside any project (scratch folders, plain folders). */
+  projectId: ProjectId.nullable(),
   kind: WorkspaceKind,
   status: WorkspaceStatus,
   path: z.string(),
@@ -94,6 +107,25 @@ export const Workspace = z.object({
 });
 export type Workspace = z.infer<typeof Workspace>;
 
+/**
+ * Where a spawned agent works (`session.spawn`, schedules): `none` (a daemon-managed scratch
+ * folder), `folder` (a folder of the user's, read and written in place) or `worktree` (a git
+ * worktree of a code project).
+ */
+export const WorkspaceSpec = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('none') }),
+  z.object({ kind: z.literal('folder'), path: z.string().min(1).max(4000) }),
+  z.object({
+    kind: z.literal('worktree'),
+    projectId: ProjectId,
+    baseRef: z.string().min(1).optional(),
+  }),
+]);
+export type WorkspaceSpec = z.infer<typeof WorkspaceSpec>;
+
+export const CostSource = z.enum(['reported', 'estimated', 'unknown']);
+export type CostSource = z.infer<typeof CostSource>;
+
 // ---------------------------------------------------------------------------
 // Session & Message
 // ---------------------------------------------------------------------------
@@ -105,7 +137,66 @@ export type Workspace = z.infer<typeof Workspace>;
 export const SessionKind = z.enum(['chat', 'agent']);
 export type SessionKind = z.infer<typeof SessionKind>;
 
-export const Session = z.object({
+/**
+ * What a session is up to, maintained by the daemon (`sessionState`, architecture.md §2.19).
+ * `supervising`: no run of its own but descendants are working or queued. `stopped`: paused
+ * (resumable), not terminal.
+ */
+export const SessionState = z.enum([
+  'idle',
+  'queued',
+  'working',
+  'supervising',
+  'needs_you',
+  'failed',
+  'review',
+  'done',
+  'stopped',
+]);
+export type SessionState = z.infer<typeof SessionState>;
+/** Derivation precedence: the first state whose condition holds wins. */
+export const SESSION_STATE_PRECEDENCE = [
+  'needs_you',
+  'failed',
+  'working',
+  'supervising',
+  'queued',
+  'review',
+  'stopped',
+  'done',
+  'idle',
+] as const satisfies SessionState[];
+
+export const ReviewBy = z.enum(['none', 'human']);
+export type ReviewBy = z.infer<typeof ReviewBy>;
+
+/** What a child session was asked to do (shown pinned as the request card). */
+export const SessionBrief = z.object({
+  goal: z.string(),
+  doneWhen: z.array(z.string()).default([]),
+  /** Session that asked (the parent); null when a human or a schedule asked. */
+  fromSessionId: SessionId.nullable(),
+  /** `human`: the outputs need a human's acceptance before the work counts as done. */
+  reviewBy: ReviewBy.default('none'),
+  givenAt: Timestamp,
+});
+export type SessionBrief = z.infer<typeof SessionBrief>;
+
+/** Spend of a session (`ownUsd`) and of it plus its descendants (`treeUsd`), from the usage ledger. */
+export const SessionCost = z.object({
+  ownUsd: z.number(),
+  treeUsd: z.number(),
+  /** Weakest source among the ledger rows (`unknown` when nothing was recorded). */
+  source: CostSource,
+});
+export type SessionCost = z.infer<typeof SessionCost>;
+export const EMPTY_SESSION_COST: SessionCost = { ownUsd: 0, treeUsd: 0, source: 'unknown' };
+
+/** `paused`: the session is not woken by its inbox (stopped by a human, or wake limit). */
+export const Supervision = z.enum(['active', 'paused']);
+export type Supervision = z.infer<typeof Supervision>;
+
+const SessionObject = z.object({
   id: SessionId,
   projectId: ProjectId.nullable(),
   kind: SessionKind,
@@ -118,6 +209,24 @@ export const Session = z.object({
   taskId: TaskId.nullable(),
   /** Session that spawned this one (e.g. orchestrator -> worker). */
   parentSessionId: SessionId.nullable(),
+  /**
+   * Root of the session tree (a root is its own root). Rows written before the tree existed
+   * read as their own root; the startup backfill fixes children.
+   */
+  rootSessionId: SessionId.optional(),
+  /** Derived by the daemon; the only writer is the `sessionState` service. */
+  state: SessionState.default('idle'),
+  /** When `state` last changed (elapsed time is shown from it; no ETA). */
+  stateSince: Timestamp.nullable().default(null),
+  /** "What is it doing now" noun phrase (max 24 chars); only while a run is active. */
+  now: z.string().nullable().default(null),
+  /** Spend; the only writer is the usage ledger. */
+  cost: SessionCost.default(EMPTY_SESSION_COST),
+  /** The request a child was given (session.spawn / schedules). */
+  brief: SessionBrief.nullable().default(null),
+  /** Schedule whose firing created this session. */
+  scheduleId: ScheduleId.nullable().default(null),
+  supervision: Supervision.default('active'),
   /** Run currently executing in this session, if any. */
   activeRunId: RunId.nullable(),
   /** The agent runtime's own session id from the latest run (used to resume the conversation). */
@@ -130,6 +239,10 @@ export const Session = z.object({
   lastActivityAt: Timestamp,
   archivedAt: Timestamp.nullable(),
 });
+export const Session = SessionObject.transform((s) => ({
+  ...s,
+  rootSessionId: s.rootSessionId ?? s.id,
+}));
 export type Session = z.infer<typeof Session>;
 
 export const TextPart = z.object({ type: z.literal('text'), text: z.string() });
@@ -161,6 +274,44 @@ export type ToolResultPart = z.infer<typeof ToolResultPart>;
 export const MessageRole = z.enum(['user', 'assistant', 'system', 'tool']);
 export type MessageRole = z.infer<typeof MessageRole>;
 
+/** One child's change in a supervisor's "status update" (the message that woke it). */
+export const WakeItemView = z.object({
+  sessionId: SessionId,
+  title: z.string(),
+  change: z.enum([
+    'done',
+    'failed',
+    'review',
+    'needs_you',
+    'stopped',
+    'answer',
+    'budget',
+    'resume',
+  ]),
+  artifactIds: z.array(ArtifactId).default([]),
+});
+export type WakeItemView = z.infer<typeof WakeItemView>;
+
+/** Data for special rendering of a message; `content` stays the LLM-facing text. */
+export const MessageMeta = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('wake'), items: z.array(WakeItemView) }),
+  z.object({ kind: z.literal('brief'), brief: SessionBrief }),
+  z.object({ kind: z.literal('schedule'), scheduleId: ScheduleId, scheduledFor: Timestamp }),
+  z.object({
+    kind: z.literal('answer'),
+    attentionId: AttentionId,
+    choiceLabel: z.string().nullable(),
+  }),
+]);
+export type MessageMeta = z.infer<typeof MessageMeta>;
+
+/**
+ * `queued`: a user message sent while the session was busy, not yet handed to a run;
+ * `delivered` once a run received it (message.updated `["delivery"]`).
+ */
+export const MessageDelivery = z.enum(['delivered', 'queued']);
+export type MessageDelivery = z.infer<typeof MessageDelivery>;
+
 export const Message = z.object({
   id: MessageId,
   sessionId: SessionId,
@@ -171,6 +322,10 @@ export const Message = z.object({
   author: Actor,
   model: z.string().nullable(),
   createdAt: Timestamp,
+  delivery: MessageDelivery.default('delivered'),
+  meta: MessageMeta.nullable().default(null),
+  /** Cost of an assistant message (may be an estimate until the run settles). */
+  usage: z.object({ costUsd: z.number(), source: CostSource }).nullable().default(null),
 });
 export type Message = z.infer<typeof Message>;
 
@@ -187,6 +342,7 @@ export const TaskStatus = z.enum([
   'failed',
   'cancelled',
   'blocked', // needs human input or an external condition
+  'paused', // stopped by a human or a supervisor; resumable (not terminal)
 ]);
 export type TaskStatus = z.infer<typeof TaskStatus>;
 export const TERMINAL_TASK_STATUSES = [
@@ -201,7 +357,8 @@ export type TaskPriority = z.infer<typeof TaskPriority>;
 /** A goal with completion criteria and dependencies. Independent of sessions and runs. */
 export const Task = z.object({
   id: TaskId,
-  projectId: ProjectId,
+  /** Null for work outside any project (e.g. a child spawned without one). */
+  projectId: ProjectId.nullable(),
   parentTaskId: TaskId.nullable(),
   title: z.string().min(1),
   description: z.string(),
@@ -219,6 +376,8 @@ export const Task = z.object({
   createdAt: Timestamp,
   updatedAt: Timestamp,
   completedAt: Timestamp.nullable(),
+  /** Start the assignee automatically once dependencies are done (session.spawn `after`). */
+  autoStart: z.boolean().default(true),
 });
 export type Task = z.infer<typeof Task>;
 
@@ -258,8 +417,31 @@ export function isTerminalRunStatus(s: RunStatus): boolean {
 export const RunKind = z.enum(['chat', 'agent', 'orchestrator']);
 export type RunKind = z.infer<typeof RunKind>;
 
-export const CostSource = z.enum(['reported', 'estimated', 'unknown']);
-export type CostSource = z.infer<typeof CostSource>;
+/** What started a run. */
+export const RunTrigger = z.enum([
+  'user',
+  'wake',
+  'spawn',
+  'schedule',
+  'resume',
+  'retry',
+  'system',
+]);
+export type RunTrigger = z.infer<typeof RunTrigger>;
+
+/**
+ * Status reasons (and error codes) of runs the daemon stops: `turn_limit` (too many model
+ * calls), `loop_detected` (the same call or text repeated), `superseded` (interrupted by a
+ * newer message), `stopped_by_user`, `daily_limit` (the daily spend limit was reached).
+ */
+export const RunStopReason = z.enum([
+  'turn_limit',
+  'loop_detected',
+  'superseded',
+  'stopped_by_user',
+  'daily_limit',
+]);
+export type RunStopReason = z.infer<typeof RunStopReason>;
 
 export const Usage = z.object({
   inputTokens: z.int().nonnegative(),
@@ -337,6 +519,7 @@ export const Run = z.object({
   budgetId: BudgetId.nullable(),
   /** Message that triggered this run (e.g. the user message). */
   triggerMessageId: MessageId.nullable(),
+  trigger: RunTrigger.default('user'),
   usage: Usage,
   error: ErrorInfo.nullable(),
   /**
@@ -377,6 +560,36 @@ export const DiffStats = z.object({
 });
 export type DiffStats = z.infer<typeof DiffStats>;
 
+/**
+ * `output`: what the work produced (shown as 成果物). `evidence`: how it was checked or kept
+ * (commits, test results).
+ */
+export const ArtifactRole = z.enum(['output', 'evidence']);
+export type ArtifactRole = z.infer<typeof ArtifactRole>;
+
+/**
+ * How an artifact came to be: `published` by the agent (artifact.publish), the run's
+ * `final_message`, files it wrote (`tracked_writes`), or the worktree diff (`workspace_diff`).
+ */
+export const ArtifactSource = z.enum([
+  'published',
+  'final_message',
+  'tracked_writes',
+  'workspace_diff',
+]);
+export type ArtifactSource = z.infer<typeof ArtifactSource>;
+
+export const ArtifactReviewState = z.enum(['none', 'pending', 'accepted', 'rejected']);
+export type ArtifactReviewState = z.infer<typeof ArtifactReviewState>;
+export const ArtifactReview = z.object({
+  state: ArtifactReviewState,
+  by: Actor.nullable(),
+  at: Timestamp.nullable(),
+  note: z.string().nullable(),
+});
+export type ArtifactReview = z.infer<typeof ArtifactReview>;
+const NO_REVIEW: ArtifactReview = { state: 'none', by: null, at: null, note: null };
+
 const artifactBase = {
   id: ArtifactId,
   projectId: ProjectId.nullable(),
@@ -387,9 +600,30 @@ const artifactBase = {
   title: z.string(),
   createdBy: Actor,
   createdAt: Timestamp,
+  /** One line. */
+  summary: z.string().nullable().default(null),
+  review: ArtifactReview.default(NO_REVIEW),
 };
+const artifactDefaults = (role: ArtifactRole, source: ArtifactSource = 'published') => ({
+  role: ArtifactRole.default(role),
+  source: ArtifactSource.default(source),
+});
 
-export const ArtifactKind = z.enum(['diff', 'commit', 'test_result', 'file', 'note']);
+/**
+ * User-facing outputs: `document`, `data`, `link`, `files`, and `diff` (code changes).
+ * Evidence: `commit`, `test_result`. Legacy (read only, shown as files / document): `file`, `note`.
+ */
+export const ArtifactKind = z.enum([
+  'document',
+  'data',
+  'link',
+  'files',
+  'diff',
+  'commit',
+  'test_result',
+  'file',
+  'note',
+]);
 export type ArtifactKind = z.infer<typeof ArtifactKind>;
 
 export const DiffArtifactData = z.object({
@@ -420,13 +654,85 @@ export const FileArtifactData = z.object({
   content: z.string().nullable(),
 });
 export const NoteArtifactData = z.object({ text: z.string() });
+/** Text content (<= 1 MB, enforced by artifact.publish). */
+export const DocumentArtifactData = z.object({
+  format: z.enum(['markdown', 'text']),
+  content: z.string(),
+  /** Workspace-relative file it was published from, if any. */
+  path: z.string().nullable(),
+});
+/** A table (<= 5,000 rows and 2 MB, enforced by artifact.publish). */
+export const DataArtifactData = z.object({
+  format: z.enum(['csv', 'json']),
+  columns: z.array(z.string()),
+  rows: z.array(z.array(z.unknown())),
+  path: z.string().nullable(),
+});
+export const LinkArtifactData = z.object({ url: z.string(), label: z.string().nullable() });
+/** A set of files in the workspace; contents are read with artifact.read. */
+export const FilesArtifactData = z.object({
+  /** Base folder the paths are relative to (relative to the workspace). */
+  root: z.string(),
+  files: z.array(
+    z.object({ path: z.string(), size: z.int().nonnegative(), mimeType: z.string().nullable() }),
+  ),
+});
 
 export const Artifact = z.discriminatedUnion('kind', [
-  z.object({ ...artifactBase, kind: z.literal('diff'), data: DiffArtifactData }),
-  z.object({ ...artifactBase, kind: z.literal('commit'), data: CommitArtifactData }),
-  z.object({ ...artifactBase, kind: z.literal('test_result'), data: TestResultArtifactData }),
-  z.object({ ...artifactBase, kind: z.literal('file'), data: FileArtifactData }),
-  z.object({ ...artifactBase, kind: z.literal('note'), data: NoteArtifactData }),
+  z.object({
+    ...artifactBase,
+    ...artifactDefaults('output'),
+    kind: z.literal('document'),
+    data: DocumentArtifactData,
+  }),
+  z.object({
+    ...artifactBase,
+    ...artifactDefaults('output'),
+    kind: z.literal('data'),
+    data: DataArtifactData,
+  }),
+  z.object({
+    ...artifactBase,
+    ...artifactDefaults('output'),
+    kind: z.literal('link'),
+    data: LinkArtifactData,
+  }),
+  z.object({
+    ...artifactBase,
+    ...artifactDefaults('output'),
+    kind: z.literal('files'),
+    data: FilesArtifactData,
+  }),
+  z.object({
+    ...artifactBase,
+    ...artifactDefaults('output', 'workspace_diff'),
+    kind: z.literal('diff'),
+    data: DiffArtifactData,
+  }),
+  z.object({
+    ...artifactBase,
+    ...artifactDefaults('evidence'),
+    kind: z.literal('commit'),
+    data: CommitArtifactData,
+  }),
+  z.object({
+    ...artifactBase,
+    ...artifactDefaults('evidence'),
+    kind: z.literal('test_result'),
+    data: TestResultArtifactData,
+  }),
+  z.object({
+    ...artifactBase,
+    ...artifactDefaults('output'),
+    kind: z.literal('file'),
+    data: FileArtifactData,
+  }),
+  z.object({
+    ...artifactBase,
+    ...artifactDefaults('output'),
+    kind: z.literal('note'),
+    data: NoteArtifactData,
+  }),
 ]);
 export type Artifact = z.infer<typeof Artifact>;
 
@@ -613,12 +919,22 @@ export type GrantScope = z.infer<typeof GrantScope>;
 export const GrantLimits = z.object({
   /** Max concurrently active worker runs this subject may spawn. */
   maxWorkers: z.int().nonnegative().optional(),
+  /** Max unfinished children (session.spawn). Absent: `maxWorkers` is read instead. */
+  maxChildren: z.int().nonnegative().optional(),
+  /** Max schedules this subject may own (schedule.create). Absent: 5. */
+  maxSchedules: z.int().nonnegative().optional(),
   /** Max delegation depth below this grant (0 = cannot delegate). */
   maxDepth: z.int().nonnegative().optional(),
 });
 export type GrantLimits = z.infer<typeof GrantLimits>;
 
-export const GrantLifetime = z.enum(['run', 'session']);
+/**
+ * `run`: until the subject run ends. `session`: until revoked or `expiresAt`. `work`: until
+ * the session's tree has settled (no active run, open attention, unfinished task or pending
+ * inbox item in it). A session-subject grant with `run` is evaluated as `work`. Daemon
+ * restarts end none of them.
+ */
+export const GrantLifetime = z.enum(['run', 'session', 'work']);
 export type GrantLifetime = z.infer<typeof GrantLifetime>;
 
 /**
@@ -683,6 +999,27 @@ export type BudgetAllocation = z.infer<typeof BudgetAllocation>;
 // Settings
 // ---------------------------------------------------------------------------
 
+/** IANA time zone of this machine ("UTC" when unknown). */
+export function localTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
+export const SupervisorSettings = z.object({
+  /** Model calls one supervisor run may make (then it fails with turn_limit). */
+  maxModelCallsPerRun: z.int().min(1).max(500).default(24),
+  /** Wakes without a human message per hour (then supervision pauses). */
+  maxWakesPerHour: z.int().min(1).max(1000).default(30),
+  /** How long wake items are gathered before a supervisor is woken. */
+  wakeDebounceMs: z.int().min(0).max(60_000).default(1500),
+  /** Latest messages sent to a supervisor each run (plus the tree snapshot and the goal). */
+  contextMessages: z.int().min(1).max(1000).default(40),
+});
+export type SupervisorSettings = z.infer<typeof SupervisorSettings>;
+
 /** Persisted in `$ACC_HOME/config.json`. Never sent to clients as-is (see SettingsView). */
 export const Settings = z.object({
   litellm: z
@@ -696,6 +1033,19 @@ export const Settings = z.object({
   defaultRuntime: z.string().min(1).nullable().default(null),
   /** Max runs in `running` state at once; the rest wait in `queued`. */
   maxConcurrentRuns: z.int().min(1).max(64).default(10),
+  /** Agent runs (with a workspace) at once. An older config's maxConcurrentRuns is read. */
+  maxConcurrentAgents: z.int().min(1).max(64).default(10),
+  /** LLM-only runs (chats, supervisors) at once, separate from agents. */
+  maxConcurrentChats: z.int().min(1).max(64).default(16),
+  /** Spend limits, enforced by the usage ledger. */
+  limits: z
+    .object({
+      /** USD per day across everything; null = no limit. */
+      dailyUsd: z.number().min(0).nullable().default(20),
+      /** IANA time zone the day is counted in. */
+      timezone: z.string().min(1).default(localTimeZone),
+    })
+    .default(() => ({ dailyUsd: 20, timezone: localTimeZone() })),
   /** Max capability delegation depth (1 = orchestrator -> worker only). */
   maxDelegationDepth: z.int().min(0).max(4).default(1),
   /**
@@ -703,6 +1053,17 @@ export const Settings = z.object({
    * (when their grant is still valid). They continue from the persisted task states.
    */
   autoResumeOrchestrators: z.boolean().default(true),
+  /**
+   * After a restart, resume interrupted supervisors and child agents (once per interruption).
+   * An older config's autoResumeOrchestrators is read.
+   */
+  autoResume: z.boolean().default(true),
+  supervisor: SupervisorSettings.default({
+    maxModelCallsPerRun: 24,
+    maxWakesPerHour: 30,
+    wakeDebounceMs: 1500,
+    contextMessages: 40,
+  }),
   /**
    * USD reserved from a run's budget before each LLM call of chat / orchestrator runs and
    * settled with the actual cost afterwards. A call that cannot reserve this much is refused,
@@ -726,8 +1087,10 @@ export const Settings = z.object({
       judge: AutoModeJudge.default('server'),
       /** LiteLLM model name for the classifier (passed as CLAUDE_CODE_AUTO_MODE_MODEL). */
       classifierModel: z.string().min(1).nullable().default(null),
+      /** Estimated cost of one client-side classifier call (recorded in the usage ledger). */
+      classifierCostUsd: z.number().min(0).max(10).default(0.011),
     })
-    .default({ enabled: true, judge: 'server', classifierModel: null }),
+    .default({ enabled: true, judge: 'server', classifierModel: null, classifierCostUsd: 0.011 }),
 });
 export type Settings = z.infer<typeof Settings>;
 
@@ -752,8 +1115,15 @@ export const SettingsView = z.object({
       /** Absent from older daemons (they always used the CLI's own classifier). */
       judge: AutoModeJudge.optional(),
       classifierModel: z.string().nullable(),
+      classifierCostUsd: z.number().optional(),
     })
     .optional(),
+  /** The fields below are absent from older daemons. */
+  maxConcurrentAgents: z.int().optional(),
+  maxConcurrentChats: z.int().optional(),
+  limits: z.object({ dailyUsd: z.number().nullable(), timezone: z.string() }).optional(),
+  autoResume: z.boolean().optional(),
+  supervisor: SupervisorSettings.optional(),
 });
 export type SettingsView = z.infer<typeof SettingsView>;
 

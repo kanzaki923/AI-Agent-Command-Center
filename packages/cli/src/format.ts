@@ -55,6 +55,9 @@ export function summarizeEvent(e: Event): string {
     case 'workspace.updated':
     case 'integration.updated':
     case 'settings.updated':
+    case 'message.updated':
+    case 'artifact.updated':
+    case 'schedule.updated':
       return `changed: ${e.payload.changes.join(', ') || '-'}`;
     case 'session.created':
       return `${e.payload.session.kind} "${e.payload.session.title || '(無題)'}"`;
@@ -106,6 +109,29 @@ export function summarizeEvent(e: Event): string {
       return `$${e.payload.budget.spentUsd.toFixed(2)} / $${e.payload.budget.limitUsd.toFixed(2)}`;
     case 'orchestrator.decision':
       return truncate(e.payload.decision, 80);
+    case 'inbox.added':
+      return `${e.payload.item.kind} → ${e.payload.item.sessionId}`;
+    case 'inbox.consumed':
+      return `${e.payload.itemIds.length} 件 → ${e.payload.runId}`;
+    case 'attention.opened':
+    case 'attention.resolved':
+      return `${e.payload.attention.kind} ${e.payload.attention.status}: ${truncate(e.payload.attention.title, 60)}`;
+    case 'session.cost_updated':
+      return `$${e.payload.ownUsd.toFixed(2)}（木 $${e.payload.treeUsd.toFixed(2)}）`;
+    case 'budget.threshold':
+      return `${e.payload.pct}%: ${e.payload.budgetId}`;
+    case 'cost.limit_reached':
+      return `日次上限 $${e.payload.usedUsd.toFixed(2)} / $${e.payload.limitUsd.toFixed(2)}`;
+    case 'schedule.created':
+      return truncate(e.payload.schedule.title, 80);
+    case 'schedule.deleted':
+      return e.payload.scheduleId;
+    case 'schedule.fired':
+      return `${e.payload.outcome}${e.payload.sessionId ? ` → ${e.payload.sessionId}` : ''}`;
+    case 'session.state_changed':
+      return `${e.payload.from} → ${e.payload.to}`;
+    case 'session.now_changed':
+      return e.payload.now ?? '-';
   }
 }
 

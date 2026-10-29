@@ -498,6 +498,9 @@ describe('history conversion', () => {
     author: HUMAN,
     model: null,
     createdAt: '2026-01-01T00:00:00.000Z',
+    delivery: 'delivered' as const,
+    meta: null,
+    usage: null,
   };
   const msg = (id: number, patch: Pick<Message, 'role' | 'content'>): Message => ({
     ...base,
@@ -801,7 +804,7 @@ describe('thinking blocks (Anthropic extended thinking via LiteLLM)', () => {
       sessionId: session.id,
       content: 'go',
     });
-    const run = await ctx.service('runs').waitForEnd(runId);
+    const run = await ctx.service('runs').waitForEnd(runId!);
     expect(run.status).toBe('completed');
     const second = JSON.parse(server.requests[1]!.body) as { messages: Record<string, unknown>[] };
     expect(second.messages.find((m) => m.role === 'assistant')).toMatchObject({

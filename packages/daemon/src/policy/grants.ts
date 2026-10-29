@@ -53,6 +53,19 @@ export interface CreateGrantOptions {
 
 /** Reason recorded when a grant ends because its run ended. */
 export const RUN_ENDED = 'run_ended';
+/** Reason recorded when a `work` grant ends because its session's tree settled. */
+export const WORK_SETTLED = 'work_settled';
+
+/**
+ * Whether a grant lives until its session's work settles: lifetime `work`, and session grants
+ * with the older `run` lifetime ("this chat's next run"), which read as `work` (D17) — they
+ * survive daemon restarts so an interrupted supervisor can resume.
+ */
+export function endsWithWork(grant: CapabilityGrant): boolean {
+  return (
+    grant.subject.kind === 'session' && (grant.lifetime === 'work' || grant.lifetime === 'run')
+  );
+}
 
 const NON_TERMINAL_RUN_STATUSES = ['created', 'queued', 'running', 'awaiting_approval'] as const;
 
@@ -72,7 +85,28 @@ export class PolicyService implements PolicyEngine {
   private readonly base: GrantPolicyEngine;
 
   constructor(private readonly ctx: DaemonContext) {
-    this.base = new GrantPolicyEngine((a) => this.activeGrantsFor(a), ctx.clock);
+    this.base = new GrantPolicyEngine(
+      (a) => this.activeGrantsFor(a),
+      ctx.clock,
+      (sessionId, rootSessionId) => this.isInSessionTree(sessionId, rootSessionId),
+    );
+  }
+
+  /**
+   * Whether `sessionId` is `rootSessionId` or one of its descendants (follows parents; trees
+   * are shallow). Enforces `CallScope.sessionIds` for agents.
+   */
+  isInSessionTree(sessionId: string, rootSessionId: string): boolean {
+    if (sessionId === rootSessionId) return true;
+    const { repos } = this.ctx;
+    let cur = repos.sessions.get(sessionId);
+    for (let i = 0; cur && i < 64; i++) {
+      const parent = cur.parentSessionId;
+      if (!parent) return false;
+      if (parent === rootSessionId) return true;
+      cur = repos.sessions.get(parent);
+    }
+    return false;
   }
 
   // -------------------------------------------------------------------------
@@ -529,37 +563,62 @@ export class PolicyService implements PolicyEngine {
   }
 
   /**
-   * A run ended: revoke grants that live only as long as it — grants for that run, and
-   * run-lifetime grants given to its session ("allow this chat's next run only") — plus
-   * everything delegated from them.
+   * A run ended: revoke the grants of that run (plus everything delegated from them), then
+   * the `work` grants of its session and ancestors whose tree has settled.
    */
   expireForRun(runId: string, sessionId: string | null): CapabilityGrant[] {
     const { ctx } = this;
     const actor: Actor = { kind: 'system', component: 'policy' };
-    return ctx.db.transaction(() => {
-      const ended: CapabilityGrant[] = ctx.repos.grants.find({
-        where: { revoked_at: null, subject_kind: 'run', subject_id: runId },
-        direction: 'asc',
-      });
-      if (sessionId) {
-        ended.push(
-          ...ctx.repos.grants
-            .find({
-              where: { revoked_at: null, subject_kind: 'session', subject_id: sessionId },
-              direction: 'asc',
-            })
-            .filter((g) => g.lifetime === 'run'),
-        );
+    const ended = ctx.db.transaction(() =>
+      ctx.repos.grants
+        .find({
+          where: { revoked_at: null, subject_kind: 'run', subject_id: runId },
+          direction: 'asc',
+        })
+        .map((g) => this.revokeTree(g, actor, RUN_ENDED)),
+    );
+    if (sessionId) ended.push(...this.expireSettledWork(sessionId));
+    return ended;
+  }
+
+  /**
+   * End the `work` grants (endsWithWork) of a session and its ancestors whose work has
+   * settled (`sessionState.isWorkSettled`, spec §1.8). Called when a run ends and when a
+   * session's state changes; never at startup, so a restart ends no work grant.
+   */
+  expireSettledWork(sessionId: string): CapabilityGrant[] {
+    const { ctx } = this;
+    if (!ctx.hasService('sessionState')) return [];
+    const actor: Actor = { kind: 'system', component: 'policy' };
+    const out: CapabilityGrant[] = [];
+    let cur = ctx.repos.sessions.get(sessionId);
+    for (let i = 0; cur && i < 64; i++) {
+      const subjectId = cur.id;
+      const grants = ctx.repos.grants
+        .find({
+          where: { revoked_at: null, subject_kind: 'session', subject_id: subjectId },
+          direction: 'asc',
+        })
+        .filter(endsWithWork);
+      if (grants.length > 0 && ctx.service('sessionState').isWorkSettled(subjectId)) {
+        ctx.db.transaction(() => {
+          for (const g of grants) {
+            if (!ctx.repos.grants.get(g.id)?.revokedAt) {
+              out.push(this.revokeTree(g, actor, WORK_SETTLED));
+            }
+          }
+        });
       }
-      return ended.map((g) => this.revokeTree(g, actor, RUN_ENDED));
-    });
+      cur = cur.parentSessionId ? ctx.repos.sessions.get(cur.parentSessionId) : undefined;
+    }
+    return out;
   }
 
   /**
    * Startup sweep: runs that ended while nobody listened (e.g. interrupted by recovery
-   * before modules registered) still hold run grants, and their sessions' run-lifetime
-   * grants ("this chat's next run only") were never expired. Revoke both, by the same rules
-   * as a run ending while the daemon runs — a crash must not keep a grant a clean stop ends.
+   * before modules registered) still hold run grants. Revoke them by the same rule as a run
+   * ending while the daemon runs. Session grants (`work`, older `run`) are kept: a restart
+   * does not end work (D17).
    */
   sweepEndedRuns(): number {
     const { ctx } = this;
@@ -571,21 +630,6 @@ export class PolicyService implements PolicyEngine {
     for (const runId of runIds) {
       const run = ctx.repos.runs.get(runId);
       if (run && isTerminalRunStatus(run.status)) count += this.expireForRun(run.id, null).length;
-    }
-    const actor: Actor = { kind: 'system', component: 'policy' };
-    const sessionRunGrants = ctx.repos.grants
-      .find({ where: { revoked_at: null, subject_kind: 'session' }, direction: 'asc' })
-      .filter((g) => g.lifetime === 'run');
-    for (const g of sessionRunGrants) {
-      if (g.subject.kind !== 'session' || ctx.repos.grants.get(g.id)?.revokedAt) continue;
-      // A run of the session ended after the grant was given: that was its "next run".
-      const ended = ctx.repos.runs.findOne({
-        where: { session_id: g.subject.sessionId, status: [...TERMINAL_RUN_STATUSES] },
-        sql: { clause: "json_extract(data, '$.endedAt') > ?", params: [g.createdAt] },
-      });
-      if (!ended) continue;
-      ctx.db.transaction(() => this.revokeTree(g, actor, RUN_ENDED));
-      count += 1;
     }
     return count;
   }

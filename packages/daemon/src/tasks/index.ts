@@ -29,7 +29,7 @@ export const tasksModule = defineModule({
 
     const taskScope = (taskId: string) => {
       const t = repos.tasks.get(taskId);
-      return { projectIds: t ? [t.projectId] : [] };
+      return { projectIds: t?.projectId ? [t.projectId] : [] };
     };
 
     ctx.methods.register(

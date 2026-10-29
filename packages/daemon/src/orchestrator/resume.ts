@@ -17,6 +17,7 @@ const TASK_STATUS_JA: Record<Task['status'], string> = {
   failed: '失敗',
   cancelled: 'キャンセル',
   blocked: 'ブロック中',
+  paused: '停止中',
 };
 
 export interface ResumeReport {

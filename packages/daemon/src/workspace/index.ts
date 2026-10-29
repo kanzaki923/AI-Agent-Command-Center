@@ -30,7 +30,7 @@ export const workspaceModule = defineModule({
 
     const wsScope = (workspaceId: string) => {
       const ws = ctx.repos.workspaces.get(workspaceId);
-      return { projectIds: ws ? [ws.projectId] : [] };
+      return { projectIds: ws?.projectId ? [ws.projectId] : [] };
     };
 
     ctx.methods.register(
@@ -79,7 +79,7 @@ export const workspaceModule = defineModule({
         scope: (p) => wsScope(p.workspaceId),
         handler: async (p, call) => {
           const ws = service.get(p.workspaceId);
-          if (ws.kind === 'main' && ws.status === 'ready') {
+          if (ws.kind === 'main' && ws.status === 'ready' && ws.projectId) {
             return service.ensureMain(ws.projectId, call.actor).catch(() => ws);
           }
           return ws;

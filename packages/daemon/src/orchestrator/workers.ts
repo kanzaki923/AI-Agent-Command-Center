@@ -634,6 +634,11 @@ export class WorkerService {
         return ws;
       }
     }
+    if (!task.projectId) {
+      throw invalidParams('プロジェクトのないタスクには worktree を作れません', {
+        taskId: task.id,
+      });
+    }
     return workspaces.createWorktree({
       projectId: task.projectId,
       label: task.title,

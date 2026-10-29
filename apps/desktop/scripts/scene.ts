@@ -156,10 +156,10 @@ async function main(): Promise<void> {
     sessionId: design.id,
     content: '認証まわりのドキュメントとテストを並列で整備して',
   });
-  await daemon.ctx.service('runs').waitForEnd(sent.runId);
+  await daemon.ctx.service('runs').waitForEnd(sent.runId!);
   // The orchestrator plans: tasks are created by the chat's agent actor through the same
   // dispatcher (the grant is checked). Falls back to the human if the policy refuses.
-  const orchestrator: Actor = { kind: 'agent', sessionId: design.id, runId: sent.runId };
+  const orchestrator: Actor = { kind: 'agent', sessionId: design.id, runId: sent.runId! };
   const createTask = async (p: ParamsInput<'task.create'>) => {
     try {
       return await call('task.create', p, orchestrator);
@@ -248,7 +248,7 @@ async function main(): Promise<void> {
       'docs/auth.md に 3 つのエンドポイントを説明しました。',
     )}`,
   );
-  await daemon.ctx.service('runs').waitForEnd(docs.runId);
+  await daemon.ctx.service('runs').waitForEnd(docs.runId!);
   await call('task.update', {
     taskId: tDocs.id,
     status: 'review',
@@ -285,7 +285,8 @@ async function main(): Promise<void> {
   );
   // tests now waits for the approval of its `node scripts/test.js` command.
   await until(
-    async () => (await call('approval.list', { status: ['pending'], runId: tests.runId })).items[0],
+    async () =>
+      (await call('approval.list', { status: ['pending'], runId: tests.runId! })).items[0],
   );
 
   // A worker that failed (an attention card with the error).
@@ -310,7 +311,7 @@ async function main(): Promise<void> {
   });
   await daemon.ctx
     .service('runs')
-    .waitForEnd(flakyRun.runId)
+    .waitForEnd(flakyRun.runId!)
     .catch(() => undefined);
 
   // Everyday chats.
@@ -325,7 +326,7 @@ async function main(): Promise<void> {
       model: 'mock/fast',
     });
     const r = await call('session.send', { sessionId: s.id, content: text });
-    await daemon.ctx.service('runs').waitForEnd(r.runId);
+    await daemon.ctx.service('runs').waitForEnd(r.runId!);
   }
 
   // ---------------------------------------------------------------- integration (really merged + tested)

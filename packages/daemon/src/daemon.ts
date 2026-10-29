@@ -26,7 +26,8 @@ import { type Db, openDb } from './core/db';
 import { EventBus } from './core/events';
 import { type IdGenerator, createIdGenerator } from './core/ids';
 import { type Logger, createLogger, parseLogLevel } from './core/log';
-import { coreMigrations, runMigrations } from './core/migrations';
+import { backfillSessionTree } from './core/backfills';
+import { backupDatabase, coreMigrations, runMigrations } from './core/migrations';
 import { type RecoveryReport, recoverOnStartup } from './core/recovery';
 import { type Repos, createRepos } from './core/repos';
 import type { DaemonModule, ModuleHooks } from './module';
@@ -172,15 +173,25 @@ export async function createDaemon(opts: CreateDaemonOptions = {}): Promise<Daem
   const clock = opts.clock ?? systemClock;
   const log = opts.log ?? createLogger(parseLogLevel(env.ACC_LOG_LEVEL));
   const mods = opts.modules ?? defaultModules;
-  const db = openDb(opts.dbPath ?? paths.db);
+  const dbPath = opts.dbPath ?? paths.db;
+  const db = openDb(dbPath);
 
   try {
     const applied = runMigrations(
       db,
       [...coreMigrations, ...mods.flatMap((m) => m.migrations ?? [])],
       () => clock.iso(),
+      {
+        beforeRebuild: () => {
+          if (dbPath === ':memory:') return;
+          const file = backupDatabase(db, dbPath, DAEMON_VERSION);
+          log.info('database backed up before rebuilding tables', { file });
+        },
+      },
     );
     if (applied.length > 0) log.info('migrations applied', { ids: applied });
+    const fixedRoots = backfillSessionTree(db);
+    if (fixedRoots > 0) log.info('session tree backfilled', { sessions: fixedRoots });
 
     const ctx = new Context(
       paths,

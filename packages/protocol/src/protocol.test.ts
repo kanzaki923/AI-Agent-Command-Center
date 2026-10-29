@@ -126,18 +126,45 @@ describe('settings', () => {
       defaultModel: null,
       defaultRuntime: null,
       maxConcurrentRuns: 10,
+      maxConcurrentAgents: 10,
+      maxConcurrentChats: 16,
+      limits: { dailyUsd: 20, timezone: expect.any(String) },
       maxDelegationDepth: 1,
       autoResumeOrchestrators: true,
+      autoResume: true,
+      supervisor: {
+        maxModelCallsPerRun: 24,
+        maxWakesPerHour: 30,
+        wakeDebounceMs: 1500,
+        contextMessages: 40,
+      },
       llmCallReserveUsd: 0.25,
       defaultPermissionProfile: 'autonomous',
-      autoMode: { enabled: true, judge: 'server', classifierModel: null },
+      autoMode: { enabled: true, judge: 'server', classifierModel: null, classifierCostUsd: 0.011 },
+    });
+  });
+
+  it('fills partial nested settings', () => {
+    const s = Settings.parse({ limits: { dailyUsd: null }, supervisor: { maxWakesPerHour: 5 } });
+    expect(s.limits.dailyUsd).toBeNull();
+    expect(s.limits.timezone.length).toBeGreaterThan(0);
+    expect(s.supervisor).toEqual({
+      maxModelCallsPerRun: 24,
+      maxWakesPerHour: 5,
+      wakeDebounceMs: 1500,
+      contextMessages: 40,
     });
   });
 
   it('gives an older auto mode setting the server judge', () => {
     // Written before `judge` existed (the CLI's own classifier was then the only way).
     const s = Settings.parse({ autoMode: { enabled: true, classifierModel: 'team-sonnet' } });
-    expect(s.autoMode).toEqual({ enabled: true, judge: 'server', classifierModel: 'team-sonnet' });
+    expect(s.autoMode).toEqual({
+      enabled: true,
+      judge: 'server',
+      classifierModel: 'team-sonnet',
+      classifierCostUsd: 0.011,
+    });
     expect(() => Settings.parse({ autoMode: { judge: 'elsewhere' } })).toThrow();
   });
 

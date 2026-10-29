@@ -1,4 +1,14 @@
-import type { Actor, ContentPart, Message, MessageRole, Session, SessionKind } from '@acc/protocol';
+import type {
+  Actor,
+  ContentPart,
+  Message,
+  MessageDelivery,
+  MessageMeta,
+  MessageRole,
+  Session,
+  SessionBrief,
+  SessionKind,
+} from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
 import { invalidParams } from '../core/errors';
 
@@ -11,6 +21,9 @@ export interface AppendMessageInput {
   model?: string | null;
   /** Use a pre-generated id (e.g. the id deltas were streamed under). */
   id?: string;
+  /** Default 'delivered'; a user message sent while the session is busy is 'queued'. */
+  delivery?: MessageDelivery;
+  meta?: MessageMeta | null;
 }
 
 /**
@@ -35,6 +48,8 @@ export class SessionService {
         author: input.author,
         model: input.model ?? null,
         createdAt: now,
+        delivery: input.delivery ?? 'delivered',
+        meta: input.meta ?? null,
       });
       this.touch(input.sessionId);
       ctx.bus.emit({ type: 'message.created', actor: input.author, payload: { message } });
@@ -95,10 +110,12 @@ export class SessionService {
           throw invalidParams('task belongs to a different project');
         }
       }
-      if (input.parentSessionId) repos.sessions.require(input.parentSessionId);
+      const parent = input.parentSessionId ? repos.sessions.require(input.parentSessionId) : null;
       const now = ctx.clock.iso();
+      const id = ctx.ids.next('session');
       const session = repos.sessions.insert({
-        id: ctx.ids.next('session'),
+        id,
+        rootSessionId: parent?.rootSessionId ?? id,
         projectId: project?.id ?? null,
         kind: input.kind,
         title: input.title?.trim() ?? '',
@@ -107,7 +124,9 @@ export class SessionService {
         systemPrompt: input.systemPrompt ?? null,
         workspaceId: input.workspaceId ?? null,
         taskId: input.taskId ?? null,
-        parentSessionId: input.parentSessionId ?? null,
+        parentSessionId: parent?.id ?? null,
+        brief: input.brief ?? null,
+        scheduleId: input.scheduleId ?? null,
         activeRunId: null,
         pinned: false,
         createdBy: actor,
@@ -132,6 +151,10 @@ export interface CreateSessionInput {
   workspaceId?: string | null | undefined;
   taskId?: string | null | undefined;
   parentSessionId?: string | null | undefined;
+  /** The request a child was given (session.spawn, schedule firings). */
+  brief?: SessionBrief | null | undefined;
+  /** Schedule whose firing created the session. */
+  scheduleId?: string | null | undefined;
 }
 
 declare module '../core/context' {

@@ -247,7 +247,7 @@ describe.skipIf(!bin)('LLM gateway through a real LiteLLM (fake Anthropic upstre
         budgetUsd: 5,
       });
       const { runId } = await d.call(HUMAN, 'session.send', { sessionId: s.id, content: '進めて' });
-      const run = await d.ctx.service('runs').waitForEnd(runId);
+      const run = await d.ctx.service('runs').waitForEnd(runId!);
       const spent = budget
         ? (await d.call(HUMAN, 'budget.get', { budgetId: budget.id })).budget
         : null;

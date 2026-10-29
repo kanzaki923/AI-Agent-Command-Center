@@ -67,7 +67,7 @@ async function setup(profile?: 'careful' | 'standard' | 'autonomous') {
       sessionId: session.id,
       content: PLAN,
     });
-    return runId;
+    return runId!;
   };
   const pending = async (runId: string): Promise<Approval> =>
     vi.waitFor(
@@ -261,6 +261,7 @@ describe('tool permissions through the daemon', () => {
       enabled: true,
       judge: 'client',
       classifierModel: 'team-classifier',
+      classifierCostUsd: 0.011,
     });
   });
 });
