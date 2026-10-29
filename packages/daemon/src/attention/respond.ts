@@ -157,7 +157,9 @@ async function route(
       if (id === DAILY_SETTINGS) {
         // A screen to open, not something the daemon does: the UI navigates to the settings,
         // and the item closes when the limit there gives today room again.
-        throw conflict('設定画面で今日の上限を変更してください（上限に余裕ができると自動で閉じます）');
+        throw conflict(
+          '設定画面で今日の上限を変更してください（上限に余裕ができると自動で閉じます）',
+        );
       }
       const add = ADD_CHOICE.exec(id);
       if (!add) break;

@@ -1,6 +1,6 @@
 /**
  * T6 acceptance (spec 20261029 §5.8) with a manual clock, a manual timer and a stand-in
- * spawner (the Spawn track's spawner is a stub on this branch):
+ * spawner (scheduling rules in isolation; spawner.integration.test.ts uses the real one):
  * 1. cron / once / schedule.preview (time zone, DST)  2. a firing makes a child of the owner
  * 3. catch-up  4. overlap, disable, expiry, delete, restart  5. schedules made by an AI
  * 6. schedule.runNow.
@@ -448,7 +448,7 @@ describe('4. overlap, stop, expiry, delete, restart', () => {
     expect(again.timers.delay).toBe(21 * HOUR);
   });
 
-  it('without the Spawn track the firing is recorded as failed_to_start', async () => {
+  it('with the real spawner a timer firing starts a child and arms the next time', async () => {
     const timers = new ManualTimers();
     const clock = createManualClock(START);
     const d = await createTestDaemon({
@@ -467,9 +467,14 @@ describe('4. overlap, stop, expiry, delete, restart', () => {
     clock.set(Date.parse('2026-11-04T13:00:00Z'));
     timers.fire();
     await (d.ctx.service('scheduler') as Scheduler).idle();
-    expect(d.ctx.repos.schedules.require(s.id)).toMatchObject({
+    const after = d.ctx.repos.schedules.require(s.id);
+    expect(after).toMatchObject({
       nextRunAt: '2026-11-04T14:00:00.000Z',
-      lastRun: { outcome: 'failed_to_start', error: expect.stringContaining('session.spawn') },
+      lastRun: { outcome: 'started', error: null },
+    });
+    expect(d.ctx.repos.sessions.require(after.lastRun!.sessionId!)).toMatchObject({
+      parentSessionId: o.id,
+      scheduleId: s.id,
     });
     expect(timers.armed).toHaveLength(1);
   });
@@ -521,16 +526,14 @@ describe('5. schedules made by an AI', () => {
 
     // An agent without the permission.
     const plain = await owner(env, 'plain');
-    env.d.ctx
-      .service('policy')
-      .createGrant(
-        {
-          subject: { kind: 'session', sessionId: plain.id },
-          permissions: ['session.get'],
-          lifetime: 'session',
-        },
-        HUMAN,
-      );
+    env.d.ctx.service('policy').createGrant(
+      {
+        subject: { kind: 'session', sessionId: plain.id },
+        permissions: ['session.get'],
+        lifetime: 'session',
+      },
+      HUMAN,
+    );
     const plainActor = actorOf(insertRun(env.d.ctx, { sessionId: plain.id }));
     expect(await codeOf(aiCreate(env, plainActor, plain.id))).toBe('forbidden');
 

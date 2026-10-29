@@ -19,6 +19,8 @@ import { isTerminalRunStatus } from '@acc/protocol';
 import type { SpawnOptions, SpawnerService } from '../contracts';
 import type { DaemonContext } from '../core/context';
 import { budgetExceeded, conflict, forbidden, invalidParams } from '../core/errors';
+import { runKindFor } from '../inbox/supervision';
+import { delegateSession } from '../orchestrator/grant';
 import { freeUsd } from '../policy/budget';
 import { CHILD_DEFAULT_PERMISSIONS, CHILD_GRANT_REASON } from '../policy/grants';
 import { isInside } from '../runtime/policy';
@@ -28,6 +30,9 @@ import { sessionBudgetId } from './methods/shared';
 
 /** Actor of what the spawner does on its own (the children's baseline grant, auto-starts). */
 export const SPAWNER_SYSTEM: SystemActor = { kind: 'system', component: 'spawner' };
+
+/** Children a supervising schedule firing may lead at once (the session.delegate default). */
+const SUPERVISED_FIRING_MAX_CHILDREN = 4;
 
 /** `reason` of grants a caller passes to a child explicitly (`permissions`). */
 export const DELEGATED_CHILD_GRANT_REASON = 'delegated';
@@ -104,13 +109,20 @@ export class Spawner implements SpawnerService {
     const allowed = parent
       ? this.policy()?.assertCanSpawnChild(actor, { parentSessionId: parent.id, projectId })
       : undefined;
-    planChildBudget(ctx, {
-      budgetUsd: p.budgetUsd,
-      minUsd: this.minChildBudget(p.mode),
-      callerRun: actor.kind === 'agent' ? ctx.repos.runs.get(actor.runId) : undefined,
-      grant: allowed?.grant ?? null,
-      actor,
-    });
+    if (opts.supervise && p.mode !== 'chat') {
+      throw invalidParams('子を率いる子（supervise）は普通の会話（mode: chat）だけです');
+    }
+    if (opts.budget) {
+      this.assertFixedBudgetFits(opts.budget);
+    } else {
+      planChildBudget(ctx, {
+        budgetUsd: p.budgetUsd,
+        minUsd: this.minChildBudget(p.mode),
+        callerRun: actor.kind === 'agent' ? ctx.repos.runs.get(actor.runId) : undefined,
+        grant: allowed?.grant ?? null,
+        actor,
+      });
+    }
     const after = this.siblings(p.after ?? [], parent?.id ?? null);
     const runtime = p.mode === 'agent' ? (p.runtime ?? ctx.service('runtimes').defaultId()) : null;
     if (runtime) ctx.service('runtimes').get(runtime);
@@ -274,15 +286,33 @@ export class Spawner implements SpawnerService {
       actor,
     );
     session = attachWorkspace(ctx, session, prepared, actor);
-    const budget = carveChildBudget(ctx, {
-      budgetUsd: p.budgetUsd,
-      minUsd: this.minChildBudget(p.mode),
-      callerRun,
-      grant: allowed.grant,
-      childSessionId: session.id,
-      actor,
-    });
+    const budget = opts.budget
+      ? this.fixedBudget(opts.budget, session.id, actor)
+      : carveChildBudget(ctx, {
+          budgetUsd: p.budgetUsd,
+          minUsd: this.minChildBudget(p.mode),
+          callerRun,
+          grant: allowed.grant,
+          childSessionId: session.id,
+          actor,
+        });
     this.grantChild(session.id, allowed.grant, p.permissions, actor);
+    if (opts.supervise) {
+      // A human-made schedule's firing that leads children of its own (spec §1.9 / §3.11):
+      // the supervisor preset on the child itself (its children are depth 1 below it). Its
+      // budget above is kept as the supervisor's budget.
+      delegateSession(
+        ctx,
+        {
+          sessionId: session.id,
+          maxChildren: SUPERVISED_FIRING_MAX_CHILDREN,
+          budgetUsd: opts.budget?.limitUsd ?? 1,
+          allowSchedules: false,
+          lifetime: 'work',
+        },
+        actor,
+      );
+    }
     const meta: MessageMeta =
       opts.scheduleId && opts.scheduledFor
         ? { kind: 'schedule', scheduleId: opts.scheduleId, scheduledFor: opts.scheduledFor }
@@ -336,6 +366,31 @@ export class Spawner implements SpawnerService {
     };
   }
 
+  /** A budget the daemon decided (schedules): it must fit before anything is created. */
+  private assertFixedBudgetFits(b: NonNullable<SpawnOptions['budget']>): void {
+    if (!b.parentBudgetId) return;
+    const free = this.ctx.service('budget').available(b.parentBudgetId).freeUsd;
+    if (free + 1e-9 < b.limitUsd) {
+      throw budgetExceeded(
+        `予算の空き（$${Math.max(0, free).toFixed(2)}）が足りないため、子を起こせません（$${b.limitUsd} が必要）`,
+        { budgetId: b.parentBudgetId, freeUsd: free, limitUsd: b.limitUsd },
+      );
+    }
+  }
+
+  /** Carve the fixed amount from its parent budget, or a new root budget (human-made). */
+  private fixedBudget(
+    b: NonNullable<SpawnOptions['budget']>,
+    sessionId: string,
+    actor: Actor,
+  ): BudgetAllocation {
+    const budget = this.ctx.service('budget');
+    const subject = { kind: 'session' as const, id: sessionId };
+    return b.parentBudgetId
+      ? budget.allocate({ parentId: b.parentBudgetId, subject, limitUsd: b.limitUsd, actor })
+      : budget.createRoot({ subject, limitUsd: b.limitUsd, actor });
+  }
+
   /** Start a child's run (chat or agent) and mark its task running. */
   private startChild(
     session: Session,
@@ -351,7 +406,8 @@ export class Spawner implements SpawnerService {
     const agent = session.kind === 'agent';
     const run = ctx.service('runs').start({
       sessionId: session.id,
-      kind: agent ? 'agent' : 'chat',
+      // A chat child that leads children (a supervising schedule firing) runs as a supervisor.
+      kind: runKindFor(ctx, session),
       createdBy: actor,
       taskId: task.id,
       projectId: session.projectId,
