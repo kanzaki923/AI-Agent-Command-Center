@@ -2,10 +2,9 @@
  * T0 seams (spec 20261029 §5.2): placeholders the tracks replace, and the call sites Core
  * created for them (usage → ledger, deltas → streams, mock steps → handlers).
  */
-import { METHOD_NAMES, api } from '@acc/protocol';
+import { METHOD_NAMES, type MethodName, api } from '@acc/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MethodRegistry, defineMethod, stubMethod } from './api/registry';
-import { type ApiError } from './core/errors';
 import { deriveSessionState, type StateFacts } from './home';
 import { apiTools } from './llm/tools';
 import { MockStep } from './runtime/mock/plan';
@@ -17,11 +16,8 @@ afterEach(async () => {
   await d?.cleanup();
 });
 
-/** Methods of the redesign the Core track ships as placeholders. */
-const STUBS = [
-  'session.tree',
-  'home.get',
-] as const;
+/** Methods of the redesign still shipped as placeholders (every track has landed: none). */
+const STUBS: readonly MethodName[] = [];
 
 describe('contract placeholders', () => {
   it('every method of the contract is registered (implemented or a stub)', async () => {
@@ -29,32 +25,29 @@ describe('contract placeholders', () => {
     expect(METHOD_NAMES.filter((m) => !d.ctx.methods.get(m))).toEqual([]);
   });
 
-  it('each stub answers not_implemented and counts as not implemented', async () => {
+  it('no method of the contract is left a stub once every track has landed', async () => {
     d = await createTestDaemon();
-    for (const name of STUBS) {
-      const impl = d.ctx.methods.get(name)!;
-      expect(impl.stub, name).toBe(true);
-      const call = {
-        actor: HUMAN,
-        ctx: d.ctx,
-        connection: null,
-        signal: new AbortController().signal,
-      };
-      expect(() => impl.handler({}, call)).toThrow(
-        expect.objectContaining({ code: 'not_found', data: { reason: 'not_implemented' } }),
-      );
-      expect(d.ctx.methods.has(name)).toBe(false);
-      expect(d.ctx.methods.names()).not.toContain(name);
-    }
+    expect(METHOD_NAMES.filter((m) => d.ctx.methods.get(m)?.stub)).toEqual([...STUBS]);
+    const info = await d.call(HUMAN, 'system.info', {});
+    expect(info.methods).toContain('home.get');
+    expect(info.methods).toContain('session.send');
   });
 
-  it('a stub with valid params says not_implemented', async () => {
-    d = await createTestDaemon();
-    const err = (await d.call(HUMAN, 'home.get', {}).catch((e: unknown) => e)) as ApiError;
-    expect(err).toMatchObject({ code: 'not_found', data: { reason: 'not_implemented' } });
-    const info = await d.call(HUMAN, 'system.info', {});
-    expect(info.methods).not.toContain('home.get');
-    expect(info.methods).toContain('session.send');
+  it('a stub answers not_implemented and counts as not implemented', () => {
+    const reg = new MethodRegistry();
+    const stub = stubMethod('home.get');
+    reg.register(stub);
+    expect(stub.stub).toBe(true);
+    expect(() =>
+      stub.handler({} as never, {
+        actor: HUMAN,
+        ctx: {} as never,
+        connection: null,
+        signal: new AbortController().signal,
+      }),
+    ).toThrow(expect.objectContaining({ code: 'not_found', data: { reason: 'not_implemented' } }));
+    expect(reg.has('home.get')).toBe(false);
+    expect(reg.names()).not.toContain('home.get');
   });
 
   it('stubs are never offered to an LLM, even under a "*" grant', async () => {

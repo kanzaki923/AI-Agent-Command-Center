@@ -963,3 +963,15 @@ T0 で仕様から足した・変えたもの（各トラックはこれを前�
 | S5 | 無効にすると `nextRunAt: null`、有効に戻すと今から次を計算（止めていた間の分は取り戻さない） | 止めた意図を尊重する |
 | S6 | 予算以外の `failed_to_start`（持ち主のアーカイブ、spawner のエラー）は出番を作らず `lastRun.error` と `schedule.fired` に残す | `AttentionRefs` に `scheduleId` がなく、重複を除けない（T4 と相談） |
 | S7 | `croner` は 10.0.1 に固定（11.0.0 は公開から 3 日） | 公開直後の版は避ける |
+
+### 7.10 T7 ホームと状態の実装時に追記
+
+| # | 差分 | 理由 |
+|---|---|---|
+| H1 | 起動時、`idle` / `done` 以外か `now` の残った会話をイベントなしで導出し直す。`start()` までの変化もイベントを出さない | 中断された Run を状態に反映しつつ、再起動で `session.state_changed` → `work` の Grant 失効が起きないように（D17・C2） |
+| H2 | `now` は Run が `running` / `awaiting_approval` のときだけ（`created` / `queued` は null）。承認待ちは開いた approval / question の出番の題、出番がまだなければ使っているツールの名詞句 | 「実行中だけ」の解釈。T4 が出番を作る前でも空にしない |
+| H3 | `session.tree` を agent が呼ぶと、自分の会話を根とする部分木だけを返す（`rootSessionId` も自分）。`session.list` も agent は自分と子孫だけ | §1.8・C15「agent は自分か子孫」。指揮役は根なので木全体が見える |
+| H4 | `totals.needsYou` は開いた出番の数（会話の数ではない）。`totals.working` / `failed` はアーカイブされていない全会話の数 | 上段の「出番の数」。1 つの会話に質問が 2 つあれば 2 |
+| H5 | 定期実行の古い発火は畳む（`hiddenNodes`）が、まだ人や作業が要る状態（needs_you / failed / working / queued / supervising / review）なら残す | 出番のある会話をホームから消さない |
+| H6 | `applyHomeEvent(snapshot, event)` を `ext/home.ts` に足した（state / now / cost / attention を当てる。構造の変化は `refetch: true`） | 受け入れ 3 の検証と、UI フェーズがそのまま使えるように |
+| H7 | `home.get` の `totals.spendTodayUsd` は `ledger.usedToday()`、`estimated` は今日の台帳に `reported` 以外の行があるか（台帳の表を読むだけ） | T5 の `record` が入れば実行中の費用もそのまま出る |
