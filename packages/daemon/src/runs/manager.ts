@@ -156,6 +156,7 @@ export class RunManager implements RunsService {
         const a = this.active.get(runId);
         if (a) this.stopForBudget(a);
       },
+      activeRunIds: () => [...this.active.keys()],
     });
   }
 
@@ -519,17 +520,17 @@ export class RunManager implements RunsService {
         if (a.abortKind === 'shutdown') {
           a.run = this.terminate(cur, 'interrupted', 'daemon_shutdown', SYSTEM);
         } else if (a.abortKind === 'budget') {
-          a.run = this.terminate(cur, 'failed', 'budget_exhausted', SYSTEM, {
-            code: 'budget_exceeded',
-            message: '予算の上限に達したため停止しました',
-          });
+          // budget_exhausted, or daily_limit (runs/usage.ts).
+          const stop = this.usage.budgetStop(a.runId);
+          a.run = this.terminate(cur, 'failed', stop.reason, SYSTEM, stop.error);
         } else if (a.abortKind === 'cancel') {
           a.run = this.terminate(cur, 'cancelled', 'cancelled', SYSTEM);
         } else if (ok) {
           a.run = this.terminate(cur, 'completed', null, SYSTEM);
         } else if (error instanceof ApiError && error.code === 'budget_exceeded') {
-          // Refused before an LLM call (nothing left / reservation did not fit).
-          a.run = this.terminate(cur, 'failed', 'budget_exhausted', SYSTEM, toErrorInfo(error));
+          // Refused before an LLM call (nothing left / reservation did not fit / the day's limit).
+          const stop = this.usage.budgetStop(a.runId, error);
+          a.run = this.terminate(cur, 'failed', stop.reason, SYSTEM, stop.error);
         } else if (stopReasonOf(error)) {
           // Stopped by the daemon's own limits (turn_limit, loop_detected, daily_limit).
           a.run = this.terminate(cur, 'failed', stopReasonOf(error), SYSTEM, toErrorInfo(error));
@@ -831,9 +832,9 @@ export class RunManager implements RunsService {
         });
       },
 
-      reportUsage: (delta) => {
+      reportUsage: (delta, opts) => {
         if (!live()) return;
-        this.usage.report(a, delta, actor);
+        this.usage.report(a, delta, actor, opts);
       },
 
       reserveBudget: (estimateUsd) => this.usage.reserve(a, actor, estimateUsd),

@@ -16,6 +16,8 @@ import { DISALLOWED_AGENT_TOOLS } from '../tools';
 import { ACC_MCP_SERVER, type McpSdk, accMcpServer } from './mcp';
 import type { ClaudeCodeLocation } from './locate';
 import { ClaudeMessageNormalizer, type UsageTotals, ZERO_TOTALS } from './normalize';
+import type { ModelPrice } from '../../llm/pricing';
+import { budgetExceeded } from '../../core/errors';
 
 /** The part of the SDK's `Query` we use. */
 export interface QueryLike extends AsyncIterable<unknown> {
@@ -80,9 +82,17 @@ export interface ClaudeRuntimeOptions {
    * means a hung CLI or connection. Default 10 minutes.
    */
   idleTimeoutMs?: number;
+  /**
+   * Prices for live cost estimates (the LLM module's price book). Without it only the result's
+   * final cost is reported.
+   */
+  pricing?: (model: string | null) => ModelPrice | null;
 }
 
 export const CLAUDE_RUNTIME_ID = 'claude-agent-sdk';
+
+/** Tool uses the CLI's auto mode allows without a classifier request (no classifier cost). */
+const CLASSIFIER_FREE: ReadonlySet<string> = new Set(['read', 'edit', 'command_readonly']);
 const STDERR_TAIL_LINES = 20;
 
 /**
@@ -328,6 +338,13 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
       return askHuman(toolName, toolInput, options.title, r);
     };
 
+    /**
+     * Cost of the CLI's own classifier requests (judge "client"): not in the SDK's totals, so
+     * booked separately, one estimated `classifierCostUsd` per tool use left to it (§3.8-8).
+     */
+    const classifierCosts: AgentEvent[] = [];
+    const classifierCostUsd = this.opts.settings().autoMode.classifierCostUsd;
+
     /** Runs for every tool use (sub-agents' too), including the ones the CLI would auto-approve. */
     const preToolUse: HookCallback = async (hookInput, toolUseID): Promise<SyncHookJSONOutput> => {
       if (hookInput.hook_event_name !== 'PreToolUse') return {};
@@ -337,6 +354,18 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
         input: hookInput.tool_input,
         ...(id ? { toolUseId: id } : {}),
       });
+      // The CLI allows reads, in-workspace edits and read-only commands without asking its
+      // classifier (docs/snapshot/20261029_auto-mode-cost.md): only the rest costs a request.
+      const judged = !CLASSIFIER_FREE.has(r.policy.category);
+      if (r.action === 'defer' && judged && gate.mode === 'classifier' && gate.judge === 'client') {
+        if (classifierCostUsd > 0) {
+          classifierCosts.push({
+            type: 'usage',
+            component: 'classifier',
+            usage: { costUsd: classifierCostUsd, costSource: 'estimated' },
+          });
+        }
+      }
       // "defer": the classifier decides. "allow" without auto mode: leave it to the CLI, which
       // may still ask (canUseTool returns the same answer). In auto mode an explicit allow
       // skips the classifier, so the gate gives one only for our own tools and remembered
@@ -379,6 +408,10 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
       },
       ...(routing.model ? { model: routing.model } : {}),
       ...(input.resumeSessionId ? { resume: input.resumeSessionId } : {}),
+      // Counts only this query()'s spend, also on resume (Q1, sdk-contract.test.ts).
+      ...(input.maxBudgetUsd !== null && input.maxBudgetUsd > 0
+        ? { maxBudgetUsd: input.maxBudgetUsd }
+        : {}),
       ...(exe?.ok ? { pathToClaudeCodeExecutable: exe.path } : {}),
     };
     // Control API read access for the agent: an in-process MCP server "acc" with the tools
@@ -398,6 +431,7 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
     const norm = new ClaudeMessageNormalizer(input.cwd, baseline, {
       expectedTools: acc?.toolNames ?? [],
       serverJudge,
+      ...(this.opts.pricing ? { price: this.opts.pricing } : {}),
     });
     const q = sdk.query({ prompt, options });
 
@@ -481,6 +515,8 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
           if (!stopping || ev.type === 'usage') yield ev;
           if (ev.type === 'tool_result') gate.settle(ev.toolCallId);
         }
+        // Money spent even when stopping.
+        while (classifierCosts.length > 0) yield classifierCosts.shift()!;
         // The classifier failed (e.g. its model is not served): the rules decide from now on.
         if (auto && gateMode(gate) === 'rules' && !fellBack) {
           fellBack = true;
@@ -501,6 +537,7 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
           closeLater();
         }
       }
+      while (classifierCosts.length > 0) yield classifierCosts.shift()!;
       if (!signal.aborted) for (const ev of norm.finish()) yield ev;
     } catch (err) {
       if (signal.aborted) throw abortError(signal);
@@ -536,6 +573,11 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
     if (signal.aborted) throw abortError(signal);
     if (failure) throw failure;
     if (!norm.outcome) throw new Error('Claude Code が結果を返さずに終了しました');
-    if (!norm.outcome.ok) throw new Error(norm.outcome.message);
+    if (!norm.outcome.ok) {
+      const { message, code } = norm.outcome;
+      // The run's spend cap (maxBudgetUsd): the run manager stops it as budget_exhausted.
+      if (code === 'budget_exceeded') throw budgetExceeded(message, { reason: 'max_budget_usd' });
+      throw Object.assign(new Error(message), code ? { code } : {});
+    }
   }
 }

@@ -22,6 +22,7 @@ import * as R from './claude/contract/recorded';
 import { type RecordedStream, withPaths } from './claude/contract/recordedTypes';
 import { DISALLOWED_AGENT_TOOLS } from './tools';
 import { GATE_NOTES, type GateAutoMode, type ToolDecisionRecord, ToolGate } from './gate';
+import { builtinPrice } from '../llm/pricing';
 
 const CWD = process.cwd();
 const rec = (s: RecordedStream) => withPaths(s, { repo: CWD });
@@ -57,6 +58,7 @@ describe('ClaudeMessageNormalizer (recorded streams)', () => {
     // Input counts cache reads too (1200 + 800).
     expect(events.at(-1)).toEqual({
       type: 'usage',
+      phase: 'final',
       usage: {
         inputTokens: 2000,
         outputTokens: 30,
@@ -207,7 +209,11 @@ describe('ClaudeMessageNormalizer (recorded streams)', () => {
     // Interrupted at an approval: the completed call before it was counted.
     const pending = normalize(R.ABORT_PENDING_APPROVAL);
     expect(ofType(pending.events, 'usage')).toEqual([
-      { type: 'usage', usage: expect.objectContaining({ inputTokens: 100, outputTokens: 22 }) },
+      {
+        type: 'usage',
+        phase: 'final',
+        usage: expect.objectContaining({ inputTokens: 100, outputTokens: 22 }),
+      },
     ]);
   });
 
@@ -220,6 +226,7 @@ describe('ClaudeMessageNormalizer (recorded streams)', () => {
     expect(ofType(second.events, 'usage')).toEqual([
       {
         type: 'usage',
+        phase: 'final',
         usage: {
           inputTokens: 2000,
           outputTokens: 10,
@@ -293,7 +300,11 @@ describe('ClaudeMessageNormalizer (auto mode judge)', () => {
     parent_tool_use_id: null,
     message: { role: 'user', content: [] },
     tool_result_meta: [
-      { id, ...extra, permission_decision: { decision, source: 'config', reason_type: 'classifier' } },
+      {
+        id,
+        ...extra,
+        permission_decision: { decision, source: 'config', reason_type: 'classifier' },
+      },
     ],
   });
   const denied = (id: string, reason: string, message: string) => ({
@@ -365,7 +376,11 @@ describe('ClaudeMessageNormalizer (auto mode judge)', () => {
   it('recognizes a classifier that could not answer, in each wording', () => {
     const n = new ClaudeMessageNormalizer(CWD);
     const out = decisions(n, [
-      denied('tu_1', 'x', 'Auto mode could not evaluate this action and is blocking it for safety.'),
+      denied(
+        'tu_1',
+        'x',
+        'Auto mode could not evaluate this action and is blocking it for safety.',
+      ),
       denied(
         'tu_2',
         'Classifier unavailable',
@@ -731,7 +746,11 @@ describe('ClaudeAgentSdkRuntime', () => {
       ['/work/b', 'run_2'],
     ] as const) {
       const sdk = replaySdk(rec(R.TEXT));
-      const gate = new ToolGate({ cwd, profile: 'autonomous', autoMode: { classifierModel: null } });
+      const gate = new ToolGate({
+        cwd,
+        profile: 'autonomous',
+        autoMode: { classifierModel: null },
+      });
       await collect(runtime(sdk.module).run(input({ gate, cwd, runId })));
       seen.push(sdk.queries[0]!.options.settings);
     }
@@ -1018,5 +1037,132 @@ describe('ClaudeAgentSdkRuntime', () => {
     });
     await expect(collect(rt.run(input()))).rejects.toThrow('実行ファイルが見つかりません');
     expect(sdk.queries).toHaveLength(1);
+  });
+});
+
+describe('live cost (T5, spec 20261029 §3.8-2/4/8)', () => {
+  const price = (m: string | null) => builtinPrice(m ?? '');
+  const sum = (
+    us: Extract<AgentEvent, { type: 'usage' }>[],
+    k: 'inputTokens' | 'outputTokens' | 'costUsd',
+  ) => us.reduce((n, u) => n + (u.usage[k] ?? 0), 0);
+
+  it('estimates each API call once (stream events and repeated messages), then reports the final figure', () => {
+    for (const stream of [R.TEXT, R.EDIT_INSIDE, R.BASH_APPROVED, R.MCP]) {
+      const { events } = normalize(stream, new ClaudeMessageNormalizer(CWD, undefined, { price }));
+      const usage = ofType(events, 'usage');
+      const estimates = usage.filter((u) => u.phase === 'estimate');
+      const finals = usage.filter((u) => u.phase === 'final');
+      expect(finals).toHaveLength(1);
+      expect(usage.at(-1)).toBe(finals[0]);
+      expect(estimates.length).toBeGreaterThan(0);
+      // The same message id repeats per content block: counted once, so the estimates add up
+      // to the CLI's own totals (same price table for this model).
+      expect(sum(estimates, 'inputTokens')).toBe(finals[0]!.usage.inputTokens);
+      expect(sum(estimates, 'outputTokens')).toBe(finals[0]!.usage.outputTokens);
+      expect(sum(estimates, 'costUsd')).toBeCloseTo(finals[0]!.usage.costUsd!, 9);
+      expect(estimates.every((u) => u.usage.costSource === 'estimated')).toBe(true);
+    }
+    // Without a price table: only the final figure, as before.
+    expect(ofType(normalize(R.TEXT).events, 'usage').map((u) => u.phase)).toEqual(['final']);
+  });
+
+  it('estimates an interrupted call the CLI never counts', () => {
+    const { events } = normalize(
+      R.INTERRUPT_STREAM,
+      new ClaudeMessageNormalizer(CWD, undefined, { price }),
+    );
+    const usage = ofType(events, 'usage');
+    expect(usage.length).toBeGreaterThan(0);
+    expect(usage.every((u) => u.phase === 'estimate')).toBe(true);
+    expect(sum(usage, 'costUsd')).toBeGreaterThan(0);
+  });
+
+  it('tells the spend cap and LiteLLM key budget apart from other failures', () => {
+    const n = new ClaudeMessageNormalizer(CWD);
+    n.push({
+      type: 'result',
+      subtype: 'error_max_budget_usd',
+      is_error: true,
+      terminal_reason: 'budget_exhausted',
+      errors: ['Reached maximum budget ($0.05)'],
+      total_cost_usd: 0.06,
+      session_id: 's1',
+    });
+    expect(n.outcome).toEqual({
+      ok: false,
+      code: 'budget_exceeded',
+      message: '予算の上限に達したため停止しました: Reached maximum budget ($0.05)',
+    });
+    const q = new ClaudeMessageNormalizer(CWD);
+    q.push({
+      type: 'result',
+      subtype: 'success',
+      is_error: true,
+      result:
+        'API Error: 400 litellm.BadRequestError: AnthropicException - b\'{"type":"error","error":{"message":"Budget has been exceeded! Current cost: 3, Max budget: 3"}}\'',
+      session_id: 's2',
+    });
+    expect(q.outcome).toMatchObject({ ok: false, code: 'llm_quota_exceeded' });
+    expect((q.outcome as { message: string }).message).toContain('予算の上限');
+  });
+
+  it('passes the spend cap to the SDK and fails a capped run as budget_exceeded', async () => {
+    const capped = rec(R.TEXT).map((m) =>
+      (m as { type?: string }).type === 'result'
+        ? {
+            ...(m as object),
+            subtype: 'error_max_budget_usd',
+            is_error: true,
+            errors: ['Reached maximum budget ($0.001)'],
+          }
+        : m,
+    );
+    const sdk = replaySdk(capped);
+    await expect(
+      collect(runtime(sdk.module).run(input({ maxBudgetUsd: 0.001 }))),
+    ).rejects.toMatchObject({
+      code: 'budget_exceeded',
+    });
+    expect(sdk.queries[0]!.options.maxBudgetUsd).toBe(0.001);
+    // No cap: the option is left out.
+    const free = replaySdk(rec(R.TEXT));
+    await collect(runtime(free.module).run(input()));
+    expect(free.queries[0]!.options).not.toHaveProperty('maxBudgetUsd');
+  });
+
+  it("books the client classifier's cost per tool use it judged, and nothing for the server judge", async () => {
+    const auto = rec(R.TEXT).map((m) =>
+      (m as { type?: string; subtype?: string }).type === 'system' &&
+      (m as { subtype?: string }).subtype === 'init'
+        ? { ...(m as object), permissionMode: 'auto' }
+        : m,
+    );
+    const classifierUsage = async (judge: 'client' | 'server') => {
+      const { gate } = testGate('autonomous', { classifierModel: 'team-classifier', judge });
+      const sdk = replaySdk(auto, {
+        before: async (i, options) => {
+          if (i !== 2) return;
+          const hook = preToolUse(options);
+          await hook('Bash', { command: 'pnpm test' }); // gray zone: the classifier judges
+          await hook('Bash', { command: 'git push' }); // hard rule: never reaches it
+          await hook('Read', { file_path: 'README.md' }); // routine: allowed by the rules
+        },
+      });
+      const rt = runtime(sdk.module, {
+        settings: settings({ litellm: { baseUrl: 'http://127.0.0.1:4000', apiKey: 'sk-x' } }),
+        parentEnv: { PATH: '/bin' },
+      });
+      const events = await collect(rt.run(input({ gate, model: 'team-sonnet' })));
+      return ofType(events, 'usage').filter((u) => u.component === 'classifier');
+    };
+    expect(await classifierUsage('client')).toEqual([
+      {
+        type: 'usage',
+        component: 'classifier',
+        usage: { costUsd: 0.011, costSource: 'estimated' },
+      },
+    ]);
+    expect(await classifierUsage('server')).toEqual([]);
   });
 });

@@ -21,6 +21,7 @@ import { classifyToolRisk } from './risk';
 import { RuntimeSessionStore } from './state';
 import { approvalDetailFor, approvalTitleFor, truncate } from './tools';
 import { ruleMatcher } from './rules';
+import { spendCapUsd } from '../runs/usage';
 
 /**
  * The "agent" RunExecutor: runs a coding-agent runtime in the run's workspace and turns its
@@ -96,8 +97,8 @@ async function executeAgentRun(
     cwd: workspace.path,
     writeRoot: workspace.path,
     readRoots,
-    // T5 adds the spend cap.
-    maxBudgetUsd: null,
+    // What the run may still spend (budget room, today's limit): runtimes stop at it.
+    maxBudgetUsd: spendCapUsd(ctx, run),
     prompt,
     systemPrompt: session.systemPrompt ?? undefined,
     model,
@@ -157,7 +158,10 @@ async function executeAgentRun(
         ctl.setActivity(ev.text);
         return;
       case 'usage':
-        ctl.reportUsage(ev.usage);
+        ctl.reportUsage(ev.usage, {
+          ...(ev.phase ? { phase: ev.phase } : {}),
+          ...(ev.component ? { component: ev.component } : {}),
+        });
         return;
       case 'session':
         rememberRuntimeSession(ctx, store, session.id, runtimeId, ev.runtimeSessionId, ctl.actor);

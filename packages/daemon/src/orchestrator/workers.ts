@@ -253,12 +253,15 @@ export class WorkerService {
         author: actor,
       });
       const kept = prev?.budgetId ? ctx.repos.budgets.get(prev.budgetId) : undefined;
+      const own = kept?.subject.kind === 'session' && kept.subject.id === session.id;
+      // A child's unused budget went back to its parent when it ended (cost/returns.ts):
+      // a retry carves it again from that parent.
       const budget =
-        kept?.status === 'active' &&
-        kept.subject.kind === 'session' &&
-        kept.subject.id === session.id
+        own && kept.status === 'active'
           ? kept
-          : this.carveBudget(undefined, callerRun, parentGrant, session.id, actor);
+          : ((own && kept.parentId && !callerRun?.budgetId
+              ? ctx.service('budget').reallocate(kept.id, actor)
+              : null) ?? this.carveBudget(undefined, callerRun, parentGrant, session.id, actor));
       const run = ctx.service('runs').start({
         sessionId: session.id,
         kind: 'agent',

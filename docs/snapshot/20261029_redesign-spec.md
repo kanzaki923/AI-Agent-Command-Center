@@ -934,3 +934,20 @@ T0 で仕様から足した・変えたもの（各トラックはこれを前�
 | S13 | `system.setupDemo` の `name` の既定を `launch-demo` にし（api.ts）、結果の `repoPath` はデモのフォルダ。週次レポートは定期実行のメソッドがあるときだけ作る。旧デモの Node プロジェクトは `DEMO_FILES` として scene スクリプト用に残す | git なしのデモ（§3.13）。T6 の前でも setupDemo が失敗しない |
 | S14 | `toChatMessages` は、ツール呼び出しの結果がそろう前に保存された発言を結果の後ろに回す | 差し込みの発言が履歴の中で呼び出しと結果の間に入り、次の Run で結果が欠けたことにされていた |
 | S15 | モックの指揮役は、コードの子の統合（`integration.create`）までは自分でしない。最終報告で人の確認を求める | 統合に要る Task の ID が指揮役から見えない（`session.tree` にない）。複数の子の統合は本物のモデルか T3 の流れで |
+
+### 7.8 T5 費用と予算で確かめたこと・入れた差分（T5 の実装時に追記）
+
+**Q1 の答え**（偽 Anthropic API と本物の CLI 2.1.312、`sdk-contract.test.ts`「maxBudgetUsd caps the spend of this query only」）：SDK の `maxBudgetUsd` は **その query() で使った額だけ**を数える。再開したセッションの累計（$0.066）が上限（$0.05）を超えていても、その実行の分（$0.006）が下なら止まらない。判定は API 呼び出しの後なので、最後の 1 回ぶん超えうる（$0.05 に対して $0.060 で停止）。止まると result は `error_max_budget_usd`・`terminal_reason: budget_exhausted`。→ 仕様どおり「その実行で使ってよい額」（予算の空きと今日の残りの小さいほう）を渡し、超え分は daemon の推定でも止める。
+
+| # | 差分 | 理由 |
+|---|---|---|
+| E1 | 契約に足した（すべて追加のみ）：`BudgetService.adjustSpend / raise / setLimit / available / reallocate`、`LedgerService.dailyLeft()` と `assertDailyLeft(sessionId?)`、`RunController.reportUsage(delta, opts?)`（`UsageReportOptions { phase, component }`）、`AgentEvent.usage.component?: 'classifier'` | 推定の補正・祖先の超過で頭打ちになる空き・再試行での切り出し直し・出番を出す会話の指定に必要 |
+| E2 | メソッド `cost.raiseDaily`（人間のみ、`DailySpend` を返す）と `COST_ATTENTION_CHOICES`（日次の出番の choices `raise_today_10` / `open_settings`）を `ext/cost.ts` に足した | 出番の「今日だけ +$10」の行き先。T4 の `attention.respond` はこの 2 つを `cost.raiseDaily({ addUsd: 10 })` と設定画面へ振り分ける |
+| E3 | 子の `budget.raise` は、親に空きが足りなければ親（と祖先）も上げる。子の超過で親が負担済みの分は親から切り出さない | 出番の「+$1」を 1 クリックで効かせる |
+| E4 | 分類器の費用は `judge: client` の間、フックが分類器に任せたツール使用のうち、CLI が分類器なしで許可するもの（読み取り・作業場所内の編集・読み取りだけのコマンド）を除いた 1 回ごと | 実機の観察（`20261029_auto-mode-cost.md`）。全部数えると何倍にも見積もる |
+| E5 | 日次・LiteLLM のキーの出番は全体で 1 件なので `refs: {}` で開き、重複は `cost_notices` 表（日と上限の組、開いている出番の ID）で避ける | `AttentionRefs` に全体の原因を表す欄がない。T4 は `refs: {}` を他と重複させないこと |
+| E6 | 予算切れで失敗した Run の出番 `budget`（refs `budgetId`）は cost モジュールが Run の種類によらず開く | 子以外（予算のある普通の会話）も同じ出番になるように。T2 の §3.4 の表は同じ refs で開けば重複しない |
+| E7 | `budget.updated` は起動時の未確定の予約の取り消し（`daemon_restart`）だけは出す | まれで、見えたほうがよい |
+| E8 | Gateway の再試行は接続失敗も対象。20 秒を超える `Retry-After` は待たずに失敗させる | §3.8-9 の「最大 20 秒」の解釈 |
+| E9 | チャットの呼び出しの単価は価格表のキャッシュだけを見る（`/model/info` を取りに行くのは Claude ランタイムの推定のとき）。知らないモデルの推定は `estimated`（最高単価）で、`unknown` にしない | 本物の LiteLLM は費用を返すので、チャットのために LiteLLM へ余計な要求を出さない |
+| E10 | 他トラックのファイルへの最小の変更：`runs/manager.ts`（T1：`activeRunIds`、`budgetStop` で止めた理由、`reportUsage` の opts）、`runtime/executor.ts`（T2：`maxBudgetUsd` と phase / component の受け渡し）、`orchestrator/workers.ts`（T2：再試行で返却済みの Budget を `reallocate`）、`runtime/index.ts`・`llm/index.ts`・`llm/types.ts`（価格表の配線、`llm_quota_exceeded`・`retryAfterMs`） | 呼び出し位置がそこにしかない |

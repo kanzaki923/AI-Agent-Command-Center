@@ -88,9 +88,13 @@ export class LlmError extends Error {
       | 'llm_http_error'
       | 'llm_stream_error'
       | 'llm_timeout'
-      | 'llm_model_not_found',
+      | 'llm_model_not_found'
+      /** LiteLLM's own budget on the key / team / user is used up (not retried). */
+      | 'llm_quota_exceeded',
     message: string,
     readonly status?: number,
+    /** The server's Retry-After, when it sent one (ms). */
+    readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = 'LlmError';

@@ -96,6 +96,8 @@ function provider(url: string | null, apiKey: string | null = 'sk-test-secret-ke
   return new OpenAiCompatibleProvider({
     connection: () => ({ baseUrl: url, apiKey }),
     pricing: (m) => (m === 'priced' ? { inputPerMTok: 1, outputPerMTok: 2 } : null),
+    // Retries without waiting (their timing is tested below).
+    retry: { sleep: async () => {} },
   });
 }
 
@@ -811,5 +813,149 @@ describe('thinking blocks (Anthropic extended thinking via LiteLLM)', () => {
       tool_calls: [{ id: 'toolu_1' }],
       thinking_blocks: [{ type: 'thinking', thinking: '調べる', signature: 'sig' }],
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LiteLLM's own budgets and retries (spec 20261029 §3.8-9)
+// ---------------------------------------------------------------------------
+
+describe('LiteLLM key budgets and retries', () => {
+  const okStream =
+    sse({ choices: [{ index: 0, delta: { content: 'ok' } }] }) +
+    sse({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.001 } }) +
+    sse('[DONE]');
+
+  it('classifies a used-up key / team / user budget and never retries it', async () => {
+    const bodies = [
+      {
+        error: {
+          message: 'Budget has been exceeded! Current cost: 1.2, Max budget: 1.0',
+          type: 'budget_exceeded',
+          param: null,
+          code: '400',
+        },
+      },
+      {
+        error: { message: 'ExceededBudget: User=u1 over budget. Spend=5.1, Budget=5.0', type: 'x' },
+      },
+    ];
+    for (const body of bodies) {
+      const server = await fakeServer((_req, _b, res) => {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(body));
+      });
+      const err = await collect(
+        provider(server.url).stream(req(), new AbortController().signal),
+      ).then(
+        () => null,
+        (e: unknown) => e as LlmError,
+      );
+      expect(err).toMatchObject({
+        code: 'llm_quota_exceeded',
+        status: 400,
+        message: expect.stringContaining('予算の上限に達しました') as unknown,
+      });
+      expect(server.requests).toHaveLength(1);
+    }
+    expect(
+      describeGatewayError('litellm.BudgetExceededError: Budget has been exceeded!').kind,
+    ).toBe('quota_exceeded');
+  });
+
+  it('retries 429 / 5xx before any token, at most twice, honouring Retry-After', async () => {
+    const statuses = [429, 503];
+    const server = await fakeServer((_req, _b, res) => {
+      const status = statuses.shift();
+      if (status) {
+        res.writeHead(status, status === 429 ? { 'retry-after': '3' } : {});
+        res.end(JSON.stringify({ error: { message: 'busy' } }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(okStream);
+    });
+    const waits: number[] = [];
+    const p = new OpenAiCompatibleProvider({
+      connection: () => ({ baseUrl: server.url, apiKey: null }),
+      retry: { sleep: async (ms) => void waits.push(ms) },
+    });
+    const events = await collect(p.stream(req(), new AbortController().signal));
+    expect(textOf(events)).toBe('ok');
+    expect(server.requests).toHaveLength(3);
+    // Retry-After: 3 s; then the default backoff for the second retry.
+    expect(waits).toEqual([3000, 2000]);
+
+    // A third failure is not retried; neither is a Retry-After longer than 20 s.
+    const always = await fakeServer((_req, _b, res) => {
+      res.writeHead(500);
+      res.end('{}');
+    });
+    const p2 = new OpenAiCompatibleProvider({
+      connection: () => ({ baseUrl: always.url, apiKey: null }),
+      retry: { sleep: async () => {} },
+    });
+    await expect(collect(p2.stream(req(), new AbortController().signal))).rejects.toMatchObject({
+      code: 'llm_http_error',
+      status: 500,
+    });
+    expect(always.requests).toHaveLength(3);
+    const slow = await fakeServer((_req, _b, res) => {
+      res.writeHead(429, { 'retry-after': '60' });
+      res.end('{}');
+    });
+    const p3 = new OpenAiCompatibleProvider({
+      connection: () => ({ baseUrl: slow.url, apiKey: null }),
+      retry: { sleep: async () => {} },
+    });
+    await expect(collect(p3.stream(req(), new AbortController().signal))).rejects.toMatchObject({
+      status: 429,
+    });
+    expect(slow.requests).toHaveLength(1);
+  });
+
+  it('does not retry once a token arrived, nor a request the gateway rejected', async () => {
+    const cut = await fakeServer(async (_req, _b, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(sse({ choices: [{ index: 0, delta: { content: '途中' } }] }));
+      await wait(20);
+      res.destroy();
+    });
+    const seen: LlmStreamEvent[] = [];
+    await expect(
+      (async () => {
+        for await (const e of provider(cut.url).stream(req(), new AbortController().signal)) {
+          seen.push(e);
+        }
+      })(),
+    ).rejects.toMatchObject({ code: 'llm_stream_error' });
+    expect(textOf(seen)).toBe('途中');
+    expect(cut.requests).toHaveLength(1);
+
+    const bad = await fakeServer((_req, _b, res) => {
+      res.writeHead(401);
+      res.end(JSON.stringify({ error: { message: 'invalid key' } }));
+    });
+    await expect(
+      collect(provider(bad.url).stream(req(), new AbortController().signal)),
+    ).rejects.toMatchObject({
+      status: 401,
+    });
+    expect(bad.requests).toHaveLength(1);
+  });
+
+  it('retries a connection that failed, then explains it', async () => {
+    const server = await fakeServer(() => {});
+    const url = server.url;
+    await server.close();
+    let tries = 0;
+    const p = new OpenAiCompatibleProvider({
+      connection: () => ({ baseUrl: url, apiKey: null }),
+      retry: { sleep: async () => void (tries += 1) },
+    });
+    await expect(collect(p.stream(req(), new AbortController().signal))).rejects.toMatchObject({
+      code: 'llm_unreachable',
+    });
+    expect(tries).toBe(2);
   });
 });

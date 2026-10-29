@@ -68,8 +68,13 @@ export class LedgerStore {
         row.model,
         row.component,
         Math.round(row.cost_micro),
-        Math.max(0, Math.round(row.input_tokens)),
-        Math.max(0, Math.round(row.output_tokens)),
+        // Corrections may take tokens back too.
+        row.component === 'adjust'
+          ? Math.round(row.input_tokens)
+          : Math.max(0, Math.round(row.input_tokens)),
+        row.component === 'adjust'
+          ? Math.round(row.output_tokens)
+          : Math.max(0, Math.round(row.output_tokens)),
         row.source,
       ],
     ).lastInsertRowid;

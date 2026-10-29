@@ -37,12 +37,38 @@ export type CostSummary = z.infer<typeof CostSummary>;
 
 export const BudgetThresholdPct = z.union([z.literal(50), z.literal(80), z.literal(100)]);
 
+/** Today's spend against the daily limit (the setting plus any raise for today only). */
+export const DailySpend = z.object({
+  /** null: no daily limit. */
+  limitUsd: z.number().nullable(),
+  usedTodayUsd: z.number(),
+  /** What `cost.raiseDaily` added for today (included in limitUsd). */
+  raisedTodayUsd: z.number(),
+  /** YYYY-MM-DD in settings.limits.timezone. */
+  day: z.string(),
+});
+export type DailySpend = z.infer<typeof DailySpend>;
+
+/**
+ * Choice ids of the daemon's spend attentions (kind `budget`): the daily limit reached
+ * (`cost.raiseDaily` +$10 for today, or open the settings) and the LiteLLM key's own budget
+ * (nothing the app can raise; the item only tells).
+ */
+export const COST_ATTENTION_CHOICES = {
+  daily: [
+    { id: 'raise_today_10', label: '今日だけ +$10', tone: 'primary' },
+    { id: 'open_settings', label: '設定', tone: 'neutral' },
+  ],
+  llmQuota: [],
+} as const;
+
 export const costDomain = {
   LedgerComponent,
   CostRange,
   CostGroupBy,
   CostSummary,
   BudgetThresholdPct,
+  DailySpend,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -65,6 +91,15 @@ export const costMethods = {
     result: BudgetAllocation,
     description:
       "Raise a budget's limit (a child budget is topped up from its parent). Humans only.",
+    tool: false,
+    mutates: true,
+  },
+  'cost.raiseDaily': {
+    params: params({
+      addUsd: z.number().positive().max(10_000).describe("Added to today's limit only"),
+    }),
+    result: DailySpend,
+    description: "Raise today's spend limit (only for today; the setting stays). Humans only.",
     tool: false,
     mutates: true,
   },

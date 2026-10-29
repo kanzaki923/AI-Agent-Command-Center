@@ -262,8 +262,10 @@ class MockRun implements StepContext {
     const outputTokens = Math.ceil(outputChars / 4) + 20;
     this.contextChars += outputChars;
     const costUsd = (inputTokens * price.inputPerMTok + outputTokens * price.outputPerMTok) / 1e6;
+    // Counted at once (live budgets and Session.cost); a plan's `usage` final replaces it.
     return {
       type: 'usage',
+      phase: 'estimate',
       usage: { inputTokens, outputTokens, costUsd, costSource: 'estimated' },
     };
   }

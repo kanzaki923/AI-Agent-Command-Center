@@ -16,7 +16,7 @@
 export interface GatewayErrorInfo {
   /** The provider's message without LiteLLM's wrapping (may be the whole text). */
   message: string;
-  kind: 'model_not_found' | 'cooldown' | null;
+  kind: 'model_not_found' | 'cooldown' | 'quota_exceeded' | null;
   /** The model name LiteLLM did not know (model_not_found). */
   model?: string;
 }
@@ -24,6 +24,12 @@ export interface GatewayErrorInfo {
 const WRAPPED = /litellm\.\w+:\s*\w+?(?:Exception|Error)\s*-\s*(?:b')?(\{[\s\S]*\})'?/;
 const MODEL_NOT_FOUND = /Invalid model name passed in model=(\S+?)\.?(?:\s|$)/;
 const COOLDOWN = /No deployments available for selected model|all_deployments_in_cooldown/;
+/**
+ * LiteLLM's own spend limits on the virtual key / team / user / end user (`max_budget`):
+ * "Budget has been exceeded! Current cost: …, Max budget: …" (`type: budget_exceeded`) or
+ * "ExceededBudget: User=… over budget. Spend=…, Budget=…". Raising it is LiteLLM's admin's job.
+ */
+const QUOTA = /budget_exceeded|Budget has been exceeded|ExceededBudget|over budget\. Spend=/i;
 
 export function describeGatewayError(text: string): GatewayErrorInfo {
   let message = text
@@ -37,6 +43,7 @@ export function describeGatewayError(text: string): GatewayErrorInfo {
   );
   const model = MODEL_NOT_FOUND.exec(text)?.[1];
   if (model) return { message, kind: 'model_not_found', model };
+  if (QUOTA.test(text)) return { message, kind: 'quota_exceeded' };
   if (COOLDOWN.test(text)) return { message, kind: 'cooldown' };
   return { message, kind: null };
 }
@@ -57,6 +64,8 @@ export function gatewayErrorHint(info: GatewayErrorInfo): string | null {
   switch (info.kind) {
     case 'model_not_found':
       return `LiteLLM にモデル「${info.model ?? ''}」がありません。LiteLLM の model_list と、設定・チャットのモデル名を確認してください`;
+    case 'quota_exceeded':
+      return 'LiteLLM の API キー（またはチーム・ユーザー）に設定された予算の上限に達しました。LiteLLM の管理者に上限の引き上げを依頼してください';
     case 'cooldown':
       return 'LiteLLM が直前の失敗（認証エラーなど）のため、このモデルへの送信を数秒間止めています。少し待ってから再試行してください';
     default:
