@@ -551,6 +551,12 @@ describe('AI-started children inside permission and budget', () => {
       start: false,
     });
     expect(d.ctx.service('budget').get(a.budgetId!).limitUsd).toBe(0.05);
+    // Home shows what the children still hold against the tree's budget, beyond its spend.
+    const snap = await d.call(HUMAN, 'home.get', {});
+    const tree = snap.trees.find((t) => t.root.id === sup.session.id)!;
+    expect(tree.spend.limitUsd).toBe(1);
+    expect(tree.spend.committedUsd).toBeGreaterThanOrEqual(0.05);
+    expect(tree.spend.committedUsd).toBeGreaterThan(tree.spend.treeUsd);
   });
 
   it('a caller with a budget cannot start a child outside it; without the permission it cannot start one', async () => {
@@ -675,7 +681,7 @@ describe('how a child ends (§3.4)', () => {
       expect.objectContaining({
         kind: 'failure',
         sessionId: r.session.id,
-        title: '「ビルド」が失敗しました',
+        title: 'ビルドが通りませんでした',
         refs: expect.objectContaining({ runId: r.runId, taskId: task.id }),
       }),
     ]);

@@ -278,6 +278,12 @@ function toTree(t: TreeDraft, facts: CardFacts): HomeTree {
     spend: {
       treeUsd: t.root.cost.treeUsd,
       limitUsd: rootBudget ? rootBudget.limitUsd : null,
+      committedUsd: rootBudget
+        ? Math.max(
+            t.root.cost.treeUsd,
+            rootBudget.spentUsd + rootBudget.allocatedUsd + rootBudget.reservedUsd,
+          )
+        : null,
       estimated: spendEstimated(t.root),
     },
     nextRunAt: t.nextRunAt,

@@ -15,7 +15,7 @@ export { costSummary, rangeWhere } from './summary';
 export { KeyedThrottle } from './throttle';
 export { setSessionBudget } from './sessionBudget';
 
-const usd = (n: number) => `$${Number(n.toFixed(2))}`;
+const usd = (n: number) => `$${n.toFixed(2)}`;
 
 /**
  * Attentions for runs that ended for money (spec 20261029 §3.4, §3.8-7/9): a used-up budget
@@ -43,8 +43,11 @@ function watchSpendFailures(ctx: DaemonContext, ledger: UsageLedger): () => void
       ctx.service('attention').open({
         kind: 'budget',
         sessionId: run.sessionId,
-        title: `予算（${usd(budget.limitUsd)}）を使い切りました`,
-        detail: `使用額は ${usd(budget.spentUsd)} です。予算を増やすと続けられます。`,
+        title: `予算（${usd(budget.limitUsd)}）の上限に達しました`,
+        detail:
+          budget.allocatedUsd + budget.reservedUsd > 0
+            ? `使用額は ${usd(budget.spentUsd)}、子に渡した分が ${usd(budget.allocatedUsd + budget.reservedUsd)} です。予算を増やすと続けられます。`
+            : `使用額は ${usd(budget.spentUsd)} です。予算を増やすと続けられます。`,
         refs: { budgetId: budget.id },
         actor: COST_SYSTEM,
       });

@@ -721,7 +721,7 @@ export class WorkerService {
         ctx.service('attention').open({
           kind: end.attention,
           sessionId: child.id,
-          title: attentionTitle(end.attention, title, run.statusReason),
+          title: attentionTitle(end.attention, title, run.statusReason, run.error?.message),
           detail: end.detail,
           refs: {
             runId: run.id,
@@ -1133,9 +1133,15 @@ function fixFiles(integ: Integration): string[] {
 
 /**
  * One line (<= 80 chars, no ids) for a child's attention item (spec §1.6), e.g.
- * "「FAQ を書く」が失敗しました".
+ * "「FAQ を書く」の予算が尽きました". A failure says why it failed (the row already names the
+ * child), falling back to "「FAQ を書く」が失敗しました" when the run gave no message.
  */
-export function attentionTitle(kind: AttentionKind, title: string, reason: string | null): string {
+export function attentionTitle(
+  kind: AttentionKind,
+  title: string,
+  reason: string | null,
+  error?: string | null,
+): string {
   switch (kind) {
     case 'budget':
       return `「${title}」の予算が尽きました`;
@@ -1145,8 +1151,10 @@ export function attentionTitle(kind: AttentionKind, title: string, reason: strin
         : `「${title}」が同じ操作を繰り返したため止めました`;
     case 'review':
       return `「${title}」の成果物を確認`;
-    case 'failure':
-      return `「${title}」が失敗しました`;
+    case 'failure': {
+      const why = error ? firstLineOf(error) : '';
+      return why ? truncate(why, 80) : `「${title}」が失敗しました`;
+    }
     default:
       return `「${title}」`;
   }

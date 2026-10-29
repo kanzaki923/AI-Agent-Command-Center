@@ -677,7 +677,7 @@ describe('spend attentions', () => {
     expect(forBudget.length).toBeGreaterThanOrEqual(1);
     expect(forBudget[0]![0]).toMatchObject({
       kind: 'budget',
-      title: '予算（$0.3）を使い切りました',
+      title: '予算（$0.30）の上限に達しました',
     });
 
     open.mockClear();

@@ -99,6 +99,20 @@ describe('<HomeView>', () => {
     expect(useUi.getState().focusSessionId).toBe(s.chat.id);
   });
 
+  it('marks a conversation whose answer arrived after you last looked; opening it clears the mark', async () => {
+    const s = scene();
+    s.morning.stateSince = new Date().toISOString();
+    useUi.setState({ readBaseline: new Date(Date.now() - 60_000).toISOString(), viewedAt: {} });
+    mount({ 'home.get': () => s.snap });
+    const morning = await screen.findByRole('region', { name: '朝のまとめ' });
+    expect(within(morning).getByRole('img', { name: '未読' })).toBeInTheDocument();
+    // Still working: nothing to read yet.
+    expect(within(screen.getByRole('region', { name: 'ブログ記事' })).queryByRole('img', { name: '未読' })).toBeNull();
+    fireEvent.click(within(morning).getByRole('button', { name: '朝のまとめ' }));
+    act(() => useUi.getState().goHome());
+    expect(within(screen.getByRole('region', { name: '朝のまとめ' })).queryByRole('img', { name: '未読' })).toBeNull();
+  });
+
   it('shows five attention rows and 「あと N 件」 when more than six are open', async () => {
     const root = card({ title: 'R', state: 'supervising' });
     const items = Array.from({ length: 8 }, (_, i) => attention({ id: root.id }, { title: `質問 ${i}` }));

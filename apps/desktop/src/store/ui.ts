@@ -42,6 +42,8 @@ export interface UiState {
   reduceMotion: MotionPref;
   drafts: Record<string, string>;
   viewedAt: Record<string, string>;
+  /** Answers that settled before this (the first run of this store) are not shown as unread. */
+  readBaseline: string;
   collapsed: Record<string, boolean>;
   onboardingDone: boolean;
   recentCommands: string[];
@@ -155,6 +157,7 @@ const initial: UiState = {
   reduceMotion: 'system',
   drafts: {},
   viewedAt: {},
+  readBaseline: '',
   collapsed: {},
   onboardingDone: false,
   recentCommands: [],
@@ -240,6 +243,7 @@ export const createUiStore = () =>
     persist(
       (set, get) => ({
         ...initial,
+        readBaseline: new Date().toISOString(),
         setMode: (mode) =>
           set((s) =>
             s.mode === mode
@@ -396,6 +400,7 @@ export const createUiStore = () =>
           projectId: s.projectId,
           drafts: s.drafts,
           viewedAt: s.viewedAt,
+          readBaseline: s.readBaseline,
           collapsed: s.collapsed,
           onboardingDone: s.onboardingDone,
           recentCommands: s.recentCommands,
@@ -408,3 +413,26 @@ export const createUiStore = () =>
   );
 
 export const useUi = createUiStore();
+
+/** A top-level conversation's state, as far as unread goes. */
+interface Settling {
+  id: string;
+  state: string;
+  stateSince: string | null;
+}
+
+/**
+ * A conversation whose answer (or whole tree's work) settled after you last looked at it:
+ * idle or done since later than you left it, and not the one open now.
+ */
+export function isUnread(s: Pick<UiState, 'viewedAt' | 'readBaseline' | 'mode' | 'focusSessionId'>, c: Settling): boolean {
+  if ((c.state !== 'idle' && c.state !== 'done') || !c.stateSince) return false;
+  if (s.mode === 'session' && s.focusSessionId === c.id) return false;
+  const seen = s.viewedAt[c.id] ?? '';
+  return c.stateSince > (seen > s.readBaseline ? seen : s.readBaseline);
+}
+
+/** isUnread for one conversation, re-rendering only when the answer changes. */
+export function useUnread(c: Settling): boolean {
+  return useUi((s) => isUnread(s, c));
+}

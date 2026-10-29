@@ -35,7 +35,7 @@ import {
 
 const daemons: TestDaemonNoServer[] = [];
 afterEach(async () => {
-  for (const d of daemons.splice(0)) await d.close();
+  for (const d of daemons.splice(0)) await d.cleanup();
 });
 
 async function daemon() {
@@ -256,7 +256,7 @@ describe('home.get (acceptance 2)', () => {
       done: 2,
       stopped: 0,
     });
-    expect(a.spend).toEqual({ treeUsd: 1.25, limitUsd: 3, estimated: true });
+    expect(a.spend).toEqual({ treeUsd: 1.25, limitUsd: 3, committedUsd: 1.25, estimated: true });
     expect(a.nextRunAt).toBe(f.schedule.nextRunAt);
     expect(a.root.budget).toEqual({ limitUsd: 3, usedUsd: 0 });
 

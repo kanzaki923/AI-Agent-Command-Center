@@ -171,6 +171,13 @@ describe('<AttentionRow>', () => {
     expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: 'ses_q' });
   });
 
+  it('offers no detail toggle when the detail only repeats the title', () => {
+    const failure = attention({ id: 's' }, { kind: 'failure', title: '顧客リストが見つかりません。', detail: '顧客リストが見つかりません。\n' });
+    wrap(<AttentionRow attention={failure} sessionTitle="配信リストの整理" />);
+    expect(screen.getByText('顧客リストが見つかりません。')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '詳細' })).toBeNull();
+  });
+
   it('answers by key when the row has focus', async () => {
     const onRespond = vi.fn();
     wrap(<AttentionRow attention={question} onRespond={onRespond} compact />);
@@ -194,6 +201,15 @@ describe('<CostMeter>', () => {
     expect(screen.getByRole('meter').dataset.tone).toBe('warn');
     rerender(<CostMeter usedUsd={20} limitUsd={20} />);
     expect(screen.getByRole('meter').dataset.tone).toBe('over');
+  });
+
+  it('shows what children still hold as a paler stretch that sets the tone', () => {
+    const { container } = render(<CostMeter usedUsd={3.03} limitUsd={3.4} committedUsd={3.4} />, plain);
+    const m = screen.getByRole('meter');
+    expect(m).toHaveTextContent('$3.03');
+    expect(m.dataset.tone).toBe('over');
+    expect(m.getAttribute('aria-valuetext')).toBe('$3.03 / $3.40・子に渡した分 $0.37');
+    expect(container.querySelector('[data-meter-held]')).not.toBeNull();
   });
 
   it('shows only the amount without a limit, and nothing for nothing', () => {

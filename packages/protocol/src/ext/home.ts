@@ -63,6 +63,12 @@ export const HomeTree = z.object({
   spend: z.object({
     treeUsd: z.number(),
     limitUsd: z.number().nullable(),
+    /**
+     * Spent plus what is handed to children (or held by calls) and not spent yet: the limit
+     * minus what is still free. The tree cannot start more work once it reaches the limit.
+     * Absent without a budget.
+     */
+    committedUsd: z.number().nullable().optional(),
     estimated: z.boolean(),
   }),
   /** Next run of a schedule attached to a session of this tree. */
@@ -255,6 +261,9 @@ export function applyHomeEvent(
         // New spend is today's spend (a day change is picked up by the next home.get).
         snap.totals.spendTodayUsd += p.treeUsd - tree.spend.treeUsd;
         tree.spend.treeUsd = p.treeUsd;
+        if (tree.spend.committedUsd != null) {
+          tree.spend.committedUsd = Math.max(tree.spend.committedUsd, p.treeUsd);
+        }
         tree.spend.estimated = p.treeUsd > 0 && p.source !== 'reported';
         if (tree.spend.estimated) snap.totals.estimated = true;
       }

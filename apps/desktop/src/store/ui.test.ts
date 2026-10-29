@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { migrateUi, normalizeMode, useUi } from './ui';
+import { createUiStore, isUnread, migrateUi, normalizeMode, useUi } from './ui';
 
 describe('editing a sent message (編集して送り直す)', () => {
   beforeEach(() => useUi.setState({ editing: null, drafts: {} }));
@@ -98,5 +98,30 @@ describe('persisted state of the old layout', () => {
     });
     expect(migrateUi({ panelOpen: { focus: true } }, 1)).toEqual({ panelOpen: true });
     expect(migrateUi(null, 0)).toEqual({ panelOpen: true });
+  });
+});
+
+describe('unread conversations', () => {
+  const base = { viewedAt: {}, readBaseline: '2026-10-30T09:00:00.000Z', mode: 'home' as const, focusSessionId: null };
+  const conv = (state: string, stateSince: string) => ({ id: 'ses_a', state, stateSince });
+
+  it('is unread once its answer settles after you last looked, never while open', () => {
+    expect(isUnread(base, conv('idle', '2026-10-30T09:05:00.000Z'))).toBe(true);
+    expect(isUnread(base, conv('done', '2026-10-30T09:05:00.000Z'))).toBe(true);
+    expect(isUnread(base, conv('working', '2026-10-30T09:05:00.000Z'))).toBe(false);
+    expect(isUnread({ ...base, viewedAt: { ses_a: '2026-10-30T09:06:00.000Z' } }, conv('idle', '2026-10-30T09:05:00.000Z'))).toBe(false);
+    expect(isUnread({ ...base, mode: 'session', focusSessionId: 'ses_a' }, conv('idle', '2026-10-30T09:05:00.000Z'))).toBe(false);
+  });
+
+  it('leaves answers from before this store existed alone, and reading clears it', () => {
+    expect(isUnread(base, conv('idle', '2026-10-30T08:00:00.000Z'))).toBe(false);
+    const store = createUiStore();
+    const settled = new Date(Date.now() - 1000).toISOString();
+    store.setState({ readBaseline: new Date(Date.now() - 60_000).toISOString() });
+    const c = conv('idle', settled);
+    expect(isUnread(store.getState(), c)).toBe(true);
+    store.getState().openSession('ses_a');
+    store.getState().goHome();
+    expect(isUnread(store.getState(), c)).toBe(false);
   });
 });

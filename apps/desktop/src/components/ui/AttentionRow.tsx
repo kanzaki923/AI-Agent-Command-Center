@@ -76,6 +76,8 @@ export function AttentionRow({
   const [replying, setReplying] = useState(false);
   const [text, setText] = useState('');
   const [expanded, setExpanded] = useState(false);
+  // A detail that only repeats the title (a one-line failure reason) has nothing to unfold.
+  const detail = attention.detail?.trim() && attention.detail.trim() !== attention.title.trim() ? attention.detail : null;
   const color = KIND_COLOR[attention.kind];
 
   const answer = (a: AttentionAnswer) => {
@@ -128,7 +130,7 @@ export function AttentionRow({
           </button>
         )}
         <span className="min-w-0 flex-1 truncate text-ui text-fg">{attention.title}</span>
-        {attention.detail && (
+        {detail && (
           <Tooltip content={expanded ? '閉じる' : '詳細'}>
             <button
               type="button"
@@ -160,8 +162,8 @@ export function AttentionRow({
           )}
         </span>
       </div>
-      {expanded && attention.detail && (
-        <div className="selectable border-t border-line-subtle px-3 py-2 text-ui whitespace-pre-wrap text-fg-2">{attention.detail}</div>
+      {expanded && detail && (
+        <div className="selectable border-t border-line-subtle px-3 py-2 text-ui whitespace-pre-wrap text-fg-2">{detail}</div>
       )}
       {replying && (
         <div className="flex items-center gap-2 border-t border-line-subtle px-2.5 py-1.5">

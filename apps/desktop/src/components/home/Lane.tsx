@@ -4,10 +4,12 @@ import { motion } from 'motion/react';
 import { useSlowNow } from '../../hooks/useNow';
 import { cn } from '../../lib/cn';
 import { formatNextRun, sessionTitle } from '../../lib/states';
+import { useUnread } from '../../store/ui';
 import { CostMeter } from '../ui/CostMeter';
 import { RoleIcon } from '../ui/SemanticIcons';
 import { SessionChip } from '../ui/SessionChip';
 import { StateIcon } from '../ui/StateIcon';
+import { UnreadDot } from '../ui/UnreadDot';
 import { StateBand } from './StateBand';
 import type { LaneShape } from './layout';
 
@@ -40,6 +42,7 @@ export function Lane({
   const folded = shape.compact || !hasChildren;
   const showRootState = hasChildren ? ROOT_STATE_SHOWN.has(root.state) : root.state !== 'idle';
   const title = sessionTitle(root);
+  const unread = useUnread(root);
 
   return (
     <section aria-label={title} data-lane={root.id} data-compact={shape.compact || undefined} className="flex flex-col gap-2">
@@ -52,12 +55,13 @@ export function Lane({
           onClick={() => onOpen(root.id)}
           className={cn(
             'min-w-0 shrink truncate rounded-sm px-1 text-ui font-medium hover:bg-hover',
-            shape.compact ? 'text-fg-2' : 'text-fg',
+            shape.compact && !unread ? 'text-fg-2' : 'text-fg',
             selectedId === root.id && 'ring-2 ring-[var(--focus-ring)]',
           )}
         >
           {title}
         </button>
+        {unread && <UnreadDot />}
         {showRootState && <StateIcon state={root.state} />}
         {!hasChildren && root.now && root.state === 'working' && (
           <span className="min-w-0 truncate text-meta text-fg-2">{root.now}</span>
@@ -106,7 +110,7 @@ function LaneFacts({ tree, withBand }: { tree: HomeTree; withBand: boolean }) {
         )}
       </span>
       <span className="flex w-[150px] justify-end">
-        <CostMeter usedUsd={tree.spend.treeUsd} limitUsd={tree.spend.limitUsd} estimated={tree.spend.estimated} />
+        <CostMeter usedUsd={tree.spend.treeUsd} limitUsd={tree.spend.limitUsd} committedUsd={tree.spend.committedUsd} estimated={tree.spend.estimated} />
       </span>
     </span>
   );

@@ -6,11 +6,12 @@ import { useRuntime } from '../../daemon/runtime';
 import { useSlowNow } from '../../hooks/useNow';
 import { cn } from '../../lib/cn';
 import { STATE_META, formatNextRun, isAlarm, sessionTitle } from '../../lib/states';
-import { useUi } from '../../store/ui';
+import { useUi, useUnread } from '../../store/ui';
 import { Elapsed } from '../ui/Elapsed';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu';
 import { StateIcon } from '../ui/StateIcon';
 import { Tooltip } from '../ui/Tooltip';
+import { UnreadDot } from '../ui/UnreadDot';
 import { type VisibleRow, childDots, stateCountsLabel } from './model';
 
 /** Left padding of a root row, and the indent of each level (px). */
@@ -148,6 +149,7 @@ export function TreeRow({
   const title = sessionTitle(s);
   const hasChildren = node.children.length > 0;
   const working = s.state === 'working';
+  const unread = useUnread(s) && depth === 0;
 
   return (
     <div
@@ -180,10 +182,11 @@ export function TreeRow({
         }}
       />
       <StateIcon state={s.state} size={ICON} className="pointer-events-none relative" />
-      <span className={cn('pointer-events-none relative min-w-0 flex-1 truncate', depth === 0 && 'font-medium')}>
+      <span className={cn('pointer-events-none relative min-w-0 flex-1 truncate', depth === 0 && 'font-medium', unread && 'text-fg')}>
         {s.pinned && depth === 0 && <Pin size={11} strokeWidth={1.75} className="mr-1 inline text-fg-3" aria-label="ピン留め" />}
         {title}
       </span>
+      {unread && <UnreadDot className="pointer-events-none relative mx-1" />}
       {nextRunAt && <NextRun at={nextRunAt} />}
       {!hasChildren && working && (
         <Elapsed since={s.stateSince} settled={false} live className="pointer-events-none relative" />

@@ -182,8 +182,10 @@ export function FocusHeader({
   const treeSpend = useHomeSelect((s) => s.trees.find((t) => t.root.id === session.id)?.spend ?? null);
   const budget =
     treeSpend?.limitUsd != null
-      ? { limitUsd: treeSpend.limitUsd, usedUsd: treeSpend.treeUsd }
-      : (rel.self?.budget ?? null);
+      ? { limitUsd: treeSpend.limitUsd, usedUsd: treeSpend.treeUsd, committedUsd: treeSpend.committedUsd ?? null }
+      : rel.self?.budget
+        ? { ...rel.self.budget, committedUsd: null }
+        : null;
   const hasChildren = children.length > 0;
   const used = budget ? budget.usedUsd : hasChildren ? session.cost.treeUsd : session.cost.ownUsd;
   const estimated = session.cost.source === 'estimated';
@@ -191,7 +193,7 @@ export function FocusHeader({
   const control = treeControl(session, subtree);
   const meta = STATE_META[session.state];
   const costShown = !!budget || !!formatUsd(used);
-  const meter = <CostMeter usedUsd={used} limitUsd={budget?.limitUsd ?? null} estimated={estimated} />;
+  const meter = <CostMeter usedUsd={used} limitUsd={budget?.limitUsd ?? null} committedUsd={budget?.committedUsd} estimated={estimated} />;
 
   return (
     <header className="shrink-0 border-b border-line-subtle" data-focus-header>
