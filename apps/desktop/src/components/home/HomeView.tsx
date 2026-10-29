@@ -1,148 +1,170 @@
-import type { HomeTree, SessionCard } from '@acc/protocol';
-import { Clock } from 'lucide-react';
-import { useState } from 'react';
-import { startConversation } from '../../daemon/actions';
+import type { Attention, HomeTree } from '@acc/protocol';
+import { motion } from 'motion/react';
+import { useRef, useState } from 'react';
+import { type AttentionAnswer, respondAttention } from '../../daemon/attention';
 import { useHome } from '../../daemon/home';
 import { useRuntime } from '../../daemon/runtime';
-import { useSlowNow } from '../../hooks/useNow';
-import { formatNextRun, sessionTitle, sortByState } from '../../lib/states';
+import { useWindowKeydown } from '../../hooks/useWindowKeydown';
+import { overlayOpen } from '../../lib/overlay';
+import { isTypingTarget } from '../../lib/shortcuts';
+import { sessionTitle } from '../../lib/states';
 import { useUi } from '../../store/ui';
-import { AttentionRow } from '../ui/AttentionRow';
-import { CostMeter } from '../ui/CostMeter';
-import { RoleIcon } from '../ui/SemanticIcons';
-import { SessionChip } from '../ui/SessionChip';
-import { StateIcon } from '../ui/StateIcon';
-
-const ATTENTION_SHOWN = 5;
+import { attentionKeyAction } from '../ui/AttentionRow';
+import { AttentionColumn } from './AttentionColumn';
+import { HomeComposer } from './HomeComposer';
+import { LAYOUT_SPRING, Lane } from './Lane';
+import { homeShape, navOrder, neighbourOf, stepSelection, visibleAttention } from './layout';
+import { useShapeHold } from './useShapeHold';
 
 /**
- * The home screen (spec §3), the app's face. Owned by track U1; this is a minimal working
- * version so the app is usable before it: the attention rows on top, then one lane per tree
- * (heading + its children as chips), and a one-line input at the bottom. No props.
+ * The home screen (spec §3), the app's face: where the human is needed on top, then one lane
+ * per conversation tree (heading with its state band, children as chips; settled trees folded
+ * to their heading), and 何を頼みますか at the bottom. With nothing yet, only that field, in
+ * the middle. Places hold still under the pointer and the keyboard; J / K walk everything,
+ * Enter opens, 1–4 / Y / N answer the selected attention row. No props.
  */
 export function HomeView() {
   const snap = useHome().data;
-  const selectedId = useUi((s) => s.selectedId);
-  const [allAttention, setAllAttention] = useState(false);
   if (!snap) return null;
-  const titles = new Map<string, string>();
-  for (const t of snap.trees) for (const c of [t.root, ...t.nodes]) titles.set(c.id, sessionTitle(c));
   if (snap.trees.length === 0 && snap.attention.length === 0) {
     return (
       <div className="flex h-full items-center justify-center px-8" data-region="main" tabIndex={-1}>
-        <div className="w-full max-w-xl">
-          <AskInput autoFocus />
+        <div className="w-full max-w-xl -translate-y-8">
+          <HomeComposer center />
         </div>
       </div>
     );
   }
-  const many = snap.attention.length > ATTENTION_SHOWN + 1 && !allAttention;
-  const attention = many ? snap.attention.slice(0, ATTENTION_SHOWN) : snap.attention;
+  return <Board trees={snap.trees} attention={snap.attention} />;
+}
+
+function Board({ trees, attention }: { trees: HomeTree[]; attention: Attention[] }) {
+  const rt = useRuntime();
+  const selectedId = useUi((s) => s.selectedId);
+  const openSession = useUi((s) => s.openSession);
+  const [allAttention, setAllAttention] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  const hold = useShapeHold(homeShape({ trees, attention }));
+  const { shown, more } = visibleAttention(attention, allAttention);
+  const attentionIds = shown.map((a) => a.id);
+  const order = navOrder(attentionIds, hold.lanes);
+  const treeById = new Map(trees.map((t) => [t.root.id, t]));
+  const titles = new Map<string, string>();
+  for (const t of trees) for (const c of [t.root, ...t.nodes]) titles.set(c.id, sessionTitle(c));
+
+  /** Put the keyboard where the selection is: an attention row takes focus (it answers its own keys). */
+  const reveal = (id: string) => {
+    requestAnimationFrame(() => {
+      const root = rootRef.current;
+      if (!root) return;
+      const sel = CSS.escape(id);
+      const row = root.querySelector<HTMLElement>(`[data-attention-row="${sel}"]`);
+      if (row) {
+        row.focus({ preventScroll: true });
+        row.scrollIntoView({ block: 'nearest' });
+        return;
+      }
+      if (document.activeElement?.closest('[data-attention-row]')) root.focus({ preventScroll: true });
+      root.querySelector<HTMLElement>(`[data-lane-root="${sel}"], [data-session-chip="${sel}"]`)?.scrollIntoView({ block: 'nearest' });
+    });
+  };
+
+  const selectByKeyboard = (id: string | null) => {
+    useUi.getState().select(id, true);
+    hold.noteKeyboard();
+    if (id) reveal(id);
+  };
+
+  // Answering the selected row moves the selection to the next item waiting for you.
+  const respond = (a: Attention, answer: AttentionAnswer) => {
+    if (useUi.getState().selectedId === a.id) selectByKeyboard(neighbourOf(attentionIds, a.id));
+    void respondAttention(rt, a, answer);
+  };
+
+  useWindowKeydown((e) => {
+    if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (isTypingTarget(e.target) || overlayOpen() || useUi.getState().paletteOpen) return;
+    const key = e.key;
+    if (key === 'j' || key === 'J' || key === 'ArrowDown' || key === 'k' || key === 'K' || key === 'ArrowUp') {
+      e.preventDefault();
+      const dir = key === 'j' || key === 'J' || key === 'ArrowDown' ? 1 : -1;
+      selectByKeyboard(stepSelection(order, selectedId, dir));
+      return;
+    }
+    if (!selectedId || !order.includes(selectedId)) return;
+    const a = shown.find((x) => x.id === selectedId);
+    if (a) {
+      // The row was not focused (it answers its keys itself when it is): hand the key over.
+      const act = attentionKeyAction(a, key);
+      if (!act) {
+        // Nothing to answer by text: Enter opens the conversation it comes from.
+        if (key === 'Enter' && !(e.target instanceof HTMLButtonElement)) {
+          e.preventDefault();
+          openSession(a.sessionId);
+        }
+        return;
+      }
+      e.preventDefault();
+      if (act.kind === 'choice') respond(a, { choiceId: act.choice.id });
+      else {
+        const row = rootRef.current?.querySelector<HTMLElement>(`[data-attention-row="${CSS.escape(a.id)}"]`);
+        row?.focus({ preventScroll: true });
+        row?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      }
+      return;
+    }
+    // A focused button opens itself on Enter.
+    if (key === 'Enter' && !(e.target instanceof HTMLButtonElement)) {
+      e.preventDefault();
+      openSession(selectedId);
+    }
+  });
+
   return (
-    <div className="flex h-full min-h-0 flex-col" data-region="main" tabIndex={-1}>
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-4 pb-6">
-        {attention.length > 0 && (
-          <section aria-label="出番" className="mb-5 flex flex-col gap-1.5">
-            {attention.map((a) => (
-              <AttentionRow key={a.id} attention={a} sessionTitle={titles.get(a.sessionId)} selected={selectedId === a.id} />
-            ))}
-            {many && (
-              <button
-                type="button"
-                onClick={() => setAllAttention(true)}
-                className="self-start rounded-sm px-2 py-0.5 text-meta text-fg-2 hover:bg-hover hover:text-fg"
+    <div className="flex h-full min-h-0 flex-col">
+      <div
+        ref={rootRef}
+        data-region="main"
+        tabIndex={-1}
+        className="min-h-0 flex-1 overflow-y-auto px-6 pt-4 pb-6 outline-none focus-visible:shadow-none"
+        {...hold.bind}
+      >
+        <AttentionColumn
+          shown={shown}
+          more={more}
+          titles={titles}
+          selectedId={selectedId}
+          onRespond={respond}
+          onShowAll={() => setAllAttention(true)}
+        />
+        <div className={shown.length > 0 ? 'mt-5 flex flex-col' : 'flex flex-col'}>
+          {hold.lanes.map((shape, i) => {
+            const tree = treeById.get(shape.id);
+            if (!tree) return null;
+            // Folded lanes sit close together; full lanes get room.
+            const prev = hold.lanes[i - 1];
+            const tight = i > 0 && isFolded(shape, tree) && prev && isFolded(prev, treeById.get(prev.id));
+            return (
+              <motion.div
+                key={shape.id}
+                layout="position"
+                transition={{ layout: LAYOUT_SPRING }}
+                className={i === 0 ? '' : tight ? 'mt-0.5' : 'mt-4'}
               >
-                あと {snap.attention.length - ATTENTION_SHOWN} 件
-              </button>
-            )}
-          </section>
-        )}
-        <div className="flex flex-col gap-4">
-          {snap.trees.map((t) => (
-            <Lane key={t.root.id} tree={t} selectedId={selectedId} />
-          ))}
+                <Lane tree={tree} shape={shape} selectedId={selectedId} onOpen={openSession} />
+              </motion.div>
+            );
+          })}
         </div>
       </div>
       <div className="shrink-0 border-t border-line-subtle px-6 py-3">
-        <AskInput />
+        <HomeComposer />
       </div>
     </div>
   );
 }
 
-function Lane({ tree, selectedId }: { tree: HomeTree; selectedId: string | null }) {
-  const openSession = useUi((s) => s.openSession);
-  const now = useSlowNow();
-  const { root } = tree;
-  const children = sortByState(tree.nodes.filter((n) => n.depth >= 1), (n) => n.state);
-  return (
-    <section aria-label={sessionTitle(root)} className="flex flex-col gap-2">
-      <div className="flex h-7 min-w-0 items-center gap-2">
-        <RoleIcon role={root.role} scheduled={root.startedBy === 'schedule'} className="text-fg-3" />
-        <button
-          type="button"
-          onClick={() => openSession(root.id)}
-          className="min-w-0 truncate rounded-sm px-1 text-ui font-medium text-fg hover:bg-hover"
-        >
-          {sessionTitle(root)}
-        </button>
-        {children.length === 0 && <StateIcon state={root.state} />}
-        {children.length === 0 && root.now && <span className="min-w-0 truncate text-meta text-fg-2">{root.now}</span>}
-        <span className="flex-1" />
-        {tree.nextRunAt && (
-          <span className="flex items-center gap-1 text-meta text-fg-3">
-            <Clock size={12} strokeWidth={1.75} aria-label="次回" />
-            <span className="tabular">{formatNextRun(tree.nextRunAt, now)}</span>
-          </span>
-        )}
-        <CostMeter usedUsd={tree.spend.treeUsd} limitUsd={tree.spend.limitUsd} estimated={tree.spend.estimated} />
-      </div>
-      {children.length > 0 && (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-2">
-          {children.map((c: SessionCard) => (
-            <SessionChip key={c.id} card={c} selected={selectedId === c.id} onOpen={openSession} />
-          ))}
-          {tree.hiddenNodes > 0 && (
-            <button
-              type="button"
-              onClick={() => openSession(root.id)}
-              className="flex h-[66px] items-center justify-center rounded-md border border-dashed border-line text-ui text-fg-2 hover:bg-hover"
-            >
-              +{tree.hiddenNodes}
-            </button>
-          )}
-        </div>
-      )}
-    </section>
-  );
-}
-
-/** 何を頼みますか: Enter starts a conversation and stays here; Ctrl+Enter opens it. */
-function AskInput({ autoFocus = false }: { autoFocus?: boolean }) {
-  const rt = useRuntime();
-  const [text, setText] = useState('');
-  const send = async (open: boolean) => {
-    const t = text.trim();
-    if (!t) return;
-    setText('');
-    const s = await startConversation(rt, { text: t, projectId: useUi.getState().projectId });
-    if (s && open) useUi.getState().openSession(s.id);
-  };
-  return (
-    <input
-      autoFocus={autoFocus}
-      value={text}
-      placeholder="何を頼みますか"
-      aria-label="何を頼みますか"
-      onChange={(e) => setText(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          void send(e.ctrlKey || e.metaKey);
-        }
-      }}
-      className="h-10 w-full rounded-md border border-line bg-surface px-3 text-chat text-fg placeholder:text-fg-4 focus:border-[var(--focus-ring)]"
-    />
-  );
+function isFolded(shape: { compact: boolean; chips: string[] }, tree: HomeTree | undefined): boolean {
+  return shape.compact || (shape.chips.length === 0 && (tree?.hiddenNodes ?? 0) === 0);
 }
