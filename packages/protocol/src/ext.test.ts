@@ -424,6 +424,10 @@ const samples: Record<string, { params: unknown; result: unknown }> = {
       releasedAt: null,
     },
   },
+  'cost.raiseDaily': {
+    params: { addUsd: 10 },
+    result: { limitUsd: 30, usedTodayUsd: 20.5, raisedTodayUsd: 10, day: '2026-10-29' },
+  },
   'session.setBudget': {
     params: { sessionId: id('session'), limitUsd: null },
     result: { budget: null },
@@ -538,6 +542,7 @@ describe('ext methods', () => {
       'session.undelegate',
       'attention.dismiss',
       'budget.raise',
+      'cost.raiseDaily',
       'session.setBudget',
       'home.get',
       'project.inspectFolder',

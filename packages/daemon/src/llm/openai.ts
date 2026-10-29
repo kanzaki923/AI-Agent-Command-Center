@@ -11,6 +11,7 @@ import {
   type PricingLookup,
   abortError,
   isAbortError,
+  sleep,
 } from './types';
 
 export interface LiteLlmConnection {
@@ -25,6 +26,46 @@ export interface OpenAiProviderOptions {
   pricing?: PricingLookup;
   /** No bytes from LiteLLM for this long aborts the call (default 5 min). */
   idleTimeoutMs?: number;
+  /** Retries of calls that failed before any token arrived (429 / 5xx / connection). */
+  retry?: RetryOptions;
+}
+
+export interface RetryOptions {
+  /** Default 2. */
+  maxRetries?: number;
+  /** Wait before the first retry without Retry-After, doubled each time (default 1 s). */
+  baseDelayMs?: number;
+  /** Longest wait; a Retry-After beyond it is not waited for (default 20 s). */
+  maxDelayMs?: number;
+  /** Injectable for tests. */
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+}
+
+/**
+ * How long to wait before retrying a failed call, or null when it must not be retried: only
+ * a 429 / 5xx answer or a failed connection (LiteLLM's key budget, auth and bad requests are
+ * not), at most `maxRetries` times, honouring Retry-After up to `maxDelayMs`.
+ */
+export function retryDelayMs(err: unknown, attempt: number, o: RetryOptions = {}): number | null {
+  if (!(err instanceof LlmError) || attempt >= (o.maxRetries ?? 2)) return null;
+  const retryable =
+    err.code === 'llm_unreachable' ||
+    (err.code === 'llm_http_error' &&
+      err.status !== undefined &&
+      (err.status === 429 || err.status >= 500));
+  if (!retryable) return null;
+  const max = o.maxDelayMs ?? 20_000;
+  if (err.retryAfterMs !== undefined) return err.retryAfterMs <= max ? err.retryAfterMs : null;
+  return Math.min(max, (o.baseDelayMs ?? 1000) * 2 ** attempt);
+}
+
+/** `Retry-After`: seconds or an HTTP date. */
+export function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
+  if (!value) return undefined;
+  const secs = Number(value.trim());
+  if (Number.isFinite(secs) && secs >= 0) return Math.round(secs * 1000);
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? Math.max(0, at - now) : undefined;
 }
 
 /** LiteLLM puts the computed cost of a call in this response header. */
@@ -257,7 +298,30 @@ export class OpenAiCompatibleProvider implements LlmProvider {
     this.fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
+  /**
+   * One model call. A call that fails before anything arrived (429 / 5xx / no connection) is
+   * retried up to twice, honouring Retry-After (LiteLLM's own retries cover the upstream; this
+   * covers LiteLLM itself and what it gives up on). Once a token arrived it is never retried.
+   */
   async *stream(req: ChatRequest, signal: AbortSignal): AsyncIterable<LlmStreamEvent> {
+    const retry = this.opts.retry ?? {};
+    for (let attempt = 0; ; attempt++) {
+      let received = false;
+      try {
+        for await (const ev of this.attempt(req, signal)) {
+          received = true;
+          yield ev;
+        }
+        return;
+      } catch (err) {
+        const wait = received || signal.aborted ? null : retryDelayMs(err, attempt, retry);
+        if (wait === null) throw err;
+        await (retry.sleep ?? sleep)(wait, signal);
+      }
+    }
+  }
+
+  private async *attempt(req: ChatRequest, signal: AbortSignal): AsyncIterable<LlmStreamEvent> {
     const { baseUrl, apiKey } = this.opts.connection();
     if (!baseUrl) {
       throw new LlmError(
@@ -305,7 +369,7 @@ export class OpenAiCompatibleProvider implements LlmProvider {
         });
         if (!res.ok) {
           const body = await res.text().catch(() => '');
-          throw httpError(res.status, body);
+          throw httpError(res.status, body, parseRetryAfter(res.headers.get('retry-after')));
         }
       } catch (err) {
         if (err instanceof LlmError) throw err;
@@ -383,7 +447,7 @@ function statusHint(status: number): string | null {
 }
 
 /** LlmError for a non-2xx answer, with LiteLLM's wrapping removed and the key masked. */
-export function httpError(status: number, body: string): LlmError {
+export function httpError(status: number, body: string, retryAfterMs?: number): LlmError {
   let raw = body;
   try {
     const parsed = JSON.parse(body) as { error?: { message?: unknown } | string };
@@ -393,15 +457,24 @@ export function httpError(status: number, body: string): LlmError {
   } catch {
     // plain text body
   }
-  const info = describeGatewayError(raw);
+  const described = describeGatewayError(raw);
+  const info =
+    described.kind === null && /"type"\s*:\s*"budget_exceeded"/.test(body)
+      ? { ...described, kind: 'quota_exceeded' as const }
+      : described;
   let detail = info.message.replace(/sk-[A-Za-z0-9_-]{6,}/g, 'sk-…').trim();
   if (detail.length > 300) detail = `${detail.slice(0, 300)}…`;
   const hint = gatewayErrorHint(info) ?? statusHint(status);
   const head = `LLM の呼び出しに失敗しました（HTTP ${status}）`;
   const message = [hint ? `${head}。${hint}` : head, detail].filter(Boolean).join(': ');
   return new LlmError(
-    info.kind === 'model_not_found' ? 'llm_model_not_found' : 'llm_http_error',
+    info.kind === 'model_not_found'
+      ? 'llm_model_not_found'
+      : info.kind === 'quota_exceeded'
+        ? 'llm_quota_exceeded'
+        : 'llm_http_error',
     message,
     status,
+    retryAfterMs,
   );
 }

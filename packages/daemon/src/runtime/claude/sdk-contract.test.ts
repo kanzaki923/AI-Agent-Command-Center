@@ -37,6 +37,7 @@ import {
 } from './contract/scenarios';
 import { AUTO_MODE_SETTINGS, MemoryBaselineStore, type ClaudeSdkModule } from './runtime';
 import { GATE_NOTES, type ToolDecisionRecord, ToolGate } from '../gate';
+import { builtinPrice } from '../../llm/pricing';
 
 const cli = process.env.ACC_SKIP_SDK_CONTRACT ? null : locateBundledCli();
 const TIMEOUT = 60_000;
@@ -52,8 +53,12 @@ afterAll(async () => {
   await Promise.all(sandboxes.map((s) => s.cleanup()));
 });
 
-async function play(name: ScenarioName, extra?: Parameters<typeof playScenario>[3]) {
-  const { sb, result } = await playScenario(scenarios[name], cli!.path, real, extra);
+async function play(
+  name: ScenarioName,
+  extra?: Parameters<typeof playScenario>[3],
+  run?: Parameters<typeof playScenario>[4],
+) {
+  const { sb, result } = await playScenario(scenarios[name], cli!.path, real, extra, run);
   sandboxes.push(sb);
   // Isolation: nothing but the fake API was contacted.
   expect(sb.proxy.attempts).toEqual([]);
@@ -99,6 +104,7 @@ describe.skipIf(!cli).concurrent('Claude Agent SDK contract (real CLI, fake API)
       expect(usage(r)).toEqual([
         {
           type: 'usage',
+          phase: 'final',
           usage: {
             inputTokens: 2000,
             outputTokens: 30,
@@ -378,6 +384,99 @@ describe.skipIf(!cli).concurrent('Claude Agent SDK contract (real CLI, fake API)
       expect(baselines.get(sid)).toMatchObject({ inputTokens: 1000 + 2000 + 4000 + 8000 + 32000 });
     },
   );
+
+  /**
+   * Spec 20261029 §7.2 Q1: `maxBudgetUsd` counts only the spend of this query() — also when it
+   * resumes a session whose saved total is already above the cap — and is checked after each
+   * API call (so a run can overshoot by its last call). We therefore pass "what this run may
+   * still spend" (runs/usage.ts spendCapUsd) and stop on our own estimates as well.
+   */
+  it(
+    'maxBudgetUsd caps the spend of this query only, also on resume (Q1)',
+    { timeout: TIMEOUT },
+    async () => {
+      const sb = await createCliSandbox();
+      sandboxes.push(sb);
+      const baselines = new MemoryBaselineStore();
+      const read = (inTok: number) => () => ({
+        content: [
+          {
+            type: 'tool_use' as const,
+            name: 'Read',
+            input: { file_path: join(sb.repo, 'README.md') },
+          },
+        ],
+        usage: { input_tokens: inTok, output_tokens: 10 },
+      });
+      const done = (inTok: number) => () => ({
+        content: [{ type: 'text' as const, text: 'done' }],
+        usage: { input_tokens: inTok, output_tokens: 10 },
+      });
+      // $0.03 per call (claude-sonnet-4-5, 10k input tokens): over $0.05 after the 2nd call.
+      sb.api.script([read(10_000), read(10_000), read(10_000), done(10_000)]);
+      const before = sb.api.mainRequests.length;
+      const r1 = await runScenario(sb, cli!.path, real, {
+        prompt: 'x',
+        maxBudgetUsd: 0.05,
+        runtime: { baselines } as never,
+      });
+      expect(sb.api.mainRequests.length - before).toBe(2);
+      expect(resultMsg(r1)).toMatchObject({
+        subtype: 'error_max_budget_usd',
+        terminal_reason: 'budget_exhausted',
+        errors: ['Reached maximum budget ($0.05)'],
+      });
+      expect(resultMsg(r1)?.total_cost_usd).toBeGreaterThan(0.05);
+      expect(r1.error).toBe('予算の上限に達したため停止しました: Reached maximum budget ($0.05)');
+      expect(r1.options[0]?.maxBudgetUsd).toBe(0.05);
+      // The spend up to the cap is still reported.
+      expect(usage(r1)).toHaveLength(1);
+
+      // Resumed with the session's saved total ($0.06) above the same cap: not refused.
+      const sid = (r1.events.find((e) => e.type === 'session') as { runtimeSessionId: string })
+        .runtimeSessionId;
+      sb.api.script([read(1000), done(1000)]);
+      const b2 = sb.api.mainRequests.length;
+      const r2 = await runScenario(sb, cli!.path, real, {
+        prompt: 'y',
+        maxBudgetUsd: 0.05,
+        resumeSessionId: sid,
+        runtime: { baselines } as never,
+      });
+      expect(r2.error).toBeNull();
+      expect(sb.api.mainRequests.length - b2).toBe(2);
+      expect(resultMsg(r2)).toMatchObject({ subtype: 'success' });
+      expect(resultMsg(r2)?.total_cost_usd).toBeGreaterThan(0.06);
+    },
+  );
+
+  it(
+    'estimates every API call while the turn runs and the result replaces them',
+    { timeout: TIMEOUT },
+    async () => {
+      const prices = (m: string | null) => builtinPrice(m ?? '');
+      const { r } = await play('editInside', undefined, {
+        runtime: { pricing: prices } as never,
+      });
+      expect(r.error).toBeNull();
+      const all = usage(r);
+      const estimates = all.filter((u) => u.phase === 'estimate');
+      const final = all.filter((u) => u.phase === 'final');
+      expect(final).toHaveLength(1);
+      // One estimate or more per API call (3 calls), each call counted once.
+      expect(estimates.length).toBeGreaterThanOrEqual(3);
+      const sum = (k: 'inputTokens' | 'outputTokens' | 'costUsd') =>
+        estimates.reduce((n, u) => n + (u.usage[k] ?? 0), 0);
+      expect(sum('inputTokens')).toBe(final[0]!.usage.inputTokens);
+      expect(sum('outputTokens')).toBe(final[0]!.usage.outputTokens);
+      // Our table prices claude-sonnet-4-5 like the CLI does.
+      expect(sum('costUsd')).toBeCloseTo(final[0]!.usage.costUsd!, 9);
+      // The first estimate arrives before the first tool runs.
+      const firstEstimate = r.events.findIndex((e) => e.type === 'usage');
+      const firstResult = r.events.findIndex((e) => e.type === 'tool_result');
+      expect(firstEstimate).toBeLessThan(firstResult);
+    },
+  );
 });
 
 /**
@@ -595,12 +694,10 @@ describe.skipIf(!cli).concurrent('Claude Agent SDK contract: layered permissions
       expect(r.asked).toEqual([]);
       expect(toolResults(r).map((t) => t.isError)).toEqual([false, true]);
       expect(toolResults(r)[1]?.text).toContain('push');
-      expect(decisions.map((d) => [d.toolName, d.decision, d.decidedBy, d.rule, d.judge])).toEqual(
-        [
-          ['Bash', 'allowed', 'classifier', null, 'client'],
-          ['Bash', 'denied', 'rule', 'publish_remote', undefined],
-        ],
-      );
+      expect(decisions.map((d) => [d.toolName, d.decision, d.decidedBy, d.rule, d.judge])).toEqual([
+        ['Bash', 'allowed', 'classifier', null, 'client'],
+        ['Bash', 'denied', 'rule', 'publish_remote', undefined],
+      ]);
     },
   );
 

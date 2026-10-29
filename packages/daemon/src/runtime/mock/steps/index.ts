@@ -11,6 +11,7 @@ import { appendStep, writeStep } from './edit';
 import { resolveStep } from './resolve';
 import { runStep } from './run';
 import { sayStep } from './say';
+import { usageStep } from './usage';
 
 export const STEP_HANDLERS: { [T in MockStepType]: StepHandler<T> } = {
   say: sayStep,
@@ -22,6 +23,7 @@ export const STEP_HANDLERS: { [T in MockStepType]: StepHandler<T> } = {
   ask: askStep,
   sleep: sleepStep,
   fail: failStep,
+  usage: usageStep,
 };
 
 export { editFile } from './edit';

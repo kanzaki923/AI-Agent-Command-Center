@@ -11,6 +11,7 @@ import {
 import type { BudgetReservation, BudgetService } from '../contracts';
 import type { DaemonContext } from '../core/context';
 import { budgetExceeded, conflict, forbidden, invalidParams } from '../core/errors';
+import { KeyedThrottle } from '../cost/throttle';
 
 /**
  * Amounts are kept as integer micro-dollars internally so that many small reservations
@@ -40,6 +41,15 @@ export function freeUsd(b: BudgetAllocation): number {
 
 const SYSTEM_ACTOR: Actor = { kind: 'system', component: 'budget' };
 
+/** `budget.threshold` percentages (of the limit, spend of the budget and its descendants). */
+const THRESHOLDS = [50, 80, 100] as const;
+
+/** Changes of `reserved` / `spent` applied by `applySpend`. */
+interface SpendDelta {
+  reserved?: number;
+  spent?: number;
+}
+
 /**
  * Budget tree (architecture.md §2.5), `ctx.service('budget')`.
  *
@@ -51,9 +61,32 @@ const SYSTEM_ACTOR: Actor = { kind: 'system', component: 'budget' };
  *
  * Release returns the free amount to the parent; the spent part stays counted in the
  * parent's `allocatedUsd` (it was given to that child and consumed).
+ *
+ * Overruns are carried up (spec 20261029 §3.8-6): whatever a budget spends beyond its limit is
+ * added to its parent's `allocatedUsd`, and so on to the root, so a parent always accounts
+ * for what its children really consumed. A budget can spend only while it and every ancestor
+ * have room (`available`): once the root is over, the whole tree stops.
+ *
+ * Events: `budget.updated` for create / allocate / release / raise, and for spend at most
+ * once a second per budget (not for reservations); `budget.threshold` when the spend of a
+ * budget and its descendants crosses 50 / 80 / 100 % of its limit.
  */
 export class BudgetManager implements BudgetService {
-  constructor(private readonly ctx: DaemonContext) {}
+  /** Spend-driven budget.updated, at most once a second per budget (spec §2.3). */
+  private readonly spendEvents: KeyedThrottle;
+
+  constructor(private readonly ctx: DaemonContext) {
+    this.spendEvents = new KeyedThrottle(ctx.clock);
+    ctx.onClose(() => {
+      this.spendEvents.flush();
+      this.spendEvents.close();
+    });
+  }
+
+  /** Emit pending spend updates now (tests). */
+  flushEvents(): void {
+    this.spendEvents.flush();
+  }
 
   get(budgetId: string): BudgetAllocation {
     return this.ctx.repos.budgets.require(budgetId);
@@ -212,7 +245,7 @@ export class BudgetManager implements BudgetService {
       const budget = ctx.repos.budgets.require(budgetId);
       this.assertActive(budget);
       const amount = toMicro(amountUsd);
-      const free = freeMicro(budget);
+      const free = this.availableMicro(budget).free;
       if (amount > free) {
         throw budgetExceeded(
           `budget ${budget.id} has $${fromMicro(Math.max(0, free))} left; cannot reserve $${fromMicro(amount)}`,
@@ -228,8 +261,7 @@ export class BudgetManager implements BudgetService {
         'INSERT INTO budget_reservations (id, budget_id, amount_micro, status, created_at) VALUES (?, ?, ?, ?, ?)',
         [id, budget.id, amount, 'pending', ctx.clock.iso()],
       );
-      const next = this.adjust(budget.id, { reserved: amount });
-      this.emit(next, SYSTEM_ACTOR, 'reserved');
+      this.applySpend(budget.id, { reserved: amount });
       return { id, budgetId: budget.id, amountUsd: fromMicro(amount) };
     });
   }
@@ -239,11 +271,11 @@ export class BudgetManager implements BudgetService {
     const { ctx } = this;
     ctx.db.transaction(() => {
       const row = this.takeReservation(reservation, 'settled');
-      const next = this.adjust(row.budget_id, {
-        reserved: -row.amount_micro,
-        spent: toMicro(actualUsd),
-      });
-      this.emit(next, SYSTEM_ACTOR, freeMicro(next) < 0 ? 'settled_over_budget' : 'settled');
+      this.applySpend(
+        row.budget_id,
+        { reserved: -row.amount_micro, spent: toMicro(actualUsd) },
+        'settled',
+      );
     });
   }
 
@@ -251,8 +283,7 @@ export class BudgetManager implements BudgetService {
     const { ctx } = this;
     ctx.db.transaction(() => {
       const row = this.takeReservation(reservation, 'cancelled');
-      const next = this.adjust(row.budget_id, { reserved: -row.amount_micro });
-      this.emit(next, SYSTEM_ACTOR, 'reservation_cancelled');
+      this.applySpend(row.budget_id, { reserved: -row.amount_micro });
     });
   }
 
@@ -263,8 +294,153 @@ export class BudgetManager implements BudgetService {
     ctx.db.transaction(() => {
       const budget = ctx.repos.budgets.require(budgetId);
       this.assertActive(budget);
-      const next = this.adjust(budget.id, { spent: toMicro(amountUsd) });
-      this.emit(next, SYSTEM_ACTOR, freeMicro(next) < 0 ? 'spent_over_budget' : 'spent');
+      this.applySpend(budget.id, { spent: toMicro(amountUsd) }, 'spent');
+    });
+  }
+
+  adjustSpend(budgetId: string, deltaUsd: number): void {
+    if (!Number.isFinite(deltaUsd)) throw invalidParams('deltaUsd must be a finite amount (USD)');
+    const delta = toMicro(deltaUsd);
+    if (delta === 0) return;
+    const { ctx } = this;
+    ctx.db.transaction(() => {
+      const budget = ctx.repos.budgets.require(budgetId);
+      // Spend never goes below zero.
+      const d = Math.max(delta, -toMicro(budget.spentUsd));
+      if (budget.status === 'released') {
+        // Its consumed part already sits in the parent's allocation: move that with it.
+        this.applySpend(budget.id, { spent: d }, 'adjusted', { carry: false });
+        this.carryOver(budget.parentId, d);
+        return;
+      }
+      this.applySpend(budget.id, { spent: d }, 'adjusted');
+    });
+  }
+
+  raise(budgetId: string, addUsd: number, actor: Actor): BudgetAllocation {
+    if (actor.kind === 'agent') throw forbidden('予算を増やせるのは人間だけです');
+    this.assertAmount(addUsd, 'addUsd', true);
+    const { ctx } = this;
+    return ctx.db.transaction(() => {
+      const budget = ctx.repos.budgets.require(budgetId);
+      this.assertActive(budget);
+      return this.raiseBy(budget, toMicro(addUsd), actor);
+    });
+  }
+
+  /**
+   * Raise `budget`'s limit by `add` micro-dollars. A child takes from its parent what its
+   * overrun does not already cover (an overrun was carried up into the parent's allocation),
+   * raising the parent first when it has not enough free.
+   */
+  private raiseBy(budget: BudgetAllocation, add: number, actor: Actor): BudgetAllocation {
+    const { ctx } = this;
+    const now = ctx.clock.iso();
+    if (budget.parentId) {
+      const covered = Math.min(add, Math.max(0, -freeMicro(budget)));
+      const need = add - covered;
+      let parent = ctx.repos.budgets.require(budget.parentId);
+      this.assertActive(parent);
+      const free = this.availableMicro(parent).free;
+      if (need > free) parent = this.raiseBy(parent, need - Math.max(0, free), actor);
+      // `covered` moves from "carried overrun" to "allocated within the limit": no change.
+      if (need > 0) {
+        parent = ctx.repos.budgets.update(parent.id, (b) => ({
+          ...b,
+          allocatedUsd: fromMicro(toMicro(b.allocatedUsd) + need),
+          updatedAt: now,
+        }));
+        this.emit(parent, actor, 'allocated_to_child');
+      }
+    }
+    const raised = ctx.repos.budgets.update(budget.id, (b) => ({
+      ...b,
+      limitUsd: fromMicro(toMicro(b.limitUsd) + add),
+      updatedAt: now,
+    }));
+    this.emit(raised, actor, 'raised');
+    return raised;
+  }
+
+  /**
+   * Set a budget's limit (`session.setBudget`). Raising goes through `raise`; lowering gives
+   * the difference back to the parent (never below what is already committed).
+   */
+  setLimit(budgetId: string, limitUsd: number, actor: Actor): BudgetAllocation {
+    if (actor.kind === 'agent') throw forbidden('予算を変えられるのは人間だけです');
+    this.assertAmount(limitUsd, 'limitUsd', true);
+    const { ctx } = this;
+    return ctx.db.transaction(() => {
+      const budget = ctx.repos.budgets.require(budgetId);
+      this.assertActive(budget);
+      const target = toMicro(limitUsd);
+      const cur = toMicro(budget.limitUsd);
+      if (target === cur) return budget;
+      if (target > cur) return this.raiseBy(budget, target - cur, actor);
+      const committed = cur - Math.max(0, freeMicro(budget));
+      const next = Math.max(target, committed);
+      const give = cur - next;
+      if (give <= 0) return budget;
+      const now = ctx.clock.iso();
+      if (budget.parentId) {
+        const parent = ctx.repos.budgets.update(budget.parentId, (b) => ({
+          ...b,
+          allocatedUsd: fromMicro(Math.max(0, toMicro(b.allocatedUsd) - give)),
+          updatedAt: now,
+        }));
+        this.emit(parent, actor, 'returned_from_child');
+      }
+      const lowered = ctx.repos.budgets.update(budget.id, (b) => ({
+        ...b,
+        limitUsd: fromMicro(next),
+        updatedAt: now,
+      }));
+      this.emit(lowered, actor, 'lowered');
+      return lowered;
+    });
+  }
+
+  available(budgetId: string): { freeUsd: number; limitedBy: string } {
+    const r = this.availableMicro(this.ctx.repos.budgets.require(budgetId));
+    return { freeUsd: fromMicro(r.free), limitedBy: r.limitedBy };
+  }
+
+  /** Own free, capped by any ancestor that is over its limit. */
+  private availableMicro(budget: BudgetAllocation): { free: number; limitedBy: string } {
+    let free = freeMicro(budget);
+    let limitedBy = budget.id;
+    const seen = new Set([budget.id]);
+    for (
+      let p = budget.parentId ? this.ctx.repos.budgets.get(budget.parentId) : undefined;
+      p && !seen.has(p.id);
+      p = p.parentId ? this.ctx.repos.budgets.get(p.parentId) : undefined
+    ) {
+      seen.add(p.id);
+      const pf = freeMicro(p);
+      if (pf < 0 && pf < free) {
+        free = pf;
+        limitedBy = p.id;
+      }
+    }
+    return { free, limitedBy };
+  }
+
+  reallocate(budgetId: string, actor: Actor): BudgetAllocation | null {
+    const { ctx } = this;
+    return ctx.db.transaction(() => {
+      const budget = ctx.repos.budgets.require(budgetId);
+      if (budget.status === 'active') return budget;
+      if (!budget.parentId) return null;
+      const parent = ctx.repos.budgets.get(budget.parentId);
+      if (!parent || parent.status !== 'active') return null;
+      const amount = Math.min(toMicro(budget.limitUsd), this.availableMicro(parent).free);
+      if (amount <= 0) return null;
+      return this.allocate({
+        parentId: parent.id,
+        subject: budget.subject,
+        limitUsd: fromMicro(amount),
+        actor,
+      });
     });
   }
 
@@ -280,7 +456,8 @@ export class BudgetManager implements BudgetService {
     for (const r of rows) {
       ctx.db.transaction(() => {
         ctx.db.run("UPDATE budget_reservations SET status = 'cancelled' WHERE id = ?", [r.id]);
-        const next = this.adjust(r.budget_id, { reserved: -r.amount_micro });
+        // Rare and worth seeing (unlike a reservation of a live call).
+        const next = this.applySpend(r.budget_id, { reserved: -r.amount_micro });
         this.emit(next, SYSTEM_ACTOR, 'daemon_restart');
       });
     }
@@ -377,14 +554,114 @@ export class BudgetManager implements BudgetService {
     return row;
   }
 
-  private adjust(budgetId: string, d: { reserved?: number; spent?: number }): BudgetAllocation {
-    const now = this.ctx.clock.iso();
-    return this.ctx.repos.budgets.update(budgetId, (b) => ({
+  /**
+   * Change a budget's reserved / spent amounts, carry an overrun change up to the parent,
+   * announce crossed thresholds, and (for spend, when `reason` is given) a throttled
+   * budget.updated. Reservations alone emit nothing.
+   */
+  private applySpend(
+    budgetId: string,
+    d: SpendDelta,
+    reason?: string,
+    opts: { carry?: boolean } = {},
+  ): BudgetAllocation {
+    const { ctx } = this;
+    const now = ctx.clock.iso();
+    const before = ctx.repos.budgets.require(budgetId);
+    const next = ctx.repos.budgets.update(budgetId, (b) => ({
       ...b,
       reservedUsd: fromMicro(Math.max(0, toMicro(b.reservedUsd) + (d.reserved ?? 0))),
-      spentUsd: fromMicro(toMicro(b.spentUsd) + (d.spent ?? 0)),
+      spentUsd: fromMicro(Math.max(0, toMicro(b.spentUsd) + (d.spent ?? 0))),
       updatedAt: now,
     }));
+    if (opts.carry !== false && next.status === 'active') {
+      const overBefore = Math.max(0, -freeMicro(before));
+      const overAfter = Math.max(0, -freeMicro(next));
+      this.carryOver(next.parentId, overAfter - overBefore);
+    }
+    const spent = toMicro(next.spentUsd) - toMicro(before.spentUsd);
+    if (spent > 0) this.announceThresholds(next, spent);
+    if (reason && spent !== 0) {
+      const id = next.id;
+      this.spendEvents.touch(
+        id,
+        () => this.emit(next, SYSTEM_ACTOR, freeMicro(next) < 0 ? `${reason}_over_budget` : reason),
+        () =>
+          ctx.db.transaction(() => {
+            const latest = ctx.repos.budgets.get(id);
+            if (latest) this.emit(latest, SYSTEM_ACTOR, 'spent');
+          }),
+      );
+    }
+    return next;
+  }
+
+  /** Add a child's overrun change to the parent's allocation, and on up while it overflows. */
+  private carryOver(parentId: string | null, delta: number): void {
+    if (!parentId || delta === 0) return;
+    const { ctx } = this;
+    const before = ctx.repos.budgets.get(parentId);
+    if (!before) return;
+    const next = ctx.repos.budgets.update(parentId, (b) => ({
+      ...b,
+      allocatedUsd: fromMicro(Math.max(0, toMicro(b.allocatedUsd) + delta)),
+      updatedAt: ctx.clock.iso(),
+    }));
+    const overBefore = Math.max(0, -freeMicro(before));
+    const overAfter = Math.max(0, -freeMicro(next));
+    this.carryOver(next.parentId, overAfter - overBefore);
+  }
+
+  /** Spend of a budget and all its descendants (released ones included), in micro-dollars. */
+  treeSpentMicro(budget: BudgetAllocation, seen = new Set<string>()): number {
+    if (seen.has(budget.id)) return 0;
+    seen.add(budget.id);
+    let n = toMicro(budget.spentUsd);
+    for (const c of this.children(budget.id)) n += this.treeSpentMicro(c, seen);
+    return n;
+  }
+
+  /** `budget.threshold` for this budget and each ancestor whose tree spend crossed a mark. */
+  private announceThresholds(budget: BudgetAllocation, added: number): void {
+    const seen = new Set<string>();
+    for (
+      let b: BudgetAllocation | undefined = budget;
+      b && !seen.has(b.id);
+      b = b.parentId ? this.ctx.repos.budgets.get(b.parentId) : undefined
+    ) {
+      seen.add(b.id);
+      const limit = toMicro(b.limitUsd);
+      if (limit <= 0) continue;
+      const after = this.treeSpentMicro(b);
+      const before = after - added;
+      for (const pct of THRESHOLDS) {
+        const mark = (limit * pct) / 100;
+        if (before < mark && after >= mark) {
+          this.ctx.bus.emit({
+            type: 'budget.threshold',
+            actor: SYSTEM_ACTOR,
+            payload: { budgetId: b.id, rootSessionId: this.rootSessionOf(b), pct },
+            refs: refsForSubject(b.subject),
+          });
+        }
+      }
+    }
+  }
+
+  /** The session tree a budget belongs to (its subject's session), if any. */
+  private rootSessionOf(b: BudgetAllocation): string | null {
+    const { repos } = this.ctx;
+    const { kind, id } = b.subject;
+    if (!id) return null;
+    const sessionId =
+      kind === 'session'
+        ? id
+        : kind === 'run'
+          ? repos.runs.get(id)?.sessionId
+          : kind === 'task'
+            ? repos.tasks.get(id)?.assigneeSessionId
+            : null;
+    return sessionId ? (repos.sessions.get(sessionId)?.rootSessionId ?? null) : null;
   }
 
   private emit(budget: BudgetAllocation, actor: Actor, reason: string): void {

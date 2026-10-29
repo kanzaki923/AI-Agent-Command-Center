@@ -2,6 +2,7 @@ import type { ContentPart } from '@acc/protocol';
 import type { AgentEvent } from '../../contracts';
 import { asRecord, asString, describeToolActivity } from '../tools';
 import { describeGatewayError, gatewayErrorHint } from '../../llm/gatewayErrors';
+import { type ModelPrice, costOf } from '../../llm/pricing';
 
 /**
  * Claude Agent SDK message stream -> AgentEvent (see
@@ -17,7 +18,25 @@ export interface UsageTotals {
 }
 export const ZERO_TOTALS: UsageTotals = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
 
-export type TurnOutcome = { ok: true } | { ok: false; message: string };
+/**
+ * `code` of a failed turn: `budget_exceeded` (the `maxBudgetUsd` cap stopped it) and
+ * `llm_quota_exceeded` (LiteLLM's own key budget) are told apart from other failures.
+ */
+export type TurnOutcome =
+  { ok: true } | { ok: false; message: string; code?: 'budget_exceeded' | 'llm_quota_exceeded' };
+
+/** Token counts of one API call seen so far (the max of what every message reported). */
+interface CallUsage {
+  model: string | null;
+  input: number;
+  cacheRead: number;
+  cacheWrite: number;
+  output: number;
+  /** Already reported as estimates. */
+  sentMicro: number;
+  sentIn: number;
+  sentOut: number;
+}
 
 const RESULT_ERRORS: Record<string, string> = {
   error_max_turns: 'ターン数の上限に達したため停止しました',
@@ -126,6 +145,13 @@ export interface NormalizerOptions {
    * classifier decision is the CLI's own classifier.
    */
   serverJudge?: boolean;
+  /**
+   * Prices for live estimates (spec 20261029 §3.8-2). With it, each API call's token counts
+   * (`message_start` / `message_delta` stream events and assistant messages, the same message
+   * id counted once) are reported as `usage` with `phase: 'estimate'` while the turn runs; the
+   * result's cost is reported as `phase: 'final'` and replaces them.
+   */
+  price?: (model: string | null) => ModelPrice | null;
 }
 
 export class ClaudeMessageNormalizer {
@@ -159,6 +185,10 @@ export class ClaudeMessageNormalizer {
   private totals: UsageTotals;
   /** Tool uses the server review evaluated (`safeguard_results`, undocumented). */
   private readonly serverEvaluated = new Set<string>();
+  /** Usage per API message id (estimates). */
+  private readonly calls = new Map<string, CallUsage>();
+  /** The API message streaming now, per agent (main = '', sub-agents by parent tool use id). */
+  private readonly streaming = new Map<string, string>();
 
   constructor(
     private readonly cwd: string,
@@ -186,6 +216,8 @@ export class ClaudeMessageNormalizer {
     }
     const parent = msg.parent_tool_use_id;
     const isSubagent = typeof parent === 'string' && parent.length > 0;
+    // Sub-agents' calls cost money too: estimate every agent's calls.
+    if (this.opts.price) out.push(...this.estimate(msg, isSubagent ? parent : ''));
 
     switch (msg.type) {
       case 'system':
@@ -267,7 +299,11 @@ export class ClaudeMessageNormalizer {
         // classifier requests are billed (CLI 2.1.312). Wording may change: the
         // `safeguard_results` statuses are the other signal.
         const content = asString(msg.content) ?? '';
-        if (this.opts.serverJudge && /classifier requests/i.test(content) && /billed/i.test(content)) {
+        if (
+          this.opts.serverJudge &&
+          /classifier requests/i.test(content) &&
+          /billed/i.test(content)
+        ) {
           this.serverJudgeLost = true;
         }
         return [];
@@ -464,6 +500,81 @@ export class ClaudeMessageNormalizer {
     return out;
   }
 
+  /** Estimates from the token counts a message carries (see NormalizerOptions.price). */
+  private estimate(msg: Record<string, unknown>, agent: string): AgentEvent[] {
+    let id: string | undefined;
+    let model: string | null = null;
+    let usage: Record<string, unknown> | undefined;
+    if (msg.type === 'stream_event') {
+      const event = asRecord(msg.event);
+      if (event?.type === 'message_start') {
+        const m = asRecord(event.message);
+        id = asString(m?.id) ?? undefined;
+        model = asString(m?.model) ?? null;
+        usage = asRecord(m?.usage);
+        if (id) this.streaming.set(agent, id);
+      } else if (event?.type === 'message_delta') {
+        id = this.streaming.get(agent);
+        usage = asRecord(event.usage);
+      }
+    } else if (msg.type === 'assistant') {
+      const m = asRecord(msg.message);
+      id = asString(m?.id) ?? undefined;
+      model = asString(m?.model) ?? null;
+      usage = asRecord(m?.usage);
+    }
+    if (!id || !usage) return [];
+    const c: CallUsage = this.calls.get(id) ?? {
+      model,
+      input: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      output: 0,
+      sentMicro: 0,
+      sentIn: 0,
+      sentOut: 0,
+    };
+    this.calls.set(id, c);
+    // The same counts repeat on every content block's message: keep the largest seen.
+    c.model ??= model;
+    c.input = Math.max(c.input, num(usage.input_tokens));
+    c.cacheRead = Math.max(c.cacheRead, num(usage.cache_read_input_tokens));
+    c.cacheWrite = Math.max(c.cacheWrite, num(usage.cache_creation_input_tokens));
+    c.output = Math.max(c.output, num(usage.output_tokens));
+    const price = this.opts.price?.(c.model);
+    if (!price) return [];
+    const costMicro = Math.round(
+      costOf(price, {
+        inputTokens: c.input,
+        outputTokens: c.output,
+        cacheReadTokens: c.cacheRead,
+        cacheWriteTokens: c.cacheWrite,
+      }) * 1_000_000,
+    );
+    const inTok = c.input + c.cacheRead + c.cacheWrite;
+    const d = {
+      micro: costMicro - c.sentMicro,
+      input: inTok - c.sentIn,
+      output: c.output - c.sentOut,
+    };
+    if (d.micro <= 0 && d.input <= 0 && d.output <= 0) return [];
+    c.sentMicro = Math.max(c.sentMicro, costMicro);
+    c.sentIn = Math.max(c.sentIn, inTok);
+    c.sentOut = Math.max(c.sentOut, c.output);
+    return [
+      {
+        type: 'usage',
+        phase: 'estimate',
+        usage: {
+          inputTokens: Math.max(0, d.input),
+          outputTokens: Math.max(0, d.output),
+          costUsd: Math.max(0, d.micro) / 1_000_000,
+          costSource: 'estimated',
+        },
+      },
+    ];
+  }
+
   private onResult(msg: Record<string, unknown>): AgentEvent[] {
     const out: AgentEvent[] = [];
     const usage = this.usageDelta(msg);
@@ -473,7 +584,21 @@ export class ClaudeMessageNormalizer {
     if (subtype === 'success' && msg.is_error !== true) {
       this.outcome = { ok: true };
     } else {
-      this.outcome = { ok: false, message: this.failureMessage(msg, subtype) };
+      const message = this.failureMessage(msg, subtype);
+      const quota =
+        describeGatewayError(
+          [
+            asString(msg.result) ?? '',
+            ...(Array.isArray(msg.errors) ? (msg.errors as unknown[]).map(String) : []),
+          ].join('\n'),
+        ).kind === 'quota_exceeded';
+      const code =
+        subtype === 'error_max_budget_usd' || asString(msg.terminal_reason) === 'budget_exhausted'
+          ? ('budget_exceeded' as const)
+          : quota
+            ? ('llm_quota_exceeded' as const)
+            : undefined;
+      this.outcome = { ok: false, message, ...(code ? { code } : {}) };
     }
     return out;
   }
@@ -552,6 +677,8 @@ export class ClaudeMessageNormalizer {
     if (delta.inputTokens === 0 && delta.outputTokens === 0 && delta.costUsd === 0) return null;
     return {
       type: 'usage',
+      // Replaces this run's estimates (the CLI's totals cover every call of the query).
+      phase: 'final',
       // The CLI prices tokens with its own table (an estimate, not a bill). "unknown" when it
       // had no price for a model (e.g. a gateway alias): costUSD is then a guess.
       usage: { ...delta, costSource: costSourceOf(entries) },

@@ -17,6 +17,7 @@ import { classifyToolRisk } from './risk';
 import { RuntimeSessionStore } from './state';
 import { approvalDetailFor, approvalTitleFor, truncate } from './tools';
 import { ruleMatcher } from './rules';
+import { spendCapUsd } from '../runs/usage';
 
 /**
  * The "agent" RunExecutor: runs a coding-agent runtime in the run's workspace and turns its
@@ -80,10 +81,11 @@ async function executeAgentRun(
   const events = runtime.run({
     runId: run.id,
     cwd: workspace.path,
-    // T2 adds the project's folder / repository as read roots; T5 the spend cap.
+    // T2 adds the project's folder / repository as read roots.
     writeRoot: workspace.path,
     readRoots: [],
-    maxBudgetUsd: null,
+    // What the run may still spend (budget room, today's limit): runtimes stop at it.
+    maxBudgetUsd: spendCapUsd(ctx, run),
     prompt,
     systemPrompt: session.systemPrompt ?? undefined,
     model,
@@ -143,7 +145,10 @@ async function executeAgentRun(
         ctl.setActivity(ev.text);
         return;
       case 'usage':
-        ctl.reportUsage(ev.usage);
+        ctl.reportUsage(ev.usage, {
+          ...(ev.phase ? { phase: ev.phase } : {}),
+          ...(ev.component ? { component: ev.component } : {}),
+        });
         return;
       case 'session':
         rememberRuntimeSession(ctx, store, session.id, runtimeId, ev.runtimeSessionId, ctl.actor);

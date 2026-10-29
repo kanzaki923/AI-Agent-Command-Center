@@ -15,6 +15,7 @@ import { z } from 'zod';
  *     { "type": "ask", "title": "本番設定に触れてよいですか", "onReject": "stop" },
  *     { "type": "check", "path": "src/sum.ts", "contains": "export const sum" },
  *     { "type": "sleep", "ms": 500 },
+ *     { "type": "usage", "costUsd": 0.4, "phase": "estimate" },
  *     { "type": "resolve", "strategy": "ours+theirs" },
  *     { "type": "fail", "message": "ビルドが通りませんでした" }
  *   ],
@@ -77,6 +78,21 @@ export const MockStep = z.discriminatedUnion('type', [
     message: z.string().default('モックの失敗ステップです'),
   }),
   z.strictObject({ type: z.literal('sleep'), ms: z.int().min(0).max(600_000) }),
+  /**
+   * Report usage as a runtime does (cost tests): `estimate` (default) counts at once like the
+   * mock's own per-call estimates; `final` replaces every estimate of the run so far (the
+   * difference is booked as a correction); `component: "classifier"` is an auto mode
+   * classifier request (outside that correction).
+   */
+  z.strictObject({
+    type: z.literal('usage'),
+    costUsd: z.number().min(0).max(1000),
+    inputTokens: z.int().min(0).default(0),
+    outputTokens: z.int().min(0).default(0),
+    phase: z.enum(['estimate', 'final']).default('estimate'),
+    component: z.literal('classifier').optional(),
+    source: z.enum(['reported', 'estimated', 'unknown']).default('estimated'),
+  }),
   /** Read-only verification: the file exists (and contains `contains`). Fails the run otherwise. */
   z.strictObject({ type: z.literal('check'), path: RelPath, contains: z.string().optional() }),
   /**

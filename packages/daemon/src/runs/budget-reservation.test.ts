@@ -67,15 +67,25 @@ describe('budget reservation', () => {
     expect(after.reservedUsd).toBe(0);
     expect(after.spentUsd).toBeCloseTo(0.08);
 
-    // The invariant held at every step: allocated + reserved + spent <= limit.
+    // Both calls held a reservation at once; the third never got one.
+    const reservations = d.ctx.db.all<{ status: string; amount_micro: number }>(
+      'SELECT status, amount_micro FROM budget_reservations WHERE budget_id = ?',
+      [budget.id],
+    );
+    expect(reservations).toEqual([
+      { status: 'settled', amount_micro: micro(0.05) },
+      { status: 'settled', amount_micro: micro(0.05) },
+    ]);
+    // The invariant held at every step: allocated + reserved + spent <= limit. Reservations
+    // themselves no longer emit budget.updated (spec 20261029 §2.3); spend does, throttled.
     const updates = d.ctx.bus
       .list({ types: ['budget.updated'], limit: 1000 })
       .events.filter(
         (e): e is Extract<Event, { type: 'budget.updated' }> => e.type === 'budget.updated',
       )
-      .map((e) => e.payload.budget);
-    expect(updates.some((b) => micro(b.reservedUsd) === micro(0.1))).toBe(true);
-    for (const b of updates) {
+      .map((e) => e.payload);
+    expect(updates.map((u) => u.reason)).not.toContain('reserved');
+    for (const b of updates.map((u) => u.budget)) {
       expect(micro(b.allocatedUsd) + micro(b.reservedUsd) + micro(b.spentUsd)).toBeLessThanOrEqual(
         micro(b.limitUsd),
       );

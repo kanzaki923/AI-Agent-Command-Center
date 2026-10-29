@@ -1,6 +1,7 @@
 import { defineMethod } from '../api/registry';
 import { defineModule } from '../module';
 import { LlmGateway } from './gateway';
+import { PriceBook } from './pricing';
 
 export {
   LlmGateway,
@@ -25,6 +26,14 @@ export {
   toWireRequest,
 } from './openai';
 export { SseParser, type SseMessage } from './sse';
+export {
+  PriceBook,
+  builtinPrice,
+  costOf,
+  normalizeModelName,
+  type ModelPrice,
+  type PriceQuote,
+} from './pricing';
 export { toChatMessages, stringifyToolOutput, textOfParts } from './messages';
 export {
   apiTools,
@@ -52,8 +61,15 @@ declare module '../core/context' {
 export const llmModule = defineModule({
   name: 'llm',
   register(ctx) {
+    const prices = new PriceBook({
+      connection: () => ctx.settings.get().litellm,
+      log: ctx.log.child('pricing'),
+      now: () => ctx.clock.now(),
+    });
+    ctx.provide('pricing', prices);
     const gateway = new LlmGateway({
       connection: () => ctx.settings.get().litellm,
+      pricing: prices.lookup,
       defaultModel: () => ctx.settings.get().defaultModel,
       log: ctx.log.child('llm'),
       now: () => ctx.clock.now(),

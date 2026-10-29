@@ -93,8 +93,11 @@ export interface RunController {
   /**
    * Add usage (tokens / cost) to the run and record the cost as spend on the run's budget
    * (for runtimes that only report cost afterwards). Stops the run when the budget is used up.
+   * `phase: 'estimate'` is counted now and replaced by the next `final` report (the
+   * difference is booked as an `adjust` ledger row); `component: 'classifier'` is the auto
+   * mode classifier's cost, outside that correction. See AgentEvent `usage`.
    */
-  reportUsage(delta: Partial<Usage>): void;
+  reportUsage(delta: Partial<Usage>, opts?: UsageReportOptions): void;
   /**
    * Reserve budget for one LLM call before making it (architecture.md §2.5). The amount is
    * `estimateUsd` (default `settings.llmCallReserveUsd`); a call whose reservation does not
@@ -113,6 +116,14 @@ export interface RunController {
   recordToolDecision(d: ToolDecisionRecord): void;
   /** How this run decides tool uses (run.updated `["permission"]`). */
   setPermission(p: RunPermission): void;
+}
+
+/** How a usage report is booked (RunController.reportUsage). */
+export interface UsageReportOptions {
+  /** Default `final`. */
+  phase?: 'estimate' | 'final';
+  /** Default: from the run kind (agent / llm). */
+  component?: 'classifier';
 }
 
 /** Budget held for one LLM call (RunController.reserveBudget). Settle or cancel it once. */
@@ -199,6 +210,26 @@ export interface BudgetService {
   cancelReservation(reservation: BudgetReservation): void;
   /** Record spend that had no reservation (e.g. a runtime that reports cost afterwards). */
   recordSpend(budgetId: string, amountUsd: number): void;
+  /** Correct recorded spend by a signed amount (an estimate replaced by the final figure). */
+  adjustSpend(budgetId: string, deltaUsd: number): void;
+  /**
+   * Raise a budget's limit. A child is topped up from its parent (an ancestor without enough
+   * free is raised too). Humans / system only.
+   */
+  raise(budgetId: string, addUsd: number, actor: Actor): BudgetAllocation;
+  /** Set a limit: raising as `raise`; lowering returns the difference to the parent. Humans only. */
+  setLimit(budgetId: string, limitUsd: number, actor: Actor): BudgetAllocation;
+  /**
+   * What the budget can still spend: its own free amount, capped by any ancestor that is
+   * over its limit (a child's overrun is carried up to the root). `limitedBy` is the budget
+   * that set the cap.
+   */
+  available(budgetId: string): { freeUsd: number; limitedBy: string };
+  /**
+   * A released child budget carved again from its parent (same limit, capped by what the
+   * parent has free) for a retry or a resume. Null when nothing is free or it had no parent.
+   */
+  reallocate(budgetId: string, actor: Actor): BudgetAllocation | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +288,13 @@ export type AgentEvent =
    * price table); `final`: the runtime's own figure, which replaces the estimates (absent =
    * final, as before the ledger).
    */
-  | { type: 'usage'; usage: Partial<Usage>; phase?: 'estimate' | 'final' }
+  | {
+      type: 'usage';
+      usage: Partial<Usage>;
+      phase?: 'estimate' | 'final';
+      /** `classifier`: the auto mode classifier's own requests (not in the runtime's totals). */
+      component?: 'classifier';
+    }
   | { type: 'session'; runtimeSessionId: string }
   /**
    * How the runtime itself decided a tool use (Claude Code: the auto mode classifier's
@@ -455,8 +492,13 @@ export interface LedgerService {
   record(entry: LedgerEntry): void;
   /** USD recorded today (settings.limits.timezone). */
   usedToday(): number;
-  /** Throw budget_exceeded (`daily_limit`) when the daily limit is used up. */
-  assertDailyLeft(): void;
+  /**
+   * Throw budget_exceeded (`data.reason: 'daily_limit'`) when the daily limit is used up, and
+   * notify once (`cost.limit_reached`, a `budget` attention on `sessionId`).
+   */
+  assertDailyLeft(sessionId?: string | null): void;
+  /** USD left today (null: no daily limit). */
+  dailyLeft(): number | null;
 }
 
 /** scheduler (src/schedules, T6). */

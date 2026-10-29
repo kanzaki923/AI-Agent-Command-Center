@@ -105,6 +105,8 @@ export interface RunScenarioOptions {
   prompt: string;
   model?: string;
   resumeSessionId?: string | null;
+  /** AgentRunInput.maxBudgetUsd (default null). */
+  maxBudgetUsd?: number | null;
   tools?: AgentTool[];
   /** Answers approvals (default: approve everything). `signal` aborts with the run. */
   decide?: (
@@ -173,7 +175,7 @@ export async function runScenario(
     cwd: sb.repo,
     writeRoot: sb.repo,
     readRoots: [],
-    maxBudgetUsd: null,
+    maxBudgetUsd: o.maxBudgetUsd ?? null,
     prompt: o.prompt,
     model: o.model ?? 'claude-sonnet-4-5',
     resumeSessionId: o.resumeSessionId ?? null,
@@ -228,12 +230,14 @@ export async function playScenario(
   cliPath: string,
   real: ClaudeSdkModule,
   api: FakeAnthropicOptions = {},
+  /** Merged into the scenario's run options (e.g. runtime options). */
+  extraRun: Partial<RunScenarioOptions> = {},
 ): Promise<{ sb: CliSandbox; result: ScenarioResult }> {
   const sb = await createCliSandbox({ ...scenario.api, ...api });
   try {
     const { turns, run } = scenario.setup(sb);
     sb.api.script(turns);
-    return { sb, result: await runScenario(sb, cliPath, real, run) };
+    return { sb, result: await runScenario(sb, cliPath, real, { ...run, ...extraRun }) };
   } catch (err) {
     await sb.cleanup();
     throw err;

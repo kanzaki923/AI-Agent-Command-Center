@@ -41,6 +41,9 @@ export const runtimeModule = defineModule({
         locateExecutable: () => locateClaudeCode(),
         baselines: new DbBaselineStore(ctx.db, ctx.clock, CLAUDE_RUNTIME_ID),
         log: ctx.log.child('claude'),
+        // Live cost estimates (spec §3.8-2), priced by the LLM module's price book.
+        pricing: (model) =>
+          ctx.hasService('pricing') ? ctx.service('pricing').quote(model) : null,
       }),
     );
     ctx.provide('runtimes', registry);
