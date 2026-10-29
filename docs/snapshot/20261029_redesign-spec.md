@@ -975,3 +975,22 @@ T0 で仕様から足した・変えたもの（各トラックはこれを前�
 | H5 | 定期実行の古い発火は畳む（`hiddenNodes`）が、まだ人や作業が要る状態（needs_you / failed / working / queued / supervising / review）なら残す | 出番のある会話をホームから消さない |
 | H6 | `applyHomeEvent(snapshot, event)` を `ext/home.ts` に足した（state / now / cost / attention を当てる。構造の変化は `refetch: true`） | 受け入れ 3 の検証と、UI フェーズがそのまま使えるように |
 | H7 | `home.get` の `totals.spendTodayUsd` は `ledger.usedToday()`、`estimated` は今日の台帳に `reported` 以外の行があるか（台帳の表を読むだけ） | T5 の `record` が入れば実行中の費用もそのまま出る |
+
+### 7.11 統合（7 トラックのマージ）で入れた差分（マージ時に追記）
+
+各トラックの §7.4〜7.10 の番号（S1 など）は節ごとの番号。トラックの報告が「§7.4」と書いているものは、T2 は §7.4、T4 は §7.5、T3 は §7.6、T1 は §7.7、T5 は §7.8、T6 は §7.9、T7 は §7.10 にある。
+
+| # | 差分 | 理由 |
+|---|---|---|
+| M1 | 子の結果の `child_update` は受信箱（T1 の `evaluateChild`）だけが作る。T2 の `onChildRunEnded` は `session.stop` を通らない停止（`cancelled`）だけを知らせる | 両方が出して親に 2 通届いていた。受信箱は状態と Run の組で 1 回にまとめる |
+| M2 | §3.7 に 1 行：`supervising` の次に「Task が `running` で最後の Run が終端 → `working`」 | Run の終了から `finalize` の後に Task が動くまで `done` と導出され、親とホームに一瞬の「完了」→「確認待ち」が見えた |
+| M3 | 予算切れの出番 `budget` は cost モジュール（T5 E6）だけが開く。T2 の §3.4 の表の行は出番を開かない | refs が違う（`runId` / `taskId` 付き）ため dedupe されず 2 件になっていた |
+| M4 | 自分の予算が尽きて失敗した子（Task `failed`・`budget_exhausted`）の予算は親に返さない | 返却（`released`）で T4 の同期が出番 `budget` を閉じ、人が増やせなくなっていた |
+| M5 | 人間が子をやり直す（`task.retry`・`artifact.review` の redo）とき、子の予算が返却済みなら `reallocate` で親から同じ額を切り出し直す | 呼び出し側に予算がないと予算なしで走っていた |
+| M6 | 日次の出番：`raise_today_10` は `cost.raiseDaily({ addUsd: 10 })` に送る。`open_settings` は UI の操作で、respond は `conflict`。今日に余裕ができたら（引き上げ・`settings.updated` の `limits.*`）開いている日次の出番を閉じる。`AttentionService` に `close(id, status, resolution)` を足した（contracts.ts、追加のみ） | T5 の残り（ID で閉じる API がない）と T4 の振り分けの抜け |
+| M7 | 今日の上限に達している間は指揮役を起こさない（項目は pending のまま）。出番 `budget` が閉じたら `pokeAll` で起こす | 起こしてもすぐ `daily_limit` で失敗し、起床の材料を使い捨てていた（T5 の残り） |
+| M8 | spawner が `SpawnOptions.budget` と `supervise`（T6 S1）に従う。`supervise` は chat の子だけ（違えば `invalid_params`）で、子に `delegateSession`（lifetime `work`、同時 4 人、定期実行なし）を付け、最初の Run は `orchestrator` | T6 の受け入れテストは代わりの spawner だった。本物の spawner での結合を `schedules/spawner.integration.test.ts` で確かめる |
+| M9 | 回答（`answer`）で始まる Run の trigger は `wake`（T1 の受信箱の判断、§3.2 の起床の材料）。T4 のテストの期待値を合わせた | §2 は回答の trigger を決めていない |
+| M10 | 再起動で中断された子は受信箱が 1 回だけ自動で再開する（T1 S12）。T2 のテストの期待値（`ready` のまま）を合わせた | §3.10 |
+| M11 | `redesign-seams.test.ts` のスタブ一覧は空になった。契約のメソッドがすべて実装済みであることを確かめるテストに変えた | 全トラックが入ったため |
+| M12 | 未了：`session.grantOrchestration` は `session.delegate` の別名にしていない（T1 S1 の継ぎ目のまま）。コードの縦の流れ（e2e:slice）・旧デモ・desktop が旧プリセットを使っているため、UI フェーズで流れを `session.spawn` に移すときに `orchestrator/index.ts` の 1 か所を替える | マージの範囲を越える振る舞いの変更で、既存の e2e を壊すため |
