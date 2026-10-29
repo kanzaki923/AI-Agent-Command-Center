@@ -1,12 +1,10 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { describeTool, displayPath } from '../lib/tools';
-import { filtersFromSearch, filtersToSearch } from '../store/timeline';
-import { T0, event, iso, message, run, session, task } from '../test/fixtures';
+import { T0, iso, message, run, session } from '../test/fixtures';
 import { describeApproval } from './approval';
 import { buildChatBlocks, summarizeTools } from './chat';
 import { parsePatch } from './diff';
-import { EMPTY_FILTERS, buildTimelineRows, describeEvent, eventContext, formatGap } from './timeline';
 
 describe('chat blocks (§5.2)', () => {
   it('groups consecutive tool calls, attaches results and keeps text order', () => {
@@ -155,121 +153,3 @@ describe('parsePatch', () => {
   });
 });
 
-describe('timeline rows (§5.3)', () => {
-  const s = session();
-  const r = run(s, { status: 'running' });
-  const done = run(s, { status: 'completed' });
-  const events = [
-    event('orchestrator.decision', { decision: '分割', rationale: '並列にできるため' }),
-    event('run.created', { run: r }, { runId: r.id, sessionId: s.id }),
-    event('tool.called', { runId: r.id, toolCallId: 't', name: 'Bash', input: { command: 'pnpm test' } }, { runId: r.id }),
-    event('run.created', { run: done }, { runId: done.id, sessionId: s.id }),
-    event('settings.updated', { changes: ['x'] }, { actor: { kind: 'system' } }),
-  ];
-  const runs = new Map([
-    [r.id, r],
-    [done.id, done],
-  ]);
-
-  it('groups consecutive events of a run under a header; ended runs start collapsed', () => {
-    const rows = buildTimelineRows({ events, filters: EMPTY_FILTERS, groupByRun: true, runs, toggled: {}, showAll: true });
-    expect(rows.map((x) => x.kind)).toEqual(['event', 'run', 'event', 'event', 'run', 'event']);
-    expect(rows[4]).toMatchObject({ kind: 'run', collapsed: true, count: 1, header: 4 });
-    expect(rows[2]).toMatchObject({ kind: 'event', inRun: true, header: 1 });
-    expect(rows[5]).toMatchObject({ kind: 'event', header: -1 });
-    const toggled = buildTimelineRows({ events, filters: EMPTY_FILTERS, groupByRun: true, runs, toggled: { [done.id]: false }, showAll: true });
-    expect(toggled).toHaveLength(7);
-  });
-
-  it('stays chronological when runs interleave; lone repeats are tagged, not re-headed', () => {
-    const call = (runId: string, n: string) =>
-      event('tool.called', { runId, toolCallId: n, name: 'Read', input: {} }, { runId });
-    const interleaved = [call(r.id, '1'), call(done.id, '2'), call(r.id, '3'), call(r.id, '4'), call(done.id, '5')];
-    const rows = buildTimelineRows({ events: interleaved, filters: EMPTY_FILTERS, groupByRun: true, runs, toggled: { [done.id]: false }, showAll: true });
-    const shape = rows.map((x) =>
-      x.kind === 'run' ? `h:${x.runId === r.id ? 'r' : 'd'}` : x.runTag ? `tag:${x.runTag === r.id ? 'r' : 'd'}` : 'e',
-    );
-    expect(shape).toEqual(['h:r', 'e', 'h:d', 'e', 'h:r', 'e', 'e', 'tag:d']);
-    expect(rows.map((x) => (x.kind === 'event' ? x.event.seq : 0)).filter(Boolean)).toEqual(
-      interleaved.map((e) => e.seq),
-    );
-  });
-
-  it('highlights orchestrator decisions with their rationale', () => {
-    const v = describeEvent(events[0]!);
-    expect(v).toMatchObject({ isDecision: true, label: '判断', summary: '分割', detail: '並列にできるため' });
-  });
-
-  it('describes run updates and policy denials', () => {
-    const busy = { ...r, activity: 'npm test を実行中' };
-    expect(describeEvent(event('run.updated', { run: busy, changes: ['activity'] }))).toMatchObject({
-      group: 'run',
-      label: '状況',
-      summary: 'npm test を実行中',
-    });
-    const used = { ...r, usage: { inputTokens: 12, outputTokens: 3, costUsd: 0.25, costSource: 'reported' as const } };
-    expect(describeEvent(event('run.updated', { run: used, changes: ['usage'] }))).toMatchObject({
-      group: 'budget',
-      label: '使用量',
-      summary: '$0.25 · 入力 12 / 出力 3 トークン',
-    });
-    expect(
-      describeEvent(event('policy.denied', { permission: 'task.create', reason: 'no grant', projectIds: null })),
-    ).toMatchObject({
-      group: 'grant',
-      label: '権限で拒否',
-      summary: '「task.create」を試みましたが、許可されていないため止めました',
-      detail: 'no grant',
-      isError: true,
-    });
-  });
-
-  it('reads like a story by default: plumbing hidden, steps named, pauses measured', () => {
-    const t0 = Date.parse('2026-10-29T05:00:00.000Z');
-    const at = (ms: number) => ({ ts: new Date(t0 + ms).toISOString() });
-    const story = [
-      event('run.created', { run: r }, { runId: r.id, sessionId: s.id, ...at(0) }),
-      event('run.status_changed', { runId: r.id, from: 'queued', to: 'running', reason: null }, { runId: r.id, sessionId: s.id, ...at(100) }),
-      event('run.updated', { run: r, changes: ['usage'] }, { runId: r.id, ...at(200) }),
-      event('tool.called', { runId: r.id, toolCallId: 'a', name: 'task.create', input: { title: '認証のテスト' } }, { runId: r.id, ...at(4300) }),
-      event('tool.result', { runId: r.id, toolCallId: 'a', name: 'task.create', output: {}, isError: false, durationMs: 100 }, { runId: r.id, ...at(4400) }),
-    ];
-    const names = { sessionTitle: (id: string) => (id === s.id ? '設計チャット' : undefined) };
-    const rows = buildTimelineRows({ events: story, filters: EMPTY_FILTERS, groupByRun: false, runs, toggled: {}, names });
-    const summaries = rows.map((x) => (x.kind === 'event' ? x.view.summary : ''));
-    expect(summaries).toEqual(['「設計チャット」が作業を開始', 'Task を作成: 「認証のテスト」']);
-    expect(rows.map((x) => (x.kind === 'event' ? x.gapMs : null))).toEqual([null, 4200]);
-    expect(formatGap(4200)).toBe('+4.2s');
-    expect(formatGap(400)).toBeNull();
-    expect(formatGap(3 * 60_000)).toBe('+3分');
-    const all = buildTimelineRows({ events: story, filters: EMPTY_FILTERS, groupByRun: false, runs, toggled: {}, showAll: true });
-    expect(all).toHaveLength(5);
-  });
-
-  it('knows where each event happened (jump to context)', () => {
-    const m = message(s, { role: 'user' });
-    expect(eventContext(event('message.created', { message: m }, { sessionId: s.id }))).toMatchObject({
-      kind: 'message',
-      messageId: m.id,
-      label: '会話を開く',
-    });
-    const t = task({ title: 'x' });
-    expect(eventContext(event('task.updated', { task: t, changes: ['status'] }))).toMatchObject({ kind: 'task', taskId: t.id });
-    expect(eventContext(event('settings.updated', { changes: ['x'] }))).toBeNull();
-  });
-
-  it('filters by type group, actor and text', () => {
-    const only = (f: Partial<typeof EMPTY_FILTERS>) =>
-      buildTimelineRows({ events, filters: { ...EMPTY_FILTERS, ...f }, groupByRun: false, runs, toggled: {}, showAll: true }).length;
-    expect(only({ groups: ['tool'] })).toBe(1);
-    expect(only({ actors: ['system'] })).toBe(1);
-    expect(only({ text: 'pnpm' })).toBe(1);
-  });
-
-  it('round-trips filters through the URL', () => {
-    const f = { ...EMPTY_FILTERS, groups: ['tool' as const, 'error' as const], actors: ['agent' as const], text: 'テスト' };
-    const search = filtersToSearch('?other=1', f);
-    expect(search).toContain('other=1');
-    expect(filtersFromSearch(search)).toEqual({ ...f, sessionId: null, runId: null });
-  });
-});

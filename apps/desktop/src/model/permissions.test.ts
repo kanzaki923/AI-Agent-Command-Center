@@ -18,7 +18,6 @@ import {
   rememberOptions,
   summarizeDecisions,
 } from './permissions';
-import { buildTimelineRows, describeEvent, EMPTY_FILTERS } from './timeline';
 
 function decided(over: Partial<ToolDecided> = {}): ToolDecided {
   return {
@@ -119,30 +118,6 @@ describe('decisions', () => {
       event('tool.decided', decided({ summary: 'other', runId: 'run_2' })),
     ];
     expect(recentBlocks(events, 'run_1').map((d) => d.summary)).toEqual(['two', 'one']);
-  });
-});
-
-describe('Timeline rows for tool decisions', () => {
-  it('shows blocks with a decider badge and the reason; routine allows only on request', () => {
-    const block = event('tool.decided', decided());
-    const routine = event('tool.decided', decided({ decision: 'allowed', notable: false, summary: 'pnpm test' }));
-    const notable = event('tool.decided', decided({ decision: 'allowed', notable: true, summary: 'pnpm add zod', decidedBy: 'classifier' }));
-    const v = describeEvent(block);
-    expect(v).toMatchObject({ group: 'grant', label: 'ブロック', blocked: true, detail: 'リモートへの push はできません' });
-    expect(v.decider?.badge).toBe('ルール');
-    expect(describeEvent(notable).decider?.badge).toBe('Auto mode');
-
-    const rows = (showAutoAllowed: boolean) =>
-      buildTimelineRows({
-        events: [block, routine, notable],
-        filters: EMPTY_FILTERS,
-        groupByRun: false,
-        runs: new Map(),
-        toggled: {},
-        showAutoAllowed,
-      }).map((r) => (r.kind === 'event' ? r.view.summary : r.kind));
-    expect(rows(false)).toEqual(['git push origin HEAD', 'pnpm add zod']);
-    expect(rows(true)).toEqual(['git push origin HEAD', 'pnpm test', 'pnpm add zod']);
   });
 });
 

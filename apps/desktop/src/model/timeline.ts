@@ -1,567 +1,633 @@
-import type { Actor, Event, Run, Session } from '@acc/protocol';
-import { RUN_STATUS_LABEL, TASK_STATUS_LABEL } from '../lib/status';
-import { type ToolLookup, describeTool, outputText, shorten } from '../lib/tools';
-import { INTEGRATION_STATUS_LABEL } from './integration';
-import { DECIDER, PROFILE_INFO, describeDecision, firstSentence } from './permissions';
+import type {
+  Artifact,
+  AttentionKind,
+  Event,
+  Message,
+  OutputKind,
+  Run,
+  RunTrigger,
+  Session,
+  SessionState,
+  WakeItemView,
+} from '@acc/protocol';
+import { outputKind } from '../daemon/outputs';
+import { sessionTitle } from '../lib/states';
+import { controlMethod, describeTool, outputText, shorten } from '../lib/tools';
 
-export type EventGroup =
-  | 'run'
-  | 'task'
-  | 'tool'
-  | 'approval'
-  | 'error'
-  | 'integration'
-  | 'budget'
-  | 'grant'
-  | 'decision'
-  | 'other';
+/**
+ * The timeline (ui-redesign spec §8): what happened, told as the moments a human cares about
+ * (a request, a question, a failure, a finished piece of work with its outputs, an
+ * acceptance, a schedule firing), grouped by conversation tree. "詳細" adds what the agents
+ * did in between: each run as one unit (its tools, replies, failures), the inbox and the
+ * budget. Pure: everything is derived from the event log and the session / run caches.
+ */
 
-export const EVENT_GROUP_LABEL: Record<EventGroup, string> = {
-  run: 'Run',
-  task: 'Task',
-  tool: 'ツール',
-  approval: '承認',
-  error: 'エラー',
-  integration: '統合',
-  budget: '予算',
-  grant: '権限',
-  decision: '判断',
-  other: 'その他',
-};
-export const EVENT_GROUPS = Object.keys(EVENT_GROUP_LABEL) as EventGroup[];
+// ------------------------------------------------------------------------------- types
 
-export type ActorKind = Actor['kind'];
-export const ACTOR_LABEL: Record<ActorKind, string> = { human: 'あなた', agent: 'AI', system: 'システム' };
+/** What a moment is; the view picks the icon and the colour from it. */
+export type MomentKind =
+  | 'request' // a human's message
+  | 'brief' // a conversation asked a child to do something
+  | 'schedule' // a schedule fired
+  | 'attention' // a question / approval / failure / review / budget / stuck item
+  | 'finished' // a child finished (done, or waiting for review) with its outputs
+  | 'accepted' // a human accepted an output
+  | 'redo' // a human asked for it to be done again
+  | 'stopped'; // a human stopped a conversation tree
 
-export type EventIcon =
-  | 'run'
-  | 'start'
-  | 'done'
-  | 'fail'
-  | 'tool'
-  | 'approval'
-  | 'human'
-  | 'task'
-  | 'decision'
-  | 'integration'
-  | 'budget'
-  | 'grant'
-  | 'denied'
-  | 'allowed'
-  | 'message'
-  | 'workspace'
-  | 'artifact'
-  | 'settings'
-  | 'project'
-  | 'session';
+export type Tone = 'neutral' | 'needs_you' | 'failed' | 'review' | 'done';
 
-export interface EventView {
-  group: EventGroup;
-  icon: EventIcon;
-  /** Short label column (120px): `判断`, `ツール`, `承認を要求` ... */
-  label: string;
-  /** Target + summary (rest of the row). */
-  summary: string;
-  /** Second line (decision rationale, error head, why a call was refused). */
-  detail: string | null;
+export interface TimelineOutput {
+  kind: OutputKind;
+  title: string;
+}
+
+/** Where a row leads: the message to scroll to and flash, or just the conversation. */
+export interface TimelineTarget {
+  sessionId: string;
+  messageId: string | null;
+}
+
+export interface TimelineMoment {
+  kind: 'moment';
+  key: string;
+  seq: number;
+  ts: string;
+  /** The conversation the moment is about (its chip). */
+  sessionId: string;
+  rootId: string;
+  what: MomentKind;
+  /** Attention kind for `attention` moments; `finished` uses the state it ended in. */
+  attention: AttentionKind | null;
+  finishedAs: 'done' | 'review' | null;
+  tone: Tone;
+  /** One noun phrase (the title, the request's first line ...). */
+  text: string;
+  outputs: TimelineOutput[];
+  /** How an attention item ended: the human's choice, or settled by itself. */
+  resolution: { label: string; byHuman: boolean } | null;
+  /** An attention item that is still open. */
+  open: boolean;
+  target: TimelineTarget;
+}
+
+export type StepKind = 'tool' | 'reply' | 'failure';
+
+export interface TimelineStep {
+  key: string;
+  seq: number;
+  ts: string;
+  what: StepKind;
+  text: string;
   isError: boolean;
-  isDecision: boolean;
-  /**
-   * Plumbing (lock changes, usage ticks, successful tool results, a status change that a
-   * dedicated event repeats): hidden unless "詳細なイベントも表示" is on, so the default
-   * Timeline reads like a story of who did what.
-   */
-  noise: boolean;
-  /**
-   * A routine automatic allow (not notable): hidden unless "自動許可も表示" (or every event)
-   * is on. Blocks, asks and notable allows always show.
-   */
-  autoAllowed?: boolean;
-  /** Who decided a tool use (`ルール` / `Auto mode` / `記憶` ...), shown as a badge. */
-  decider?: { badge: string; tooltip: string };
-  /** A tool use the daemon blocked (neutral left bar: noticeable, nothing to do). */
-  blocked?: boolean;
+  target: TimelineTarget;
 }
 
-/** Names the Timeline knows from the caches (session titles, task titles). */
-export interface TimelineNames extends ToolLookup {
-  sessionTitle?: (sessionId: string) => string | undefined;
+/** One run as one unit (never split by other runs' events: the old timeline's bug 9). */
+export interface TimelineRun {
+  kind: 'run';
+  key: string;
+  seq: number;
+  ts: string;
+  runId: string;
+  sessionId: string;
+  rootId: string;
+  run: Run | null;
+  trigger: RunTrigger | null;
+  /** What woke a supervisor (the status update it got), when this run is a wake. */
+  wake: WakeItemView[] | null;
+  /** The run's last reply line (or what it is doing first). */
+  headline: string;
+  steps: TimelineStep[];
+  /** Status of the run in the session-state vocabulary (icon and colour). */
+  state: SessionState;
+  target: TimelineTarget;
 }
 
-/** `「設計チャット」が完了` reads naturally; `Run が完了` needs the space. */
-function joinSubject(subject: string, verb: string): string {
-  return subject.endsWith('」') ? `${subject}${verb}` : `${subject} ${verb}`;
+export type NoteKind = 'inbox' | 'budget';
+
+/** A detail line that belongs to no run (an inbox item, a budget threshold). */
+export interface TimelineNote {
+  kind: 'note';
+  key: string;
+  seq: number;
+  ts: string;
+  sessionId: string;
+  rootId: string;
+  what: NoteKind;
+  text: string;
+  tone: Tone;
+  target: TimelineTarget;
 }
 
-/** One line of a message for the Timeline: fenced blocks (code, tool plans) drop out. */
-function messageLine(text: string): string {
-  const prose = text.replace(/```[\s\S]*?(?:```|$)/g, ' ').trim();
-  return prose ? shorten(prose, 120) : text.includes('```') ? '（コード）' : '';
-}
+export type TimelineItem = TimelineMoment | TimelineRun | TimelineNote;
 
-function runSubject(e: Event, names: TimelineNames | undefined): string {
-  const title = e.sessionId ? names?.sessionTitle?.(e.sessionId) : undefined;
-  return title ? `「${shorten(title, 40)}」` : 'Run';
-}
-
-export function describeEvent(e: Event, names?: TimelineNames): EventView {
-  const base = { detail: null, isError: false, isDecision: false, noise: false };
-  switch (e.type) {
-    case 'project.created':
-      return { ...base, group: 'other', icon: 'project', label: 'プロジェクト', summary: `「${e.payload.project.name}」を追加` };
-    case 'project.updated':
-      return { ...base, group: 'other', icon: 'project', label: 'プロジェクト', summary: `「${e.payload.project.name}」の設定を変更` };
-    case 'session.created': {
-      const s = e.payload.session;
-      return {
-        ...base,
-        group: 'run',
-        icon: 'session',
-        label: '作成',
-        summary: `${s.kind === 'agent' ? 'エージェント' : 'チャット'}「${s.title || '無題'}」を作成`,
-      };
-    }
-    case 'session.updated':
-      return {
-        ...base,
-        group: 'other',
-        icon: 'session',
-        label: 'セッション',
-        summary: `更新（${e.payload.changes.join(', ')}）`,
-        // Title / pin changes are the human's; the rest is bookkeeping.
-        noise: !e.payload.changes.some((c) => c === 'title' || c === 'pinned' || c === 'model'),
-      };
-    case 'session.archived':
-      return { ...base, group: 'other', icon: 'session', label: 'セッション', summary: e.payload.archived ? 'アーカイブ' : '復元' };
-    case 'message.created': {
-      const m = e.payload.message;
-      const text = m.content.find((p) => p.type === 'text')?.text ?? '';
-      const calls = m.content.filter((p) => p.type === 'tool_call').length;
-      return {
-        ...base,
-        group: 'other',
-        icon: 'message',
-        label: m.role === 'user' ? (m.author.kind === 'agent' ? '指示' : 'メッセージ') : m.role === 'assistant' ? '応答' : 'メッセージ',
-        summary: text ? messageLine(text) || '（コード）' : calls > 0 ? `ツール呼び出し ${calls} 件` : '（内容なし）',
-        // Tool results are messages too; the tool rows already tell that part.
-        noise: m.role === 'tool' || (!text && calls > 0),
-      };
-    }
-    case 'run.created':
-      return {
-        ...base,
-        group: 'run',
-        icon: 'run',
-        label: 'Run 作成',
-        summary: `${runSubject(e, names)} の Run を作成${e.payload.run.model ? ` · ${e.payload.run.model}` : ''}`,
-        noise: true,
-      };
-    case 'run.status_changed': {
-      const { from, to, reason } = e.payload;
-      const label = to === 'running' ? (from === 'awaiting_approval' ? '再開' : '開始') : RUN_STATUS_LABEL[to];
-      const subject = runSubject(e, names);
-      const verb =
-        to === 'running'
-          ? from === 'awaiting_approval'
-            ? 'が作業を再開'
-            : 'が作業を開始'
-          : to === 'awaiting_approval'
-            ? 'があなたの承認を待っています'
-            : to === 'queued'
-              ? 'は同時実行の空きを待っています'
-              : `が${RUN_STATUS_LABEL[to]}になりました`;
-      return {
-        ...base,
-        group: to === 'failed' ? 'error' : 'run',
-        icon: to === 'running' ? 'start' : to === 'failed' ? 'fail' : to === 'completed' ? 'done' : 'run',
-        label,
-        summary: `${joinSubject(subject, verb)}${reason && to !== 'failed' ? `（${reason}）` : ''}`,
-        isError: to === 'failed',
-        // run.completed / run.failed say the same with more detail; approval rows say
-        // "waiting"; queued → running is a blink unless the run really waits.
-        noise:
-          to === 'completed' ||
-          to === 'failed' ||
-          to === 'awaiting_approval' ||
-          to === 'created' ||
-          (to === 'queued' && from === 'created'),
-      };
-    }
-    case 'run.updated': {
-      const r = e.payload.run;
-      if (e.payload.changes.includes('activity')) {
-        return { ...base, group: 'run', icon: 'run', label: '状況', summary: r.activity ?? '（なし）', noise: true };
-      }
-      return {
-        ...base,
-        group: 'budget',
-        icon: 'budget',
-        label: '使用量',
-        summary: `$${r.usage.costUsd.toFixed(2)} · 入力 ${r.usage.inputTokens} / 出力 ${r.usage.outputTokens} トークン`,
-        noise: true,
-      };
-    }
-    case 'run.completed':
-      return { ...base, group: 'run', icon: 'done', label: '完了', summary: joinSubject(runSubject(e, names), 'が完了しました') };
-    case 'run.failed':
-      return {
-        ...base,
-        group: 'error',
-        icon: 'fail',
-        label: '失敗',
-        summary: shorten(e.payload.error.message.split('\n')[0] ?? '', 120),
-        detail: e.payload.error.message.split('\n').slice(1, 3).join(' ') || null,
-        isError: true,
-      };
-    case 'tool.called': {
-      const d = describeTool(e.payload.name, e.payload.input, names);
-      return { ...base, group: 'tool', icon: d.category === 'control' ? 'task' : 'tool', label: 'ツール', summary: d.label };
-    }
-    case 'tool.result': {
-      const out = outputText(e.payload.output);
-      return {
-        ...base,
-        group: e.payload.isError ? 'error' : 'tool',
-        icon: e.payload.isError ? 'fail' : 'tool',
-        label: e.payload.isError ? 'ツール失敗' : 'ツール結果',
-        summary: `${describeTool(e.payload.name, {}, names).label}${out ? ` · ${shorten(out, 100)}` : ''}`,
-        isError: e.payload.isError,
-        noise: !e.payload.isError,
-      };
-    }
-    case 'tool.decided': {
-      const d = e.payload;
-      const v = describeDecision(d);
-      const what = d.summary ? shorten(d.summary, 100) : describeTool(d.toolName, {}, names).label;
-      return {
-        ...base,
-        group: d.decision === 'asked' ? 'approval' : 'grant',
-        icon: v.tone === 'blocked' ? 'denied' : v.tone === 'asked' ? 'approval' : 'allowed',
-        label: v.label,
-        summary: what,
-        detail: v.tone === 'allowed' ? null : v.reason,
-        decider: { badge: DECIDER[d.decidedBy].badge, tooltip: `${v.deciderTooltip}（${PROFILE_INFO[d.profile].label}）` },
-        blocked: v.tone === 'blocked',
-        autoAllowed: v.tone === 'allowed' && !d.notable,
-        // An ask is told by its approval.requested row (which carries the same reason).
-        noise: v.tone === 'asked',
-      };
-    }
-    case 'permission.rule_created':
-    case 'permission.rule_revoked':
-      return {
-        ...base,
-        group: 'grant',
-        icon: 'grant',
-        label: e.type === 'permission.rule_created' ? '許可を記憶' : '記憶を取り消し',
-        summary: e.payload.rule.description,
-      };
-    case 'approval.requested': {
-      // Approvals are the exception: the second line says why this one was not decided.
-      const reason = (e.payload.approval.payload as { reason?: unknown } | null)?.reason;
-      return {
-        ...base,
-        group: 'approval',
-        icon: 'approval',
-        label: '承認を要求',
-        summary: e.payload.approval.title,
-        detail: typeof reason === 'string' ? firstSentence(reason) : null,
-      };
-    }
-    case 'approval.resolved': {
-      const a = e.payload.approval;
-      return {
-        ...base,
-        group: 'approval',
-        icon: 'human',
-        label: a.status === 'approved' ? '承認' : a.status === 'rejected' ? '拒否' : '取消',
-        summary: a.title,
-        detail: a.resolutionNote ? `メモ: ${a.resolutionNote}` : null,
-      };
-    }
-    case 'task.created':
-      return { ...base, group: 'task', icon: 'task', label: 'Task 作成', summary: e.payload.task.title };
-    case 'task.updated': {
-      const t = e.payload.task;
-      const statusChanged = e.payload.changes.includes('status');
-      return {
-        ...base,
-        group: 'task',
-        icon: 'task',
-        label: statusChanged ? TASK_STATUS_LABEL[t.status] : 'Task 更新',
-        summary: statusChanged ? `「${t.title}」→ ${TASK_STATUS_LABEL[t.status]}` : `「${t.title}」（${e.payload.changes.join(', ')}）`,
-        detail: statusChanged && t.status === 'review' && t.resultSummary ? t.resultSummary : null,
-        noise: !statusChanged,
-      };
-    }
-    case 'workspace.created':
-      return { ...base, group: 'integration', icon: 'workspace', label: 'worktree', summary: `作成 ${e.payload.workspace.branch ?? e.payload.workspace.path}` };
-    case 'workspace.updated':
-      return { ...base, group: 'other', icon: 'workspace', label: 'worktree', summary: `更新（${e.payload.changes.join(', ')}）`, noise: true };
-    case 'workspace.removed':
-      return { ...base, group: 'other', icon: 'workspace', label: 'worktree', summary: '削除' };
-    case 'artifact.created':
-      return { ...base, group: 'other', icon: 'artifact', label: '成果物', summary: e.payload.artifact.title };
-    case 'integration.created':
-      return { ...base, group: 'integration', icon: 'integration', label: '統合', summary: `作成 ${e.payload.integration.title}` };
-    case 'integration.updated': {
-      const i = e.payload.integration;
-      return {
-        ...base,
-        group: i.status === 'failed' || i.status === 'conflict' ? 'error' : 'integration',
-        icon: 'integration',
-        label: `統合 · ${INTEGRATION_STATUS_LABEL[i.status]}`,
-        summary: i.title,
-        detail: i.error ? shorten(i.error.message, 160) : null,
-        isError: i.status === 'failed' || i.status === 'conflict',
-        // Step progress ticks repeat the same status; only the status changes tell the story.
-        noise: !e.payload.changes.includes('status'),
-      };
-    }
-    case 'grant.created':
-      return {
-        ...base,
-        group: 'grant',
-        icon: 'grant',
-        label: '権限付与',
-        summary: shorten(e.payload.grant.reason ?? e.payload.grant.permissions.join(', '), 120),
-        detail: e.payload.grant.reason ? shorten(e.payload.grant.permissions.join(', '), 160) : null,
-      };
-    case 'grant.revoked':
-      return { ...base, group: 'grant', icon: 'grant', label: '権限の終了', summary: e.payload.reason ?? '権限を取り消しました' };
-    case 'policy.denied':
-      return {
-        ...base,
-        group: 'grant',
-        icon: 'denied',
-        label: '権限で拒否',
-        summary: `「${e.payload.permission}」を試みましたが、許可されていないため止めました`,
-        detail: e.payload.reason,
-        isError: true,
-      };
-    case 'budget.updated':
-      return {
-        ...base,
-        group: 'budget',
-        icon: 'budget',
-        label: '予算',
-        summary: `$${e.payload.budget.spentUsd.toFixed(2)} / $${e.payload.budget.limitUsd.toFixed(2)}${e.payload.reason ? ` · ${e.payload.reason}` : ''}`,
-        noise: !e.payload.reason,
-      };
-    case 'orchestrator.decision':
-      return {
-        group: 'decision',
-        icon: 'decision',
-        label: '判断',
-        summary: e.payload.decision,
-        detail: e.payload.rationale,
-        isError: false,
-        isDecision: true,
-        noise: false,
-      };
-    case 'settings.updated':
-      return { ...base, group: 'other', icon: 'settings', label: '設定', summary: `更新（${e.payload.changes.join(', ')}）` };
-    // Session-tree redesign events: the UI phase gives them their own views (spec 20261029 §6.1).
-    case 'message.updated':
-    case 'inbox.added':
-    case 'inbox.consumed':
-    case 'artifact.updated':
-    case 'attention.opened':
-    case 'attention.resolved':
-    case 'session.cost_updated':
-    case 'budget.threshold':
-    case 'cost.limit_reached':
-    case 'schedule.created':
-    case 'schedule.updated':
-    case 'schedule.deleted':
-    case 'schedule.fired':
-    case 'session.state_changed':
-    case 'session.now_changed':
-      return { ...base, group: 'other', icon: 'settings', label: '更新', summary: e.type, noise: true };
-  }
-}
-
-export function actorName(actor: Actor, sessions: Map<string, Session>, runs: Map<string, Run>): string {
-  if (actor.kind === 'human') return 'あなた';
-  if (actor.kind === 'system') return 'システム';
-  const run = runs.get(actor.runId);
-  const s = sessions.get(actor.sessionId);
-  const role = run?.kind === 'orchestrator' ? 'Orchestrator' : s?.kind === 'chat' ? 'チャット' : 'Worker';
-  return role;
-}
-
-/** Where Enter / 「開く」 on an event takes you (jump to its context). */
-export type EventContext =
-  | { kind: 'message'; sessionId: string; messageId: string; label: string }
-  | { kind: 'session'; sessionId: string; label: string }
-  | { kind: 'task'; taskId: string; label: string }
-  | { kind: 'integration'; integrationId: string; label: string };
-
-export function eventContext(e: Event): EventContext | null {
-  switch (e.type) {
-    case 'message.created':
-      return { kind: 'message', sessionId: e.payload.message.sessionId, messageId: e.payload.message.id, label: '会話を開く' };
-    case 'task.created':
-    case 'task.updated':
-      return { kind: 'task', taskId: e.payload.task.id, label: 'Task を開く' };
-    case 'integration.created':
-    case 'integration.updated':
-      return { kind: 'integration', integrationId: e.payload.integration.id, label: '統合を開く' };
-    case 'approval.requested':
-    case 'approval.resolved':
-      if (e.payload.approval.integrationId)
-        return { kind: 'integration', integrationId: e.payload.approval.integrationId, label: '統合を開く' };
-      return e.sessionId ? { kind: 'session', sessionId: e.sessionId, label: '承認の場所を開く' } : null;
-    default:
-      if (e.type === 'orchestrator.decision' && e.payload.refs?.taskIds?.[0] && !e.sessionId)
-        return { kind: 'task', taskId: e.payload.refs.taskIds[0], label: 'Task を開く' };
-      return e.sessionId ? { kind: 'session', sessionId: e.sessionId, label: 'セッションを開く' } : null;
-  }
+export interface TimelineGroup {
+  rootId: string;
+  /** Chronological (oldest first): the tree reads like a story from the top. */
+  items: TimelineItem[];
+  /** Time of the newest item; groups are ordered newest first. */
+  lastTs: string;
 }
 
 export interface TimelineFilters {
-  groups: EventGroup[];
-  actors: ActorKind[];
+  /** Only this conversation's rows. */
   sessionId: string | null;
+  /** Only this run (shown with its details, open). */
   runId: string | null;
   text: string;
 }
 
-export const EMPTY_FILTERS: TimelineFilters = { groups: [], actors: [], sessionId: null, runId: null, text: '' };
+export const EMPTY_FILTERS: TimelineFilters = { sessionId: null, runId: null, text: '' };
 
 export function filtersActive(f: TimelineFilters): boolean {
-  return f.groups.length > 0 || f.actors.length > 0 || !!f.sessionId || !!f.runId || !!f.text.trim();
-}
-
-export function matchesFilters(e: Event, v: EventView, f: TimelineFilters): boolean {
-  if (f.groups.length > 0 && !f.groups.includes(v.group)) return false;
-  if (f.actors.length > 0 && !f.actors.includes(e.actor.kind)) return false;
-  if (f.sessionId && e.sessionId !== f.sessionId) return false;
-  if (f.runId && e.runId !== f.runId) return false;
-  const q = f.text.trim().toLowerCase();
-  if (q && !`${v.label} ${v.summary} ${v.detail ?? ''} ${e.type}`.toLowerCase().includes(q)) return false;
-  return true;
-}
-
-export type TimelineRow =
-  | {
-      kind: 'event';
-      key: string;
-      event: Event;
-      view: EventView;
-      inRun: boolean;
-      /** Index of the run header row this event sits under, or -1. */
-      header: number;
-      /** Short run id shown inline when a lone event of a known run is not grouped. */
-      runTag: string | null;
-      /** Time since the previous shown event (the pause between two steps), ms. */
-      gapMs: number | null;
-    }
-  | {
-      kind: 'run';
-      key: string;
-      runId: string;
-      run: Run | null;
-      count: number;
-      /** Blocked tool uses in this segment (kept visible on a folded run). */
-      blocked: number;
-      collapsed: boolean;
-      header: number;
-    };
-
-/** Run id of a run-header row key (`r<runId>:<firstSeq>`). */
-export function runIdOfKey(key: string): string | null {
-  return key.startsWith('r') ? (key.slice(1).split(':')[0] ?? null) : null;
-}
-
-/** `+0.8s` is not worth a glance; pauses from a second up are. */
-export const GAP_SHOWN_MS = 1000;
-
-/** `+3.2s`, `+42s`, `+3分`, `+1時間12分` — the pause before a step. */
-export function formatGap(ms: number | null): string | null {
-  if (ms == null || ms < GAP_SHOWN_MS) return null;
-  if (ms < 10_000) return `+${(ms / 1000).toFixed(1)}s`;
-  if (ms < 60_000) return `+${Math.round(ms / 1000)}s`;
-  if (ms < 3_600_000) return `+${Math.round(ms / 60_000)}分`;
-  const h = Math.floor(ms / 3_600_000);
-  const m = Math.round((ms % 3_600_000) / 60_000);
-  return m ? `+${h}時間${m}分` : `+${h}時間`;
+  return !!f.sessionId || !!f.runId || !!f.text.trim();
 }
 
 /**
- * Flatten events into rows, newest last. With `groupByRun`, consecutive events of one run
- * form a segment under a run header, so the stream stays chronological when runs
- * interleave. A lone event of a run that already had a header is shown inline with a run
- * tag instead of repeating the header (parallel runs would otherwise produce a header per
- * line). Ended runs start collapsed unless toggled. Plumbing events (`EventView.noise`) are
- * left out unless `showAll`.
+ * Sessions by id: the cached list, plus the ones it does not have (archived, or newer than
+ * the list) as their creation event described them.
  */
-export function buildTimelineRows(input: {
+export function knownSessions(events: readonly Event[], sessions: ReadonlyMap<string, Session>): Map<string, Session> {
+  const out = new Map(sessions);
+  for (const e of events) {
+    if (e.type === 'session.created' && !out.has(e.payload.session.id)) out.set(e.payload.session.id, e.payload.session);
+  }
+  return out;
+}
+
+// ----------------------------------------------------------------------------- helpers
+
+/** One line of a message: fenced blocks (code, plans for the mock runtime) drop out. */
+export function messageLine(text: string, max = 80): string {
+  const prose = text.replace(/```[\s\S]*?(?:```|$)/g, ' ').trim();
+  const first = prose.split('\n').find((l) => l.trim()) ?? '';
+  // Markdown marks (a heading, a list bullet, bold) are not part of the words, and a row is
+  // a phrase, not a sentence (no closing 。).
+  const plain = first
+    .replace(/^\s*(?:#{1,6}\s+|[-*>]\s+|\d+\.\s+)/, '')
+    .replace(/\*\*|__|`/g, '')
+    .replace(/。\s*$/, '');
+  return shorten(plain, max);
+}
+
+function textOf(m: Message): string {
+  return m.content
+    .filter((p) => p.type === 'text')
+    .map((p) => (p as { text: string }).text)
+    .join('\n');
+}
+
+/** A run status in the session-state vocabulary (one icon set for the whole app). */
+export function runState(run: Run | null): SessionState {
+  switch (run?.status) {
+    case 'running':
+      return 'working';
+    case 'awaiting_approval':
+      return 'needs_you';
+    case 'created':
+    case 'queued':
+      return 'queued';
+    case 'completed':
+      return 'done';
+    case 'failed':
+      return 'failed';
+    case 'cancelled':
+      return 'stopped';
+    default:
+      return 'idle';
+  }
+}
+
+/**
+ * A tool use as a noun phrase. The tools of the session tree are named here (spawn, ask,
+ * publish, send) so no method name reaches the screen; the rest is the shared wording.
+ */
+export function stepPhrase(name: string, rawInput: unknown): string {
+  const input = (rawInput && typeof rawInput === 'object' ? rawInput : {}) as Record<string, unknown>;
+  const str = (k: string) => (typeof input[k] === 'string' ? input[k] : null);
+  const method = controlMethod(name) ?? name.replace(/^mcp__[^_]+__/, '').replaceAll('__', '.').replaceAll('_', '.');
+  switch (method) {
+    case 'session.spawn':
+      return str('title') ? `「${shorten(str('title')!, 40)}」に依頼` : '子に依頼';
+    case 'human.ask':
+      return str('question') ? `質問: ${shorten(str('question')!, 60)}` : '質問';
+    case 'artifact.publish':
+      return str('title') ? `成果物「${shorten(str('title')!, 40)}」を残す` : '成果物を残す';
+    case 'session.send':
+      return str('content') ? `指示: ${shorten(str('content')!, 60)}` : '指示';
+    case 'session.stop':
+      return '停止';
+    case 'session.resume':
+      return '再開';
+    case 'artifact.review':
+      return str('decision') === 'redo' ? 'やり直しを依頼' : '採用';
+    case 'schedule.create':
+      return '繰り返しを設定';
+    case 'attention.respond':
+      return '質問に回答';
+    default:
+      return describeTool(name, rawInput).label;
+  }
+}
+
+const INBOX_TEXT: Record<string, string> = {
+  answer: '回答',
+  budget: '予算',
+  resume: '再開',
+  user_message: 'あなたの発言',
+};
+
+// ------------------------------------------------------------------------------- build
+
+export interface BuildInput {
   events: readonly Event[];
-  filters: TimelineFilters;
-  groupByRun: boolean;
-  runs: Map<string, Run>;
-  /** Explicit expand/collapse choices by run id (true = collapsed). */
-  toggled: Record<string, boolean>;
-  showAll?: boolean;
-  /** Also routine automatic allows (tool.decided), without the rest of the plumbing. */
-  showAutoAllowed?: boolean;
-  names?: TimelineNames;
-}): TimelineRow[] {
-  type Seg = { runId: string | null; items: { e: Event; v: EventView }[] };
-  const segs: Seg[] = [];
+  sessions: ReadonlyMap<string, Session>;
+  runs: ReadonlyMap<string, Run>;
+  /** "詳細": runs, inbox and budget too. */
+  details: boolean;
+  filters?: TimelineFilters;
+}
+
+/**
+ * Turn the event log into tree groups (newest tree first, items oldest first). Moments are
+ * always there; with `details` each run becomes one unit placed where it started, holding
+ * every step of that run however the runs interleave.
+ */
+export function buildTimeline(input: BuildInput): TimelineGroup[] {
+  const filters = input.filters ?? EMPTY_FILTERS;
+  const details = input.details || !!filters.runId;
+  const known = knownSessions(input.events, input.sessions);
+  const session = (id: string) => known.get(id);
+  // Events that name the tree tell it even before the session list has the session.
+  const rootHint = new Map<string, string>();
   for (const e of input.events) {
-    const v = describeEvent(e, input.names);
-    if (v.noise && !input.showAll) continue;
-    if (v.autoAllowed && !input.showAll && !input.showAutoAllowed) continue;
-    if (!matchesFilters(e, v, input.filters)) continue;
-    const runId = input.groupByRun ? e.runId : null;
-    const last = segs[segs.length - 1];
-    if (runId && last?.runId === runId) last.items.push({ e, v });
-    else segs.push({ runId, items: [{ e, v }] });
+    if (e.type === 'attention.opened') rootHint.set(e.payload.attention.sessionId, e.payload.attention.rootSessionId);
+    else if (e.type === 'session.state_changed' || e.type === 'session.now_changed' || e.type === 'session.cost_updated')
+      rootHint.set(e.payload.sessionId, e.payload.rootSessionId);
+  }
+  const rootOf = (id: string): string => session(id)?.rootSessionId ?? rootHint.get(id) ?? id;
+
+  const items: TimelineItem[] = [];
+  const lastMessage = new Map<string, string>();
+  const scheduleMessage = new Map<string, string>();
+  const attentionMoments = new Map<string, TimelineMoment>();
+  const artifactAttention = new Set<string>();
+  const pendingOutputs = new Map<string, TimelineOutput[]>();
+  const lastFinished = new Map<string, TimelineMoment>();
+  const runUnits = new Map<string, TimelineRun>();
+  const toolSteps = new Map<string, TimelineStep>();
+  const pendingWake = new Map<string, WakeItemView[]>();
+
+  const target = (sessionId: string, messageId?: string | null): TimelineTarget => ({
+    sessionId,
+    messageId: messageId === undefined ? (lastMessage.get(sessionId) ?? null) : messageId,
+  });
+
+  const moment = (
+    e: Event,
+    sessionId: string,
+    what: MomentKind,
+    text: string,
+    over: Partial<TimelineMoment> = {},
+  ): TimelineMoment => {
+    const m: TimelineMoment = {
+      kind: 'moment',
+      key: `m${e.seq}`,
+      seq: e.seq,
+      ts: e.ts,
+      sessionId,
+      rootId: rootOf(sessionId),
+      what,
+      attention: null,
+      finishedAs: null,
+      tone: 'neutral',
+      text,
+      outputs: [],
+      resolution: null,
+      open: false,
+      target: target(sessionId),
+      ...over,
+    };
+    items.push(m);
+    return m;
+  };
+
+  const unitOf = (runId: string, e: Event): TimelineRun | null => {
+    if (!details) return null;
+    if (filters.runId && filters.runId !== runId) return null;
+    const existing = runUnits.get(runId);
+    if (existing) return existing;
+    const run = input.runs.get(runId) ?? (e.type === 'run.created' ? e.payload.run : null);
+    const sessionId = run?.sessionId ?? e.sessionId;
+    if (!sessionId) return null;
+    const unit: TimelineRun = {
+      kind: 'run',
+      key: `r${runId}`,
+      seq: e.seq,
+      ts: e.ts,
+      runId,
+      sessionId,
+      rootId: rootOf(sessionId),
+      run,
+      trigger: run?.trigger ?? null,
+      wake: run?.trigger === 'wake' ? (pendingWake.get(sessionId) ?? null) : null,
+      headline: '',
+      steps: [],
+      state: runState(run),
+      target: target(sessionId),
+    };
+    if (unit.wake) pendingWake.delete(sessionId);
+    runUnits.set(runId, unit);
+    items.push(unit);
+    return unit;
+  };
+
+  const step = (unit: TimelineRun, e: Event, what: StepKind, text: string, isError = false): TimelineStep => {
+    const s: TimelineStep = {
+      key: `s${e.seq}`,
+      seq: e.seq,
+      ts: e.ts,
+      what,
+      text,
+      isError,
+      target: target(unit.sessionId),
+    };
+    unit.steps.push(s);
+    return s;
+  };
+
+  const note = (e: Event, sessionId: string, what: NoteKind, text: string, tone: Tone = 'neutral') => {
+    if (!details || filters.runId) return;
+    items.push({
+      kind: 'note',
+      key: `n${e.seq}`,
+      seq: e.seq,
+      ts: e.ts,
+      sessionId,
+      rootId: rootOf(sessionId),
+      what,
+      text,
+      tone,
+      target: target(sessionId),
+    });
+  };
+
+  const addOutput = (a: Artifact) => {
+    if (a.role !== 'output' || !a.sessionId) return;
+    const kind = outputKind(a);
+    if (!kind) return;
+    const out = { kind, title: a.title };
+    // An output recorded right after its session finished still belongs to that moment.
+    const fin = lastFinished.get(a.sessionId);
+    if (fin && fin.outputs.length === 0) {
+      fin.outputs.push(out);
+      return;
+    }
+    pendingOutputs.set(a.sessionId, [...(pendingOutputs.get(a.sessionId) ?? []), out]);
+  };
+
+  for (const e of input.events) {
+    switch (e.type) {
+      case 'message.created': {
+        const m = e.payload.message;
+        if (m.role === 'user' && m.meta?.kind === 'brief') {
+          moment(e, m.sessionId, 'brief', messageLine(m.meta.brief.goal) || messageLine(textOf(m)), {
+            target: target(m.sessionId, m.id),
+          });
+        } else if (m.role === 'user' && m.meta?.kind === 'schedule') {
+          scheduleMessage.set(m.sessionId, m.id);
+        } else if (m.role === 'user' && m.author.kind === 'human' && m.meta?.kind !== 'answer') {
+          moment(e, m.sessionId, 'request', messageLine(textOf(m)) || '（添付）', { target: target(m.sessionId, m.id) });
+        } else if (m.role === 'system' && m.meta?.kind === 'wake') {
+          pendingWake.set(m.sessionId, m.meta.items);
+        }
+        if (m.role !== 'tool') lastMessage.set(m.sessionId, m.id);
+        if (m.role === 'assistant') {
+          const runId = m.runId ?? e.runId;
+          const unit = runId ? unitOf(runId, e) : null;
+          const line = messageLine(textOf(m));
+          if (unit && line) {
+            step(unit, e, 'reply', line);
+            unit.headline = line;
+          }
+        } else if (m.role === 'user' && m.author.kind === 'agent' && m.meta === null) {
+          // A supervisor's follow-up to a child: a step of the supervisor's run.
+          const unit = unitOf(m.author.runId, e);
+          const title = session(m.sessionId);
+          if (unit) step(unit, e, 'tool', `${title ? `「${shorten(sessionTitle(title), 30)}」へ` : ''}指示: ${messageLine(textOf(m), 60)}`);
+        }
+        break;
+      }
+      case 'attention.opened': {
+        const a = e.payload.attention;
+        const tone: Tone =
+          a.kind === 'failure' ? 'failed' : a.kind === 'review' ? 'review' : 'needs_you';
+        const m = moment(e, a.sessionId, 'attention', a.title, { attention: a.kind, tone, open: true });
+        attentionMoments.set(a.id, m);
+        if (a.refs.artifactId) artifactAttention.add(a.refs.artifactId);
+        break;
+      }
+      case 'attention.resolved': {
+        const a = e.payload.attention;
+        const m = attentionMoments.get(a.id);
+        if (!m) break;
+        m.open = false;
+        const r = a.resolution;
+        if (a.status === 'dismissed') m.resolution = { label: '取り下げ', byHuman: true };
+        else if (r && r.by.kind === 'human') {
+          const choice = r.choiceId ? a.choices.find((c) => c.id === r.choiceId)?.label : null;
+          m.resolution = { label: choice ?? (r.text ? `「${shorten(r.text, 24)}」` : '回答'), byHuman: true };
+        } else m.resolution = { label: '解決', byHuman: false };
+        break;
+      }
+      case 'session.state_changed': {
+        const p = e.payload;
+        if ((p.to === 'done' || p.to === 'review') && p.from !== p.to) {
+          const outs = pendingOutputs.get(p.sessionId) ?? [];
+          pendingOutputs.delete(p.sessionId);
+          const m = moment(e, p.sessionId, 'finished', '', {
+            finishedAs: p.to,
+            tone: p.to === 'done' ? 'done' : 'review',
+            outputs: outs,
+          });
+          lastFinished.set(p.sessionId, m);
+        } else if (p.to === 'stopped' && p.parentSessionId === null) {
+          moment(e, p.sessionId, 'stopped', '停止');
+        } else if (p.to !== 'done' && p.to !== 'review') {
+          // Working again: later outputs belong to the next finish.
+          if (p.to === 'working') lastFinished.delete(p.sessionId);
+        }
+        break;
+      }
+      case 'artifact.created':
+        addOutput(e.payload.artifact);
+        break;
+      case 'artifact.updated': {
+        const a = e.payload.artifact;
+        if (!e.payload.changes.includes('review') || a.review.by?.kind !== 'human' || !a.sessionId) break;
+        if (artifactAttention.has(a.id)) break; // its review item shows the answer
+        const kind = outputKind(a);
+        if (a.review.state === 'accepted')
+          moment(e, a.sessionId, 'accepted', a.title, { tone: 'done', outputs: kind ? [{ kind, title: a.title }] : [] });
+        else if (a.review.state === 'rejected')
+          moment(e, a.sessionId, 'redo', a.review.note ? shorten(a.review.note, 60) : a.title, {
+            outputs: kind ? [{ kind, title: a.title }] : [],
+          });
+        break;
+      }
+      case 'schedule.fired': {
+        const p = e.payload;
+        const sid = p.sessionId ?? e.sessionId;
+        if (!sid) break;
+        const at = new Date(p.scheduledFor);
+        const clock = `${at.getHours()}:${String(at.getMinutes()).padStart(2, '0')}`;
+        // A started firing is told by its icon and the chip of the conversation it made.
+        const text =
+          p.outcome === 'started'
+            ? ''
+            : p.outcome === 'skipped_overlap'
+              ? `${clock} の回を見送り`
+              : p.outcome === 'missed'
+                ? `${clock} の回を逃した`
+                : `${clock} の回を開始できず`;
+        moment(e, sid, 'schedule', text, {
+          tone: p.outcome === 'failed_to_start' ? 'failed' : 'neutral',
+          target: target(sid, scheduleMessage.get(sid) ?? null),
+        });
+        break;
+      }
+      case 'run.created': {
+        unitOf(e.payload.run.id, e);
+        break;
+      }
+      case 'tool.called': {
+        const unit = unitOf(e.payload.runId, e);
+        if (!unit) break;
+        const s = step(unit, e, 'tool', stepPhrase(e.payload.name, e.payload.input));
+        toolSteps.set(e.payload.toolCallId, s);
+        break;
+      }
+      case 'tool.result': {
+        const s = toolSteps.get(e.payload.toolCallId);
+        if (s && e.payload.isError) {
+          s.isError = true;
+          const out = outputText(e.payload.output);
+          if (out) s.text = `${s.text} · ${shorten(out, 80)}`;
+        }
+        break;
+      }
+      case 'run.failed': {
+        const unit = unitOf(e.payload.run.id, e);
+        if (unit) step(unit, e, 'failure', shorten(e.payload.error.message.split('\n')[0] ?? '', 100), true);
+        break;
+      }
+      case 'inbox.added': {
+        const item = e.payload.item;
+        if (item.kind === 'user_message') break; // the request row says it
+        const child = item.refs.childSessionId ? session(item.refs.childSessionId) : undefined;
+        const text =
+          item.kind === 'child_update' && child
+            ? `「${shorten(sessionTitle(child), 30)}」の知らせ`
+            : (INBOX_TEXT[item.kind] ?? '知らせ');
+        note(e, item.sessionId, 'inbox', text);
+        break;
+      }
+      case 'budget.threshold': {
+        const sid = e.sessionId ?? e.payload.rootSessionId;
+        if (sid) note(e, sid, 'budget', `予算の ${e.payload.pct}%`, e.payload.pct >= 100 ? 'failed' : e.payload.pct >= 80 ? 'needs_you' : 'neutral');
+        break;
+      }
+      default:
+        break;
+    }
   }
 
-  const rows: TimelineRow[] = [];
-  const seen = new Set<string>();
-  let prevTs: number | null = null;
-  const eventRow = (e: Event, v: EventView, header: number, runTag: string | null): TimelineRow => {
-    const ts = Date.parse(e.ts);
-    const gapMs = prevTs == null || Number.isNaN(ts) ? null : Math.max(0, ts - prevTs);
-    prevTs = Number.isNaN(ts) ? prevTs : ts;
-    return { kind: 'event', key: `e${e.seq}`, event: e, view: v, inRun: header !== -1, header, runTag, gapMs };
+  // Runs read their live status from the cache (a unit is built from its first event).
+  for (const unit of runUnits.values()) {
+    const live = input.runs.get(unit.runId);
+    if (live) {
+      unit.run = live;
+      unit.state = runState(live);
+      unit.trigger = live.trigger;
+    }
+    // No reply yet: what it is doing now (a live run), else its first step.
+    if (!unit.headline)
+      unit.headline =
+        (unit.state === 'working' ? session(unit.sessionId)?.now : null) ??
+        unit.steps.find((s) => s.what !== 'reply')?.text ??
+        '';
+    const lastStep = unit.steps[unit.steps.length - 1];
+    unit.target = lastStep?.target ?? unit.target;
+  }
+
+  const q = filters.text.trim().toLowerCase();
+  const titleOf = (id: string) => {
+    const s = session(id);
+    return s ? sessionTitle(s) : '';
   };
-  for (const seg of segs) {
-    if (!seg.runId) {
-      for (const { e, v } of seg.items) rows.push(eventRow(e, v, -1, null));
-      continue;
-    }
-    const run = input.runs.get(seg.runId) ?? null;
-    const ended = run ? ['completed', 'cancelled'].includes(run.status) : false;
-    // A run the filters single out is what the reader came for: open even when it ended.
-    const collapsed = input.toggled[seg.runId] ?? (ended && input.filters.runId !== seg.runId);
-    if (seg.items.length === 1 && seen.has(seg.runId) && !collapsed) {
-      const { e, v } = seg.items[0]!;
-      rows.push(eventRow(e, v, -1, seg.runId));
-      continue;
-    }
-    seen.add(seg.runId);
-    const header = rows.length;
-    rows.push({
-      kind: 'run',
-      key: `r${seg.runId}:${seg.items[0]!.e.seq}`,
-      runId: seg.runId,
-      run,
-      count: seg.items.length,
-      blocked: seg.items.filter((x) => x.v.blocked).length,
-      collapsed,
-      header,
-    });
-    if (!collapsed) for (const { e, v } of seg.items) rows.push(eventRow(e, v, header, null));
-    else {
-      // The pause after a folded run is measured from its last event.
-      const lastTs = Date.parse(seg.items[seg.items.length - 1]!.e.ts);
-      if (!Number.isNaN(lastTs)) prevTs = lastTs;
+  const matches = (it: TimelineItem) => {
+    if (filters.sessionId && it.sessionId !== filters.sessionId) return false;
+    if (filters.runId && !(it.kind === 'run' && it.runId === filters.runId)) return false;
+    if (!q) return true;
+    const hay =
+      it.kind === 'run'
+        ? `${it.headline} ${it.steps.map((s) => s.text).join(' ')} ${(it.wake ?? []).map((w) => w.title).join(' ')}`
+        : it.kind === 'moment'
+          ? `${it.text} ${it.outputs.map((o) => o.title).join(' ')} ${it.resolution?.label ?? ''}`
+          : it.text;
+    return `${hay} ${titleOf(it.sessionId)}`.toLowerCase().includes(q);
+  };
+
+  const groups = new Map<string, TimelineGroup>();
+  for (const it of items) {
+    if (!matches(it)) continue;
+    const g = groups.get(it.rootId) ?? { rootId: it.rootId, items: [], lastTs: it.ts };
+    g.items.push(it);
+    groups.set(it.rootId, g);
+  }
+  const out = [...groups.values()];
+  for (const g of out) {
+    g.items.sort((a, b) => a.seq - b.seq);
+    const last = g.items[g.items.length - 1]!;
+    g.lastTs = last.kind === 'run' && last.steps.length ? last.steps[last.steps.length - 1]!.ts : last.ts;
+    for (const it of g.items) {
+      const t = it.kind === 'run' && it.steps.length ? it.steps[it.steps.length - 1]!.ts : it.ts;
+      if (t > g.lastTs) g.lastTs = t;
     }
   }
-  return rows;
+  return out.sort((a, b) => (a.lastTs < b.lastTs ? 1 : a.lastTs > b.lastTs ? -1 : 0));
+}
+
+/** Rows shown while a tree is folded: the newest few. */
+export const FOLDED_ITEMS = 6;
+
+/** The items of a group as shown (the newest `FOLDED_ITEMS` unless unfolded) and how many are hidden. */
+export function visibleItems(g: TimelineGroup, unfolded: boolean): { items: TimelineItem[]; hidden: number } {
+  if (unfolded || g.items.length <= FOLDED_ITEMS + 1) return { items: g.items, hidden: 0 };
+  return { items: g.items.slice(-FOLDED_ITEMS), hidden: g.items.length - FOLDED_ITEMS };
+}
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+/** Row time: `9:02` today, `昨日 9:02`, `10/27 9:02`. */
+export function formatWhen(iso: string, now: number): string {
+  const d = new Date(iso);
+  const clock = `${d.getHours()}:${pad2(d.getMinutes())}`;
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  const t = d.getTime();
+  if (t >= today.getTime()) return clock;
+  if (t >= today.getTime() - 86_400_000) return `昨日 ${clock}`;
+  return `${d.getMonth() + 1}/${d.getDate()} ${clock}`;
+}
+
+/** `42秒` `3分` `1時間12分` — how long a run took. */
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))}秒`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}分`;
+  const h = Math.floor(ms / 3_600_000);
+  const m = Math.round((ms % 3_600_000) / 60_000);
+  return m ? `${h}時間${m}分` : `${h}時間`;
 }
