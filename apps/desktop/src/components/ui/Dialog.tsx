@@ -2,6 +2,7 @@ import { X } from 'lucide-react';
 import { Dialog as D } from 'radix-ui';
 import type { ReactNode } from 'react';
 import { cn } from '../../lib/cn';
+import { InDialog } from './layer';
 
 /** Modal dialog (level 3, z-dialog 60): scale 0.98 → 1 + fade, 140ms (§3.2). */
 export function Dialog({
@@ -48,8 +49,10 @@ export function Dialog({
               <X size={15} strokeWidth={1.75} />
             </D.Close>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">{children}</div>
-          {footer && <div className="flex justify-end gap-2 border-t border-line-subtle px-5 py-3">{footer}</div>}
+          <InDialog.Provider value={true}>
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">{children}</div>
+            {footer && <div className="flex justify-end gap-2 border-t border-line-subtle px-5 py-3">{footer}</div>}
+          </InDialog.Provider>
         </D.Content>
       </D.Portal>
     </D.Root>

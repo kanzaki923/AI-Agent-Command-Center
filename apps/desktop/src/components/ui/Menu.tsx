@@ -3,9 +3,11 @@ import type { ReactNode } from 'react';
 import { cn } from '../../lib/cn';
 import type { ShortcutId } from '../../lib/shortcuts';
 import { Kbd } from './Kbd';
+import { usePopoverLayer } from './layer';
 
+/** Popover / menu surface; the z-index comes from usePopoverLayer (above a dialog it opens from). */
 const LAYER =
-  'z-[40] rounded-md border border-line bg-raised p-1 shadow-float outline-none origin-[var(--radix-popper-transform-origin)] data-[state=open]:animate-[acc-pop-in_180ms_var(--ease-out)]';
+  'rounded-md border border-line bg-raised p-1 shadow-float outline-none origin-[var(--radix-popper-transform-origin)] data-[state=open]:animate-[acc-pop-in_180ms_var(--ease-out)]';
 
 export const Menu = DropdownMenu.Root;
 export const MenuTrigger = DropdownMenu.Trigger;
@@ -19,9 +21,10 @@ export function MenuContent({
   align?: 'start' | 'end' | 'center';
   className?: string;
 }) {
+  const layer = usePopoverLayer();
   return (
     <DropdownMenu.Portal>
-      <DropdownMenu.Content align={align} sideOffset={6} className={cn(LAYER, 'min-w-52', className)}>
+      <DropdownMenu.Content align={align} sideOffset={6} className={cn(LAYER, layer, 'min-w-52', className)}>
         {children}
       </DropdownMenu.Content>
     </DropdownMenu.Portal>
@@ -94,13 +97,14 @@ export function PopoverContent({
    */
   focusInput?: boolean;
 }) {
+  const layer = usePopoverLayer();
   return (
     <P.Portal>
       <P.Content
         align={align}
         side={side}
         sideOffset={6}
-        className={cn(LAYER, 'p-0', className)}
+        className={cn(LAYER, layer, 'p-0', className)}
         onOpenAutoFocus={(e) => {
           if (!focusInput) {
             e.preventDefault();

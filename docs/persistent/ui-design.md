@@ -214,7 +214,7 @@
 | 2 浮遊（メニュー・トースト） | `raised` + `border-default` | `0 8px 24px rgb(0 0 0 / 0.45)` | `0 8px 24px rgb(0 0 0 / 0.10), 0 0 0 1px rgb(0 0 0 / 0.06)` |
 | 3 モーダル（ダイアログ・パレット） | `raised` + `border-strong` | `0 24px 64px rgb(0 0 0 / 0.60)` | `0 24px 64px rgb(0 0 0 / 0.16)` |
 
-z-index：`sidebar 10 / panel 20 / sticky 30 / popover 40 / toast 50 / dialog 60 / palette 70 / tooltip 80`。
+z-index：`sidebar 10 / panel 20 / sticky 30 / popover 40 / toast 50 / dialog 60 / palette 70 / tooltip 80`。ダイアログの中から開くポップオーバーとメニューは 61（`ui/layer.ts` の `InDialog`。40 のままだとダイアログの幕の裏に開く）。
 
 ### 2.9 フォーカス
 

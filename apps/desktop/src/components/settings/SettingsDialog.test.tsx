@@ -373,6 +373,26 @@ describe('<SettingsDialog> モデル', () => {
     expect(screen.getByTestId('roster-otherwise')).toHaveTextContent('契約枠');
   });
 
+  it('opens the model list of a row above the dialog and saves the choice', async () => {
+    const { updates } = mount(ROSTER, MODELS);
+    await openRoster();
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: '1 番目のモデル' }));
+    });
+    const opus = await screen.findByRole('option', { name: /Claude Opus 5.5/ });
+    // Popovers sit below dialogs (40 < 60) unless opened from one.
+    expect(opus.closest('[data-radix-popper-content-wrapper] > *')).toHaveClass('z-[61]');
+    await act(async () => {
+      fireEvent.click(opus);
+    });
+    expect(updates.at(-1)).toEqual({
+      modelRules: [
+        { model: 'anthropic/claude-opus-5-5', when: '画面の設計' },
+        { model: 'gemini-3-pro', when: '文章を書く' },
+      ],
+    });
+  });
+
   it('reorders with Alt+↑, saves a condition on blur, adds and removes rows', async () => {
     const { updates } = mount(ROSTER, MODELS);
     await openRoster();
