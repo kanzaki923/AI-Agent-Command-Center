@@ -1,5 +1,6 @@
 import { defineMethod } from '../../api/registry';
 import type { DaemonContext } from '../../core/context';
+import { conflict } from '../../core/errors';
 import { sessionScope } from './shared';
 
 export function sessionArchive(ctx: DaemonContext) {
@@ -10,6 +11,9 @@ export function sessionArchive(ctx: DaemonContext) {
       db.transaction(() => {
         const cur = repos.sessions.require(p.sessionId);
         if (p.archived === (cur.archivedAt !== null)) return cur;
+        if (p.archived && ctx.hasService('assistant') && ctx.service('assistant').isAssistant(cur.id)) {
+          throw conflict('右腕はアーカイブできません');
+        }
         const now = ctx.clock.iso();
         const session = repos.sessions.update(p.sessionId, (s) => ({
           ...s,

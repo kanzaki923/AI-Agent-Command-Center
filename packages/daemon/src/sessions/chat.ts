@@ -1,6 +1,7 @@
 import type { Message, Run, Session } from '@acc/protocol';
 import type { RunExecutor } from '../contracts';
 import type { DaemonContext } from '../core/context';
+import { MOCK_RIGHT_HAND_MODEL } from '../assistant/permissions';
 import { invalidParams } from '../core/errors';
 import { apiTools, runToolLoop, toChatMessages } from '../llm';
 
@@ -12,19 +13,23 @@ export const CHAT_HISTORY_LIMIT = 200;
 
 /**
  * Model for a new chat run: explicit override > session model > settings default >
- * the offline mock when LiteLLM is not configured (null = nothing usable).
+ * the offline mock when LiteLLM is not configured (null = nothing usable). The assistant
+ * (assistant/) reads `settings.assistant.model` before the default and falls back to its own
+ * mock.
  */
 export function resolveChatModel(
   ctx: DaemonContext,
-  sessionModel: string | null,
+  session: Pick<Session, 'id' | 'model'>,
   override?: string | null,
 ): string | null {
   const s = ctx.settings.get();
+  const assistant = ctx.hasService('assistant') && ctx.service('assistant').isAssistant(session.id);
   return (
     override ??
-    sessionModel ??
+    session.model ??
+    (assistant ? s.assistant.model : null) ??
     s.defaultModel ??
-    (s.litellm.baseUrl ? null : OFFLINE_FALLBACK_MODEL)
+    (s.litellm.baseUrl ? null : assistant ? MOCK_RIGHT_HAND_MODEL : OFFLINE_FALLBACK_MODEL)
   );
 }
 
@@ -50,17 +55,25 @@ export function createChatExecutor(ctx: DaemonContext): RunExecutor {
   return async (ctl) => {
     const run = ctl.run;
     const session = ctx.repos.sessions.require(run.sessionId);
+    // The assistant (assistant/): its own model order, a daily limit on its own calls, and a
+    // system prompt that carries the status of every tree.
+    const assistant =
+      ctx.hasService('assistant') && ctx.service('assistant').isAssistant(session.id)
+        ? ctx.service('assistant')
+        : null;
+    assistant?.assertWithinDailyLimit();
     const model = requireChatModel(ctx, run, session);
     // Messages that waited for this run are in its history; later ones are injected at the
     // next step (spec 20261029 §3.2, D9).
     const inbox = ctx.hasService('supervisorInbox') ? ctx.service('supervisorInbox') : null;
     inbox?.drain(run.id);
+    const history = chatHistory(ctx, run, session);
     await runToolLoop({
       ctx,
       ctl,
       model,
-      messages: toChatMessages(chatHistory(ctx, run, session), {
-        systemPrompt: session.systemPrompt,
+      messages: toChatMessages(history, {
+        systemPrompt: assistant ? assistant.systemPrompt(session, history) : session.systemPrompt,
       }),
       tools: apiTools(ctx, ctl.actor),
       maxTurns: ctx.settings.get().supervisor.maxModelCallsPerRun,
@@ -72,7 +85,7 @@ export function createChatExecutor(ctx: DaemonContext): RunExecutor {
 
 /** The run's model, or a user-facing error when nothing is configured. */
 export function requireChatModel(ctx: DaemonContext, run: Run, session: Session): string {
-  const model = run.model ?? resolveChatModel(ctx, session.model);
+  const model = run.model ?? resolveChatModel(ctx, session);
   if (!model) {
     throw invalidParams(
       'モデルが設定されていません。セッションか設定で既定のモデルを指定してください',

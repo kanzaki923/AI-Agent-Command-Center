@@ -1,9 +1,9 @@
-import type { Project, WorkspaceSpec } from '@acc/protocol';
-import { ChevronDown, Diamond, Loader2, MessageSquare, Play } from 'lucide-react';
+import type { Project } from '@acc/protocol';
+import { ChevronDown, Loader2, MessageSquare, Play } from 'lucide-react';
 import { useState } from 'react';
 import { promptConnectionThen } from '../../app/connect';
 import { startDemo } from '../../app/demo';
-import { startConversation } from '../../daemon/actions';
+import { askAssistant, workspaceHint } from '../../daemon/assistant';
 import { useMethods, useProjects, useSettings } from '../../daemon/queries';
 import { useRuntime } from '../../daemon/runtime';
 import { cn } from '../../lib/cn';
@@ -12,6 +12,7 @@ import { useUi } from '../../store/ui';
 import { Button } from '../ui/Button';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu';
 import { Tooltip } from '../ui/Tooltip';
+import { AssistantLine } from './AssistantLine';
 
 const NO_PROJECTS: Project[] = [];
 
@@ -25,20 +26,15 @@ function candidates(projects: readonly Project[], kind: WorkspaceKind): Project[
   return [];
 }
 
-/** The workspace a new conversation gets, or none. */
-export function workspaceSpec(kind: WorkspaceKind, project: Project | null): WorkspaceSpec | undefined {
-  if (kind === 'folder' && project?.folderPath) return { kind: 'folder', path: project.folderPath };
-  if (kind === 'worktree' && project?.repoPath) return { kind: 'worktree', projectId: project.id };
-  return undefined;
-}
-
 /**
- * 何を頼みますか (ui-rework spec §3.3–3.4): the one way to ask for something. At the bottom of
- * home it is a line; Enter starts a conversation and stays home, Ctrl+Enter opens it. In the
- * middle (`center`: the empty home and Ctrl+N) it is larger, 任せる is on from the start,
- * examples cycle under it and 試してみる starts the demo. `open` always opens the new
- * conversation (Ctrl+N). The first real request without a saved LLM endpoint brings up the
- * connection prompt first; the request goes once it closes.
+ * 何を頼みますか (right-hand spec §2.1): the one way to ask for something, and the one person
+ * it goes to — the assistant. Enter sends the words to it and stays home; its reply appears
+ * above the field (AssistantLine) and new lanes are born as it starts work. Ctrl+Enter sends
+ * and opens its conversation. The workspace toggle (none / folder / code) rides along as a
+ * hint. In the middle (`center`: the empty home and Ctrl+N) it is larger, examples cycle under
+ * it and 試してみる starts the demo. `open` always opens the conversation (Ctrl+N). The first
+ * real request without a saved LLM endpoint brings up the connection prompt first; the request
+ * goes once it closes.
  */
 export function HomeComposer({
   center = false,
@@ -47,7 +43,7 @@ export function HomeComposer({
   demo = center,
 }: {
   center?: boolean;
-  /** Open the conversation after sending (the draft screen). */
+  /** Open the assistant's conversation after sending (the draft screen). */
   open?: boolean;
   /** Keep the text in the UI store under this key (survives leaving the screen). */
   draftKey?: string;
@@ -64,7 +60,6 @@ export function HomeComposer({
   const [local, setLocal] = useState('');
   const text = draftKey ? stored : local;
   const setText = (t: string) => (draftKey ? setDraft(draftKey, t) : setLocal(t));
-  const [delegate, setDelegate] = useState(center);
   const [kind, setKind] = useState<WorkspaceKind>('none');
   const [pickedProjectId, setPickedProjectId] = useState<string | null>(null);
   const [preparing, setPreparing] = useState(false);
@@ -79,20 +74,13 @@ export function HomeComposer({
     if (!t) return;
     const go = async () => {
       setText('');
-      const workspace = workspaceSpec(kind, project);
-      const s = await startConversation(rt, {
-        text: t,
-        projectId: workspace ? project!.id : uiProjectId,
-        ...(workspace ? { workspace } : {}),
-        delegate,
-      });
-      if (!s) {
-        // Nothing was started: give the words back.
+      const id = await askAssistant(rt, t, { hint: workspaceHint(kind, project) });
+      if (!id) {
+        // Nothing was sent: give the words back.
         setText(t);
         return;
       }
-      setDelegate(center);
-      if (openIt) useUi.getState().openSession(s.id);
+      if (openIt) useUi.getState().openSession(id);
     };
     if (!promptConnectionThen(settings, () => void go())) await go();
   };
@@ -117,25 +105,10 @@ export function HomeComposer({
   const field = (
     <div
       className={cn(
-        'flex min-w-0 items-center gap-1 rounded-md border border-transparent bg-surface pr-1.5 pl-1.5 focus-within:border-[var(--focus-ring)]',
-        center ? 'h-12 w-full' : 'h-11 flex-1',
+        'flex min-w-0 items-center gap-1 rounded-md border border-transparent bg-surface pr-1.5 pl-3 focus-within:border-[var(--focus-ring)]',
+        center ? 'h-12 w-full' : 'h-11 w-full',
       )}
     >
-      <Tooltip content="任せる">
-        <button
-          type="button"
-          aria-label="任せる"
-          aria-pressed={delegate}
-          data-delegate-toggle
-          onClick={() => setDelegate((v) => !v)}
-          className={cn(
-            'flex size-7 shrink-0 items-center justify-center rounded-sm transition-colors duration-[120ms] hover:bg-hover',
-            delegate ? 'text-st-supervising' : 'text-fg-3 hover:text-fg',
-          )}
-        >
-          <Diamond size={15} strokeWidth={1.75} fill={delegate ? 'currentColor' : 'none'} fillOpacity={delegate ? 0.35 : undefined} />
-        </button>
-      </Tooltip>
       <input
         autoFocus={center}
         value={text}
@@ -156,10 +129,18 @@ export function HomeComposer({
     </div>
   );
 
-  if (!center) return field;
+  if (!center) {
+    return (
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <AssistantLine />
+        {field}
+      </div>
+    );
+  }
   // The middle of an empty screen: the field, examples of what to ask, where the work happens, and the demo.
   return (
     <div className="flex w-full flex-col items-center gap-3" data-composer-center>
+      <AssistantLine className="w-full" />
       {field}
       <Examples />
       {projects.length > 0 && toggle}
@@ -206,7 +187,7 @@ const KINDS: { kind: WorkspaceKind; label: string }[] = [
 ];
 
 /**
- * Where the new conversation works: nothing (a plain conversation), a folder, or a project's
+ * Where the work should happen: nothing (a plain conversation), a folder, or a project's
  * code. A folder or code shows the project it comes from (a menu when there are several).
  * Code without any repository yet opens 「プロジェクトを追加」.
  */

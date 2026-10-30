@@ -76,7 +76,7 @@ pnpm --filter @acc/desktop e2e:home       # 監査の場面で「5 秒テスト�
 pnpm --filter @acc/desktop e2e:conflict   # 2 人のコードの変更が README.md で競合：1 つ目を採用 → 反映、2 つ目を採用 → 競合（パネルとホームの失敗の行）→ 解消を任せる → 反映待ち → 反映（承認は 0）
 pnpm --filter @acc/desktop e2e:perf       # 本番ビルドで 10 本同時ストリーミングのフレーム間隔と長いタスクを測る（ホームと会話。--profile で内訳、--dev で開発サーバ）
 pnpm --filter @acc/desktop e2e:reconnect  # デーモンを止める → 再接続の帯とホームの維持 → 同じポートで起動し直す → 帯が消え、止まっている間の変化がホームに出る
-pnpm --filter @acc/desktop e2e:audit -- --out <dir>  # 画面の監査：scripts/audit-scene.ts の場面（任せた木 3 本・定期実行・普通の会話。10 人以上が同時に動く）を一時 ACC_HOME で作り、e2e/audit-shots.js の一覧どおりに撮る（--theme light、--serve で撮らずに起動したまま、--keep）
+pnpm --filter @acc/desktop e2e:audit -- --out <dir>  # 画面の監査：scripts/audit-scene.ts の場面（任せた木 3 本・定期実行・普通の会話・右腕。10 人以上が同時に動く）を一時 ACC_HOME で作り、e2e/audit-shots.js の一覧どおりに撮る（--theme light、--serve で撮らずに起動したまま、--keep）
 ```
 
 e2e はすべて `e2e/harness.js` で一時 `ACC_HOME`・空きポートにデーモンと Vite を起動し、`ANTHROPIC_*` と LiteLLM の設定を子プロセスに渡さない（モックのモデルとランタイムだけ）。確かめる e2e（audit 以外）が待つのは UI とデーモンの状態で、時間では待たない。
@@ -85,6 +85,7 @@ UI とデーモンは同じ `ACC_HOME` を見る（Vite の開発ミドルウェ
 
 ### Vertical Slice を試す
 
+- **右腕に頼む（費用なし）**：ホームの入力欄に打ったものは右腕（`system.assistant` の会話。LiteLLM 未設定なら `mock/right-hand`）へ行く。「来月のローンチ準備を進めて」で木が 1 本生まれ、「今どう？」で 1〜2 行の状況、「ローンチ準備を止めて」で止まる、「毎朝 9 時に昨日のまとめを作って」で繰り返しができる。右腕の会話はサイドバーの固定行から（`architecture.md` §2.20）。
 - **オフライン（費用なし）**：UI の初回画面で「デモモードで試す」を選ぶ（または `system.setupDemo` を呼ぶ）。`<ACC_HOME>/demo/launch-demo` に git なしのフォルダと「デモ: 新製品ローンチ準備」（`mock/orchestrator` + `session.delegate`）ができるので、下書きの目標をそのまま送る。指揮役が 3 人に任せ、終わるたびに起こされて進み具合を答え、そろったら最終報告で止まる。コードの流れは git のプロジェクトで任せると試せる：`mock/orchestrator` の指揮役は 1 人をコードの子（worktree。テストの実行は慎重のプロファイルなら承認）にし、その成果物を採用すると反映される（`e2e:slice`）。
 - **本物の経路**：設定（または `ACC_LITELLM_BASE_URL` / `ACC_LITELLM_API_KEY`）で LiteLLM Proxy の URL とキーを入れる。
   1. 自分のプロジェクトを追加し（`testCommand` を設定すると統合後に検証される）、チャットを作ってモデルに LiteLLM のモデル名（例 `claude-sonnet-4`）を選ぶ。

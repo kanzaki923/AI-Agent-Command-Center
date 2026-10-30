@@ -2,6 +2,7 @@ import type { Project } from '@acc/protocol';
 import { ChevronRight, Folder, FolderGit2, FolderPlus, MoreHorizontal, Pencil, Plus } from 'lucide-react';
 import { type KeyboardEvent, type ReactNode, useState } from 'react';
 import { newChat } from '../../app/commands';
+import { useAssistantId } from '../../daemon/assistant';
 import { useHomeSelect } from '../../daemon/home';
 import { useProjects, useSessions } from '../../daemon/queries';
 import { useDeferredReorder } from '../../hooks/useDeferredReorder';
@@ -131,7 +132,10 @@ function rowButtons(container: HTMLElement): HTMLElement[] {
  * a week fold into 「以前」. Rows hold still while the pointer is over the list.
  */
 export function ConversationTree() {
-  const sessions = useSessions().data ?? NONE;
+  // The assistant has its own fixed row above the tree (right-hand spec §2.2).
+  const assistantId = useAssistantId();
+  const all = useSessions().data ?? NONE;
+  const sessions = assistantId ? all.filter((s) => s.id !== assistantId) : all;
   const projects = (useProjects().data ?? NONE).filter((p) => !p.archivedAt);
   const mode = useUi((s) => s.mode);
   const focusSessionId = useUi((s) => s.focusSessionId);

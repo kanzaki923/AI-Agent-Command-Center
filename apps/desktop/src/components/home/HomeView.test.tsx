@@ -5,7 +5,7 @@ import { qk } from '../../daemon/keys';
 import { type AppRuntime, RuntimeProvider, createRuntime } from '../../daemon/runtime';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
-import { attention, card, homeSnapshot, homeTree, session } from '../../test/fixtures';
+import { attention, card, homeSnapshot, homeTree, message, session } from '../../test/fixtures';
 import { TooltipProvider } from '../ui/Tooltip';
 import { HomeView } from './HomeView';
 
@@ -306,68 +306,86 @@ describe('<HomeView>', () => {
     expect(ids()).toEqual([s.faq.id, s.press.id, s.research.id, s.mail.id]);
   });
 
-  it('is one field when there is nothing yet; Enter starts a conversation and stays home', async () => {
-    const s = session({ kind: 'chat' });
+  it('is one field when there is nothing yet; Enter speaks to the assistant and stays home, its answer above the field', async () => {
+    const assistant = session({ kind: 'chat', title: '右腕' });
     const fake = mount({
       'home.get': () => homeSnapshot(),
       'project.list': () => ({ items: [] }),
-      'session.create': () => s,
+      'system.assistant': () => ({ sessionId: assistant.id }),
       'session.messages': () => ({ items: [], hasMore: false, streaming: null }),
       'session.send': () => ({ messageId: 'msg_1', runId: null, delivery: 'started' }),
     });
     const input = await screen.findByRole('textbox', { name: '何を頼みますか' });
     expect(screen.queryByRole('region')).toBeNull();
-    // The empty home offers the demo and has 任せる on; this one is a plain question.
     expect(screen.getByRole('button', { name: '試してみる' })).toBeInTheDocument();
-    const toggle = screen.getByRole('button', { name: '任せる' });
-    expect(toggle).toHaveAttribute('aria-pressed', 'true');
-    fireEvent.click(toggle);
+    // No 任せる switch any more: the assistant decides.
+    expect(screen.queryByRole('button', { name: '任せる' })).toBeNull();
+    expect(document.querySelector('[data-assistant-line]')).toBeNull();
     fireEvent.change(input, { target: { value: '競合を調べて' } });
     fireEvent.keyDown(input, { key: 'Enter' });
     await vi.waitFor(() => expect(fake.calls.map((c) => c.method)).toContain('session.send'));
-    expect(fake.calls.map((c) => c.method)).not.toContain('session.delegate');
+    expect(fake.calls.find((c) => c.method === 'session.send')?.params).toEqual({
+      sessionId: assistant.id,
+      content: '競合を調べて',
+    });
+    expect(fake.calls.map((c) => c.method)).not.toContain('session.create');
     expect(useUi.getState().mode).toBe('home');
+    expect(input).toHaveValue('');
+    // The words of the human stand above the field while the assistant works.
+    await vi.waitFor(() => expect(document.querySelector('[data-assistant-asked]')).toHaveTextContent('競合を調べて'));
+    expect(document.querySelector('[data-assistant-said]')).toHaveTextContent('');
+    // Its answer streams in; a title in 「」 that names a lane opens it.
+    const lane = card({ title: '競合調査', role: 'supervisor', state: 'supervising' });
+    setSnap(fake.rt, homeSnapshot({ trees: [homeTree(lane, [], { counts })] }));
+    const now = new Date().toISOString();
+    const asked = message(assistant, { id: 'msg_1', createdAt: now, content: [{ type: 'text', text: '競合を調べて' }] });
+    const said = message(assistant, {
+      id: 'msg_2',
+      role: 'assistant',
+      createdAt: now,
+      content: [{ type: 'text', text: '「競合調査」を始めます。終わったら知らせます。' }],
+    });
+    act(() => void fake.rt.queryClient.setQueryData(qk.messages(assistant.id), [asked, said]));
+    await vi.waitFor(() =>
+      expect(document.querySelector('[data-assistant-said]')).toHaveTextContent('「競合調査」を始めます。終わったら知らせます。'),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '「競合調査」' }));
+    expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: lane.id });
   });
 
-  it('with 任せる on, the new conversation is delegated before the first message; Ctrl+Enter opens it', async () => {
-    const s = session({ kind: 'chat' });
+  it('Ctrl+Enter speaks to the assistant and opens its conversation', async () => {
+    const assistant = session({ kind: 'chat', title: '右腕' });
     const fake = mount({
       'home.get': () => homeSnapshot(),
       'project.list': () => ({ items: [] }),
-      'session.create': () => s,
-      'session.delegate': () => ({}),
+      'system.assistant': () => ({ sessionId: assistant.id }),
       'session.messages': () => ({ items: [], hasMore: false, streaming: null }),
       'session.send': () => ({ messageId: 'msg_1', runId: null, delivery: 'started' }),
     });
     const input = await screen.findByRole('textbox', { name: '何を頼みますか' });
-    const toggle = screen.getByRole('button', { name: '任せる' });
-    expect(toggle).toHaveAttribute('aria-pressed', 'true');
     fireEvent.change(input, { target: { value: 'ローンチの準備' } });
     fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true });
     await vi.waitFor(() =>
-      expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: s.id }),
+      expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: assistant.id }),
     );
-    const methods = fake.calls
-      .map((c) => c.method)
-      .filter((m) => m.startsWith('session.') && m !== 'session.messages');
-    expect(methods).toEqual(['session.create', 'session.delegate', 'session.send']);
-    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    const methods = fake.calls.map((c) => c.method);
+    expect(methods).toContain('session.send');
+    expect(methods).not.toContain('session.create');
+    expect(methods).not.toContain('session.delegate');
   });
 
-  it('コード works in a worktree of a repository project', async () => {
+  it('the chosen workspace (コード of a repository project) rides along as a hint for the assistant', async () => {
     const project = { id: 'prj_1', name: 'app', repoPath: '/repo', folderPath: null } as Project;
-    const s = session({ kind: 'agent', projectId: project.id });
+    const assistant = session({ kind: 'chat', title: '右腕' });
     const fake = mount({
       'home.get': () => homeSnapshot(),
       'project.list': () => ({ items: [project] }),
-      'session.create': () => s,
+      'system.assistant': () => ({ sessionId: assistant.id }),
       'session.messages': () => ({ items: [], hasMore: false, streaming: null }),
       'session.send': () => ({ messageId: 'msg_1', runId: null, delivery: 'started' }),
     });
     const input = await screen.findByRole('textbox', { name: '何を頼みますか' });
     await vi.waitFor(() => expect(fake.calls.map((c) => c.method)).toContain('project.list'));
-    // Plain work on the code, not delegated.
-    fireEvent.click(screen.getByRole('button', { name: '任せる' }));
     // No folder project: フォルダ cannot be chosen.
     fireEvent.click(await screen.findByRole('radio', { name: 'フォルダ' }));
     expect(screen.getByRole('radio', { name: '作業場所なし' })).toHaveAttribute(
@@ -381,10 +399,10 @@ describe('<HomeView>', () => {
     fireEvent.change(input, { target: { value: 'テストを足して' } });
     fireEvent.keyDown(input, { key: 'Enter' });
     await vi.waitFor(() => expect(fake.calls.map((c) => c.method)).toContain('session.send'));
-    expect(fake.calls.find((c) => c.method === 'session.create')?.params).toMatchObject({
-      kind: 'agent',
-      projectId: project.id,
-      workspace: { kind: 'worktree', projectId: project.id },
+    expect(fake.calls.find((c) => c.method === 'session.send')?.params).toMatchObject({
+      sessionId: assistant.id,
+      content: 'テストを足して',
+      hint: 'コード（プロジェクト「app」 projectId: prj_1）',
     });
   });
 });

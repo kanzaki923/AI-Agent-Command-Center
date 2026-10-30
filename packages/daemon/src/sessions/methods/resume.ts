@@ -103,7 +103,7 @@ function resumeOne(ctx: DaemonContext, sessionId: string, actor: Actor): Run | n
     taskId: last?.taskId ?? null,
     projectId: last?.projectId ?? session.projectId,
     workspaceId: kind === 'agent' ? (last?.workspaceId ?? session.workspaceId) : null,
-    model: kind === 'agent' ? (last?.model ?? session.model) : resolveChatModel(ctx, session.model),
+    model: kind === 'agent' ? (last?.model ?? session.model) : resolveChatModel(ctx, session),
     runtime: last?.runtime ?? session.runtime,
     budgetId: activeBudget(ctx, last?.budgetId ?? null) ?? sessionBudgetId(ctx, session.id),
   });

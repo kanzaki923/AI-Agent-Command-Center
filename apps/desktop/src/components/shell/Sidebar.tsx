@@ -1,14 +1,17 @@
-import { Hand, House, Plus, Rows3, Settings } from 'lucide-react';
+import { Diamond, Hand, House, Plus, Rows3, Settings } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { newChat } from '../../app/commands';
+import { useAssistantId } from '../../daemon/assistant';
 import { useHomeSelect } from '../../daemon/home';
+import { useSessions } from '../../daemon/queries';
 import { cn } from '../../lib/cn';
 import type { ShortcutId } from '../../lib/shortcuts';
-import { useUi } from '../../store/ui';
+import { useUi, useUnread } from '../../store/ui';
 import { ConversationTree } from '../sidebar/ConversationTree';
 import { Kbd } from '../ui/Kbd';
 import { NumberRoll } from '../ui/Meta';
 import { ResizeHandle } from '../ui/ResizeHandle';
+import { UnreadDot } from '../ui/UnreadDot';
 import { ConnectionDot } from './TitleBar';
 
 function NavRow({
@@ -48,9 +51,24 @@ function NavRow({
   );
 }
 
+/** The fixed row of the assistant (right-hand spec §2.2): its conversation, with the unread dot. */
+function AssistantRow() {
+  const id = useAssistantId();
+  const session = useSessions().data?.find((s) => s.id === id);
+  const active = useUi((s) => s.mode === 'session' && !!id && s.focusSessionId === id);
+  const openSession = useUi((s) => s.openSession);
+  const unread = useUnread(session ?? { id: '', state: 'idle', stateSince: null });
+  if (!id) return null;
+  return (
+    <NavRow icon={<Diamond size={15} strokeWidth={1.75} />} label="右腕" active={active} onClick={() => openSession(id)}>
+      {unread && <UnreadDot className="group-hover:hidden" />}
+    </NavRow>
+  );
+}
+
 /**
- * Sidebar (ui-redesign spec §2, §4): new conversation, home (with the attention count),
- * timeline, the conversation tree, and settings with the connection at the bottom.
+ * Sidebar (ui-redesign spec §2, §4): new conversation, home (with the attention count), the
+ * assistant, timeline, the conversation tree, and settings with the connection at the bottom.
  */
 export function Sidebar() {
   const mode = useUi((s) => s.mode);
@@ -74,6 +92,7 @@ export function Sidebar() {
             </span>
           )}
         </NavRow>
+        <AssistantRow />
         <NavRow icon={<Rows3 size={15} strokeWidth={1.75} />} label="タイムライン" shortcut="modeTimeline" active={mode === 'timeline'} onClick={openTimeline} />
       </div>
 

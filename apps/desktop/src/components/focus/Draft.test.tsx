@@ -43,10 +43,10 @@ describe('<Draft> (Ctrl+N)', () => {
   beforeEach(() => useUi.setState({ mode: 'session', focusSessionId: null, projectId: null, drafts: {}, onboardingDone: true }));
 
   function mount(projects: Project[]) {
-    const created = session({ kind: 'agent', title: '' });
+    const assistant = session({ kind: 'chat', title: '右腕' });
     const fake = createFakeClient({
       'project.list': () => ({ items: projects, nextCursor: null }),
-      'session.create': () => created,
+      'system.assistant': () => ({ sessionId: assistant.id }),
       'session.messages': () => ({ items: [], hasMore: false, streaming: null }),
       'session.send': () => ({ messageId: 'msg_00000000000000000000000001', runId: null, delivery: 'started' }),
     });
@@ -57,19 +57,16 @@ describe('<Draft> (Ctrl+N)', () => {
         </TooltipProvider>
       </RuntimeProvider>,
     );
-    return { fake, created };
+    return { fake, assistant };
   }
 
-  it('is the same field as the empty home, without the demo; the first send creates the conversation in the chosen place and opens it', async () => {
+  it('is the same field as the empty home, without the demo; the first send goes to the assistant with the chosen place and opens it', async () => {
     const p = project();
     useUi.setState({ projectId: p.id });
-    const { fake, created } = mount([p]);
+    const { fake, assistant } = mount([p]);
     const input = screen.getByRole('textbox', { name: '何を頼みますか' });
     expect(screen.queryByRole('button', { name: '試してみる' })).toBeNull();
-    // 任せる is on from the start here too; this request is plain work on the code.
-    const delegate = screen.getByRole('button', { name: '任せる' });
-    expect(delegate).toHaveAttribute('aria-pressed', 'true');
-    fireEvent.click(delegate);
+    expect(screen.queryByRole('button', { name: '任せる' })).toBeNull();
     const code = await screen.findByRole('radio', { name: 'コード' });
     // The project has code but no folder.
     expect(screen.getByRole('radio', { name: 'フォルダ' })).toHaveAttribute('aria-disabled', 'true');
@@ -78,17 +75,16 @@ describe('<Draft> (Ctrl+N)', () => {
     expect(screen.getByText('acme-web')).toBeInTheDocument();
 
     fireEvent.change(input, { target: { value: 'ログイン画面を直して' } });
-    expect(fake.calls.some((c) => c.method === 'session.create')).toBe(false);
+    expect(fake.calls.some((c) => c.method === 'session.send')).toBe(false);
     expect(useUi.getState().drafts[DRAFT_KEY]).toBe('ログイン画面を直して');
     fireEvent.keyDown(input, { key: 'Enter' });
-    await waitFor(() => expect(useUi.getState().focusSessionId).toBe(created.id));
-    expect(fake.calls.find((c) => c.method === 'session.create')?.params).toMatchObject({
-      kind: 'agent',
-      projectId: p.id,
-      workspace: { kind: 'worktree', projectId: p.id },
+    await waitFor(() => expect(useUi.getState().focusSessionId).toBe(assistant.id));
+    expect(fake.calls.find((c) => c.method === 'session.send')?.params).toEqual({
+      sessionId: assistant.id,
+      content: 'ログイン画面を直して',
+      hint: `コード（プロジェクト「acme-web」 projectId: ${p.id}）`,
     });
-    expect(fake.calls.map((c) => c.method)).not.toContain('session.delegate');
-    expect(fake.calls.find((c) => c.method === 'session.send')?.params).toMatchObject({ content: 'ログイン画面を直して' });
+    expect(fake.calls.map((c) => c.method)).not.toContain('session.create');
     expect(useUi.getState().drafts[DRAFT_KEY]).toBeUndefined();
   });
 

@@ -75,6 +75,7 @@ packages/cli      `acc` コマンド（Control API クライアント）
 | `cost/` | 使用量の台帳と集計（§2.17） |
 | `schedules/` | 定期実行（§2.18） |
 | `home/` | 会話の状態・「いま何してる」・ホーム（§2.19） |
+| `assistant/` | 右腕：人の隣に立つ権限つきの会話、`system.assistant` / `assistant.startWork`、`mock/right-hand`（§2.20） |
 
 - `sessions/` のメソッドは `sessions/methods/<method>.ts` に 1 つずつ置く（トラックごとに自分のファイルだけを触るため）。
 - 作り直し（`docs/snapshot/20261029_redesign-spec.md`）のメソッド・型・イベントは `packages/protocol/src/ext/<track>.ts` に置き、`api.ts` / `events.ts` が取り込む。モジュール間のサービス契約は `contracts.ts`。トラックが実装するまでの間、メソッドは `stubMethod`（`not_found`・`data.reason: "not_implemented"`、`system.info` と LLM のツールには出ない。本物を登録すると置き換わる）、サービスは何もしないスタブ。
@@ -93,7 +94,7 @@ packages/cli      `acc` コマンド（Control API クライアント）
 - セッションのワークスペースと Task は、セッションにプロジェクトがあればそのプロジェクトのものに限る（`session.create` / `session.update`。移動でずれる場合も拒否）。
 - LLM に見せるツールの一覧づくりは呼び出しではないので、外したメソッドを `policy.denied` に記録しない（`PolicyEngine.peek`）。
 - Grant の有効範囲：`run`（その Run の終了で失効）、`session`（期限 `expiresAt` まで）、`work`（その会話と子孫の作業が落ち着くまで：実行中の Run・開いた出番・終わっていない Task（子孫が担当、または子孫が作成）・未処理の受信箱が 0。判定は `sessionState.isWorkSettled`）。Session に付けた `lifetime: run` の Grant は `work` として扱う（データは書き換えない）。`work` の失効は Run の終了（その会話と祖先を確かめる）と `session.state_changed` で判定し、デーモンの停止・再起動では失効しない（中断された指揮役が権限を持ったまま再開できるように）。Run を subject にした Grant は従来どおりその Run の終了で失効し、起動時のスイープも Run の Grant だけを扱う。剥奪は委譲先へ連鎖する。付与・剥奪は `grant.created` / `grant.revoked`（`work` の失効は reason `work_settled`）、使用は `tool.called`、agent の拒否は `policy.denied` として残る。
-- 会話のスコープ：メソッドの `scope` は触る会話を `sessionIds` で返せる（`session.*` は対象の会話）。agent は Grant の subject の会話（Run の Grant なら自分の会話）を根とする部分木の中しか触れない（親をたどって判定。兄弟の木・親は `forbidden`）。
+- 会話のスコープ：メソッドの `scope` は触る会話を `sessionIds` で返せる（`session.*` は対象の会話）。agent は Grant の subject の会話（Run の Grant なら自分の会話）を根とする部分木の中しか触れない（親をたどって判定。兄弟の木・親は `forbidden`）。例外は `scope.allSessions` を持つ Grant（右腕 §2.20）：どの木にも届き、`session.list` / `session.tree` / `cost.summary` も全体を見る（`policy.seesAllSessions`、`ownTreeOnly`）。委譲では親が `allSessions` を持つときだけ子に付けられる（規則 (c)）。`assertAgentMayStartRun` もこの Grant には適用しない（右腕が木の根に `session.send` できるように。根は自分の Grant と予算で動く）。
 - Control API の Capability とは別に、エージェントの**ツールの使用**（ファイル・コマンド・Web）はデーモンの権限ゲートが決める（§2.10）。どこまで任せるか（`Project.permissionProfile`、`settings.defaultPermissionProfile` / `autoMode`、覚えた許可 `permissionRule.*`、`approval.respond` の `remember`）を変えられるのは人間だけ（agent が `project.update` で `permissionProfile` を変える、`remember` を付けて回答するのは Grant があっても `forbidden`）。
 
 ### 2.5 Budget
@@ -203,7 +204,8 @@ packages/cli      `acc` コマンド（Control API クライアント）
 - Anthropic の extended thinking：LiteLLM は thinking を `reasoning_content` と `thinking_blocks`（署名つき）で流す。thinking が有効なモデルでは、ツール呼び出しのターンを thinking ブロックなしで送り返すと Anthropic が 400 を返すので、ツールループはそのターンの `thinking_blocks` を次の呼び出しの assistant メッセージに付けて返す（メモリ上だけ。セッション履歴には保存しない）。
 - mock：`mock/echo`（実時間に近い間隔で分割送信）、`mock/fast`（遅延なし）。`llm.mock.define(model, scripted([...]))` でツール呼び出しを含む複数ターンの台本を定義できる（ターン = 最後のユーザーメッセージ以降のモデル呼び出し回数）。
 - ツールループ `runToolLoop`（`src/llm`）：モデル → ツール呼び出し → ディスパッチャ経由で `ctx.call(run の agent actor, ...)` → 結果 → モデル…。ツールは API 契約（`tool !== false`）から生成し、actor の Grant で絞る。メソッド名の `.` はツール名では `__`。ツールの失敗は `{ error }` としてモデルに返し、Run は失敗させない。
-- チャット Run はセッション履歴をそのまま送る。セッションに Grant があればその範囲の API がツールとして見える（普通のチャットが Orchestrator になれる）。モデル未設定かつ LiteLLM 未設定なら `mock/echo` を使う。実行中に届いた発言は区切りで差し込まれ（§2.13）、1 実行のモデル呼び出しは `supervisor.maxModelCallsPerRun` まで。
+- チャット Run はセッション履歴をそのまま送る。セッションに Grant があればその範囲の API がツールとして見える（普通のチャットが Orchestrator になれる）。モデル未設定かつ LiteLLM 未設定なら `mock/echo` を使う。実行中に届いた発言は区切りで差し込まれ（§2.13）、1 実行のモデル呼び出しは `supervisor.maxModelCallsPerRun` まで。右腕の会話（§2.20）だけは、モデルの順序（会話で選んだもの → `settings.assistant.model` → 既定 → `mock/right-hand`）、system prompt（役割＋全部の木の状況）、日次上限を `assistant` サービスが差し込む。
+- `session.send` の `hint`（最大 500 字）：会話には出さず、モデルにだけ渡す 1 行の文脈（メッセージの `meta.hint`）。いまは右腕の system prompt だけが読む（ホームの作業場所の選択）。
 - 履歴の組み立て（`toChatMessages`）：ツール呼び出しの結果がそろう前に保存された発言（実行中に差し込まれたもの）は、結果の後ろに回す（モデルが見た順と同じにし、呼び出しと結果の組を崩さない）。
 - `session.search`：FTS5 の trigram で部分一致（日本語向け）。3 文字未満の語は LIKE で補う。索引はトリガーで同期する。
 - Session 自身の Budget（subject `session`、`active`）があれば、`session.send` の Run はそれを `budgetId` にする。
@@ -328,7 +330,20 @@ spec §3.7・§2.2（home）・§6。型は `protocol/src/ext/home.ts`、実装�
 - **書きかけの本文（streams）**：`emitDelta` の断片を Run ごとにメモリに持ち（1MB まで）、`session.messages` の `streaming` に返す。assistant メッセージの保存か Run の終了で捨てる。
 - **`home.get`**：対象の根は「開いた出番／実行中・待ち・指揮中・要対応・失敗・確認待ち／有効な定期実行／ピン留め／`doneWithinHours` 以内に動いた」のどれか（1 本の UNION）。木の会話・予算・委任の Grant（`session.spawn` か `task.spawnWorker` を持てば `supervisor`）・最新 3 件の成果物（`role: output`、ウィンドウ関数）はまとめて読み、**クエリ数は木の数によらない**（500 件ごとの IN）。木は「出番（最小 priority）→ 実行中 → 予定あり（近い順）→ 最近（ピン留め優先）」。子は深さ優先・作成順、`maxNodesPerTree` で打ち切り、同じ親の同じ定期実行の古い発火は畳む（まだ人や作業が要る状態のものは残す）。`hiddenNodes` はその合計。`counts` は木の全会話（畳んだものを含む）。`totals.working` / `failed` はアーカイブされていない全会話の状態、`needsYou` は開いた出番の数、`spendTodayUsd` は `ledger.usedToday()`、`estimated` は今日の台帳に `reported` 以外の行があるか。`upcoming` は次の 5 件。
 - **差分**：`@acc/protocol` の `applyHomeEvent(snapshot, event)` が `session.state_changed` / `now_changed` / `cost_updated`・`attention.opened` / `resolved` を当てる（counts・totals・カードを更新。木の並べ替えはしない）。会話の作成・アーカイブ、定期実行、成果物、Grant、予算の変化は `refetch: true`（`home.get` し直す）。
-- **`session.tree`**：木の全会話（アーカイブ済みを除く）を深さ優先のカードで返す。agent は自分の会話を根とする部分木だけを見る（`rootSessionId` も自分）。**`session.list`**：`rootsOnly` / `parentSessionId`。agent は自分と子孫だけ。
+- **`session.tree`**：木の全会話（アーカイブ済みを除く）を深さ優先のカードで返す。agent は自分の会話を根とする部分木だけを見る（`rootSessionId` も自分。`allSessions` の Grant なら本当の根）。**`session.list`**：`rootsOnly` / `parentSessionId`。agent は自分と子孫だけ（同上）。
+- 右腕（§2.20）の会話は `home.get` の木にも `totals` にも入れない。カードの `role` は `assistant`、右腕が立てた根の `startedBy` は `assistant`（`createdBy` が system の `assistant`）。`HomeTree.goal` は人の最初の言葉だが、右腕が運んだ言葉（author = system `assistant`）も同じに扱う。
+
+### 2.20 右腕（assistant）
+
+構想は `concept.md` §1.3・§2・§3、仕様は `docs/snapshot/20261030_right-hand-spec.md`。「普段のチャットに権限を与えるだけで、ほかのエージェントを指揮してくれる」をそのまま形にした、**権限を持った 1 本の会話**。新しい実行エンジンはない。
+
+- **1 つだけ**：`system.assistant` が返す（なければ作る。`kind: 'chat'`、題 `右腕`、モデルは空のまま）。何が右腕かは Grant で決まる（`reason: assistant`、`subject` がその会話。`AssistantService.currentId` はこの Grant から引く）。アーカイブと `session.delegate` は拒む（`conflict` / `invalid_params`）。
+- **Grant**（`ASSISTANT_PERMISSIONS`、`lifetime: session`、`scope.allSessions: true`、`maxDepth: 0`、`maxSchedules: 20`）：見渡す `home.get`（`tool: true` にした）・`session.list/get/tree/messages/search`・`project.list/get`・`cost.summary`、動かす `assistant.startWork`・`session.send`・`session.stop/resume`、繰り返す `schedule.preview/create/update/delete/list/get`。**ない**：`attention.respond/dismiss`（出番は人のもの）、`session.spawn`（右腕の下に木ができるとホームが 1 本に潰れる。木は常に根）、`session.archive`、予算、設定、プロジェクトの変更、`system.*`。ツール一覧は Grant から生成されるので、プロンプトに書かなくても出番に答える道はない。
+- **`assistant.startWork({ text, title?, delegate = true, projectId?, workspace?, model? })`**（人も呼べる）：UI にあった create → delegate → send をデーモンに下ろしたもの。題は `title` か `text` の 1 行目（40 字）。`delegate` なら `session.delegate` の既定値（4 人・$3）で任せ、`text` を最初のメッセージとして送る（右腕が呼んだときは `createdBy` / `author` が system の `assistant`。言葉は言い換えない）。右腕からは **1 Run に 3 本まで**（`limit_exceeded`、Run の終了で忘れる）。delegate なしで `workspace` があれば `agent` の会話。
+- **モデルと上限**：`resolveChatModel` が右腕を見分けて `settings.assistant.model` → `defaultModel` → LiteLLM 未設定なら `mock/right-hand`。右腕自身の呼び出しは `settings.assistant.dailyUsd`（既定 $2、null で無制限）まで。超えたら Run は `budget_exceeded`（「右腕は今日の上限（$2）に当たりました」）で失敗し、UI が欄の上に出す。立てた木の予算は任せ方の既定で、右腕の上限からは引かない。
+- **system prompt**（`assistant/prompt.ts`）：役割と規則、会話自身の `systemPrompt`、最後の人のメッセージの `hint`（`作業場所の希望:`）、そして `statusBlock`（`home.get` を 1 回呼んで、木ごとに 1 行：id・題・state・progress・needsYou・failed・nextRun、プロジェクト一覧）。「今どう？」は 1 回のモデル呼び出しで返る。
+- **`mock/right-hand`**（`assistant/mockRightHand.ts`）：文の形で分ける。末尾 ？ か 今・どう・何 で始まる → `home.get` → 1〜2 行。止めて・停止 ＋ 木の題（文に題が含まれるか、動詞を切った残りが題に含まれる）→ `session.stop {tree}`。再開 → `session.resume`。毎朝・毎日・毎週（＋ N 時）→ `assistant.startWork {delegate: false}` → `schedule.create`（cron）。それ以外 → `assistant.startWork` → 「「題」を始めます。終わったら知らせます。」。同じ文を 2 回続けて返さない。ツールの失敗は「できませんでした。<理由>」。
+- **UI**：§3 とユーザ向けの決めは `ui-design.md` §4.2・§5.1・§8.6。撮影の場面は `assistant.model` を `mock/right-hand` にし、`14-home-assistant`（今どう？の返事）と `62-assistant`（右腕の会話）を撮る。
 
 ## 3. Desktop UI
 

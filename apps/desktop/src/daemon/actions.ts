@@ -101,6 +101,8 @@ export async function sendMessage(
     reuseLocalId?: string;
     /** Agent run in progress: stop at the next step and take this message now. */
     interrupt?: boolean;
+    /** One line of context for the model that the conversation does not show. */
+    hint?: string;
     /** How the daemon handed it over (started / queued after the run / injected at a boundary). */
     onDelivery?: (delivery: SendDelivery) => void;
   } = {},
@@ -129,6 +131,7 @@ export async function sendMessage(
       content: text,
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.interrupt ? { interrupt: true } : {}),
+      ...(opts.hint ? { hint: opts.hint } : {}),
     });
     const delivery = res.delivery === 'queued' ? 'queued' : 'delivered';
     qc.setQueryData<ChatMessage[]>(key, (cur) => {
@@ -212,24 +215,11 @@ export async function createSession(
 }
 
 /**
- * A new conversation from its first message (home input, the Ctrl+N draft): create it, give
- * it to the AI to lead when asked (`delegate`), then send. The session is created only here,
- * at the first send (spec §5.3). Returns the session (null when creating failed).
+ * A new conversation from its first message (the palette's AI に頼む; the home field goes
+ * through the assistant instead): the daemon creates it, lets it lead when asked
+ * (`delegate`), names it by the request and sends the words (`assistant.startWork`). Returns
+ * the session (null when the daemon refused).
  */
-/** Longest title taken from a request (the rest is in the conversation). */
-const REQUEST_TITLE_MAX = 40;
-
-/**
- * A new conversation is named by what was asked: the request's first line, cut at
- * REQUEST_TITLE_MAX characters. Without it every conversation started from home read as
- * 「新しい会話」 in its lane and the sidebar.
- */
-export function titleFromRequest(text: string): string {
-  const line = text.trim().split(/\r?\n/)[0]!.trim();
-  const chars = [...line];
-  return chars.length > REQUEST_TITLE_MAX ? `${chars.slice(0, REQUEST_TITLE_MAX - 1).join('')}…` : line;
-}
-
 export async function startConversation(
   rt: AppRuntime,
   input: {
@@ -242,24 +232,22 @@ export async function startConversation(
     model?: string | null;
   },
 ): Promise<Session | null> {
-  const chosen = input.workspace && input.workspace.kind !== 'none' ? input.workspace : undefined;
-  // Only a conversation leads others: delegated, it stays a conversation in the chosen
-  // project, and its children get the workspaces (code → worktrees) instead.
-  const workspace = input.delegate ? undefined : chosen;
-  const projectId =
-    input.delegate && chosen?.kind === 'worktree' ? chosen.projectId : (input.projectId ?? null);
-  const s = await createSession(rt, {
-    kind: workspace ? 'agent' : 'chat',
-    title: titleFromRequest(input.text),
-    projectId,
-    model: input.model ?? null,
-    ...(workspace ? { workspace } : {}),
-  });
-  if (!s) return null;
-  if (input.delegate) await delegateSession(rt, s.id);
-  await sendMessage(rt, s.id, input.text, { model: input.model ?? null });
-  void rt.queryClient.invalidateQueries({ queryKey: qk.home });
-  return s;
+  const workspace = input.workspace && input.workspace.kind !== 'none' ? input.workspace : undefined;
+  try {
+    const { session } = await rt.client.call('assistant.startWork', {
+      text: input.text,
+      delegate: !!input.delegate,
+      ...(input.projectId ? { projectId: input.projectId } : {}),
+      ...(workspace ? { workspace } : {}),
+      ...(input.model ? { model: input.model } : {}),
+    });
+    upsertIn(rt.queryClient, qk.sessions, session, (a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
+    void rt.queryClient.invalidateQueries({ queryKey: qk.home });
+    return session;
+  } catch (err) {
+    toastError(err, '会話を作れませんでした');
+    return null;
+  }
 }
 
 /** Let a session lead other agents ("任せる"), with the daemon's defaults unless given. */

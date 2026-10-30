@@ -221,6 +221,8 @@ ${JSON.stringify(await detail(), null, 1)}` : '';
     defaultRuntime: 'mock',
     defaultModel: 'mock/assistant',
     limits: { dailyUsd: 20 },
+    // The home field talks to the assistant (右腕): the offline one, whatever the default model.
+    assistant: { model: 'mock/right-hand' },
   });
 
   // ---------------------------------------------------------------- mock models

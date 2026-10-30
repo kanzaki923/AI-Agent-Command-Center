@@ -77,6 +77,11 @@ export interface UiState {
   /** The unanswered message being edited in the composer (↑ in an empty composer). */
   /** `prevDraft`: what the composer held before the edit started; it comes back afterwards. */
   editing: { sessionId: string; messageId: string; prevDraft: string } | null;
+  /**
+   * When this window last spoke to the assistant from the home field (ISO). The line above
+   * the field shows only exchanges from then on; a fresh window shows none.
+   */
+  assistantAskedAt: string | null;
 }
 
 interface UiActions {
@@ -116,6 +121,7 @@ interface UiActions {
   toggleCollapsed: (key: string, defaultCollapsed?: boolean) => void;
   finishOnboarding: () => void;
   setConnectPromptOpen: (open: boolean) => void;
+  noteAssistantAsk: (at: string) => void;
   rememberCommand: (id: string) => void;
   goBack: () => void;
   goForward: () => void;
@@ -181,6 +187,7 @@ const initial: UiState = {
   notifyInApp: true,
   superseded: {},
   editing: null,
+  assistantAskedAt: null,
 };
 
 let jumpNonce = 0;
@@ -325,6 +332,7 @@ export const createUiStore = () =>
           set((s) => ({ collapsed: { ...s.collapsed, [key]: !(s.collapsed[key] ?? defaultCollapsed) } })),
         finishOnboarding: () => set({ onboardingDone: true, connectPromptOpen: false }),
         setConnectPromptOpen: (connectPromptOpen) => set({ connectPromptOpen }),
+        noteAssistantAsk: (assistantAskedAt) => set({ assistantAskedAt }),
         rememberCommand: (id) =>
           set((s) => ({ recentCommands: [id, ...s.recentCommands.filter((x) => x !== id)].slice(0, 8) })),
         goBack: () => {

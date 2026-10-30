@@ -487,7 +487,7 @@ export class Inbox implements InboxService {
       model:
         kind === 'agent'
           ? (opts.model ?? session.model)
-          : resolveChatModel(ctx, session.model, opts.model),
+          : resolveChatModel(ctx, session, opts.model),
       runtime: session.runtime,
       workspaceId: kind === 'agent' ? session.workspaceId : null,
       budgetId: sessionBudgetId(ctx, session.id),

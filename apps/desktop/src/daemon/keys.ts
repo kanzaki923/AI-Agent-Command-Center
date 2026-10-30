@@ -4,6 +4,8 @@
  */
 export const qk = {
   info: ['system.info'] as const,
+  /** system.assistant: the id of the assistant conversation. */
+  assistant: ['system.assistant'] as const,
   settings: ['settings.get'] as const,
   models: ['models.list'] as const,
   projects: ['project.list'] as const,

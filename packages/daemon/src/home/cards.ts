@@ -9,6 +9,7 @@ import {
   type SessionRole,
   matchAnyPattern,
 } from '@acc/protocol';
+import { ASSISTANT_COMPONENT } from '../assistant/permissions';
 import type { DaemonContext } from '../core/context';
 import type { SqlValue } from '../core/db';
 
@@ -44,6 +45,8 @@ export interface CardFacts {
   supervisors: Set<string>;
   outputs: Map<string, SessionCard['outputs']>;
   attention: Map<string, string[]>;
+  /** The assistant's session (role `assistant`), when it exists. */
+  assistantId: string | null;
 }
 
 /**
@@ -108,7 +111,8 @@ export function readCardFacts(
     list.push(a.id);
     attention.set(a.sessionId, list);
   }
-  return { budgets, supervisors, outputs, attention };
+  const assistantId = ctx.hasService('assistant') ? ctx.service('assistant').currentId() : null;
+  return { budgets, supervisors, outputs, attention, assistantId };
 }
 
 function newestFirst(aAt: string, aId: string, bAt: string, bId: string): number {
@@ -116,15 +120,19 @@ function newestFirst(aAt: string, aId: string, bAt: string, bId: string): number
   return aId < bId ? 1 : aId > bId ? -1 : 0;
 }
 
-/** Who started a session, for its badge: a schedule, an AI (spawned), or a person. */
+/** Who started a session, for its badge: a schedule, an AI (spawned), the assistant, or a person. */
 export function startedBy(s: Session): SessionCard['startedBy'] {
   if (s.scheduleId) return 'schedule';
   if (s.createdBy.kind === 'agent') return 'ai';
   if (s.createdBy.kind === 'system' && s.createdBy.component === 'scheduler') return 'schedule';
+  if (s.createdBy.kind === 'system' && s.createdBy.component === ASSISTANT_COMPONENT) {
+    return 'assistant';
+  }
   return 'human';
 }
 
 export function roleOf(s: Session, facts: CardFacts): SessionRole {
+  if (s.id === facts.assistantId) return 'assistant';
   return facts.supervisors.has(s.id) ? 'supervisor' : s.kind;
 }
 

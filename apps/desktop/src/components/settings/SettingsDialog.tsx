@@ -150,6 +150,19 @@ export function SettingsDialog() {
             onCommit={(v) => void setDailyLimit(rt, v)}
           />
         </FieldRow>
+        {settings?.assistant && (
+          <FieldRow label="右腕の上限" hint="右腕自身のモデル費用。1 日あたり" htmlFor="assistant-limit">
+            <UsdField
+              id="assistant-limit"
+              label="右腕の上限"
+              value={settings.assistant.dailyUsd}
+              allowEmpty
+              allowZero
+              placeholder="—"
+              onCommit={(v) => update({ assistant: { dailyUsd: v } })}
+            />
+          </FieldRow>
+        )}
         <FieldRow label="外観">
           <Segmented<ThemePref> label="テーマ" value={theme} options={THEME_OPTIONS} onChange={setTheme} />
           <span className="ml-2 text-meta text-fg-3" aria-hidden>

@@ -413,7 +413,7 @@ export class Spawner implements SpawnerService {
       projectId: session.projectId,
       workspaceId: agent ? session.workspaceId : null,
       parentRunId: opts.parentRunId,
-      model: agent ? session.model : resolveChatModel(ctx, session.model),
+      model: agent ? session.model : resolveChatModel(ctx, session),
       runtime: session.runtime,
       budgetId: sessionBudgetId(ctx, session.id),
       triggerMessageId: opts.triggerMessageId,

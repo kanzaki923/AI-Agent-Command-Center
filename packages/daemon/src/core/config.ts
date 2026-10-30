@@ -89,6 +89,8 @@ export type SettingsPatch = {
         classifierCostUsd?: number | undefined;
       }
     | undefined;
+  assistant?:
+    { model?: string | null | undefined; dailyUsd?: number | null | undefined } | undefined;
 };
 
 /**
@@ -204,6 +206,15 @@ export class SettingsStore {
         next.defaultPermissionProfile = patch.defaultPermissionProfile!;
       },
     );
+    if (patch.assistant) {
+      const a = patch.assistant;
+      set('assistant.model', next.assistant.model, a.model, () => {
+        next.assistant.model = a.model ?? null;
+      });
+      set('assistant.dailyUsd', next.assistant.dailyUsd, a.dailyUsd, () => {
+        next.assistant.dailyUsd = a.dailyUsd ?? null;
+      });
+    }
     if (patch.autoMode) {
       const a = patch.autoMode;
       set('autoMode.enabled', next.autoMode.enabled, a.enabled, () => {
@@ -256,6 +267,7 @@ export function toSettingsView(s: Settings): SettingsView {
     autoResumeOrchestrators: s.autoResumeOrchestrators,
     autoResume: s.autoResume,
     supervisor: { ...s.supervisor },
+    assistant: { ...s.assistant },
     llmCallReserveUsd: s.llmCallReserveUsd,
     defaultPermissionProfile: s.defaultPermissionProfile,
     autoMode: {

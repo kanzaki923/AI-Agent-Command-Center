@@ -1,6 +1,7 @@
 import { defineMethod } from '../../api/registry';
 import type { DaemonContext } from '../../core/context';
 import { subtreeIds } from '../../home/tree';
+import { ownTreeOnly } from '../../policy/grants';
 
 /**
  * session.list: most recently active first; `rootsOnly` / `parentSessionId` walk the tree.
@@ -13,7 +14,7 @@ export function sessionList(ctx: DaemonContext) {
       ...(p.parentSessionId ? { sessionIds: [p.parentSessionId] } : {}),
     }),
     handler: (p, call) => {
-      const own = call.actor.kind === 'agent' ? subtreeIds(ctx, call.actor.sessionId) : null;
+      const own = ownTreeOnly(ctx, call.actor) ? subtreeIds(ctx, call.actor.sessionId) : null;
       return ctx.repos.sessions.page({
         where: {
           project_id: p.projectId,

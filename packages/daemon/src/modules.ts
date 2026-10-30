@@ -1,3 +1,4 @@
+import { assistantModule } from './assistant';
 import { attentionModule } from './attention';
 import { costModule } from './cost';
 import { eventsModule } from './events';
@@ -44,4 +45,5 @@ export const modules: DaemonModule[] = [
   costModule,
   schedulesModule,
   homeModule,
+  assistantModule,
 ];

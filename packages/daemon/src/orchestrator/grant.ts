@@ -204,6 +204,9 @@ export function delegateSession(
       throw invalidParams('任せられるのは普通の会話だけです');
     }
     if (session.archivedAt) throw invalidParams('アーカイブ済みの会話には任せられません');
+    if (ctx.hasService('assistant') && ctx.service('assistant').isAssistant(session.id)) {
+      throw invalidParams('右腕には任せられません。右腕は会話を立てる側です');
+    }
     const projectId = p.projectId === undefined ? session.projectId : p.projectId;
     const project = projectId ? ctx.repos.projects.require(projectId) : null;
     const policy = ctx.service('policy');

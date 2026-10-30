@@ -71,15 +71,18 @@ export function Lane({
     <section aria-label={title} data-lane={root.id} data-compact={shape.compact || undefined} className="flex flex-col gap-2">
       <div className="flex flex-col">
         <div className="flex h-7 min-w-0 items-center gap-2">
-          <RoleIcon
-            role={root.role}
-            scheduled={root.startedBy === 'schedule'}
-            className={cn(
-              root.role === 'supervisor' ? 'text-st-supervising' : 'text-fg-3',
-              root.role === 'supervisor' && busy && 'acc-breathe',
-              shape.compact && 'opacity-60',
-            )}
-          />
+          <Tooltip content={root.startedBy === 'assistant' ? '右腕が始めた' : null}>
+            <RoleIcon
+              role={root.role}
+              scheduled={root.startedBy === 'schedule'}
+              byAssistant={root.startedBy === 'assistant'}
+              className={cn(
+                root.role === 'supervisor' ? 'text-st-supervising' : 'text-fg-3',
+                root.role === 'supervisor' && busy && 'acc-breathe',
+                shape.compact && 'opacity-60',
+              )}
+            />
+          </Tooltip>
           <button
             type="button"
             data-lane-root={root.id}

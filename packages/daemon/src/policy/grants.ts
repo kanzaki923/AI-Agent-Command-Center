@@ -199,6 +199,11 @@ export class PolicyService implements PolicyEngine {
     return this.sessionGrantsAllowing(sessionId, permission).length > 0;
   }
 
+  /** Whether an active grant lets the agent see and touch every session tree (the assistant). */
+  seesAllSessions(actor: AgentActor): boolean {
+    return this.grantsFor(actor).some((g) => g.scope.allSessions === true);
+  }
+
   /**
    * Agents start runs outside task.spawnWorker / task.retry (session.send, run.retry) only
    * in sessions below their own whose grants they gave: a child they spawned
@@ -211,6 +216,9 @@ export class PolicyService implements PolicyEngine {
    */
   assertAgentMayStartRun(actor: Actor, session: Session, method: string): void {
     if (actor.kind !== 'agent') return;
+    // The assistant (scope.allSessions) drives any conversation the human could: its
+    // permissions are the gate, and the targets run on their own grants and budgets.
+    if (this.seesAllSessions(actor)) return;
     const deny = (error: ApiError): never => {
       this.recordDenial(actor, method, error.message, {
         projectIds: session.projectId ? [session.projectId] : [],
@@ -538,6 +546,13 @@ export class PolicyService implements PolicyEngine {
     }
     // (c)
     let scope: GrantScope = req.scope;
+    if (req.scope.allSessions && !parent.scope.allSessions) {
+      return fail(
+        forbidden(
+          `grant ${parent.id} is limited to its own session tree and cannot delegate allSessions`,
+        ),
+      );
+    }
     const parentProjects = parent.scope.projectIds;
     if (parentProjects) {
       if (!req.scope.projectIds) {
@@ -953,4 +968,12 @@ declare module '../core/context' {
   interface Services {
     policy: PolicyService;
   }
+}
+
+/** Whether the caller is limited to its own session tree (agents, unless the assistant). */
+export function ownTreeOnly(ctx: DaemonContext, actor: Actor): actor is AgentActor {
+  return (
+    actor.kind === 'agent' &&
+    !(ctx.hasService('policy') && ctx.service('policy').seesAllSessions(actor))
+  );
 }

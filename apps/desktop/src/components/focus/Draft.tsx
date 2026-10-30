@@ -14,9 +14,9 @@ export function workspaceFor(place: DraftPlace, project: Project | null): Worksp
 }
 
 /**
- * A new conversation before its first message (Ctrl+N, ui-rework spec §3.4): the same field
- * as the empty home, in the middle. Nothing exists until the first send, which creates the
- * conversation (with the chosen place to work) and opens it.
+ * Ctrl+N (ui-rework spec §3.4, right-hand spec §2.1): the same field as the empty home, in the
+ * middle. The first send goes to the assistant (with the chosen place to work as a hint) and
+ * opens its conversation, where the answer or the new work shows up.
  */
 export function Draft() {
   return (

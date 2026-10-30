@@ -23,6 +23,7 @@ const VIEW: SettingsView = {
   maxConcurrentChats: 16,
   limits: { dailyUsd: 20, timezone: 'Asia/Tokyo' },
   autoResume: true,
+  assistant: { model: null, dailyUsd: 2 },
 };
 
 function mount(view: SettingsView = VIEW) {
@@ -39,6 +40,7 @@ function mount(view: SettingsView = VIEW) {
         ...patch,
         ...(patch.autoMode && current.autoMode ? { autoMode: { ...current.autoMode, ...patch.autoMode } } : {}),
         ...(patch.limits && current.limits ? { limits: { ...current.limits, ...patch.limits } } : {}),
+        ...(patch.assistant && current.assistant ? { assistant: { ...current.assistant, ...patch.assistant } } : {}),
       };
       return current;
     },
@@ -153,6 +155,16 @@ describe('<SettingsDialog> up front', () => {
       fireEvent.blur(again);
     });
     await waitFor(() => expect(updates).toContainEqual({ limits: { dailyUsd: null } }));
+  });
+
+  it('changes the daily limit of the assistant beside the daily limit; an older daemon has no such row', async () => {
+    const { updates } = mount();
+    await waitFor(() => expect(screen.getByLabelText('右腕の上限')).toHaveValue('2'));
+    const input = screen.getByLabelText('右腕の上限');
+    fireEvent.change(input, { target: { value: '5' } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(updates).toContainEqual({ assistant: { dailyUsd: 5 } }));
+    await waitFor(() => expect(screen.getByLabelText('右腕の上限')).toHaveValue('5'));
   });
 
   it('ignores an invalid amount and puts the value back', async () => {

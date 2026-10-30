@@ -9,6 +9,7 @@
 //   11-home-1280            home, 1280x800
 //   12-home-attention       home with the first attention item selected (Ctrl+J)
 //   13-home-light           home in the light theme
+//   14-home-assistant       home right after asking the assistant 「今どう？」 (its answer above the field)
 //   20-sidebar-tree         the sidebar while conversation A is open
 //   30-session-supervisor   conversation A (the supervisor)
 //   31-child-working        a working child of A
@@ -25,6 +26,7 @@
 //   51-timeline-detail      timeline with details
 //   60-palette              the palette with a search
 //   61-draft                Ctrl+N: the draft of a new conversation
+//   62-assistant            the conversation of the assistant (the fixed sidebar row)
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { log } from './harness.js';
@@ -149,6 +151,16 @@ export async function shoot({ url, out, theme, build }) {
     await pause(600);
     await snap('12-home-attention');
   });
+  await step('home assistant', async () => {
+    await page.keyboard.press('Escape');
+    const field = page.getByRole('textbox', { name: '何を頼みますか' });
+    await field.click();
+    await field.fill('今どう？');
+    await page.keyboard.press('Enter');
+    await page.locator('[data-assistant-said]').filter({ hasText: /出番/ }).waitFor({ timeout: 20_000 });
+    await calm();
+    await snap('14-home-assistant');
+  });
 
   await step('sidebar tree', async () => {
     await open('新製品ローンチ準備');
@@ -220,6 +232,14 @@ export async function shoot({ url, out, theme, build }) {
     await page.keyboard.press('Control+n');
     await pause(700);
     await snap('61-draft');
+    await home();
+  });
+  await step('assistant conversation', async () => {
+    await home();
+    await page.getByRole('button', { name: /右腕/ }).click();
+    await pause(900);
+    await calm();
+    await snap('62-assistant');
     await home();
   });
 

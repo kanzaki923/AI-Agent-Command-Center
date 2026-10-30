@@ -1,4 +1,5 @@
 import type { AttentionKind, OutputKind, SessionRole } from '@acc/protocol';
+import { Diamond } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { ATTENTION_META, OUTPUT_META, ROLE_META, SCHEDULE_ICON, WORKSPACE_META, type WorkspaceKind } from '../../lib/states';
 
@@ -18,28 +19,37 @@ export function OutputIcon({ kind, size = 14, className }: IconProps & { kind: O
 }
 
 /**
- * Role of a session: chat, agent, supervisor (a filled diamond). `scheduled` overlays a small
- * clock at the top right (started by a schedule).
+ * Role of a session: chat, agent, supervisor (a filled diamond), the assistant (an open one).
+ * `scheduled` overlays a small clock at the top right (started by a schedule); `byAssistant`
+ * a small diamond at the bottom right (a root the assistant started, right-hand spec §2.3).
  */
 export function RoleIcon({
   role,
   scheduled = false,
+  byAssistant = false,
   size = 14,
   className,
-}: IconProps & { role: SessionRole; scheduled?: boolean }) {
+}: IconProps & { role: SessionRole; scheduled?: boolean; byAssistant?: boolean }) {
   const { icon: Icon, label, filled } = ROLE_META[role];
   const Clock = SCHEDULE_ICON;
+  const name = scheduled ? `${label}（繰り返し）` : byAssistant ? `${label}（右腕が始めた）` : label;
+  const markSize = Math.max(8, Math.round(size * 0.6));
   return (
     <span
       role="img"
-      aria-label={scheduled ? `${label}（繰り返し）` : label}
+      aria-label={name}
       className={cn('relative inline-flex shrink-0', className)}
       style={{ width: size, height: size }}
     >
       <Icon size={size} strokeWidth={1.75} aria-hidden fill={filled ? 'currentColor' : 'none'} />
       {scheduled && (
         <span className="absolute -top-1 -right-1 inline-flex rounded-full bg-canvas">
-          <Clock size={Math.max(8, Math.round(size * 0.6))} strokeWidth={2.25} aria-hidden />
+          <Clock size={markSize} strokeWidth={2.25} aria-hidden />
+        </span>
+      )}
+      {byAssistant && !scheduled && (
+        <span className="absolute -right-1 -bottom-1 inline-flex rounded-full bg-canvas text-st-supervising" data-by-assistant>
+          <Diamond size={markSize} strokeWidth={2.25} aria-hidden />
         </span>
       )}
     </span>

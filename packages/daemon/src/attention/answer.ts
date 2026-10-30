@@ -94,7 +94,7 @@ function startAnswerRun(
         createdBy: actor,
         triggerMessageId: message.id,
         trigger: actor.kind === 'human' ? 'user' : 'wake',
-        model: kind === 'agent' ? session.model : resolveChatModel(ctx, session.model),
+        model: kind === 'agent' ? session.model : resolveChatModel(ctx, session),
         runtime: session.runtime,
         workspaceId: kind === 'agent' ? session.workspaceId : null,
         budgetId: sessionBudgetId(ctx, session.id),

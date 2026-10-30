@@ -2,6 +2,7 @@ import type { Run, Session, SessionCard, SessionState } from '@acc/protocol';
 import { ArrowUp, MoreHorizontal, Pin, Play, Square } from 'lucide-react';
 import { useState } from 'react';
 import { archiveSession, renameSession, resumeTree, setPinned, stopTree } from '../../daemon/actions';
+import { useAssistantId } from '../../daemon/assistant';
 import { useHomeSelect } from '../../daemon/home';
 import { useSlowNow } from '../../hooks/useNow';
 import { useSessions } from '../../daemon/queries';
@@ -177,7 +178,9 @@ export function FocusHeader({
         state: rel.parent?.state ?? parentSession?.state ?? null,
       }
     : null;
-  const root = !session.parentSessionId;
+  // The assistant starts trees; it is never delegated to or repeated itself (right-hand spec §1.1).
+  const assistantId = useAssistantId();
+  const root = !session.parentSessionId && session.id !== assistantId;
 
   // Budget: a top-level conversation's is its whole tree's (as on home); a child's is its own.
   const treeSpend = useHomeSelect((s) => s.trees.find((t) => t.root.id === session.id)?.spend ?? null);

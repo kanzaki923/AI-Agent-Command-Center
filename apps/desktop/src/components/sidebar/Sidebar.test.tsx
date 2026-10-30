@@ -32,16 +32,20 @@ function mount({
   sessions,
   projects = [],
   snap = homeSnapshot(),
+  assistantId,
 }: {
   sessions: Session[];
   projects?: Project[];
   snap?: ReturnType<typeof homeSnapshot>;
+  /** The daemon has an assistant conversation (system.assistant). */
+  assistantId?: string;
 }) {
   const fake = createFakeClient({
     'session.list': () => ({ items: sessions, nextCursor: null }),
     'project.list': () => ({ items: projects }),
     'home.get': () => snap,
     'session.archive': (p) => ({ ...sessions.find((s) => s.id === p.sessionId)!, archivedAt: iso(now) }),
+    ...(assistantId ? { 'system.assistant': () => ({ sessionId: assistantId }) } : {}),
   });
   render(
     <RuntimeProvider runtime={createRuntime(fake.client)}>
@@ -180,6 +184,21 @@ describe('<Sidebar> conversation tree', () => {
     await waitFor(() => expect(item('朝のまとめ').querySelector('[data-next-run]')).not.toBeNull());
     expect(item('朝のまとめ').querySelector('[data-next-run]')!.textContent).toMatch(/\d+:\d\d/);
     expect(screen.getByRole('button', { name: /ホーム/ })).toHaveTextContent('1');
+  });
+
+  it('gives the assistant a fixed row of its own, with the unread dot, and keeps it out of the tree', async () => {
+    const assistant = session({ title: '右腕', kind: 'chat', state: 'idle', stateSince: recent(), lastActivityAt: recent() });
+    const chat = session({ title: 'お詫びメール', kind: 'chat', state: 'idle', lastActivityAt: recent(-1000) });
+    useUi.setState({ viewedAt: {}, readBaseline: iso(T0) });
+    mount({ sessions: [assistant, chat], assistantId: assistant.id });
+    const fixed = await screen.findByRole('button', { name: /右腕/ });
+    expect(fixed.closest('[data-sidebar-item]')).toBeNull();
+    await screen.findByRole('button', { name: 'お詫びメール' });
+    expect(screen.queryByRole('button', { name: '右腕' })).toBeNull();
+    expect(within(fixed).getByRole('img', { name: '未読' })).toBeInTheDocument();
+    fireEvent.click(fixed);
+    expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: assistant.id });
+    await waitFor(() => expect(within(fixed).queryByRole('img', { name: '未読' })).toBeNull());
   });
 
   it('archives from the row menu (right click)', async () => {

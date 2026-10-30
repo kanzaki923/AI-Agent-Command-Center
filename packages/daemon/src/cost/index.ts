@@ -2,6 +2,7 @@ import { defineMethod } from '../api/registry';
 import { forbidden } from '../core/errors';
 import type { DaemonContext } from '../core/context';
 import { defineModule } from '../module';
+import { ownTreeOnly } from '../policy/grants';
 import { backfillLedgerFromRuns, recomputeSessionCosts } from './backfill';
 import { BudgetReturns } from './returns';
 import { COST_SYSTEM, UsageLedger } from './service';
@@ -114,16 +115,17 @@ CREATE TABLE cost_notices (
       defineMethod('cost.summary', {
         scope: (p, call) => {
           const sessionId =
-            p.rootSessionId ?? (call.actor.kind === 'agent' ? call.actor.sessionId : undefined);
+            p.rootSessionId ?? (ownTreeOnly(ctx, call.actor) ? call.actor.sessionId : undefined);
           return { projectIds: [], ...(sessionId ? { sessionIds: [sessionId] } : {}) };
         },
         handler: (p, call) =>
           costSummary(ctx, ledger, {
             range: p.range,
             groupBy: p.groupBy,
-            // Agents see only their own tree (the scope above checked rootSessionId).
+            // Agents see only their own tree (the scope above checked rootSessionId); the
+            // assistant sees everything.
             subtreeOf:
-              p.rootSessionId ?? (call.actor.kind === 'agent' ? call.actor.sessionId : null),
+              p.rootSessionId ?? (ownTreeOnly(ctx, call.actor) ? call.actor.sessionId : null),
           }),
       }),
 

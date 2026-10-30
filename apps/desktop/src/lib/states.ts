@@ -100,6 +100,7 @@ export const ROLE_META: Record<SessionRole, { icon: LucideIcon; label: string; f
   chat: { icon: MessageSquare, label: '会話', filled: false },
   agent: { icon: Bot, label: 'エージェント', filled: false },
   supervisor: { icon: Diamond, label: '任せた会話', filled: true },
+  assistant: { icon: Diamond, label: '右腕', filled: false },
 };
 
 /** Who started a session; `ai` has no mark (the tree position says it). */

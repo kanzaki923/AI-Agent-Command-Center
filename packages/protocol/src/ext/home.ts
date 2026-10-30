@@ -13,8 +13,11 @@ import type { costEvents } from './cost';
 // Domain
 // ---------------------------------------------------------------------------
 
-/** Icon of a session: a supervisor holds a delegation grant; otherwise its kind. */
-export const SessionRole = z.enum(['chat', 'agent', 'supervisor']);
+/**
+ * Icon of a session: a supervisor holds a delegation grant; the assistant is the one chat
+ * that stands beside the human (`system.assistant`); otherwise its kind.
+ */
+export const SessionRole = z.enum(['chat', 'agent', 'supervisor', 'assistant']);
 export type SessionRole = z.infer<typeof SessionRole>;
 
 /** Output kinds as the UI names them (`code` = a diff). */
@@ -37,7 +40,8 @@ export const SessionCard = z.object({
   /** Latest 3 outputs. */
   outputs: z.array(z.object({ id: ArtifactId, kind: OutputKind, title: z.string() })).max(3),
   attentionIds: z.array(AttentionId),
-  startedBy: z.enum(['human', 'ai', 'schedule']),
+  /** `assistant`: a root the assistant started for the human (`assistant.startWork`). */
+  startedBy: z.enum(['human', 'ai', 'schedule', 'assistant']),
   scheduleId: ScheduleId.nullable(),
   lastActivityAt: Timestamp,
 });
@@ -139,8 +143,7 @@ export const homeMethods = {
     }),
     result: HomeSnapshot,
     description:
-      'Everything the home screen shows in one call: every active session tree with its children, what they are doing, spend, items needing a human and upcoming schedules.',
-    tool: false,
+      'Everything the home screen shows in one call: every active session tree with its children, what they are doing, spend, items needing a human and upcoming schedules. The assistant uses it to answer "what is going on".',
   },
   'session.tree': {
     params: params({ sessionId: SessionId.describe('Any session of the tree') }),

@@ -10,8 +10,10 @@ import {
   type Session,
   type SessionState,
 } from '@acc/protocol';
+import { ASSISTANT_COMPONENT } from '../assistant/permissions';
 import type { DaemonContext } from '../core/context';
 import { dayOf } from '../cost/ledger';
+import { ownTreeOnly } from '../policy/grants';
 import { type CardFacts, depthFirst, inChunks, readCardFacts, toCard } from './cards';
 
 /** States of a session that is doing something (its tree is shown on the home screen). */
@@ -207,7 +209,9 @@ export function buildHomeSnapshot(ctx: DaemonContext, p: Params<'home.get'>): Ho
       orderBy: 'next_run_at',
       direction: 'asc',
     });
-    const rootIds = listedRootIds(ctx, sinceIso);
+    // The assistant is not a tree of its own: it stands beside the human (right-hand spec §1).
+    const assistantId = ctx.hasService('assistant') ? ctx.service('assistant').currentId() : null;
+    const rootIds = listedRootIds(ctx, sinceIso).filter((id) => id !== assistantId);
     const members = inChunks(rootIds, (ids) =>
       repos.sessions.find({ where: { root_session_id: ids, archived_at: null } }),
     );
@@ -241,7 +245,8 @@ export function buildHomeSnapshot(ctx: DaemonContext, p: Params<'home.get'>): Ho
     const stateCounts = new Map(
       ctx.db
         .all<{ state: string; n: number }>(
-          'SELECT state, COUNT(*) AS n FROM sessions WHERE archived_at IS NULL GROUP BY state',
+          'SELECT state, COUNT(*) AS n FROM sessions WHERE archived_at IS NULL AND id != ? GROUP BY state',
+          [assistantId ?? ''],
         )
         .map((r) => [r.state, r.n]),
     );
@@ -286,8 +291,9 @@ export function goalLine(text: string): string | null {
 }
 
 /**
- * What each tree is for (ui-rework spec §3.1): the human's first message to its root, one
- * query for every root. Roots nobody wrote to (a schedule's, a demo's) have none.
+ * What each tree is for (ui-rework spec §3.1): the human's first message to its root — written
+ * by them, or carried word for word by the assistant (`assistant.startWork`) — one query for
+ * every root. Roots nobody wrote to (a schedule's, a demo's) have none.
  */
 function readGoals(ctx: DaemonContext, rootIds: readonly string[]): Map<string, string> {
   const out = new Map<string, string>();
@@ -300,9 +306,11 @@ function readGoals(ctx: DaemonContext, rootIds: readonly string[]): Map<string, 
          FROM messages
          WHERE session_id IN (${ids.map(() => '?').join(', ')})
            AND json_extract(data, '$.role') = 'user'
-           AND json_extract(data, '$.author.kind') = 'human'
+           AND (json_extract(data, '$.author.kind') = 'human'
+             OR (json_extract(data, '$.author.kind') = 'system'
+               AND json_extract(data, '$.author.component') = ?))
        ) WHERE rn = 1`,
-      ids,
+      [...ids, ASSISTANT_COMPONENT],
     ),
   );
   for (const row of rows) {
@@ -359,7 +367,7 @@ export function buildSessionTree(
   return ctx.db.transaction(() => {
     const session = repos.sessions.require(sessionId);
     const realRoot = session.rootSessionId;
-    const viewRoot = actor.kind === 'agent' ? actor.sessionId : realRoot;
+    const viewRoot = ownTreeOnly(ctx, actor) ? actor.sessionId : realRoot;
     const members = repos.sessions.find({
       where: { root_session_id: realRoot },
       sql: { clause: 'archived_at IS NULL OR id = ?', params: [viewRoot] },

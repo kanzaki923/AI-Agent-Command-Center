@@ -60,6 +60,7 @@ import {
 } from './domain';
 import { Event, EventFilter } from './events';
 import { attentionMethods } from './ext/attention';
+import { assistantMethods } from './ext/assistant';
 import { costMethods } from './ext/cost';
 import { StreamingMessage, homeMethods } from './ext/home';
 import { outputsMethods } from './ext/outputs';
@@ -328,6 +329,10 @@ export const api = defineApi({
           .describe('LiteLLM model name of a Claude model (Sonnet 4.6 or later); null clears it'),
         classifierCostUsd: z.number().min(0).max(10).optional(),
       }).optional(),
+      assistant: params({
+        model: z.string().min(1).nullable().optional().describe('null follows defaultModel'),
+        dailyUsd: z.number().min(0).nullable().optional().describe('null removes the limit'),
+      }).optional(),
     }),
     result: SettingsView,
     description: 'Update daemon settings (persisted to config.json).',
@@ -500,6 +505,13 @@ export const api = defineApi({
         .boolean()
         .optional()
         .describe('Agent sessions: stop the current run and hand the message over now'),
+      hint: z
+        .string()
+        .max(500)
+        .optional()
+        .describe(
+          'One line of context for the model, kept out of the conversation (e.g. the workspace the human chose for the request)',
+        ),
     }),
     result: z.object({
       messageId: MessageId,
@@ -1041,6 +1053,7 @@ export const api = defineApi({
   ...costMethods,
   ...scheduleMethods,
   ...homeMethods,
+  ...assistantMethods,
 });
 
 export type Api = typeof api;

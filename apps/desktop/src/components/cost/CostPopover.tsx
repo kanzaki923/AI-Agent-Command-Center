@@ -1,6 +1,7 @@
 import type { CostSummary, SessionRole } from '@acc/protocol';
 import { Cpu } from 'lucide-react';
 import { type ReactElement, type ReactNode, useState } from 'react';
+import { useAssistantId } from '../../daemon/assistant';
 import { setDailyLimit, useCostSummary } from '../../daemon/cost';
 import { useHomeSelect, useTodaySpend } from '../../daemon/home';
 import { useRuntime } from '../../daemon/runtime';
@@ -54,6 +55,8 @@ function CostContents({ onOpenTree }: { onOpenTree: () => void }) {
   const byTree = spendRows(useCostSummary({ range: 'today', groupBy: 'root' }).data, TOP_TREES);
   const byModel = spendRows(useCostSummary({ range: 'today', groupBy: 'model' }).data);
   const roles = useHomeSelect((s) => new Map<string, SessionRole>(s.trees.map((t) => [t.root.id, t.root.role]))) ?? null;
+  const assistantId = useAssistantId();
+  const roleOf = (key: string): SessionRole => (key === assistantId ? 'assistant' : (roles?.get(key) ?? 'chat'));
   const used = today?.usedUsd ?? 0;
   const limit = today?.limitUsd ?? null;
   const tone = limit != null ? budgetTone(used, limit) : 'ok';
@@ -104,7 +107,7 @@ function CostContents({ onOpenTree }: { onOpenTree: () => void }) {
                 }}
               >
                 <SpendBar
-                  icon={<RoleIcon role={roles?.get(r.key) ?? 'chat'} size={12} className="text-fg-3" />}
+                  icon={<RoleIcon role={roleOf(r.key)} size={12} className={roleOf(r.key) === 'assistant' ? 'text-st-supervising' : 'text-fg-3'} />}
                   label={r.label}
                   usd={r.usd}
                   max={max}

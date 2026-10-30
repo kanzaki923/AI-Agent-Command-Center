@@ -544,11 +544,14 @@ describe('ext methods', () => {
       'budget.raise',
       'cost.raiseDaily',
       'session.setBudget',
-      'home.get',
+      'system.assistant',
       'project.inspectFolder',
     ] as const) {
       expect(api[name].tool, name).toBe(false);
     }
+    // The assistant answers "what is going on" from it (right-hand spec §1.1).
+    expect(api['home.get'].tool).not.toBe(false);
+    expect(api['assistant.startWork'].tool).not.toBe(false);
   });
 
   it('changed core methods: session.send never refuses, messages carry the stream', () => {

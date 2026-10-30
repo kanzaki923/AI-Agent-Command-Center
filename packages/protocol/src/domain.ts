@@ -302,6 +302,8 @@ export const MessageMeta = z.discriminatedUnion('kind', [
     attentionId: AttentionId,
     choiceLabel: z.string().nullable(),
   }),
+  /** A line of context for the model that the chat does not show (`session.send` hint). */
+  z.object({ kind: z.literal('hint'), text: z.string() }),
 ]);
 export type MessageMeta = z.infer<typeof MessageMeta>;
 
@@ -918,6 +920,11 @@ export type GrantSubject = z.infer<typeof GrantSubject>;
 export const GrantScope = z.object({
   /** Restrict to these projects. Omitted = all projects the parent grant allows. */
   projectIds: z.array(ProjectId).optional(),
+  /**
+   * The agent may touch any session, not only its own session tree (the assistant, which
+   * looks over and drives every tree). A delegated grant may hold it only when its parent does.
+   */
+  allSessions: z.boolean().optional(),
 });
 export type GrantScope = z.infer<typeof GrantScope>;
 
@@ -1025,6 +1032,15 @@ export const SupervisorSettings = z.object({
 });
 export type SupervisorSettings = z.infer<typeof SupervisorSettings>;
 
+/** The assistant (`system.assistant`): its model and what its own calls may cost per day. */
+export const AssistantSettings = z.object({
+  /** null: `defaultModel`, or the offline `mock/right-hand` without LiteLLM. */
+  model: z.string().min(1).nullable().default(null),
+  /** USD per day for the assistant's own model calls; null = no limit. */
+  dailyUsd: z.number().min(0).nullable().default(2),
+});
+export type AssistantSettings = z.infer<typeof AssistantSettings>;
+
 /** Persisted in `$ACC_HOME/config.json`. Never sent to clients as-is (see SettingsView). */
 export const Settings = z.object({
   litellm: z
@@ -1069,6 +1085,7 @@ export const Settings = z.object({
     wakeDebounceMs: 1500,
     contextMessages: 40,
   }),
+  assistant: AssistantSettings.default({ model: null, dailyUsd: 2 }),
   /**
    * USD reserved from a run's budget before each LLM call of chat / orchestrator runs and
    * settled with the actual cost afterwards. A call that cannot reserve this much is refused,
@@ -1129,6 +1146,7 @@ export const SettingsView = z.object({
   limits: z.object({ dailyUsd: z.number().nullable(), timezone: z.string() }).optional(),
   autoResume: z.boolean().optional(),
   supervisor: SupervisorSettings.optional(),
+  assistant: AssistantSettings.optional(),
 });
 export type SettingsView = z.infer<typeof SettingsView>;
 

@@ -59,7 +59,8 @@ export function grantAllows(
       return { ok: false, reason: `project(s) outside grant scope: ${outside.join(', ')}` };
     }
   }
-  if (tree && scope?.sessionIds && scope.sessionIds.length > 0) {
+  // The assistant's grant reaches every tree; everyone else stays inside their own.
+  if (tree && !grant.scope.allSessions && scope?.sessionIds && scope.sessionIds.length > 0) {
     const root = grantTreeRoot(grant, tree.actor);
     const outside = scope.sessionIds.filter((id) => !tree.inTree(id, root));
     if (outside.length > 0) {
