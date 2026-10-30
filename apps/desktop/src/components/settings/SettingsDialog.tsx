@@ -13,7 +13,13 @@ import { notificationPermission, requestNotificationPermission } from '../../lib
 import { isTauri } from '../../lib/platform';
 import { PROFILE_INFO } from '../../model/permissions';
 import { toastError } from '../../store/toast';
-import { type GlassScope, type GlassStrength, type MotionPref, type ThemePref, useUi } from '../../store/ui';
+import {
+  type GlassScope,
+  type GlassStrength,
+  type MotionPref,
+  type ThemePref,
+  useUi,
+} from '../../store/ui';
 import { Button } from '../ui/Button';
 import { Dialog, inputClass } from '../ui/Dialog';
 import { FieldRow, type SegmentOption, Segmented, Stepper, UsdField } from './controls';
@@ -25,9 +31,24 @@ const icon = (I: typeof Zap) => <I size={13} strokeWidth={1.75} />;
 
 /** 任せ方: the default permission profile, one icon and word each, one line on hover. */
 export const PROFILE_OPTIONS: SegmentOption<PermissionProfile>[] = [
-  { value: 'autonomous', label: PROFILE_INFO.autonomous.label, icon: icon(Zap), hint: '危険な操作だけ止めて、ほかは確認なしで進める' },
-  { value: 'standard', label: PROFILE_INFO.standard.label, icon: icon(ShieldCheck), hint: '依存の追加と作業場所の外の読み取りは確認する' },
-  { value: 'careful', label: PROFILE_INFO.careful.label, icon: icon(ShieldAlert), hint: '読み取りと編集のほかはすべて確認する' },
+  {
+    value: 'autonomous',
+    label: PROFILE_INFO.autonomous.label,
+    icon: icon(Zap),
+    hint: '危険な操作だけ止めて、ほかは確認なしで進める',
+  },
+  {
+    value: 'standard',
+    label: PROFILE_INFO.standard.label,
+    icon: icon(ShieldCheck),
+    hint: '依存の追加と作業場所の外の読み取りは確認する',
+  },
+  {
+    value: 'careful',
+    label: PROFILE_INFO.careful.label,
+    icon: icon(ShieldAlert),
+    hint: '読み取りと編集のほかはすべて確認する',
+  },
 ];
 
 const THEME_OPTIONS: SegmentOption<ThemePref>[] = [
@@ -47,7 +68,10 @@ const ON_OFF: SegmentOption<'on' | 'off'>[] = [
   { value: 'off', label: 'オフ' },
 ];
 
-const GLASS_SCOPE_OPTIONS: SegmentOption<GlassScope>[] = [
+/** Off and the scope are one choice: where the desktop shows through, if at all. */
+type GlassChoice = 'off' | GlassScope;
+const GLASS_OPTIONS: SegmentOption<GlassChoice>[] = [
+  { value: 'off', label: 'なし' },
   { value: 'wings', label: '翼だけ' },
   { value: 'all', label: '全体' },
 ];
@@ -130,7 +154,10 @@ export function SettingsDialog() {
     >
       <Group className="pt-0">
         <FieldRow label="接続">
-          <span className="flex min-w-0 items-center gap-2 text-ui text-fg-2" data-testid="connection-status">
+          <span
+            className="flex min-w-0 items-center gap-2 text-ui text-fg-2"
+            data-testid="connection-status"
+          >
             <span className={cn('size-2 shrink-0 rounded-full', DOT[status.tone])} aria-hidden />
             <span className="truncate font-mono text-meta">{status.text}</span>
           </span>
@@ -142,7 +169,11 @@ export function SettingsDialog() {
         </FieldRow>
         {editing && (
           <div className="mt-1 mb-2 rounded-md border border-line-subtle bg-canvas p-3">
-            <LiteLlmForm compact onDone={() => setEditing(false)} onCancel={() => setEditing(false)} />
+            <LiteLlmForm
+              compact
+              onDone={() => setEditing(false)}
+              onCancel={() => setEditing(false)}
+            />
           </div>
         )}
         {profile && (
@@ -166,7 +197,11 @@ export function SettingsDialog() {
           />
         </FieldRow>
         {settings?.assistant && (
-          <FieldRow label="右腕の上限" hint="右腕自身のモデル費用。1 日あたり" htmlFor="assistant-limit">
+          <FieldRow
+            label="右腕の上限"
+            hint="右腕自身のモデル費用。1 日あたり"
+            htmlFor="assistant-limit"
+          >
             <UsdField
               id="assistant-limit"
               label="右腕の上限"
@@ -178,27 +213,43 @@ export function SettingsDialog() {
             />
           </FieldRow>
         )}
-        <FieldRow label="外観">
-          <Segmented<ThemePref> label="テーマ" value={theme} options={THEME_OPTIONS} onChange={setTheme} />
-          <span className="ml-2 text-meta text-fg-3" aria-hidden>
-            動き
-          </span>
-          <Segmented<MotionPref> label="動きを減らす" value={reduceMotion} options={MOTION_OPTIONS} onChange={setReduceMotion} />
+        <FieldRow label="テーマ">
+          <Segmented<ThemePref>
+            label="テーマ"
+            value={theme}
+            options={THEME_OPTIONS}
+            onChange={setTheme}
+          />
+        </FieldRow>
+        <FieldRow label="動き">
+          <Segmented<MotionPref>
+            label="動きを減らす"
+            value={reduceMotion}
+            options={MOTION_OPTIONS}
+            onChange={setReduceMotion}
+          />
         </FieldRow>
         {isTauri() && (
           <FieldRow label="透け">
-            <Segmented<'on' | 'off'> label="透け" value={glass} options={ON_OFF} onChange={setGlass} />
+            <Segmented<GlassChoice>
+              label="透け"
+              value={glass === 'off' ? 'off' : glassScope}
+              options={GLASS_OPTIONS}
+              onChange={(v) => {
+                if (v === 'off') setGlass('off');
+                else {
+                  setGlassScope(v);
+                  setGlass('on');
+                }
+              }}
+            />
             {glass === 'on' && (
-              <>
-                <span className="ml-2 text-meta text-fg-3" aria-hidden>
-                  範囲
-                </span>
-                <Segmented<GlassScope> label="透ける範囲" value={glassScope} options={GLASS_SCOPE_OPTIONS} onChange={setGlassScope} />
-                <span className="ml-2 text-meta text-fg-3" aria-hidden>
-                  強さ
-                </span>
-                <Segmented<GlassStrength> label="透けの強さ" value={glassStrength} options={GLASS_STRENGTH_OPTIONS} onChange={setGlassStrength} />
-              </>
+              <Segmented<GlassStrength>
+                label="透けの強さ"
+                value={glassStrength}
+                options={GLASS_STRENGTH_OPTIONS}
+                onChange={setGlassStrength}
+              />
             )}
           </FieldRow>
         )}
@@ -223,7 +274,13 @@ export function SettingsDialog() {
   );
 }
 
-function Details({ settings, update }: { settings: SettingsView | undefined; update: (patch: SettingsPatch) => void }) {
+function Details({
+  settings,
+  update,
+}: {
+  settings: SettingsView | undefined;
+  update: (patch: SettingsPatch) => void;
+}) {
   const rt = useRuntime();
   const info = useInfo();
   const unimplemented = useStore(rt.unimplemented, (s) => s.methods);
@@ -231,7 +288,11 @@ function Details({ settings, update }: { settings: SettingsView | undefined; upd
   const notifyInApp = useUi((s) => s.notifyInApp);
   const setNotify = useUi((s) => s.setNotify);
   const setShortcutsOpen = useUi((s) => s.setShortcutsOpen);
-  const permission = useQuery({ queryKey: ['notify.permission'], queryFn: notificationPermission, staleTime: 0 });
+  const permission = useQuery({
+    queryKey: ['notify.permission'],
+    queryFn: notificationPermission,
+    staleTime: 0,
+  });
   const perm = permission.data ?? 'default';
   const autoMode = settings?.autoMode;
   const agents = settings?.maxConcurrentAgents ?? settings?.maxConcurrentRuns ?? 10;
@@ -291,16 +352,32 @@ function Details({ settings, update }: { settings: SettingsView | undefined; upd
             value={agents}
             min={1}
             max={64}
-            onChange={(v) => update(settings?.maxConcurrentAgents != null ? { maxConcurrentAgents: v } : { maxConcurrentRuns: v })}
+            onChange={(v) =>
+              update(
+                settings?.maxConcurrentAgents != null
+                  ? { maxConcurrentAgents: v }
+                  : { maxConcurrentRuns: v },
+              )
+            }
           />
         </FieldRow>
         {chats != null && (
           <FieldRow label="同時に動く会話">
-            <Stepper label="同時に動く会話" value={chats} min={1} max={64} onChange={(v) => update({ maxConcurrentChats: v })} />
+            <Stepper
+              label="同時に動く会話"
+              value={chats}
+              min={1}
+              max={64}
+              onChange={(v) => update({ maxConcurrentChats: v })}
+            />
           </FieldRow>
         )}
         {reserve != null && (
-          <FieldRow label="1 回の呼び出しの予約" htmlFor="llm-reserve" hint="呼び出しの前に予算から確保する額">
+          <FieldRow
+            label="1 回の呼び出しの予約"
+            htmlFor="llm-reserve"
+            hint="呼び出しの前に予算から確保する額"
+          >
             <UsdField
               id="llm-reserve"
               label="1 回の呼び出しの予約"
@@ -317,7 +394,11 @@ function Details({ settings, update }: { settings: SettingsView | undefined; upd
             value={autoResume ? 'on' : 'off'}
             options={ON_OFF}
             onChange={(v) =>
-              update(settings?.autoResume != null ? { autoResume: v === 'on' } : { autoResumeOrchestrators: v === 'on' })
+              update(
+                settings?.autoResume != null
+                  ? { autoResume: v === 'on' }
+                  : { autoResumeOrchestrators: v === 'on' },
+              )
             }
           />
         </FieldRow>
@@ -353,19 +434,32 @@ function Details({ settings, update }: { settings: SettingsView | undefined; upd
           />
         </FieldRow>
         <FieldRow label="ショートカット">
-          <Button size="sm" variant="secondary" shortcutKeys="?" onClick={() => setShortcutsOpen(true)}>
+          <Button
+            size="sm"
+            variant="secondary"
+            shortcutKeys="?"
+            onClick={() => setShortcutsOpen(true)}
+          >
             一覧
           </Button>
         </FieldRow>
       </Group>
       <Group className="border-t border-line-subtle">
         <FieldRow label="診断">
-          <Button size="sm" variant="secondary" onClick={() => void confirmShutdown(rt)} data-testid="shutdown-daemon">
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => void confirmShutdown(rt)}
+            data-testid="shutdown-daemon"
+          >
             {restart ? 'Core Daemon を再起動' : 'Core Daemon を停止'}
           </Button>
         </FieldRow>
         {info.data && (
-          <dl className="grid grid-cols-[72px_1fr] gap-x-3 gap-y-1 text-meta" data-testid="diagnostics">
+          <dl
+            className="grid grid-cols-[72px_1fr] gap-x-3 gap-y-1 text-meta"
+            data-testid="diagnostics"
+          >
             <dt className="text-fg-3">バージョン</dt>
             <dd className="text-fg-2">{info.data.version}</dd>
             <dt className="text-fg-3">データ</dt>
@@ -377,7 +471,9 @@ function Details({ settings, update }: { settings: SettingsView | undefined; upd
             <dt className="text-fg-3">API</dt>
             <dd className="text-fg-2">
               {info.data.methods.length}
-              {unimplemented.length > 0 && <span className="text-fg-3"> · 未実装 {unimplemented.join(', ')}</span>}
+              {unimplemented.length > 0 && (
+                <span className="text-fg-3"> · 未実装 {unimplemented.join(', ')}</span>
+              )}
             </dd>
           </dl>
         )}
@@ -385,4 +481,3 @@ function Details({ settings, update }: { settings: SettingsView | undefined; upd
     </div>
   );
 }
-
