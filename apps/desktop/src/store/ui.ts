@@ -40,12 +40,16 @@ export interface UiState {
   modelPickerOpen: boolean;
   theme: ThemePref;
   reduceMotion: MotionPref;
+  /** Let the desktop show through the app ground (only when the shell applied a material). */
+  glass: 'on' | 'off';
   drafts: Record<string, string>;
   viewedAt: Record<string, string>;
   /** Answers that settled before this (the first run of this store) are not shown as unread. */
   readBaseline: string;
   collapsed: Record<string, boolean>;
   onboardingDone: boolean;
+  /** The connection prompt (first real request without a configured LLM) is open. */
+  connectPromptOpen: boolean;
   recentCommands: string[];
   back: View[];
   forward: View[];
@@ -105,11 +109,13 @@ interface UiActions {
   setShortcutsOpen: (open: boolean) => void;
   setModelPickerOpen: (open: boolean) => void;
   setTheme: (t: ThemePref) => void;
-  setReduceMotion: (m: MotionPref) => void;
+  setReduceMotion: (reduceMotion: MotionPref) => void;
+  setGlass: (g: 'on' | 'off') => void;
   setDraft: (sessionId: string, text: string) => void;
   markViewed: (sessionId: string, at: string) => void;
   toggleCollapsed: (key: string, defaultCollapsed?: boolean) => void;
   finishOnboarding: () => void;
+  setConnectPromptOpen: (open: boolean) => void;
   rememberCommand: (id: string) => void;
   goBack: () => void;
   goForward: () => void;
@@ -155,11 +161,13 @@ const initial: UiState = {
   modelPickerOpen: false,
   theme: 'dark',
   reduceMotion: 'system',
+  glass: 'on',
   drafts: {},
   viewedAt: {},
   readBaseline: '',
   collapsed: {},
   onboardingDone: false,
+  connectPromptOpen: false,
   recentCommands: [],
   back: [],
   forward: [],
@@ -300,6 +308,7 @@ export const createUiStore = () =>
         setModelPickerOpen: (modelPickerOpen) => set({ modelPickerOpen }),
         setTheme: (theme) => set({ theme }),
         setReduceMotion: (reduceMotion) => set({ reduceMotion }),
+        setGlass: (glass) => set({ glass }),
         setDraft: (sessionId, text) =>
           set((s) => {
             if ((s.drafts[sessionId] ?? '') === text) return s;
@@ -314,7 +323,8 @@ export const createUiStore = () =>
           ),
         toggleCollapsed: (key, defaultCollapsed = false) =>
           set((s) => ({ collapsed: { ...s.collapsed, [key]: !(s.collapsed[key] ?? defaultCollapsed) } })),
-        finishOnboarding: () => set({ onboardingDone: true }),
+        finishOnboarding: () => set({ onboardingDone: true, connectPromptOpen: false }),
+        setConnectPromptOpen: (connectPromptOpen) => set({ connectPromptOpen }),
         rememberCommand: (id) =>
           set((s) => ({ recentCommands: [id, ...s.recentCommands.filter((x) => x !== id)].slice(0, 8) })),
         goBack: () => {
@@ -393,6 +403,7 @@ export const createUiStore = () =>
         partialize: (s) => ({
           theme: s.theme,
           reduceMotion: s.reduceMotion,
+          glass: s.glass,
           sidebarOpen: s.sidebarOpen,
           sidebarWidth: s.sidebarWidth,
           panelWidth: s.panelWidth,

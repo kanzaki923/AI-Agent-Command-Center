@@ -23,6 +23,7 @@ import {
 import { useTimeline } from '../../store/timeline';
 import { useUi } from '../../store/ui';
 import { Kbd } from '../ui/Kbd';
+import { Skeleton } from '../ui/Meta';
 import { Tooltip } from '../ui/Tooltip';
 import { GroupHeading, MomentRow, NoteRow, RunRow, StepRow } from './TimelineRows';
 
@@ -218,9 +219,15 @@ export function TimelineView() {
         data-region="main"
         {...ordered.bind}
       >
-        {shown.length === 0 ? (
+        {shown.length === 0 && history.isPending ? (
+          <div className="flex max-w-[1080px] flex-col gap-3 px-4 py-3" aria-busy="true" data-timeline-loading>
+            <Skeleton className="h-5 w-48" />
+            <Skeleton className="h-5 w-[70%]" />
+            <Skeleton className="h-5 w-[55%]" />
+          </div>
+        ) : shown.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
-            {history.isPending ? null : filtersActive(filters) ? (
+            {filtersActive(filters) ? (
               <>
                 <div className="text-ui text-fg-2">条件に合う出来事はありません</div>
                 <button type="button" onClick={clearFilters} className="text-ui text-accent hover:underline">

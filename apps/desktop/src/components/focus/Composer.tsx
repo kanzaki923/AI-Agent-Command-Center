@@ -313,7 +313,10 @@ export function Composer({
             </Tooltip>
           )}
           <span className="flex-1" />
-          <ModelPicker value={session.model} fallback={settings?.defaultModel ?? null} onChange={setModel} />
+          {/* A child's model is the supervisor's business, not a name to show (ui-rework spec §5). */}
+          {!session.parentSessionId && (
+            <ModelPicker value={session.model} fallback={settings?.defaultModel ?? null} onChange={setModel} />
+          )}
           {canStopInline && !draft.trim() && attachments.length === 0 ? (
             <Tooltip content="生成を停止（Esc）">
               <button

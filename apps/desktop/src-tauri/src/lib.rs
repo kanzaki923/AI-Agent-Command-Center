@@ -83,6 +83,39 @@ async fn get_connection(app: AppHandle) -> Result<daemon::Connection, String> {
         .map_err(|e| e.to_string())?
 }
 
+/// Whether the main window got a translucent material (ui-rework spec §1.3). The UI only turns
+/// its glass tokens on when this is true, so an opaque window never shows half-transparent
+/// grounds over nothing.
+static GLASS: Mutex<bool> = Mutex::new(false);
+
+/// Acrylic (Windows 11), else mica, else nothing; vibrancy on macOS. Never fails the launch.
+fn apply_glass(window: &tauri::WebviewWindow) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use window_vibrancy::{apply_acrylic, apply_mica};
+        if apply_acrylic(window, Some((11, 12, 14, 170))).is_ok() {
+            return true;
+        }
+        return apply_mica(window, Some(true)).is_ok();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
+        return apply_vibrancy(window, NSVisualEffectMaterial::Sidebar, None, None).is_ok();
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = window;
+        false
+    }
+}
+
+/// True when the window shows the desktop through its ground (see `apply_glass`).
+#[tauri::command]
+fn get_glass() -> bool {
+    *GLASS.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -103,8 +136,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         // OS notifications (src/lib/notify.ts calls plugin:notification|notify etc.)
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![get_connection])
+        .invoke_handler(tauri::generate_handler![get_connection, get_glass])
         .setup(|app| {
+            if let Some(w) = app.get_webview_window("main") {
+                let ok = apply_glass(&w);
+                *GLASS.lock().unwrap_or_else(|p| p.into_inner()) = ok;
+            }
             // Pre-warm: start the daemon while the WebView boots, so the first
             // get_connection() usually returns immediately.
             let handle = app.handle().clone();

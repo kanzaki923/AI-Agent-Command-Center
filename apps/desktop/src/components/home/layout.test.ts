@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { attention, card, homeTree } from '../../test/fixtures';
 import {
   bandSegments,
+  costNote,
+  outputCounts,
+  showLaneCost,
   heldShape,
   homeShape,
   isSettledTree,
@@ -112,5 +115,25 @@ describe('home layout', () => {
       { state: 'done', n: 1 },
     ]);
     expect(bandSegments(counts())).toEqual([]);
+  });
+});
+
+describe('lane facts (ui-rework spec §3.1)', () => {
+  it('shows the budget meter only past half the budget; the band note says the spend', () => {
+    expect(showLaneCost({ treeUsd: 1, limitUsd: 3.4, committedUsd: 1.2, estimated: false })).toBe(false);
+    expect(showLaneCost({ treeUsd: 1, limitUsd: 3.4, committedUsd: 2, estimated: false })).toBe(true);
+    expect(showLaneCost({ treeUsd: 5, limitUsd: null, estimated: false })).toBe(false);
+    expect(costNote({ treeUsd: 2.77, limitUsd: 3.4, estimated: false })).toBe('費用 $2.77 / $3.40');
+    expect(costNote({ treeUsd: 0.35, limitUsd: null, estimated: false })).toBe('費用 $0.35');
+    expect(costNote({ treeUsd: 0, limitUsd: null, estimated: false })).toBeNull();
+    expect(
+      outputCounts([
+        { outputs: [{ id: 'a', kind: 'document', title: 'x' }, { id: 'b', kind: 'code', title: 'y' }] },
+        { outputs: [{ id: 'c', kind: 'code', title: 'z' }] },
+      ] as never),
+    ).toEqual([
+      { kind: 'code', n: 2 },
+      { kind: 'document', n: 1 },
+    ]);
   });
 });

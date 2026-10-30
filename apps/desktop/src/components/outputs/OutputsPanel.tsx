@@ -105,7 +105,7 @@ function Panel({
       data-region="panel"
       data-overlay={narrow ? 'true' : undefined}
       className={cn(
-        'flex h-full shrink-0 flex-col border-t border-l border-line-subtle bg-canvas',
+        'flex h-full shrink-0 flex-col bg-app',
         narrow ? 'absolute top-0 right-0 bottom-0 z-20 shadow-float' : 'relative',
       )}
       style={{ width }}
@@ -289,7 +289,7 @@ function OutputsRail({ outputs, onPick }: { outputs: Output[]; onPick: (id: stri
     <aside
       aria-label="成果物"
       data-region="panel-rail"
-      className="flex h-full w-10 shrink-0 flex-col items-center gap-1 border-t border-l border-line-subtle bg-canvas py-2"
+      className="flex h-full w-10 shrink-0 flex-col items-center gap-1 bg-app py-2"
     >
       {shown.map((o) => {
         const phase = reviewPhase(o, integrations);

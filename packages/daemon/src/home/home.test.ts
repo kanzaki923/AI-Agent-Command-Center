@@ -514,3 +514,22 @@ describe('session tree methods (acceptance 5)', () => {
     expect(listed.items.map((s) => s.title).sort()).toEqual(['child', 'grandchild']);
   });
 });
+
+describe('home.get goal (ui-rework spec §3.1)', () => {
+  it('is the first line of the human’s first message, without machine blocks; null when nobody wrote', async () => {
+    const d = await daemon();
+    const s = await d.call(HUMAN, 'session.create', { model: 'mock/echo', title: 'ローンチ' });
+    const sent = await d.call(HUMAN, 'session.send', {
+      sessionId: s.id,
+      content:
+        '来月 20 日に新製品を出す。準備を進めて\n\n```acc-mock\n{"steps":[]}\n```\n二行目は出ない',
+    });
+    await d.ctx.service('runs').waitForEnd(sent.runId!);
+    await d.call(HUMAN, 'session.send', { sessionId: s.id, content: 'あとから送ったもの' });
+    const quiet = await d.call(HUMAN, 'session.create', { model: 'mock/echo', title: '静か' });
+    const snap = await home(d);
+    const byId = new Map(snap.trees.map((t) => [t.root.id, t]));
+    expect(byId.get(s.id)?.goal).toBe('来月 20 日に新製品を出す。準備を進めて');
+    expect(byId.get(quiet.id)?.goal ?? null).toBeNull();
+  });
+});

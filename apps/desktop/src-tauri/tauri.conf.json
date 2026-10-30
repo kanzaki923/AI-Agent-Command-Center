@@ -23,8 +23,8 @@
         "center": true,
         "decorations": false,
         "shadow": true,
+        "transparent": true,
         "visible": false,
-        "backgroundColor": "#0b0c0e",
         "useHttpsScheme": false
       }
     ],

@@ -74,6 +74,11 @@ export const HomeTree = z.object({
   /** Next run of a schedule attached to a session of this tree. */
   nextRunAt: Timestamp.nullable(),
   projectId: ProjectId.nullable(),
+  /**
+   * What the tree is for, in the human's own words: the first line of their first message to
+   * the root (machine blocks removed, at most 200 characters). Null when no human wrote to it.
+   */
+  goal: z.string().nullable().optional(),
 });
 export type HomeTree = z.infer<typeof HomeTree>;
 

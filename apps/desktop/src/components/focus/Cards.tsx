@@ -1,5 +1,5 @@
 import type { Approval, SessionBrief, SessionCard, SessionState, WakeItemView } from '@acc/protocol';
-import { ChevronRight, Circle, CircleCheck, Coins, CornerDownLeft, ShieldCheck, ShieldX } from 'lucide-react';
+import { ChevronRight, Circle, CircleCheck, Coins, CornerDownLeft, Diamond, ShieldCheck, ShieldX } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { useProjects, useWorkspace } from '../../daemon/queries';
 import { cn } from '../../lib/cn';
@@ -10,7 +10,8 @@ import { useUi } from '../../store/ui';
 import { WorkspaceIcon } from '../ui/SemanticIcons';
 import { StateIcon } from '../ui/StateIcon';
 import { Tooltip } from '../ui/Tooltip';
-import { stripMachineBlocks } from './conversation';
+import type { ToolCallView } from '../../model/chat';
+import { spawnRequest, spawnedSessionId, stripMachineBlocks } from './conversation';
 
 const NONE: never[] = [];
 
@@ -213,4 +214,74 @@ export function FromLine({ icon, children }: { icon: ReactNode; children: ReactN
 /** A session title for display, falling back to its default name. */
 export function titleOrDefault(s: { title: string; kind?: 'chat' | 'agent' } | undefined): string | undefined {
   return s ? sessionTitle(s) : undefined;
+}
+
+/**
+ * The plan card (ui-rework spec §4.1): the moment a supervisor split the work. One row per
+ * child it started — the child's state (from the tree), its title (press to go there), the
+ * first line of its request, where it works and its budget — under the supervisor's reason
+ * when it recorded one. The rows read the live tree, so the card keeps saying where each
+ * piece stands.
+ */
+export function PlanCard({
+  spawns,
+  rationale,
+  children,
+}: {
+  spawns: ToolCallView[];
+  rationale: string | null;
+  /** The children of the conversation (its tree), to find each row's session. */
+  children: readonly SessionCard[];
+}) {
+  const openSession = useUi((s) => s.openSession);
+  const rows = spawns.map((call) => {
+    const req = spawnRequest(call.input);
+    const id = spawnedSessionId(call.output);
+    const child = (id && children.find((c) => c.id === id)) || children.find((c) => c.title === req.title) || null;
+    return { call, req, child };
+  });
+  return (
+    <section aria-label="計画" data-plan className="flex flex-col rounded-md bg-surface">
+      <div className="flex min-h-9 items-center gap-2 px-3 pt-2 pb-1">
+        <span className="inline-flex text-st-supervising">
+          <Diamond size={14} strokeWidth={1.75} fill="currentColor" fillOpacity={0.35} aria-hidden />
+        </span>
+        <span className="text-ui font-medium text-fg">{spawns.length} 人に任せる</span>
+      </div>
+      {rationale && <div className="selectable px-3 pb-1 text-meta text-fg-2">{rationale}</div>}
+      <ul className="flex flex-col py-1">
+        {rows.map(({ call, req, child }) => {
+          const state: SessionState = child?.state ?? 'queued';
+          const Ws = req.workspace === 'none' ? null : WorkspaceIcon;
+          return (
+            <li key={call.id}>
+              <button
+                type="button"
+                data-plan-row={child?.id ?? undefined}
+                disabled={!child}
+                onClick={() => child && openSession(child.id)}
+                className="grid h-8 w-full grid-cols-[14px_minmax(120px,0.9fr)_minmax(0,1.6fr)_auto] items-center gap-2.5 px-3 text-left text-ui enabled:hover:bg-hover"
+              >
+                <StateIcon state={state} size={13} />
+                <span className="min-w-0 truncate text-fg">{child ? sessionTitle(child) : req.title || '新しい子'}</span>
+                <span className="min-w-0 truncate text-meta text-fg-3">{req.goal.split('\n')[0]}</span>
+                <span className="flex shrink-0 items-center gap-2 text-meta text-fg-3">
+                  {Ws && <Ws kind={req.workspace} size={12} />}
+                  {req.doneWhen.length > 0 && (
+                    <Tooltip content={req.doneWhen.join('、')}>
+                      <span className="inline-flex items-center gap-0.5 tabular">
+                        <Circle size={10} strokeWidth={2} aria-hidden />
+                        {req.doneWhen.length}
+                      </span>
+                    </Tooltip>
+                  )}
+                  {req.budgetUsd != null && <span className="tabular">${Number.isInteger(req.budgetUsd) ? req.budgetUsd : req.budgetUsd.toFixed(2)}</span>}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
 }

@@ -219,6 +219,8 @@ export function ConversationTree() {
       {groups.map((g) => {
         if (!g.project) return <div key="" className="contents">{g.trees.map(renderTree)}</div>;
         const p = g.project;
+        // One tree that carries the project's own name: the heading would only repeat it (ui-rework spec §5).
+        if (g.quiet) return <div key={p.id} className="contents">{g.trees.map(renderTree)}</div>;
         const open = collapsed[projectKey(p.id)] !== true;
         return (
           <div key={p.id} className="contents">

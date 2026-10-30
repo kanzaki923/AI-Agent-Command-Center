@@ -131,3 +131,21 @@ describe('ancestorsOf / childDots', () => {
     expect(stateCountsLabel(kids)).toBe('あなたの出番 1 · 失敗 1 · 作業中 1 · 完了 5');
   });
 });
+
+describe('quiet project groups (ui-rework spec §5)', () => {
+  it('drops the heading of a project whose one tree has the project’s name', () => {
+    const now = Date.now();
+    const p1 = project('prj_1', '市場レポート');
+    const p2 = project('prj_2', 'acme-web');
+    const same = session({ title: '市場レポート', projectId: p1.id, state: 'working' });
+    const login = session({ title: 'ログイン改善', projectId: p2.id, state: 'working' });
+    const forest = buildForest([same, login]);
+    const ids = new Set([p1.id, p2.id]);
+    const { groups } = groupTrees(forest, [p1, p2], (t) => groupKeyOf(t, now, true, ids));
+    expect(groups.map((g) => [g.project?.name ?? null, g.quiet ?? false])).toEqual([
+      [null, false],
+      ['市場レポート', true],
+      ['acme-web', false],
+    ]);
+  });
+});

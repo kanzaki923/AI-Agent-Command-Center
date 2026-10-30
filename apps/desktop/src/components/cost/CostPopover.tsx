@@ -25,6 +25,11 @@ export function spendRows(summary: CostSummary | undefined, limit = Number.POSIT
     .slice(0, limit);
 }
 
+/** A model as a person names it: without the provider prefix (`mock/assistant` → `assistant`). */
+export function modelName(id: string): string {
+  return id.replace(/^[^/\s]+\//, '');
+}
+
 /**
  * Today's spend (title bar meter → this popover, spec §7): the total against the daily limit
  * (changed in place), one bar per conversation tree (the top 8, press to open it) and the
@@ -115,7 +120,7 @@ function CostContents({ onOpenTree }: { onOpenTree: () => void }) {
             <li key={r.key} className="px-2 py-1">
               <SpendBar
                 icon={<Cpu size={12} strokeWidth={1.75} className="text-fg-3" aria-hidden />}
-                label={r.label}
+                label={modelName(r.label)}
                 usd={r.usd}
                 max={max}
                 muted

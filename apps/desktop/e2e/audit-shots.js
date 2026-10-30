@@ -3,7 +3,7 @@
 // missing control is logged and the sequence goes on, so one UI change never hides the other
 // screens. File names are stable so every track can find its own screen.
 //
-//   00-onboarding           first run
+//   00-first-run            first run (the empty home, 試してみる)
 //   01-home-empty           the empty home
 //   10-home-1440            home, 1440x900 (3 trees, 10+ children, attention on top)
 //   11-home-1280            home, 1280x800
@@ -106,10 +106,12 @@ export async function shoot({ url, out, theme, build }) {
 
   // ------------------------------------------------------------------ empty app
   await page.goto(url);
-  await step('onboarding', async () => {
-    await page.getByRole('dialog', { name: 'はじめに' }).waitFor({ timeout: 20_000 });
+  // First run (ui-rework spec §3.4): no setup screen, the empty home with its examples and 試してみる.
+  await step('first run', async () => {
+    await page.getByRole('textbox', { name: '何を頼みますか' }).waitFor({ timeout: 20_000 });
+    await page.getByRole('button', { name: '試してみる' }).waitFor({ timeout: 20_000 });
     await pause(800);
-    await snap('00-onboarding');
+    await snap('00-first-run');
   });
   // Skip the first-run screen the way a returning user would have.
   await page.evaluate((initial) => {

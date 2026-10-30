@@ -7,6 +7,8 @@ import {
   type ConversationBlock,
   buildBaseBlocks,
   describeControlCall,
+  spawnRequest,
+  spawnedSessionId,
   stripMachineBlocks,
   toConversationBlocks,
   toolMethod,
@@ -76,14 +78,59 @@ describe('conversation blocks', () => {
   it('rephrases control calls and keeps the mapped row while its block is unchanged', () => {
     const m = message(s, {
       role: 'assistant',
-      content: [{ type: 'tool_call', toolCallId: 't1', name: 'mcp__acc__session__spawn', input: { title: 'FAQ' } }],
+      content: [{ type: 'tool_call', toolCallId: 't1', name: 'mcp__acc__artifact_publish', input: { title: 'FAQ' } }],
     });
     const prev = new Map<string, ChatBlock>();
     const cache = new WeakMap<ChatBlock, ConversationBlock>();
     const first = toConversationBlocks(stabilizeBlocks(prev, buildBaseBlocks({ ...base, messages: [m] })), cache);
     const tools = first[0]!;
-    expect(tools.kind === 'tools' && tools.calls[0]!.desc.label).toBe('「FAQ」に依頼');
+    expect(tools.kind === 'tools' && tools.calls[0]!.desc.label).toBe('「FAQ」を提出');
     const again = toConversationBlocks(stabilizeBlocks(prev, buildBaseBlocks({ ...base, messages: [m] })), cache);
     expect(again[0]).toBe(tools);
+  });
+});
+
+describe('the plan (ui-rework spec §4.1)', () => {
+  it('turns a block with spawns into the plan: the children, the reason, the other calls apart', () => {
+    const goal = '質問を 5 つ\n\n```acc-mock\n{}\n```';
+    const m = message(s, {
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool_call',
+          toolCallId: 't1',
+          name: 'mcp__acc__session__spawn',
+          input: { title: 'FAQ', goal, doneWhen: ['5 組ある'], workspace: { kind: 'worktree', projectId: 'prj_1' }, budgetUsd: 1 },
+        },
+        { type: 'tool_call', toolCallId: 't2', name: 'mcp__acc__session__spawn', input: { title: '告知文', goal: '300 字' } },
+        {
+          type: 'tool_call',
+          toolCallId: 't3',
+          name: 'mcp__acc__orchestrator_recordDecision',
+          input: { decision: '2 人', rationale: '待ち合わせがないので同時に。' },
+        },
+        { type: 'tool_call', toolCallId: 't4', name: 'mcp__acc__session__tree', input: {} },
+      ],
+    });
+    const result = message(s, {
+      role: 'tool',
+      content: [{ type: 'tool_result', toolCallId: 't1', output: JSON.stringify({ session: { id: 'ses_kid' }, runId: null }), isError: false }],
+      createdAt: iso(T0 + 1000),
+    });
+    const blocks = toConversationBlocks(buildBaseBlocks({ ...base, messages: [m, result] }), new WeakMap());
+    const plan = blocks.find((b) => b.kind === 'plan');
+    if (!plan || plan.kind !== 'plan') throw new Error('no plan block');
+    expect(plan.spawns.map((c) => c.id)).toEqual(['t1', 't2']);
+    expect(plan.rationale).toBe('待ち合わせがないので同時に。');
+    expect(plan.rest.map((c) => c.desc.label)).toEqual(['状況を確認']);
+    expect(spawnRequest(plan.spawns[0]!.input)).toEqual({
+      title: 'FAQ',
+      goal: '質問を 5 つ',
+      doneWhen: ['5 組ある'],
+      workspace: 'worktree',
+      budgetUsd: 1,
+    });
+    expect(spawnedSessionId(plan.spawns[0]!.output)).toBe('ses_kid');
+    expect(spawnedSessionId(plan.spawns[1]!.output)).toBeNull();
   });
 });

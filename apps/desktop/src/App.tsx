@@ -68,8 +68,8 @@ export function App() {
               {sidebarOpen && !narrow && <Sidebar />}
               <main
                 // min-w = MAIN_MIN_WIDTH (outputs/model.ts): the panel floats once this would not fit.
-                className="relative flex min-w-[480px] flex-1 flex-col overflow-hidden border-t border-l border-line-subtle bg-canvas"
-                style={{ borderTopLeftRadius: sidebarOpen && !narrow ? 10 : 0 }}
+                // No line between the wings and the stage: the ground steps up (ui-rework spec §1.2).
+                className="relative flex min-w-[480px] flex-1 flex-col overflow-hidden bg-canvas"
               >
                 <ReconnectBanner />
                 <ModeView />

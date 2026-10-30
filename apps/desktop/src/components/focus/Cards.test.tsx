@@ -5,7 +5,7 @@ import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
 import { approval, card, iso, run, session, T0 } from '../../test/fixtures';
 import { TooltipProvider } from '../ui/Tooltip';
-import { ApprovalLine, BriefCard, WakeCard, pathTail } from './Cards';
+import { ApprovalLine, BriefCard, PlanCard, WakeCard, pathTail } from './Cards';
 
 function wrap(node: React.ReactNode) {
   return render(
@@ -72,5 +72,54 @@ describe('pathTail', () => {
   it('names a folder by its last segment', () => {
     expect(pathTail('C:\\work\\market\\')).toBe('market');
     expect(pathTail('/home/me/docs')).toBe('docs');
+  });
+});
+
+describe('<PlanCard>', () => {
+  it('lists each child with its live state and request; a row goes to the child', () => {
+    const kid = card({ id: 'ses_kid', title: 'FAQ を書く', state: 'needs_you', parentId: 'ses_root', depth: 1 });
+    const other = card({ title: '告知文', state: 'working', parentId: 'ses_root', depth: 1 });
+    const call = (id: string, input: unknown, output: unknown = null) => ({
+      id,
+      name: 'mcp__acc__session__spawn',
+      input,
+      output,
+      done: output != null,
+      isError: false,
+      desc: { category: 'control' as const, label: '', activity: '', target: null, additions: null, deletions: null },
+      at: iso(T0),
+      endedAt: null,
+      decision: null,
+    });
+    wrap(
+      <PlanCard
+        rationale="互いに待ち合わせずに進められる作業なので、同時に任せます。"
+        spawns={[
+          call(
+            't1',
+            { title: 'FAQ', goal: '質問 5 つと回答', doneWhen: ['5 組ある'], workspace: { kind: 'worktree', projectId: 'p' } },
+            JSON.stringify({ session: { id: 'ses_kid' } }),
+          ),
+          call('t2', { title: '告知文', goal: '300 字程度' }),
+          call('t3', { title: 'まだ', goal: '…' }),
+        ]}
+        children={[kid, other]}
+      />,
+    );
+    const plan = screen.getByRole('region', { name: '計画' });
+    expect(plan).toHaveTextContent('3 人に任せる');
+    expect(plan).toHaveTextContent('互いに待ち合わせずに');
+    const rows = within(plan).getAllByRole('listitem');
+    expect(rows).toHaveLength(3);
+    // Row 1 found its child by the spawn result (title from the tree), row 2 by title, row 3 is still queued.
+    expect(within(rows[0]!).getByRole('img', { name: 'あなたの出番' })).toBeInTheDocument();
+    expect(rows[0]).toHaveTextContent('FAQ を書く');
+    expect(rows[0]).toHaveTextContent('質問 5 つと回答');
+    expect(within(rows[0]!).getByRole('img', { name: 'コード' })).toBeInTheDocument();
+    expect(within(rows[1]!).getByRole('img', { name: '作業中' })).toBeInTheDocument();
+    expect(within(rows[2]!).getByRole('img', { name: '順番待ち' })).toBeInTheDocument();
+    expect(within(rows[2]!).getByRole('button')).toBeDisabled();
+    fireEvent.click(within(rows[0]!).getByRole('button'));
+    expect(useUi.getState().focusSessionId).toBe('ses_kid');
   });
 });

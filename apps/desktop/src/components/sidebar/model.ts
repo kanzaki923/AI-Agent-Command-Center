@@ -78,6 +78,13 @@ export interface SidebarGroup {
   /** null: conversations without a project (shown first, without a heading). */
   project: Project | null;
   trees: TreeNode[];
+  /** No heading: the project's one tree carries the project's own name (ui-rework spec §5). */
+  quiet?: boolean;
+}
+
+/** A project heading that would only repeat its single tree's title says nothing. */
+export function quietGroup(project: Project, trees: readonly TreeNode[]): boolean {
+  return trees.length === 1 && trees[0]!.session.title.trim() === project.name.trim();
 }
 
 /** Group key of a tree, for the reorder hold (a tree moving between groups is held too). */
@@ -106,7 +113,12 @@ export function groupTrees(
     byKey.set(k, list);
   }
   const groups: SidebarGroup[] = [{ project: null, trees: byKey.get('') ?? [] }];
-  if (grouped) for (const p of projects) groups.push({ project: p, trees: byKey.get(p.id) ?? [] });
+  if (grouped) {
+    for (const p of projects) {
+      const list = byKey.get(p.id) ?? [];
+      groups.push({ project: p, trees: list, ...(quietGroup(p, list) ? { quiet: true } : {}) });
+    }
+  }
   return { groups, older: byKey.get('older') ?? [] };
 }
 

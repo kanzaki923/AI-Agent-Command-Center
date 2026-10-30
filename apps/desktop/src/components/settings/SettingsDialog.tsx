@@ -86,6 +86,8 @@ export function SettingsDialog() {
   const setTheme = useUi((s) => s.setTheme);
   const reduceMotion = useUi((s) => s.reduceMotion);
   const setReduceMotion = useUi((s) => s.setReduceMotion);
+  const glass = useUi((s) => s.glass);
+  const setGlass = useUi((s) => s.setGlass);
   const settings = useSettings().data;
   const models = useModels();
   const [editing, setEditing] = useState(false);
@@ -155,6 +157,11 @@ export function SettingsDialog() {
           </span>
           <Segmented<MotionPref> label="動きを減らす" value={reduceMotion} options={MOTION_OPTIONS} onChange={setReduceMotion} />
         </FieldRow>
+        {isTauri() && (
+          <FieldRow label="透け">
+            <Segmented<'on' | 'off'> label="透け" value={glass} options={ON_OFF} onChange={setGlass} />
+          </FieldRow>
+        )}
       </Group>
       <div className="border-t border-line-subtle">
         <button

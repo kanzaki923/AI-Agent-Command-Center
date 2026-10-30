@@ -1,16 +1,22 @@
 import type { Project, WorkspaceSpec } from '@acc/protocol';
-import { ChevronDown, Diamond, MessageSquare } from 'lucide-react';
+import { ChevronDown, Diamond, Loader2, MessageSquare, Play } from 'lucide-react';
 import { useState } from 'react';
+import { promptConnectionThen } from '../../app/connect';
+import { startDemo } from '../../app/demo';
 import { startConversation } from '../../daemon/actions';
-import { useProjects } from '../../daemon/queries';
+import { useMethods, useProjects, useSettings } from '../../daemon/queries';
 import { useRuntime } from '../../daemon/runtime';
 import { cn } from '../../lib/cn';
 import { WORKSPACE_META, type WorkspaceKind } from '../../lib/states';
 import { useUi } from '../../store/ui';
+import { Button } from '../ui/Button';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu';
 import { Tooltip } from '../ui/Tooltip';
 
 const NO_PROJECTS: Project[] = [];
+
+/** What a request can look like (ui-rework spec §3.4): examples under the empty home's field, not explanations. */
+export const EXAMPLES = ['来月のローンチ準備を進めて', 'ログイン画面のエラー文言とテストを直して', '毎朝 9 時に昨日のまとめを作って'];
 
 /** Projects a workspace kind can use: a folder needs a folder, code a git repository. */
 function candidates(projects: readonly Project[], kind: WorkspaceKind): Project[] {
@@ -27,44 +33,74 @@ export function workspaceSpec(kind: WorkspaceKind, project: Project | null): Wor
 }
 
 /**
- * 何を頼みますか (spec §3.1–3.2): the home screen's one-line request. Enter starts a new
- * conversation and stays on home; Ctrl+Enter starts it and opens it. The diamond makes it
- * delegated from the start (create → delegate → send). The empty home (`center`) is this
- * field alone in the middle, a little larger; elsewhere it sits at the bottom. The workspace
- * toggle (none / folder / code) picks where the work happens.
+ * 何を頼みますか (ui-rework spec §3.3–3.4): the one way to ask for something. At the bottom of
+ * home it is a line; Enter starts a conversation and stays home, Ctrl+Enter opens it. In the
+ * middle (`center`: the empty home and Ctrl+N) it is larger, 任せる is on from the start,
+ * examples cycle under it and 試してみる starts the demo. `open` always opens the new
+ * conversation (Ctrl+N). The first real request without a saved LLM endpoint brings up the
+ * connection prompt first; the request goes once it closes.
  */
-export function HomeComposer({ center = false }: { center?: boolean }) {
+export function HomeComposer({
+  center = false,
+  open = false,
+  draftKey,
+  demo = center,
+}: {
+  center?: boolean;
+  /** Open the conversation after sending (the draft screen). */
+  open?: boolean;
+  /** Keep the text in the UI store under this key (survives leaving the screen). */
+  draftKey?: string;
+  /** Offer 試してみる (the demo) under the field. */
+  demo?: boolean;
+}) {
   const rt = useRuntime();
-  const projects = useProjects().data ?? NO_PROJECTS;
+  const projects = (useProjects().data ?? NO_PROJECTS).filter((p) => !p.archivedAt);
+  const settings = useSettings().data;
+  const methods = useMethods();
   const uiProjectId = useUi((s) => s.projectId);
-  const [text, setText] = useState('');
-  const [delegate, setDelegate] = useState(false);
+  const stored = useUi((s) => (draftKey ? (s.drafts[draftKey] ?? '') : ''));
+  const setDraft = useUi((s) => s.setDraft);
+  const [local, setLocal] = useState('');
+  const text = draftKey ? stored : local;
+  const setText = (t: string) => (draftKey ? setDraft(draftKey, t) : setLocal(t));
+  const [delegate, setDelegate] = useState(center);
   const [kind, setKind] = useState<WorkspaceKind>('none');
   const [pickedProjectId, setPickedProjectId] = useState<string | null>(null);
+  const [preparing, setPreparing] = useState(false);
 
   // The project the workspace comes from: the one picked here, else the current one, else the first that fits.
   const fits = candidates(projects, kind);
   const project =
     fits.find((p) => p.id === pickedProjectId) ?? fits.find((p) => p.id === uiProjectId) ?? fits[0] ?? null;
 
-  const send = async (open: boolean) => {
+  const send = async (openIt: boolean) => {
     const t = text.trim();
     if (!t) return;
-    setText('');
-    const workspace = workspaceSpec(kind, project);
-    const s = await startConversation(rt, {
-      text: t,
-      projectId: workspace ? project!.id : uiProjectId,
-      ...(workspace ? { workspace } : {}),
-      delegate,
-    });
-    if (!s) {
-      // Nothing was started: give the words back.
-      setText((cur) => cur || t);
-      return;
-    }
-    setDelegate(false);
-    if (open) useUi.getState().openSession(s.id);
+    const go = async () => {
+      setText('');
+      const workspace = workspaceSpec(kind, project);
+      const s = await startConversation(rt, {
+        text: t,
+        projectId: workspace ? project!.id : uiProjectId,
+        ...(workspace ? { workspace } : {}),
+        delegate,
+      });
+      if (!s) {
+        // Nothing was started: give the words back.
+        setText(t);
+        return;
+      }
+      setDelegate(center);
+      if (openIt) useUi.getState().openSession(s.id);
+    };
+    if (!promptConnectionThen(settings, () => void go())) await go();
+  };
+
+  const tryDemo = () => {
+    if (preparing) return;
+    setPreparing(true);
+    void startDemo(rt, methods).finally(() => setPreparing(false));
   };
 
   const toggle = (
@@ -81,8 +117,8 @@ export function HomeComposer({ center = false }: { center?: boolean }) {
   const field = (
     <div
       className={cn(
-        'flex min-w-0 items-center gap-1 rounded-md border border-line bg-surface pr-1.5 pl-1.5 focus-within:border-[var(--focus-ring)]',
-        center ? 'h-12 w-full' : 'h-10 flex-1',
+        'flex min-w-0 items-center gap-1 rounded-md border border-transparent bg-surface pr-1.5 pl-1.5 focus-within:border-[var(--focus-ring)]',
+        center ? 'h-12 w-full' : 'h-11 flex-1',
       )}
     >
       <Tooltip content="任せる">
@@ -111,21 +147,54 @@ export function HomeComposer({ center = false }: { center?: boolean }) {
           if (e.nativeEvent.isComposing || e.keyCode === 229) return;
           if (e.key === 'Enter') {
             e.preventDefault();
-            void send(e.ctrlKey || e.metaKey);
+            void send(open || e.ctrlKey || e.metaKey);
           }
         }}
         className={cn('h-full min-w-0 flex-1 bg-transparent px-1 text-fg placeholder:text-fg-4', center ? 'text-[15px]' : 'text-chat')}
       />
-      {!center && toggle}
+      {!center && projects.length > 0 && toggle}
     </div>
   );
 
   if (!center) return field;
-  // The empty home: the field, and where the work happens right under it.
+  // The middle of an empty screen: the field, examples of what to ask, where the work happens, and the demo.
   return (
-    <div className="flex w-full flex-col items-center gap-3">
+    <div className="flex w-full flex-col items-center gap-3" data-composer-center>
       {field}
-      {toggle}
+      <Examples />
+      {projects.length > 0 && toggle}
+      {demo && (
+        <Button
+          variant="ghost"
+          size="md"
+          className="mt-4"
+          disabled={preparing}
+          onClick={tryDemo}
+          icon={preparing ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} strokeWidth={1.75} />}
+        >
+          試してみる
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Three examples take turns (4s each, 180ms cross-fade) by CSS alone; with reduced motion the
+ * first one stays. Decoration for the eye: hidden from assistive tech.
+ */
+function Examples() {
+  return (
+    <div aria-hidden className="relative h-5 w-full" data-examples>
+      {EXAMPLES.map((e, i) => (
+        <span
+          key={e}
+          className="acc-example absolute inset-x-0 top-0 truncate text-center text-ui text-fg-3"
+          style={{ animationDelay: `${i * 4}s` }}
+        >
+          {e}
+        </span>
+      ))}
     </div>
   );
 }
@@ -180,7 +249,7 @@ function WorkspaceToggle({
           </MenuContent>
         </Menu>
       )}
-      <span role="radiogroup" aria-label="作業場所" className={cn('flex items-center rounded-sm p-0.5', large ? 'gap-0.5 border border-line-subtle bg-surface' : 'bg-canvas')}>
+      <span role="radiogroup" aria-label="作業場所" className={cn('flex items-center rounded-sm p-0.5', large ? 'gap-0.5 bg-surface' : 'bg-canvas')}>
         {KINDS.map(({ kind: k, label }) => {
           const Icon = k === 'none' ? MessageSquare : WORKSPACE_META[k].icon;
           const none = k !== 'none' && candidates(projects, k).length === 0;

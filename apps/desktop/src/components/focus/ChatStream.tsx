@@ -16,6 +16,7 @@ import {
   useToolDecisionHistory,
 } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
+import { treeRelations, useSessionTree } from '../../daemon/tree';
 import type { ChatMessage } from '../../daemon/sync';
 import type { StickToBottom } from '../../hooks/useStickToBottom';
 import { cn } from '../../lib/cn';
@@ -32,7 +33,7 @@ import { CopyButton } from '../ui/CopyButton';
 import { Kbd } from '../ui/Kbd';
 import { Skeleton, TimeStamp } from '../ui/Meta';
 import { Tooltip } from '../ui/Tooltip';
-import { ApprovalLine, BriefCard, FromLine, WakeCard } from './Cards';
+import { ApprovalLine, BriefCard, FromLine, PlanCard, WakeCard } from './Cards';
 import { type ConversationBlock, buildBaseBlocks, stripMachineBlocks, toConversationBlocks } from './conversation';
 import { Markdown } from './Markdown';
 import { ToolGroup } from './ToolBlocks';
@@ -216,7 +217,7 @@ function Reasoning({ text, live = false }: { text: string; live?: boolean }) {
         <span className="text-fg-3 tabular">· {chars.toLocaleString()} 文字</span>
       </button>
       {open && (
-        <div className="selectable mt-1 border-l-2 border-line pl-3 text-ui whitespace-pre-wrap text-fg-3">
+        <div className="selectable mt-1 rounded-md bg-surface px-3 py-2 text-ui whitespace-pre-wrap text-fg-3">
           {text}
           {live && <span className="acc-caret" aria-hidden="true" />}
         </div>
@@ -333,6 +334,19 @@ function Brief({ block }: { block: ConversationBlock & { kind: 'brief' } }) {
   return <BriefCard brief={block.brief} card={card} workspaceId={session?.workspaceId ?? null} />;
 }
 
+/** The plan card reads the conversation's children from its tree (live states). */
+function Plan({ block }: { block: ConversationBlock & { kind: 'plan' } }) {
+  const { session } = use(ConversationContext);
+  const tree = useSessionTree(session?.id).data;
+  const children = treeRelations(tree, session?.id).children;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <PlanCard spawns={block.spawns} rationale={block.rationale} children={children} />
+      {block.rest.length > 0 && <ToolGroup calls={block.rest} />}
+    </div>
+  );
+}
+
 const Block = memo(function Block({ block, editableId }: { block: ConversationBlock; editableId: string | null }) {
   switch (block.kind) {
     case 'user':
@@ -341,6 +355,8 @@ const Block = memo(function Block({ block, editableId }: { block: ConversationBl
       return <Brief block={block} />;
     case 'wake':
       return <WakeCard items={block.items} />;
+    case 'plan':
+      return <Plan block={block} />;
     case 'assistant':
       return <AssistantBlock block={block} />;
     case 'tools':
@@ -467,7 +483,11 @@ export function ChatStream({
   const virt = useVirtualizer({
     count: blocks.length,
     getScrollElement: stick.getElement,
-    estimateSize: (i) => (blocks[i]?.kind === 'tools' || blocks[i]?.kind === 'wake' ? 34 : 96),
+    estimateSize: (i) => {
+      const b = blocks[i];
+      if (b?.kind === 'plan') return 52 + b.spawns.length * 32;
+      return b?.kind === 'tools' || b?.kind === 'wake' ? 34 : 96;
+    },
     getItemKey: (i) => blocks[i]?.id ?? i,
     overscan: 8,
   });

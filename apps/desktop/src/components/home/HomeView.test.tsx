@@ -30,7 +30,7 @@ function scene() {
   const faq = card({ parentId: root.id, depth: 1, title: 'FAQ', state: 'needs_you' });
   const research = card({ parentId: root.id, depth: 1, title: '競合調査', state: 'working', now: 'pricing.md を参照' });
   const mail = card({ parentId: root.id, depth: 1, title: '告知メール', state: 'working' });
-  const press = card({ parentId: root.id, depth: 1, title: 'プレスリリース', state: 'done' });
+  const press = card({ parentId: root.id, depth: 1, title: 'プレスリリース', state: 'done', stateSince: new Date(Date.now() - 120_000).toISOString(), outputs: [{ id: 'art_press', kind: 'document', title: 'プレスリリース（案）' }] });
   const q = attention({ id: faq.id, rootSessionId: root.id }, { title: '価格を載せる？', choices: [
     { id: 'yes', label: '載せる', tone: 'primary' },
     { id: 'later', label: '発売時に案内', tone: 'neutral' },
@@ -52,7 +52,11 @@ function scene() {
   const snap = homeSnapshot({
     attention: [ok, q],
     trees: [
-      homeTree(root, [research, faq, mail, press], { counts: { ...counts, working: 2, needsYou: 1, done: 1 } }),
+      homeTree(root, [research, faq, mail, press], {
+        counts: { ...counts, working: 2, needsYou: 1, done: 1 },
+        goal: '来月 20 日に新製品を出す。準備を進めて',
+        spend: { treeUsd: 0.8, limitUsd: 3.4, committedUsd: 1.2, estimated: false },
+      }),
       homeTree(chat, [], { counts: { ...counts, working: 1 } }),
       homeTree(morning, [firing], { counts: { ...counts, done: 2 }, nextRunAt: new Date(Date.now() + 3_600_000).toISOString() }),
     ],
@@ -69,7 +73,7 @@ const setSnap = (rt: AppRuntime, snap: HomeSnapshot) => act(() => void rt.queryC
 
 const press = (key: string, target: Element | Document = document.body) => act(() => void fireEvent.keyDown(target, { key }));
 
-beforeEach(() => useUi.setState({ mode: 'home', focusSessionId: null, selectedId: null, projectId: null }));
+beforeEach(() => useUi.setState({ mode: 'home', focusSessionId: null, selectedId: null, projectId: null, onboardingDone: true }));
 
 describe('<HomeView>', () => {
   it('shows attention on top, then each tree: chips by state priority with a state band', async () => {
@@ -80,6 +84,18 @@ describe('<HomeView>', () => {
     const lane = screen.getByRole('region', { name: 'ローンチ準備' });
     expect(chipsIn(lane).map((c) => c.getAttribute('data-state'))).toEqual(['needs_you', 'working', 'working', 'done']);
     expect(within(lane).getByRole('img', { name: 'あなたの出番 1、作業中 2、完了 1' })).toHaveAttribute('data-state-band');
+    // The human's words under the heading, progress at the right; spend stays in the tooltip under half the budget.
+    expect(within(lane).getByText('来月 20 日に新製品を出す。準備を進めて')).toBeInTheDocument();
+    expect(within(lane).getByLabelText('進み具合')).toHaveTextContent('1 / 4');
+    expect(within(lane).queryByRole('meter')).toBeNull();
+    // What came out of the trees, as a strip above the lanes; a card opens its conversation.
+    const made = screen.getByRole('region', { name: 'できたもの' });
+    expect(within(made).getByText('プレスリリース（案）')).toBeInTheDocument();
+    expect(made).toHaveTextContent('ローンチ準備');
+    fireEvent.click(within(made).getByRole('button'));
+    expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: s.press.id });
+    act(() => useUi.getState().goHome());
+    expect(within(lane).getByRole('img', { name: 'あなたの出番 1、作業中 2、完了 1' })).toHaveAttribute('aria-description', '費用 $0.80 / $3.40');
     fireEvent.click(chipsIn(lane)[1]!);
     expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: s.research.id });
   });
@@ -208,6 +224,11 @@ describe('<HomeView>', () => {
     });
     const input = await screen.findByRole('textbox', { name: '何を頼みますか' });
     expect(screen.queryByRole('region')).toBeNull();
+    // The empty home offers the demo and has 任せる on; this one is a plain question.
+    expect(screen.getByRole('button', { name: '試してみる' })).toBeInTheDocument();
+    const toggle = screen.getByRole('button', { name: '任せる' });
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(toggle);
     fireEvent.change(input, { target: { value: '競合を調べて' } });
     fireEvent.keyDown(input, { key: 'Enter' });
     await vi.waitFor(() => expect(fake.calls.map((c) => c.method)).toContain('session.send'));
@@ -227,14 +248,13 @@ describe('<HomeView>', () => {
     });
     const input = await screen.findByRole('textbox', { name: '何を頼みますか' });
     const toggle = screen.getByRole('button', { name: '任せる' });
-    fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-pressed', 'true');
     fireEvent.change(input, { target: { value: 'ローンチの準備' } });
     fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true });
     await vi.waitFor(() => expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: s.id }));
     const methods = fake.calls.map((c) => c.method).filter((m) => m.startsWith('session.') && m !== 'session.messages');
     expect(methods).toEqual(['session.create', 'session.delegate', 'session.send']);
-    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('コード works in a worktree of a repository project', async () => {
@@ -249,8 +269,10 @@ describe('<HomeView>', () => {
     });
     const input = await screen.findByRole('textbox', { name: '何を頼みますか' });
     await vi.waitFor(() => expect(fake.calls.map((c) => c.method)).toContain('project.list'));
+    // Plain work on the code, not delegated.
+    fireEvent.click(screen.getByRole('button', { name: '任せる' }));
     // No folder project: フォルダ cannot be chosen.
-    fireEvent.click(screen.getByRole('radio', { name: 'フォルダ' }));
+    fireEvent.click(await screen.findByRole('radio', { name: 'フォルダ' }));
     expect(screen.getByRole('radio', { name: '作業場所なし' })).toHaveAttribute('aria-checked', 'true');
     await vi.waitFor(() => {
       fireEvent.click(screen.getByRole('radio', { name: 'コード' }));

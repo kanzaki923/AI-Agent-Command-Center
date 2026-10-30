@@ -232,7 +232,11 @@ export function buildHomeSnapshot(ctx: DaemonContext, p: Params<'home.get'>): Ho
 
     const cardIds = drafts.flatMap((t) => [t.root.id, ...t.shown.map((n) => n.session.id)]);
     const facts = readCardFacts(ctx, cardIds, openAttention);
-    const trees: HomeTree[] = drafts.map((t) => toTree(t, facts));
+    const goals = readGoals(
+      ctx,
+      drafts.map((t) => t.root.id),
+    );
+    const trees: HomeTree[] = drafts.map((t) => toTree(t, facts, goals.get(t.root.id) ?? null));
 
     const stateCounts = new Map(
       ctx.db
@@ -268,10 +272,60 @@ export function buildHomeSnapshot(ctx: DaemonContext, p: Params<'home.get'>): Ho
   });
 }
 
-function toTree(t: TreeDraft, facts: CardFacts): HomeTree {
+const GOAL_MAX = 200;
+
+/** The first line of a message's text, machine blocks (```acc-mock …```) removed, cut to GOAL_MAX. */
+export function goalLine(text: string): string | null {
+  const clean = text.replace(/```acc-mock[^\n]*\n[\s\S]*?(?:```|$)/g, '');
+  const line = clean
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  if (!line) return null;
+  return line.length > GOAL_MAX ? `${line.slice(0, GOAL_MAX - 1)}…` : line;
+}
+
+/**
+ * What each tree is for (ui-rework spec §3.1): the human's first message to its root, one
+ * query for every root. Roots nobody wrote to (a schedule's, a demo's) have none.
+ */
+function readGoals(ctx: DaemonContext, rootIds: readonly string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  if (rootIds.length === 0) return out;
+  const rows = inChunks(rootIds, (ids) =>
+    ctx.db.all<{ session_id: string; data: string }>(
+      `SELECT session_id, data FROM (
+         SELECT session_id, data, ROW_NUMBER() OVER (
+           PARTITION BY session_id ORDER BY created_at ASC, id ASC) AS rn
+         FROM messages
+         WHERE session_id IN (${ids.map(() => '?').join(', ')})
+           AND json_extract(data, '$.role') = 'user'
+           AND json_extract(data, '$.author.kind') = 'human'
+       ) WHERE rn = 1`,
+      ids,
+    ),
+  );
+  for (const row of rows) {
+    try {
+      const msg = JSON.parse(row.data) as { content?: { type: string; text?: string }[] };
+      const text = (msg.content ?? [])
+        .filter((p) => p.type === 'text' && typeof p.text === 'string')
+        .map((p) => p.text as string)
+        .join('\n');
+      const line = goalLine(text);
+      if (line) out.set(row.session_id, line);
+    } catch {
+      // A malformed row never breaks the home screen.
+    }
+  }
+  return out;
+}
+
+function toTree(t: TreeDraft, facts: CardFacts, goal: string | null): HomeTree {
   const rootBudget = facts.budgets.get(t.root.id);
   return {
     root: toCard(t.root, 0, facts),
+    goal,
     nodes: t.shown.map((n) => toCard(n.session, n.depth, facts)),
     hiddenNodes: t.hiddenNodes,
     counts: t.counts,

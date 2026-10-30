@@ -1,10 +1,10 @@
 import type { SettingsView } from '@acc/protocol';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { promptConnectionThen, unconfigured } from '../../app/connect';
 import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
-import { card, session } from '../../test/fixtures';
 import { TooltipProvider } from '../ui/Tooltip';
 import { Onboarding } from './Onboarding';
 
@@ -16,9 +16,8 @@ const EMPTY: SettingsView = {
   maxDelegationDepth: 1,
 };
 
-function mount(over: Parameters<typeof createFakeClient>[0] = {}, sessions = 0) {
+function mount(over: Parameters<typeof createFakeClient>[0] = {}) {
   let settings = EMPTY;
-  const demo = session({ kind: 'chat', title: 'デモ: 新製品ローンチ準備' });
   const fake = createFakeClient({
     'settings.get': () => settings,
     'settings.update': (p) => {
@@ -26,11 +25,7 @@ function mount(over: Parameters<typeof createFakeClient>[0] = {}, sessions = 0) 
       if (l?.baseUrl) settings = { ...settings, litellm: { baseUrl: l.baseUrl, hasApiKey: true, apiKeyMasked: 'sk-…1234' } };
       return settings;
     },
-    'session.list': () => ({ items: Array.from({ length: sessions }, () => session()), nextCursor: null }),
     'models.list': () => ({ models: [{ id: 'claude-sonnet', label: 'Claude Sonnet', provider: null }], source: 'litellm' }),
-    'system.setupDemo': () => ({ project: { id: 'prj_d' }, session: demo, grant: {}, repoPath: 'x', created: true }),
-    'session.tree': () => ({ rootSessionId: demo.id, nodes: [card({ id: demo.id, role: 'supervisor' })] }),
-    'session.spawn': () => ({ session: session(), runId: null, budgetId: null, waitingFor: [] }),
     ...over,
   });
   render(
@@ -40,61 +35,62 @@ function mount(over: Parameters<typeof createFakeClient>[0] = {}, sessions = 0) 
       </TooltipProvider>
     </RuntimeProvider>,
   );
-  return { fake, demo };
+  return { fake };
 }
 
 beforeEach(() => {
-  useUi.setState({ onboardingDone: false, mode: 'session', focusSessionId: null });
+  useUi.setState({ onboardingDone: false, connectPromptOpen: false, mode: 'home', focusSessionId: null });
 });
 
-describe('<Onboarding>', () => {
-  it('is one screen: the connection with 確かめる, or あとで (mock) — nothing to read', async () => {
+describe('the connection prompt (ui-rework spec §3.4)', () => {
+  it('is not a first-run screen: nothing shows until a real request is sent without an endpoint', () => {
     mount();
-    const dialog = await screen.findByRole('dialog', { name: 'はじめに' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(unconfigured(EMPTY)).toBe(true);
+    expect(unconfigured({ ...EMPTY, litellm: { baseUrl: 'http://x', hasApiKey: false, apiKeyMasked: null } })).toBe(false);
+  });
+
+  it('opens on the first request, and あとで sends it on the mock and never asks again', async () => {
+    mount();
+    const go = vi.fn();
+    expect(promptConnectionThen(EMPTY, go)).toBe(true);
+    const dialog = await screen.findByRole('dialog', { name: '接続先' });
     expect(within(dialog).getByLabelText('LiteLLM Proxy の URL')).toBeInTheDocument();
-    expect(within(dialog).getByLabelText('API キー')).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '確かめる' })).toBeInTheDocument();
-    expect(within(dialog).getByRole('button', { name: 'あとで（モックで試す）' })).toBeInTheDocument();
-    expect(within(dialog).queryAllByText(/。/)).toHaveLength(0);
-    expect(dialog).not.toHaveTextContent(/Orchestrator|Worker|プロジェクト/);
-  });
-
-  it('あとで starts the demo: a delegated conversation with three mock children, then home', async () => {
-    const { fake, demo } = mount();
-    const later = await screen.findByRole('button', { name: 'あとで（モックで試す）' });
+    expect(go).not.toHaveBeenCalled();
     await act(async () => {
-      fireEvent.click(later);
+      fireEvent.click(within(dialog).getByRole('button', { name: 'あとで' }));
     });
-    await waitFor(() => expect(useUi.getState().onboardingDone).toBe(true));
-    expect(fake.calls.filter((c) => c.method === 'system.setupDemo')).toHaveLength(1);
-    const spawns = fake.calls.filter((c) => c.method === 'session.spawn').map((c) => c.params);
-    expect(spawns).toHaveLength(3);
-    for (const p of spawns) expect(p).toMatchObject({ parentSessionId: demo.id, mode: 'agent', runtime: 'mock' });
-    expect(useUi.getState().mode).toBe('home');
-    expect(screen.queryByRole('dialog', { name: 'はじめに' })).toBeNull();
+    expect(go).toHaveBeenCalledTimes(1);
+    expect(useUi.getState().onboardingDone).toBe(true);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    // Asked once: the next request goes straight through.
+    expect(promptConnectionThen(EMPTY, vi.fn())).toBe(false);
   });
 
-  it('stays open while connecting (saving the URL configures it) until 始める', async () => {
+  it('connecting (確かめる → 始める) sends the waiting request too', async () => {
     mount();
+    const go = vi.fn();
+    promptConnectionThen(EMPTY, go);
     const url = await screen.findByLabelText('LiteLLM Proxy の URL');
     fireEvent.change(url, { target: { value: 'http://localhost:4000' } });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: '確かめる' }));
     });
     expect(await screen.findByText('1 モデル')).toBeInTheDocument();
-    expect(screen.getByRole('dialog', { name: 'はじめに' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: '接続先' })).toBeInTheDocument();
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: '始める' }));
     });
     await waitFor(() => expect(useUi.getState().onboardingDone).toBe(true));
+    expect(go).toHaveBeenCalledTimes(1);
   });
 
-  it('does not show for someone who already uses the app', async () => {
-    const { fake } = mount({}, 2);
-    await waitFor(() => expect(fake.calls.some((c) => c.method === 'session.list')).toBe(true));
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 20));
-    });
-    expect(screen.queryByRole('dialog', { name: 'はじめに' })).toBeNull();
+  it('does not ask when an endpoint is saved, or when it was already answered', () => {
+    useUi.setState({ onboardingDone: true });
+    expect(promptConnectionThen(EMPTY, vi.fn())).toBe(false);
+    useUi.setState({ onboardingDone: false });
+    expect(promptConnectionThen({ ...EMPTY, litellm: { baseUrl: 'http://x', hasApiKey: true, apiKeyMasked: null } }, vi.fn())).toBe(false);
+    expect(useUi.getState().connectPromptOpen).toBe(false);
   });
 });

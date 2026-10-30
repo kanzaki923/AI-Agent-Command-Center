@@ -1,5 +1,5 @@
-import type { Attention, HomeSnapshot, HomeTree, SessionCard, SessionState } from '@acc/protocol';
-import { isSettled, sortByState } from '../../lib/states';
+import type { Attention, HomeSnapshot, HomeTree, OutputKind, SessionCard, SessionState } from '@acc/protocol';
+import { formatUsd, isSettled, sortByState } from '../../lib/states';
 
 /**
  * The shape of the home screen (spec §3.1) as plain data: which lanes in which order, which of
@@ -115,4 +115,53 @@ export const BAND_STATES: { state: SessionState; key: keyof HomeTree['counts'] }
 
 export function bandSegments(counts: HomeTree['counts']): { state: SessionState; n: number }[] {
   return BAND_STATES.map(({ state, key }) => ({ state, n: counts[key] })).filter((s) => s.n > 0);
+}
+
+/** Spend shows on the lane only past half the budget (ui-rework spec §3.1); the rest is in the band's tooltip. */
+export function showLaneCost(spend: HomeTree['spend']): boolean {
+  if (spend.limitUsd == null || spend.limitUsd <= 0) return false;
+  return Math.max(spend.treeUsd, spend.committedUsd ?? 0) / spend.limitUsd >= 0.5;
+}
+
+/** `費用 $2.77 / $3.40`, `費用 $0.35`, or null when nothing was spent. */
+export function costNote(spend: HomeTree['spend']): string | null {
+  const used = formatUsd(spend.treeUsd);
+  if (spend.limitUsd != null) {
+    const limit = Number.isInteger(spend.limitUsd) ? `$${spend.limitUsd}` : `$${spend.limitUsd.toFixed(2)}`;
+    return `費用 ${used ?? '$0'} / ${limit}`;
+  }
+  return used ? `費用 ${used}` : null;
+}
+
+/** The outputs of a tree's children by kind, most first. */
+export function outputCounts(nodes: readonly SessionCard[]): { kind: OutputKind; n: number }[] {
+  const counts = new Map<OutputKind, number>();
+  for (const n of nodes) for (const o of n.outputs) counts.set(o.kind, (counts.get(o.kind) ?? 0) + 1);
+  return [...counts.entries()].map(([kind, n]) => ({ kind, n })).sort((a, b) => b.n - a.n);
+}
+
+/** One finished piece of work on the home screen (ui-rework spec §3.2). */
+export interface HomeOutput {
+  id: string;
+  kind: OutputKind;
+  title: string;
+  /** The session that made it. */
+  session: SessionCard;
+  /** The tree it belongs to (its root's title names the lane). */
+  root: SessionCard;
+  /** Waiting for a decision (the session is in review). */
+  review: boolean;
+}
+
+/** できたもの: outputs of done / review sessions across every tree, newest state first, at most `max`. */
+export function homeOutputs(trees: readonly HomeTree[], max = 8): HomeOutput[] {
+  const out: HomeOutput[] = [];
+  for (const t of trees) {
+    for (const c of [t.root, ...t.nodes]) {
+      if (c.state !== 'done' && c.state !== 'review') continue;
+      for (const o of c.outputs) out.push({ id: o.id, kind: o.kind, title: o.title, session: c, root: t.root, review: c.state === 'review' });
+    }
+  }
+  out.sort((a, b) => (b.session.stateSince ?? '').localeCompare(a.session.stateSince ?? ''));
+  return out.slice(0, max);
 }

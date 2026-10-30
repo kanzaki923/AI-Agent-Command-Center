@@ -13,7 +13,8 @@ import { attentionKeyAction } from '../ui/AttentionRow';
 import { AttentionColumn } from './AttentionColumn';
 import { HomeComposer } from './HomeComposer';
 import { LAYOUT_SPRING, Lane } from './Lane';
-import { homeShape, navOrder, neighbourOf, stepSelection, visibleAttention } from './layout';
+import { homeOutputs, homeShape, navOrder, neighbourOf, stepSelection, visibleAttention } from './layout';
+import { OutputsStrip } from './OutputsStrip';
 import { useShapeHold } from './useShapeHold';
 
 /**
@@ -50,6 +51,7 @@ function Board({ trees, attention }: { trees: HomeTree[]; attention: Attention[]
   const attentionIds = shown.map((a) => a.id);
   const order = navOrder(attentionIds, hold.lanes);
   const treeById = new Map(trees.map((t) => [t.root.id, t]));
+  const outputs = homeOutputs(trees);
   const titles = new Map<string, string>();
   for (const t of trees) for (const c of [t.root, ...t.nodes]) titles.set(c.id, sessionTitle(c));
 
@@ -138,7 +140,10 @@ function Board({ trees, attention }: { trees: HomeTree[]; attention: Attention[]
           onRespond={respond}
           onShowAll={() => setAllAttention(true)}
         />
-        <div className={shown.length > 0 ? 'mt-5 flex flex-col' : 'flex flex-col'}>
+        <div className={shown.length > 0 ? 'mt-4' : ''}>
+          <OutputsStrip outputs={outputs} onOpen={openSession} />
+        </div>
+        <div className={shown.length > 0 || outputs.length > 0 ? 'mt-4 flex flex-col' : 'flex flex-col'}>
           {hold.lanes.map((shape, i) => {
             const tree = treeById.get(shape.id);
             if (!tree) return null;

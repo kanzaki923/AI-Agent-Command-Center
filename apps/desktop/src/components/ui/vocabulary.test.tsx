@@ -55,13 +55,35 @@ describe('<OutputIcon> / <RoleIcon>', () => {
 });
 
 describe('<SessionChip>', () => {
-  it('shows what it is doing now, the time in its state and its spend', () => {
+  it('shows what it is doing now and keeps the numbers off its face; breathes while working', () => {
     const c = card({ title: '競合調査', state: 'working', now: 'pricing.md を参照', costUsd: 0.214, stateSince: iso(Date.now() - 4 * 60_000) });
     wrap(<SessionChip card={c} />);
     const chip = screen.getByRole('button', { name: '競合調査（作業中）' });
     expect(chip).toHaveTextContent('pricing.md を参照');
-    expect(chip).toHaveTextContent('4分');
-    expect(chip).toHaveTextContent('$0.21');
+    expect(chip).not.toHaveTextContent('4分');
+    expect(chip).not.toHaveTextContent('$0.21');
+    expect(chip.className).toContain('acc-breathe-face');
+  });
+
+  it('says how long once one state has lasted over ten minutes while working', () => {
+    const c = card({ title: '長い', state: 'working', now: '統計を読み取り中', stateSince: iso(Date.now() - 12 * 60_000) });
+    wrap(<SessionChip card={c} />);
+    expect(screen.getByRole('button', { name: '長い（作業中）' })).toHaveTextContent('12分');
+  });
+
+  it('lights once when its work arrives (done / review)', () => {
+    const c = card({ title: '届く', state: 'working', now: '書いています' });
+    const { rerender, rt, container } = wrap(<SessionChip card={c} />);
+    expect(container.querySelector('.acc-arrive-once')).toBeNull();
+    rerender(
+      <RuntimeProvider runtime={rt}>
+        <TooltipProvider>
+          <SessionChip card={{ ...c, state: 'done', outputs: [{ id: 'art_9', kind: 'document', title: 'FAQ' }] }} />
+        </TooltipProvider>
+      </RuntimeProvider>,
+    );
+    expect(container.querySelector('.acc-arrive-once')).not.toBeNull();
+    expect(screen.getByRole('button', { name: '届く（完了）' })).toHaveTextContent('FAQ');
   });
 
   it('shows the attention it waits on in amber and gets a coloured frame', () => {
@@ -93,6 +115,7 @@ describe('<SessionChip>', () => {
     const d = screen.getByRole('button', { name: '完了（完了）' });
     expect(within(d).getByRole('img', { name: '文書' })).toBeInTheDocument();
     expect(d).toHaveTextContent('2');
+    expect(d).not.toHaveTextContent('FAQ');
     expect(screen.getByRole('button', { name: '確認（確認待ち）' })).toHaveTextContent('変更');
     fireEvent.click(d);
     expect(onOpen).toHaveBeenCalledWith(done.id);

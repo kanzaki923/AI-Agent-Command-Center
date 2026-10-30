@@ -12,12 +12,14 @@ import { App } from './App';
 import { installAttention } from './app/attention';
 import { getConnection } from './daemon/connection';
 import { RuntimeProvider, createRuntime, createStatusStore } from './daemon/runtime';
+import { glassAvailable } from './lib/platform';
 import { installThemeSync } from './lib/theme';
 import { useUi } from './store/ui';
 
 installThemeSync(
   () => useUi.getState(),
   (fn) => useUi.subscribe(fn),
+  glassAvailable,
 );
 
 const status = createStatusStore();

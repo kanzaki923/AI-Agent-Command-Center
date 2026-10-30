@@ -40,7 +40,7 @@ describe('workspaceFor', () => {
 });
 
 describe('<Draft> (Ctrl+N)', () => {
-  beforeEach(() => useUi.setState({ mode: 'session', focusSessionId: null, projectId: null, drafts: {} }));
+  beforeEach(() => useUi.setState({ mode: 'session', focusSessionId: null, projectId: null, drafts: {}, onboardingDone: true }));
 
   function mount(projects: Project[]) {
     const created = session({ kind: 'agent', title: '' });
@@ -60,16 +60,22 @@ describe('<Draft> (Ctrl+N)', () => {
     return { fake, created };
   }
 
-  it('creates nothing until the first send, then creates in the chosen project and place and opens it', async () => {
+  it('is the same field as the empty home, without the demo; the first send creates the conversation in the chosen place and opens it', async () => {
     const p = project();
     useUi.setState({ projectId: p.id });
     const { fake, created } = mount([p]);
     const input = screen.getByRole('textbox', { name: '何を頼みますか' });
-    expect(await screen.findByTestId('draft-project')).toHaveTextContent('acme-web');
+    expect(screen.queryByRole('button', { name: '試してみる' })).toBeNull();
+    // 任せる is on from the start here too; this request is plain work on the code.
+    const delegate = screen.getByRole('button', { name: '任せる' });
+    expect(delegate).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(delegate);
+    const code = await screen.findByRole('radio', { name: 'コード' });
     // The project has code but no folder.
-    expect(screen.getByRole('radio', { name: 'フォルダ' })).toBeDisabled();
-    fireEvent.click(screen.getByRole('radio', { name: 'コード' }));
-    expect(screen.getByRole('radio', { name: 'コード' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('radio', { name: 'フォルダ' })).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(code);
+    expect(code).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByText('acme-web')).toBeInTheDocument();
 
     fireEvent.change(input, { target: { value: 'ログイン画面を直して' } });
     expect(fake.calls.some((c) => c.method === 'session.create')).toBe(false);
@@ -81,6 +87,7 @@ describe('<Draft> (Ctrl+N)', () => {
       projectId: p.id,
       workspace: { kind: 'worktree', projectId: p.id },
     });
+    expect(fake.calls.map((c) => c.method)).not.toContain('session.delegate');
     expect(fake.calls.find((c) => c.method === 'session.send')?.params).toMatchObject({ content: 'ログイン画面を直して' });
     expect(useUi.getState().drafts[DRAFT_KEY]).toBeUndefined();
   });
@@ -88,7 +95,6 @@ describe('<Draft> (Ctrl+N)', () => {
   it('is only the input when there is no project', async () => {
     const { fake } = mount([]);
     await waitFor(() => expect(fake.calls.some((c) => c.method === 'project.list')).toBe(true));
-    expect(screen.queryByTestId('draft-project')).not.toBeInTheDocument();
     expect(screen.queryByRole('radiogroup', { name: '作業場所' })).not.toBeInTheDocument();
   });
 });

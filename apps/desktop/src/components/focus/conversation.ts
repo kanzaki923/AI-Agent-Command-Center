@@ -14,7 +14,69 @@ import { controlMethod, describeControlCall } from '../../lib/tools';
 export type ConversationBlock =
   | Exclude<ChatBlock, { kind: 'grant' }>
   | { kind: 'brief'; id: string; message: ChatMessage; brief: SessionBrief }
-  | { kind: 'wake'; id: string; message: ChatMessage; items: WakeItemView[] };
+  | { kind: 'wake'; id: string; message: ChatMessage; items: WakeItemView[] }
+  | {
+      /** The moment of delegation (ui-rework spec §4.1): the children a supervisor started. */
+      kind: 'plan';
+      id: string;
+      spawns: ToolCallView[];
+      /** The supervisor's reason (orchestrator.recordDecision), when it gave one. */
+      rationale: string | null;
+      /** Other calls of the same block, shown under the plan as usual. */
+      rest: ToolCallView[];
+    };
+
+/** What a spawn call asked for, read from its input. */
+export interface SpawnRequest {
+  title: string;
+  goal: string;
+  doneWhen: string[];
+  workspace: 'none' | 'folder' | 'worktree';
+  budgetUsd: number | null;
+}
+
+function asRecord(v: unknown): Record<string, unknown> {
+  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+}
+
+export function spawnRequest(input: unknown): SpawnRequest {
+  const o = asRecord(input);
+  const ws = asRecord(o.workspace);
+  const kind = ws.kind === 'folder' ? 'folder' : ws.kind === 'worktree' ? 'worktree' : 'none';
+  return {
+    title: typeof o.title === 'string' ? o.title : '',
+    goal: typeof o.goal === 'string' ? stripMachineBlocks(o.goal) : '',
+    doneWhen: Array.isArray(o.doneWhen) ? o.doneWhen.filter((d): d is string => typeof d === 'string') : [],
+    workspace: kind,
+    budgetUsd: typeof o.budgetUsd === 'number' ? o.budgetUsd : null,
+  };
+}
+
+/** The session a spawn call created, from its result (JSON text or object); null until it answered. */
+export function spawnedSessionId(output: unknown): string | null {
+  let v = output;
+  if (Array.isArray(v)) v = v.find((p) => p && typeof p === 'object' && 'text' in p);
+  if (v && typeof v === 'object' && 'text' in v) v = v.text;
+  if (typeof v === 'string') {
+    try {
+      v = JSON.parse(v);
+    } catch {
+      return null;
+    }
+  }
+  const session = asRecord(asRecord(v).session);
+  return typeof session.id === 'string' ? session.id : null;
+}
+
+/** The reason a supervisor recorded with its plan, if the block has one. */
+function rationaleOf(calls: ToolCallView[]): string | null {
+  for (const c of calls) {
+    if (controlMethod(c.name) !== 'orchestrator.recordDecision') continue;
+    const r = asRecord(c.input).rationale;
+    if (typeof r === 'string' && r.trim()) return r.trim();
+  }
+  return null;
+}
 
 /**
  * Machine-readable blocks inside a message (the mock runtime's ```acc-mock steps): for the
@@ -105,8 +167,20 @@ export function toConversationBlocks(
     } else if (b.kind === 'user' && b.message.meta?.kind === 'wake') {
       mapped = { kind: 'wake', id: b.id, message: b.message, items: b.message.meta.items };
     } else if (b.kind === 'tools') {
-      const calls = rephrase(b.calls, titleOf);
-      if (calls !== b.calls) mapped = { ...b, calls };
+      const spawns = b.calls.filter((c) => controlMethod(c.name) === 'session.spawn');
+      if (spawns.length > 0) {
+        const rest = rephrase(
+          b.calls.filter((c) => {
+            const m = controlMethod(c.name);
+            return m !== 'session.spawn' && m !== 'orchestrator.recordDecision';
+          }),
+          titleOf,
+        );
+        mapped = { kind: 'plan', id: b.id, spawns, rationale: rationaleOf(b.calls), rest };
+      } else {
+        const calls = rephrase(b.calls, titleOf);
+        if (calls !== b.calls) mapped = { ...b, calls };
+      }
     }
     cache.set(b, mapped);
     out.push(mapped);

@@ -18,8 +18,6 @@ import { type VisibleRow, childDots, stateCountsLabel } from './model';
 export const ROW_PAD = 8;
 export const INDENT = 18;
 const ICON = 13;
-/** x of the centre of the state icon of a row at `depth` (where its children's line starts). */
-const iconCenter = (depth: number) => ROW_PAD + depth * INDENT + ICON / 2;
 
 /** Hollow dots: nothing is happening there. */
 const HOLLOW = new Set<SessionState>(['queued', 'stopped', 'idle']);
@@ -94,41 +92,10 @@ function NextRun({ at }: { at: string }) {
 }
 
 /**
- * Tree lines of a row: guides of the ancestors, ├ or └ to this row, and (open) the start of
- * the line down to its children. Lines reach 1px past the row, over the gap between rows.
- */
-function TreeLines({ row }: { row: VisibleRow }) {
-  const { depth, guides, last, open } = row;
-  if (depth === 0 && !open) return null;
-  const x = iconCenter(depth - 1);
-  return (
-    <span aria-hidden className="pointer-events-none absolute inset-y-0 left-0">
-      {guides.map((on, i) =>
-        on ? (
-          <span key={i} className="absolute top-0 -bottom-px border-l border-line" style={{ left: iconCenter(i) - 0.5 }} />
-        ) : null,
-      )}
-      {depth > 0 && (
-        <span
-          className="absolute top-0 h-1/2 rounded-bl-[5px] border-b border-l border-line"
-          style={{ left: x - 0.5, width: ROW_PAD + depth * INDENT - x - 2 }}
-        />
-      )}
-      {depth > 0 && !last && <span className="absolute top-1/2 -bottom-px border-l border-line" style={{ left: x - 0.5 }} />}
-      {open && (
-        <span
-          className="absolute -bottom-px border-l border-line"
-          style={{ left: iconCenter(depth) - 0.5, top: `calc(50% + ${ICON / 2 + 2}px)` }}
-        />
-      )}
-    </span>
-  );
-}
-
-/**
  * One conversation in the sidebar tree (spec §4): state icon, title, and on the right the
  * folded children as dots (or the time it has been working, or the next scheduled run).
- * Hover / right-click: the row menu.
+ * Children are told by indent alone, no tree lines (ui-rework spec §1.2). Hover /
+ * right-click: the row menu.
  */
 export function TreeRow({
   row,
@@ -165,7 +132,6 @@ export function TreeRow({
         setMenuOpen(true);
       }}
     >
-      <TreeLines row={row} />
       <button
         type="button"
         data-sidebar-row={s.id}
