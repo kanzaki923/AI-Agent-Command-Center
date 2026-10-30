@@ -292,7 +292,7 @@ export function goalLine(text: string): string | null {
 
 /**
  * What each tree is for (ui-rework spec §3.1): the human's first message to its root — written
- * by them, or carried word for word by the assistant (`assistant.startWork`) — one query for
+ * by them, or by the assistant for them (`assistant.startWork`) — one query for
  * every root. Roots nobody wrote to (a schedule's, a demo's) have none.
  */
 function readGoals(ctx: DaemonContext, rootIds: readonly string[]): Map<string, string> {

@@ -1,11 +1,11 @@
 import type { Run, Session, SessionCard, SessionState } from '@acc/protocol';
 import { ArrowUp, MoreHorizontal, Pin, Play, Square } from 'lucide-react';
 import { useState } from 'react';
-import { archiveSession, renameSession, resumeTree, setPinned, stopTree } from '../../daemon/actions';
+import { archiveSession, renameSession, resumeTree, setPinned, setSessionModel, stopTree } from '../../daemon/actions';
 import { useAssistantId } from '../../daemon/assistant';
 import { useHomeSelect } from '../../daemon/home';
 import { useSlowNow } from '../../hooks/useNow';
-import { useSessions } from '../../daemon/queries';
+import { useMessages, useSessions, useSettings } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { type SessionTree, treeRelations } from '../../daemon/tree';
 import { cn } from '../../lib/cn';
@@ -20,6 +20,7 @@ import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger, Popover, Popov
 import { SessionChip } from '../ui/SessionChip';
 import { StateIcon } from '../ui/StateIcon';
 import { Tooltip } from '../ui/Tooltip';
+import { ModelPicker } from './ModelPicker';
 
 const MOVING: ReadonlySet<SessionState> = new Set(['working', 'supervising', 'queued']);
 
@@ -215,6 +216,7 @@ export function FocusHeader({
         </Tooltip>
         {session.pinned && <Pin size={12} strokeWidth={2} className="shrink-0 text-fg-3" aria-label="ピン留め" />}
         <span className="flex-1" />
+        <SessionModel session={session} assistant={session.id === assistantId} />
         {hasChildren && costShown ? (
           <Popover open={costOpen} onOpenChange={setCostOpen}>
             <PopoverTrigger asChild>
@@ -272,5 +274,30 @@ export function FocusHeader({
         </nav>
       )}
     </header>
+  );
+}
+
+/**
+ * The model of the conversation, beside its cost: a property of the conversation, chosen when
+ * it starts. It can be changed (Ctrl+M), but mid-conversation the new model reads the whole
+ * history without the prompt cache, so the list says so first.
+ */
+function SessionModel({ session, assistant }: { session: Session; assistant: boolean }) {
+  const rt = useRuntime();
+  const settings = useSettings().data;
+  const started = (useMessages(session.id).data?.length ?? 0) > 0;
+  // Without a model of its own: the assistant's setting, then the roster's last row.
+  const fallback = (assistant ? settings?.assistant?.model : null) ?? settings?.defaultModel ?? null;
+  const roster = [...new Set([...(settings?.modelRules ?? []).map((r) => r.model), ...(fallback ? [fallback] : [])])];
+  return (
+    <ModelPicker
+      value={session.model}
+      fallback={fallback}
+      roster={roster}
+      side="bottom"
+      align="end"
+      note={started ? '途中で変えると、会話を最初から読み直すため費用が増えます' : null}
+      onChange={(m) => m && void setSessionModel(rt, session, m)}
+    />
   );
 }

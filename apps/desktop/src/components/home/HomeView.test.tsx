@@ -441,4 +441,46 @@ describe('<HomeView>', () => {
       hint: 'コード（プロジェクト「app」 projectId: prj_1）',
     });
   });
+
+  it('picks a model for the request (自動 by default); the assistant is told, the daemon applies it', async () => {
+    const assistant = session({ kind: 'chat', title: '右腕' });
+    const fake = mount({
+      'home.get': () => homeSnapshot(),
+      'project.list': () => ({ items: [] }),
+      'system.assistant': () => ({ sessionId: assistant.id }),
+      'session.messages': () => ({ items: [], hasMore: false, streaming: null }),
+      'session.send': () => ({ messageId: 'msg_1', runId: null, delivery: 'started' }),
+      'settings.get': () => ({ defaultModel: 'openai/gpt-6.1-sol', modelRules: [{ model: 'openai/gpt-6-luna', when: '調べもの' }] }),
+      'models.list': () => ({
+        models: [
+          { id: 'openai/gpt-6.1-sol', label: 'GPT-6.1-Sol', provider: 'chatgpt', runUsd: 0 },
+          { id: 'openai/gpt-6-luna', label: 'GPT-6-Luna', provider: 'chatgpt', runUsd: 0 },
+          { id: 'openai/gpt-6-astra', label: 'GPT-6-Astra', provider: 'chatgpt', runUsd: 0 },
+        ],
+        source: 'providers',
+      }),
+    });
+    const input = await screen.findByRole('textbox', { name: '何を頼みますか' });
+    const chip = screen.getByRole('button', { name: /自動/ });
+    fireEvent.click(chip);
+    // The roster first, in its order, below the row that chooses nothing.
+    await vi.waitFor(() =>
+      expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual([
+      expect.stringContaining('自動'),
+      expect.stringContaining('GPT-6-Luna'),
+      expect.stringContaining('GPT-6.1-Sol'),
+        expect.stringContaining('GPT-6-Astra'),
+      ]),
+    );
+    fireEvent.click(screen.getByRole('option', { name: /GPT-6-Astra/ }));
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: /gpt-6-astra/ })).toBeInTheDocument());
+    fireEvent.change(input, { target: { value: '難しい設計を考えて' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await vi.waitFor(() => expect(fake.calls.map((c) => c.method)).toContain('session.send'));
+    expect(fake.calls.find((c) => c.method === 'session.send')?.params).toEqual({
+      sessionId: assistant.id,
+      content: '難しい設計を考えて',
+      workModel: 'openai/gpt-6-astra',
+    });
+  });
 });

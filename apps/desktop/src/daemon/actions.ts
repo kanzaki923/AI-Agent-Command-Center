@@ -103,6 +103,8 @@ export async function sendMessage(
     interrupt?: boolean;
     /** One line of context for the model that the conversation does not show. */
     hint?: string;
+    /** To the assistant: the model the person chose for the work this message starts. */
+    workModel?: string;
     /** How the daemon handed it over (started / queued after the run / injected at a boundary). */
     onDelivery?: (delivery: SendDelivery) => void;
   } = {},
@@ -132,6 +134,7 @@ export async function sendMessage(
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.interrupt ? { interrupt: true } : {}),
       ...(opts.hint ? { hint: opts.hint } : {}),
+      ...(opts.workModel ? { workModel: opts.workModel } : {}),
     });
     const delivery = res.delivery === 'queued' ? 'queued' : 'delivered';
     qc.setQueryData<ChatMessage[]>(key, (cur) => {

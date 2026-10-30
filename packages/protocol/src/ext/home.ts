@@ -36,6 +36,8 @@ export const SessionCard = z.object({
   stateSince: Timestamp.nullable(),
   now: z.string().nullable(),
   costUsd: z.number(),
+  /** The session's model (null: the roster's last row). Absent from older daemons. */
+  model: z.string().nullable().optional(),
   budget: z.object({ limitUsd: z.number(), usedUsd: z.number() }).nullable(),
   /** Latest 3 outputs. */
   outputs: z.array(z.object({ id: ArtifactId, kind: OutputKind, title: z.string() })).max(3),

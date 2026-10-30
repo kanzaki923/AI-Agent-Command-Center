@@ -6,6 +6,7 @@ import { relativeCost, shortModel } from '../../lib/models';
 import { useUi } from '../../store/ui';
 import { runCostText } from '../settings/ModelRoster';
 import { Kbd } from '../ui/Kbd';
+import { Tooltip } from '../ui/Tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/Menu';
 
 const GROUP_HEADING =
@@ -14,12 +15,18 @@ const GROUP_HEADING =
 /**
  * Model chip + cmdk popover (Ctrl+M). The models of the roster (settings → モデル) come first
  * in its order, then the rest with recently used ones first. Without a model of its own the
- * conversation follows the roster's last row (`fallback`).
+ * conversation follows the roster's last row (`fallback`). With `autoLabel` the first row is
+ * "no choice" (null): e.g. a new request, where the assistant picks from the roster.
  */
 export function ModelPicker({
   value,
   fallback,
   roster = [],
+  autoLabel,
+  autoHint,
+  note,
+  side = 'top',
+  align = 'start',
   onChange,
   disabled,
 }: {
@@ -27,7 +34,15 @@ export function ModelPicker({
   fallback: string | null;
   /** Models of the roster in its order, the last row included. */
   roster?: readonly string[];
-  onChange: (model: string) => void;
+  /** Name of a first row that chooses nothing (onChange(null)). */
+  autoLabel?: string;
+  /** Tooltip of the chip while nothing is chosen (what `autoLabel` means). */
+  autoHint?: string;
+  /** One line above the list (e.g. what changing the model mid-conversation costs). */
+  note?: string | null;
+  side?: 'top' | 'bottom';
+  align?: 'start' | 'end';
+  onChange: (model: string | null) => void;
   disabled?: boolean;
 }) {
   const open = useUi((s) => s.modelPickerOpen);
@@ -67,29 +82,52 @@ export function ModelPicker({
   );
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          disabled={disabled}
-          className="flex h-6 items-center gap-1.5 rounded-xs px-1.5 text-meta text-fg-2 hover:bg-hover hover:text-fg disabled:text-fg-4"
-        >
-          <Cpu size={12} strokeWidth={2} className="text-fg-3" />
-          {current ? shortModel(current) || current : 'モデル'}
-          <ChevronDown size={11} strokeWidth={2} className="text-fg-4" />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent side="top" className="w-[380px]">
+      <Tooltip content={current === null && autoHint ? autoHint : null}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            disabled={disabled}
+            className="flex h-6 items-center gap-1.5 rounded-xs px-1.5 text-meta text-fg-2 hover:bg-hover hover:text-fg disabled:text-fg-4"
+          >
+            <Cpu size={12} strokeWidth={2} className="text-fg-3" />
+            {current ? shortModel(current) || current : (autoLabel ?? 'モデル')}
+            <ChevronDown size={11} strokeWidth={2} className="text-fg-4" />
+          </button>
+        </PopoverTrigger>
+      </Tooltip>
+      <PopoverContent side={side} align={align} className="w-[380px]">
         <Command loop>
           <Command.Input
             placeholder="モデルを検索…"
             className="h-9 w-full border-b border-line-subtle bg-transparent px-3 text-ui text-fg placeholder:text-fg-4"
           />
+          {note && (
+            <div
+              className="border-b border-line-subtle px-3 py-1.5 text-micro text-fg-3"
+              data-testid="model-note"
+            >
+              {note}
+            </div>
+          )}
           <Command.List className={`max-h-72 overflow-y-auto p-1 ${GROUP_HEADING}`}>
             <Command.Empty className="px-3 py-4 text-ui text-fg-3">
               {models.data?.source === 'none' || list.length === 0
                 ? 'モデル一覧を取得できませんでした。設定で接続を確認してください。'
                 : '一致するモデルはありません'}
             </Command.Empty>
+            {autoLabel && (
+              <Command.Item
+                value={autoLabel}
+                onSelect={() => {
+                  onChange(null);
+                  setOpen(false);
+                }}
+                className="flex h-8 items-center gap-2 rounded-sm px-2 text-ui text-fg data-[selected=true]:bg-selected"
+              >
+                <span className="w-4 text-accent">{current === null && <Check size={13} />}</span>
+                <span className="min-w-0 flex-1 truncate">{autoLabel}</span>
+              </Command.Item>
+            )}
             {inRoster.length > 0 ? (
               <>
                 <Command.Group heading="使うモデル">{inRoster.map(item)}</Command.Group>

@@ -48,7 +48,15 @@ export function sessionSend(ctx: DaemonContext) {
           content,
           author: call.actor,
           delivery: handsOverNow ? 'delivered' : 'queued',
-          ...(p.hint ? { meta: { kind: 'hint', text: p.hint } } : {}),
+          ...(p.hint || p.workModel
+            ? {
+                meta: {
+                  kind: 'hint',
+                  text: p.hint ?? '',
+                  ...(p.workModel ? { model: p.workModel } : {}),
+                },
+              }
+            : {}),
         });
         const r = ctx.service('inbox').deliver(session.id, {
           kind: 'user_message',

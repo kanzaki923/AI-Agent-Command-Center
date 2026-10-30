@@ -175,6 +175,86 @@ describe('<FocusView> flow', () => {
     expect(document.body.textContent).not.toMatch(/Orchestrator|Worker|権限/);
   });
 
+  it('marks a request the assistant wrote as from 右腕, and opens the assistant from it', async () => {
+    const chat = session({ kind: 'chat', title: 'シネマシティについて' });
+    const ask = message(chat, {
+      author: { kind: 'system', component: 'assistant' },
+      content: [{ type: 'text', text: 'シネマシティについて、話し相手になって' }],
+    });
+    useUi.setState({ focusSessionId: chat.id });
+    mount({
+      sessions: [chat],
+      nodes: [card({ id: chat.id, title: chat.title, role: 'chat', state: 'idle' })],
+      messages: { [chat.id]: [ask] },
+      extra: { 'system.assistant': () => ({ sessionId: 'ses_00000000000000000000000099' }) },
+    });
+    const from = await screen.findByRole('button', { name: '右腕' });
+    // Once the assistant's id is known, the line opens its conversation.
+    await waitFor(() => {
+      fireEvent.click(from);
+      expect(useUi.getState().focusSessionId).toBe('ses_00000000000000000000000099');
+    });
+  });
+
+  it('shows the model of a child conversation and of each reply', async () => {
+    const { lead, faq, research, nodes } = scene();
+    const child = { ...faq, model: 'openai/gpt-6-luna' };
+    const reply = message(child, {
+      role: 'assistant',
+      model: 'openai/gpt-6-luna',
+      author: { kind: 'agent', sessionId: child.id, runId: 'run_1' },
+      content: [{ type: 'text', text: '10 問できました' }],
+    });
+    useUi.setState({ focusSessionId: child.id });
+    mount({ sessions: [lead, child, research], nodes, messages: { [child.id]: [reply] } });
+    expect(await screen.findByRole('button', { name: /gpt-6-luna/ })).toBeInTheDocument();
+    expect(await screen.findByTestId('message-model')).toHaveTextContent('gpt-6-luna');
+  });
+
+  it('shows the model beside the cost; the roster first, and a word on changing it mid-conversation', async () => {
+    const chat = session({ kind: 'chat', title: '相談', model: null });
+    const models = {
+      'settings.get': () => ({
+        defaultModel: 'openai/gpt-6-luna',
+        modelRules: [{ model: 'anthropic/claude-sonnet-5-5', when: '画面の設計' }],
+      }),
+      'models.list': () => ({
+        models: [
+          { id: 'anthropic/claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'anthropic', runUsd: 0.96 },
+          { id: 'openai/gpt-6-luna', label: 'GPT-6 Luna', provider: 'chatgpt', runUsd: 0 },
+          { id: 'anthropic/claude-sonnet-5-5', label: 'Claude Sonnet 5.5', provider: 'anthropic', runUsd: 0.48 },
+        ],
+        source: 'providers',
+      }),
+      'session.update': (p: unknown) => ({ ...chat, model: (p as { model: string }).model }),
+    };
+    useUi.setState({ focusSessionId: chat.id, modelPickerOpen: false });
+    const fake = mount({
+      sessions: [chat],
+      nodes: [card({ id: chat.id, title: chat.title, role: 'chat', state: 'idle' })],
+      messages: { [chat.id]: [message(chat)] },
+      extra: models,
+    });
+    const chip = await screen.findByRole('button', { name: /gpt-6-luna/ });
+    expect(chip.closest('[data-focus-header]')).not.toBeNull();
+    act(() => useUi.getState().setModelPickerOpen(true));
+    await waitFor(() =>
+      expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual([
+        expect.stringContaining('Claude Sonnet 5.5'),
+        expect.stringContaining('GPT-6 Luna'),
+        expect.stringContaining('Claude Opus 5.5'),
+      ]),
+    );
+    expect(screen.getAllByRole('option')[1]).toHaveTextContent('契約枠');
+    // The conversation has started: changing the model now costs a fresh read.
+    expect(await screen.findByTestId('model-note')).toHaveTextContent('費用が増えます');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('option', { name: /Claude Opus 5.5/ }));
+    });
+    const updates = fake.calls.filter((c) => c.method === 'session.update').map((c) => c.params);
+    expect(updates).toEqual([{ sessionId: chat.id, model: 'anthropic/claude-opus-5-5' }]);
+  });
+
   it('shows the answer being written when opened mid-stream', async () => {
     const chat = session({ kind: 'chat', title: 'ブログ記事', state: 'working' });
     const ask = message(chat, { content: [{ type: 'text', text: 'ブログを書いて' }] });

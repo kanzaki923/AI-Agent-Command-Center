@@ -13,7 +13,7 @@ import {
   MAX_TREES_PER_MESSAGE,
 } from './permissions';
 import type { AssistantNotifier } from './notify';
-import { HINT_LABEL, buildAssistantPrompt, statusBlock } from './prompt';
+import { HINT_LABEL, MODEL_HINT_LABEL, buildAssistantPrompt, statusBlock } from './prompt';
 
 /** Longest title taken from a request (the rest is in the conversation). */
 export const REQUEST_TITLE_MAX = 40;
@@ -107,7 +107,14 @@ export class AssistantService {
    */
   systemPrompts(session: Session, history: readonly Message[]): [string, string] {
     const last = [...history].reverse().find((m) => m.role === 'user');
-    const hint = last?.meta?.kind === 'hint' ? `${HINT_LABEL} ${last.meta.text}` : null;
+    const meta = last?.meta?.kind === 'hint' ? last.meta : null;
+    const hint =
+      [
+        meta?.text ? `${HINT_LABEL} ${meta.text}` : null,
+        meta?.model ? `${MODEL_HINT_LABEL} ${meta.model}` : null,
+      ]
+        .filter(Boolean)
+        .join('\n') || null;
     const fixed = [
       buildAssistantPrompt({
         maxTrees: MAX_TREES_PER_MESSAGE,
@@ -122,6 +129,17 @@ export class AssistantService {
       .join('\n\n');
     const changing = [hint, statusBlock(this.ctx)].filter(Boolean).join('\n\n');
     return [fixed, changing];
+  }
+
+  /**
+   * The model the person chose for the request a run of the assistant answers (`session.send`
+   * workModel on the message that started the run), or null.
+   */
+  private chosenModel(runId: string): string | null {
+    const run = this.ctx.repos.runs.get(runId);
+    const msg = run?.triggerMessageId ? this.ctx.repos.messages.get(run.triggerMessageId) : null;
+    if (!msg || msg.author.kind !== 'human' || msg.meta?.kind !== 'hint') return null;
+    return msg.meta.model ?? null;
   }
 
   /** `settings.assistant.dailyUsd`: the own calls of the assistant stop for the day at the limit. */
@@ -157,7 +175,11 @@ export class AssistantService {
     if (actor.kind === 'agent' && !viaAssistant) {
       throw forbidden('新しい会話を始められるのは人と右腕だけです');
     }
-    if (p.model) {
+    // A model the person chose for this request wins over the assistant's pick (and over the
+    // roster: it is theirs to choose).
+    const personal = viaAssistant ? this.chosenModel(actor.runId) : null;
+    const model = personal ?? p.model;
+    if (p.model && !personal) {
       // The root is an agent when it works alone in a workspace (see below).
       const agent = !p.delegate && !!p.workspace && p.workspace.kind !== 'none';
       const runtime = ctx.settings.get().defaultRuntime ?? 'mock';
@@ -185,7 +207,7 @@ export class AssistantService {
       kind: workspace ? 'agent' : 'chat',
       title,
       ...(projectId ? { projectId } : {}),
-      ...(p.model ? { model: p.model } : {}),
+      ...(model ? { model } : {}),
       ...(workspace ? { workspace } : {}),
     });
     if (p.delegate) {
@@ -198,7 +220,7 @@ export class AssistantService {
     await ctx.call(creator, 'session.send', {
       sessionId: created.id,
       content: p.text,
-      ...(p.model ? { model: p.model } : {}),
+      ...(model ? { model } : {}),
     });
     return { session: ctx.repos.sessions.require(created.id) };
   }

@@ -149,6 +149,7 @@ export function toCard(s: Session, depth: number, facts: CardFacts): SessionCard
     stateSince: s.stateSince,
     now: s.now,
     costUsd: s.cost.ownUsd,
+    model: s.model,
     budget: budget ? { limitUsd: budget.limitUsd, usedUsd: budget.spentUsd } : null,
     outputs: facts.outputs.get(s.id) ?? [],
     attentionIds: facts.attention.get(s.id) ?? [],

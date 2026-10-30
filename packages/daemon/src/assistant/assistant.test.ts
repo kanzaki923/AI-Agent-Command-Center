@@ -8,13 +8,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ApiError } from '../core/errors';
 import { insertDocument, openAttention } from '../home/testutil';
 import { apiTools, methodForToolName } from '../llm';
+import { scripted } from '../llm/mock';
 import type { ChatRequest } from '../llm/types';
 import { HUMAN, type TestDaemonNoServer, agentActor, createTestDaemon } from '../testing';
 import { ASSISTANT_TITLE, MAX_TREES_PER_MESSAGE, MOCK_RIGHT_HAND_MODEL } from './permissions';
 import { rememberPastRuns } from './history';
 import { cronOf } from './mockRightHand';
 import { NOTICES_PER_HOUR } from './notify';
-import { STATUS_HEADING, statusBlock } from './prompt';
+import { STATUS_HEADING, buildAssistantPrompt, statusBlock } from './prompt';
 import { titleFromRequest } from './service';
 
 const daemons: TestDaemonNoServer[] = [];
@@ -126,12 +127,12 @@ describe('what the assistant may call (the grant, not the prompt)', () => {
 });
 
 describe('assistant.startWork', () => {
-  it('starts a delegated root from the words of the human, unchanged; the lane says the assistant started it', async () => {
+  it('starts a delegated root from the request the assistant wrote, sent as from the assistant; the lane says so', async () => {
     const d = await daemon();
     const { sessionId } = await d.call(HUMAN, 'system.assistant', {});
     const me = agentActor(sessionId, 'run_00000000000000000000000000');
     const text = '来月のローンチ準備を進めて。\n競合の価格、FAQ、告知文。';
-    const { session } = await d.call(me, 'assistant.startWork', { text });
+    const { session } = await d.call(me, 'assistant.startWork', { text, delegate: true });
     expect(session.title).toBe('来月のローンチ準備を進めて。');
     expect(session.parentSessionId).toBeNull();
     expect(d.ctx.service('policy').sessionAllows(session.id, 'session.spawn')).toBe(true);
@@ -161,14 +162,18 @@ describe('assistant.startWork', () => {
     const { sessionId } = await d.call(HUMAN, 'system.assistant', {});
     const me = agentActor(sessionId, 'run_00000000000000000000000000');
     for (let i = 0; i < MAX_TREES_PER_MESSAGE; i++) {
-      await d.call(me, 'assistant.startWork', { text: `仕事 ${i}` });
+      await d.call(me, 'assistant.startWork', { text: `仕事 ${i}`, delegate: false });
     }
-    await expect(d.call(me, 'assistant.startWork', { text: 'もう 1 本' })).rejects.toMatchObject({
+    await expect(
+      d.call(me, 'assistant.startWork', { text: 'もう 1 本', delegate: false }),
+    ).rejects.toMatchObject({
       code: 'limit_exceeded',
     });
     // Another run of the assistant starts fresh.
     const next = agentActor(sessionId, 'run_00000000000000000000000000001');
-    await expect(d.call(next, 'assistant.startWork', { text: '次の言葉' })).resolves.toBeTruthy();
+    await expect(
+      d.call(next, 'assistant.startWork', { text: '次の言葉', delegate: false }),
+    ).resolves.toBeTruthy();
   });
 
   it('names a conversation by the first line of what was asked, cut to 40 characters', () => {
@@ -513,5 +518,84 @@ describe('the assistant speaks up when a tree ends or fails', () => {
     d.ctx.repos.sessions.update(root.id, (s) => ({ ...s, state: 'failed' }));
     for (let i = 0; i < NOTICES_PER_HOUR; i++) expect(n.notify(root.id, 'failed')).not.toBeNull();
     expect(n.notify(root.id, 'failed')).toBeNull();
+  });
+});
+
+describe('the prompt of the assistant', () => {
+  it('has it write the request of each conversation it starts, split when it starts several', () => {
+    const prompt = buildAssistantPrompt({ maxTrees: MAX_TREES_PER_MESSAGE });
+    expect(prompt).toContain('`text` is the request you write for that conversation');
+    expect(prompt).toContain('never give each the whole message');
+    expect(prompt).not.toMatch(/their words as `text`, unchanged/);
+  });
+
+  it('has it decide whether a team is needed: chats and single pieces are one conversation', async () => {
+    const prompt = buildAssistantPrompt({ maxTrees: MAX_TREES_PER_MESSAGE });
+    expect(prompt).toContain('`delegate` (decide every time)');
+    expect(prompt).toContain('「チャットを立てて」');
+    expect(prompt).toContain('When unsure, false');
+    // The tool says so too, and leaves no default to fall back on.
+    const d = await daemon();
+    const { sessionId } = await d.call(HUMAN, 'system.assistant', {});
+    const tool = apiTools(d.ctx, agentActor(sessionId, 'run_00000000000000000000000000')).find(
+      (t) => t.name === 'assistant__startWork',
+    )!;
+    const schema = tool.parameters as { required?: string[] };
+    expect(schema.required).toContain('delegate');
+    await expect(
+      d.call(agentActor(sessionId, 'run_00000000000000000000000000'), 'assistant.startWork', {
+        text: 'x',
+      } as never),
+    ).rejects.toMatchObject({ code: 'invalid_params' });
+  });
+});
+
+describe('a model the person chose for a request', () => {
+  it('runs the conversations the assistant starts for it, whatever model the assistant named', async () => {
+    const d = await daemon();
+    await d.call(HUMAN, 'settings.update', {
+      defaultModel: 'openai/gpt-6.1-sol',
+      modelRules: [{ model: 'openai/gpt-6-luna', when: '調べもの' }],
+    });
+    const seen: ChatRequest[] = [];
+    d.ctx.service('llm').mock.define(
+      'mock/picker',
+      scripted([
+        (req) => {
+          seen.push(req);
+          return {
+            text: '',
+            toolCalls: [
+              {
+                id: 'c1',
+                name: 'assistant__startWork',
+                input: {
+                  text: '調べて',
+                  title: '調べもの',
+                  delegate: false,
+                  model: 'openai/gpt-6-luna',
+                },
+              },
+            ],
+          };
+        },
+        { text: '「調べもの」を始めます。終わったら知らせます。' },
+      ]),
+    );
+    await d.call(HUMAN, 'settings.update', { assistant: { model: 'mock/picker' } });
+    const { sessionId } = await d.call(HUMAN, 'system.assistant', {});
+    const r = await d.call(HUMAN, 'session.send', {
+      sessionId,
+      content: '調べて',
+      workModel: 'openai/gpt-6-astra',
+    });
+    expect((await d.ctx.service('runs').waitForEnd(r.runId!)).status).toBe('completed');
+    // The assistant was told, and the daemon gave the new conversation that model even though
+    // the assistant named another (and it is outside the roster: the person may choose any).
+    expect((seen[0]!.messages[1] as { content: string }).content).toContain(
+      'モデルの指定: openai/gpt-6-astra',
+    );
+    const started = d.ctx.repos.sessions.find({}).filter((s) => s.title === '調べもの');
+    expect(started.map((s) => s.model)).toEqual(['openai/gpt-6-astra']);
   });
 });

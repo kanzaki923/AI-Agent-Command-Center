@@ -244,6 +244,7 @@ export function mockRightHand(req: ChatRequest, info: MockCallInfo): MockReply {
         tc('assistant.startWork', {
           text,
           title: titleOf(text),
+          delegate: true,
           ...(projectId ? { projectId } : {}),
           ...(code ? { workspace: { kind: 'worktree', projectId } } : {}),
           ...(folder ? { workspace: { kind: 'folder', path: folder } } : {}),

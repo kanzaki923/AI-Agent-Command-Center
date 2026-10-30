@@ -49,7 +49,7 @@ export function workspaceHint(kind: WorkspaceKind, project: Project | null): str
 export async function askAssistant(
   rt: AppRuntime,
   text: string,
-  opts: { hint?: string | undefined } = {},
+  opts: { hint?: string | undefined; model?: string | null } = {},
 ): Promise<string | null> {
   let id: string;
   try {
@@ -58,6 +58,9 @@ export async function askAssistant(
     return null;
   }
   useUi.getState().noteAssistantAsk(new Date().toISOString());
-  const ok = await sendMessage(rt, id, text, { ...(opts.hint ? { hint: opts.hint } : {}) });
+  const ok = await sendMessage(rt, id, text, {
+    ...(opts.hint ? { hint: opts.hint } : {}),
+    ...(opts.model ? { workModel: opts.model } : {}),
+  });
   return ok ? id : null;
 }

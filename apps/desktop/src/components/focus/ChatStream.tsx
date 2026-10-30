@@ -4,6 +4,7 @@ import { AlertTriangle, ArrowDown, Brain, ChevronRight, Clock, Diamond, Pencil, 
 import { type ReactNode, createContext, memo, use, useEffect, useMemo, useState } from 'react';
 import { focusComposerSoon, retry } from '../../app/commands';
 import { sendMessage } from '../../daemon/actions';
+import { useAssistantId } from '../../daemon/assistant';
 import { useAttention } from '../../daemon/home';
 import {
   useMessages,
@@ -22,6 +23,7 @@ import type { StickToBottom } from '../../hooks/useStickToBottom';
 import { cn } from '../../lib/cn';
 import { formatClock } from '../../lib/format';
 import { sessionTitle } from '../../lib/states';
+import { shortModel } from '../../lib/models';
 import { headLines } from '../../lib/tools';
 import { decisionsByToolCall } from '../../model/permissions';
 import { type ChatBlock, contentKey, lastUnanswered, messageText, stabilizeBlocks } from '../../model/chat';
@@ -76,10 +78,25 @@ function displayText(message: ChatMessage): string {
 /** Who sent a message that was not typed here (the leading conversation, a schedule). */
 function Origin({ message }: { message: ChatMessage }) {
   const { titleOf } = use(ConversationContext);
+  const assistantId = useAssistantId();
   if (message.meta?.kind === 'schedule') {
     return (
       <FromLine icon={<Clock size={12} strokeWidth={2} aria-label="繰り返し" />}>
         <span className="tabular">{formatClock(message.meta.scheduledFor)}</span>
+      </FromLine>
+    );
+  }
+  // The assistant wrote the request of a conversation it started (assistant.startWork).
+  if (message.author.kind === 'system' && message.author.component === 'assistant') {
+    return (
+      <FromLine icon={<Diamond size={11} strokeWidth={1.75} className="text-fg-3" aria-hidden />}>
+        <button
+          type="button"
+          className="truncate hover:text-fg hover:underline"
+          onClick={() => assistantId && useUi.getState().openSession(assistantId)}
+        >
+          右腕
+        </button>
       </FromLine>
     );
   }
@@ -237,6 +254,13 @@ function AssistantBlock({ block }: { block: ChatBlock & { kind: 'assistant' } })
       {block.text.trim() && <Markdown text={block.text} />}
       {block.text.trim() && (
         <MessageActions>
+          {block.message.model && (
+            <Tooltip content={block.message.model}>
+              <span className="px-1.5 text-micro text-fg-3" data-testid="message-model">
+                {shortModel(block.message.model) || block.message.model}
+              </span>
+            </Tooltip>
+          )}
           <CopyButton text={block.text} label="コピー" />
           {retryable && run && (
             <button

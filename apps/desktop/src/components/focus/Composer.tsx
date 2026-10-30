@@ -3,16 +3,14 @@ import { ArrowUp, CornerDownLeft, FileText, Pencil, Square, X, Zap } from 'lucid
 import { motion } from 'motion/react';
 import { type KeyboardEvent, useRef, useState } from 'react';
 import { newChat, stop } from '../../app/commands';
-import { resendEdited, sendMessage, setSessionModel } from '../../daemon/actions';
-import { useAssistantId } from '../../daemon/assistant';
-import { useMessages, useSettings } from '../../daemon/queries';
+import { resendEdited, sendMessage } from '../../daemon/actions';
+import { useMessages } from '../../daemon/queries';
 import { lastUnanswered, messageText } from '../../model/chat';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { cn } from '../../lib/cn';
 import { useUi } from '../../store/ui';
 import { Kbd } from '../ui/Kbd';
 import { Tooltip } from '../ui/Tooltip';
-import { ModelPicker } from './ModelPicker';
 
 /**
  * Suggested first message (demo): one click sends it. Shown above an empty conversation's
@@ -111,10 +109,6 @@ export function Composer({
   const editing = useUi((s) => (s.editing?.sessionId === session.id ? s.editing : null));
   const setEditing = useUi((s) => s.setEditing);
   const messages = useMessages(session.id).data;
-  const settings = useSettings().data;
-  // What runs when nothing is chosen: the assistant has its own setting before the default.
-  const assistant = useAssistantId() === session.id;
-  const fallbackModel = (assistant ? settings?.assistant?.model : null) ?? settings?.defaultModel ?? null;
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   // Agent at work: the next message waits for the run (default) or interrupts it (Zap).
   const [interrupt, setInterrupt] = useState(false);
@@ -216,10 +210,6 @@ export function Composer({
     }
   };
 
-  const setModel = (model: string) => void setSessionModel(rt, session, model);
-  const roster = [
-    ...new Set([...(settings?.modelRules ?? []).map((r) => r.model), ...(fallbackModel ? [fallbackModel] : [])]),
-  ];
 
   return (
     <div className="mx-auto w-full max-w-[760px] px-6 pb-4">
@@ -320,10 +310,6 @@ export function Composer({
             </Tooltip>
           )}
           <span className="flex-1" />
-          {/* A child's model is the supervisor's business, not a name to show (ui-rework spec §5). */}
-          {!session.parentSessionId && (
-            <ModelPicker value={session.model} fallback={fallbackModel} roster={roster} onChange={setModel} />
-          )}
           {canStopInline && !draft.trim() && attachments.length === 0 ? (
             <Tooltip content="生成を停止（Esc）">
               <button

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
 import { useUi } from '../../store/ui';
@@ -64,50 +64,6 @@ describe('<Composer> while an agent works', () => {
     );
     expect(screen.queryByRole('button', { name: '割り込む' })).not.toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'メッセージ' })).toHaveAttribute('placeholder', '次の区切りで渡す');
-  });
-});
-
-describe('<Composer> model chip', () => {
-  beforeEach(() => useUi.setState({ drafts: {}, modelPickerOpen: false }));
-
-  it('lists the roster first, in its order, and shows the last row when nothing is chosen', async () => {
-    const fake = createFakeClient({
-      'settings.get': () => ({
-        defaultModel: 'openai/gpt-6-luna',
-        modelRules: [{ model: 'anthropic/claude-sonnet-5-5', when: '画面の設計' }],
-      }),
-      'models.list': () => ({
-        models: [
-          { id: 'anthropic/claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'anthropic', runUsd: 0.96 },
-          { id: 'openai/gpt-6-luna', label: 'GPT-6 Luna', provider: 'chatgpt', runUsd: 0 },
-          { id: 'anthropic/claude-sonnet-5-5', label: 'Claude Sonnet 5.5', provider: 'anthropic', runUsd: 0.48 },
-        ],
-        source: 'providers',
-      }),
-      'session.update': (p) => ({ ...session({ kind: 'chat' }), model: (p as { model: string }).model }),
-    });
-    const s = session({ kind: 'chat', model: null });
-    render(
-      <RuntimeProvider runtime={createRuntime(fake.client)}>
-        <TooltipProvider>
-          <Composer session={s} activeRun={null} onSent={() => {}} />
-        </TooltipProvider>
-      </RuntimeProvider>,
-    );
-    expect(await screen.findByRole('button', { name: /gpt-6-luna/ })).toBeInTheDocument();
-    act(() => useUi.getState().setModelPickerOpen(true));
-    await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(3));
-    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual([
-      expect.stringContaining('Claude Sonnet 5.5'),
-      expect.stringContaining('GPT-6 Luna'),
-      expect.stringContaining('Claude Opus 5.5'),
-    ]);
-    expect(screen.getAllByRole('option')[1]).toHaveTextContent('契約枠');
-    await act(async () => {
-      fireEvent.click(screen.getByRole('option', { name: /Claude Opus 5.5/ }));
-    });
-    const updates = fake.calls.filter((c) => c.method === 'session.update').map((c) => c.params);
-    expect(updates).toEqual([{ sessionId: s.id, model: 'anthropic/claude-opus-5-5' }]);
   });
 });
 

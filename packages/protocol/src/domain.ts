@@ -302,8 +302,11 @@ export const MessageMeta = z.discriminatedUnion('kind', [
     attentionId: AttentionId,
     choiceLabel: z.string().nullable(),
   }),
-  /** A line of context for the model that the chat does not show (`session.send` hint). */
-  z.object({ kind: z.literal('hint'), text: z.string() }),
+  /**
+   * A line of context for the model that the chat does not show (`session.send` hint), and
+   * the model the human chose for the work the message starts (`workModel`).
+   */
+  z.object({ kind: z.literal('hint'), text: z.string(), model: z.string().optional() }),
 ]);
 export type MessageMeta = z.infer<typeof MessageMeta>;
 

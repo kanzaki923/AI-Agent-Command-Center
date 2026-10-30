@@ -9,6 +9,7 @@ import { useRuntime } from '../../daemon/runtime';
 import { cn } from '../../lib/cn';
 import { WORKSPACE_META, type WorkspaceKind } from '../../lib/states';
 import { useUi } from '../../store/ui';
+import { ModelPicker } from '../focus/ModelPicker';
 import { Button } from '../ui/Button';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu';
 import { Tooltip } from '../ui/Tooltip';
@@ -63,6 +64,14 @@ export function HomeComposer({
   const [kind, setKind] = useState<WorkspaceKind>('none');
   const [pickedProjectId, setPickedProjectId] = useState<string | null>(null);
   const [preparing, setPreparing] = useState(false);
+  // The model for the work this request starts; none: the assistant picks from the roster.
+  const [model, setModel] = useState<string | null>(null);
+  const roster = [
+    ...new Set([
+      ...(settings?.modelRules ?? []).map((r) => r.model),
+      ...(settings?.defaultModel ? [settings.defaultModel] : []),
+    ]),
+  ];
 
   // The project the workspace comes from: the one picked here, else the current one, else the first that fits.
   const fits = candidates(projects, kind);
@@ -74,7 +83,7 @@ export function HomeComposer({
     if (!t) return;
     const go = async () => {
       setText('');
-      const id = await askAssistant(rt, t, { hint: workspaceHint(kind, project) });
+      const id = await askAssistant(rt, t, { hint: workspaceHint(kind, project), model });
       if (!id) {
         // Nothing was sent: give the words back.
         setText(t);
@@ -125,6 +134,7 @@ export function HomeComposer({
         }}
         className={cn('h-full min-w-0 flex-1 bg-transparent px-1 text-fg placeholder:text-fg-4', center ? 'text-[15px]' : 'text-chat')}
       />
+      <ModelPicker value={model} fallback={null} roster={roster} autoLabel="自動" autoHint="設定の名簿に沿って選びます" onChange={setModel} />
       {!center && projects.length > 0 && toggle}
     </div>
   );

@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useAttentionItems } from '../../daemon/home';
 import { useSlowNow } from '../../hooks/useNow';
 import { cn } from '../../lib/cn';
+import { shortModel } from '../../lib/models';
 import { LONG_WORK_MS, OUTPUT_META, STATE_META, formatSince, formatUsd, isAlarm, isLongWork, isSettled, sessionTitle } from '../../lib/states';
 import { Elapsed } from './Elapsed';
 import { OutputIcon, RoleIcon } from './SemanticIcons';
@@ -58,7 +59,7 @@ export function SessionChip({
   const title = sessionTitle(card);
   const since = card.stateSince ? formatSince(card.stateSince, Math.max(now, Date.parse(card.stateSince)), isSettled(card.state)) : null;
   const cost = formatUsd(card.costUsd);
-  const tip = [meta.label, since, cost].filter(Boolean).join(' · ');
+  const tip = [meta.label, since, cost, shortModel(card.model)].filter(Boolean).join(' · ');
   const longWork = isLongWork(card.state, card.stateSince, now);
 
   return (

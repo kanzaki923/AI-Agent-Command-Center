@@ -536,6 +536,13 @@ export const api = defineApi({
         .describe(
           'One line of context for the model, kept out of the conversation (e.g. the workspace the human chose for the request)',
         ),
+      workModel: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          'To the assistant: the model the human chose for the work this message starts; the conversations it starts get it',
+        ),
     }),
     result: z.object({
       messageId: MessageId,

@@ -24,7 +24,7 @@ export const assistantMethods = {
         .min(1)
         .max(50_000)
         .describe(
-          "The human's request, word for word: it becomes the first message of the new conversation",
+          'The request for this conversation, written by you: only its own piece of what the human asked (split a request that starts several conversations; never pass the whole message to each), keeping their specifics and adding nothing. It becomes the first message of the new conversation, shown as from the assistant',
         ),
       title: z
         .string()
@@ -33,9 +33,8 @@ export const assistantMethods = {
         .describe('Short name of the work; the first line of the request when omitted'),
       delegate: z
         .boolean()
-        .default(true)
         .describe(
-          'true: the conversation leads a team of children on its own (anything with several parts). false: a single conversation, or a single agent when a workspace is given.',
+          'Decide every time. false: one conversation (talking, asking, a chat to open) or one piece of work, by a single agent when a workspace is given; it can run on any model of the list. true: work with several parts that go on side by side and are put together, so the conversation leads a team of children.',
         ),
       projectId: ProjectId.optional().describe('Project the work belongs to'),
       workspace: WorkspaceSpec.optional().describe(
