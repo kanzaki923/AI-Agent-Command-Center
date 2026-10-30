@@ -386,14 +386,19 @@
   }
 }
 
+/*
+ * Dialogs and the palette are centred by the `translate` property (Tailwind's
+ * -translate-x-1/2); the entrance only scales, or the two offsets would add up and the box
+ * would start 50% off and jump into place when the animation ends.
+ */
 @keyframes acc-dialog-in {
   from {
     opacity: 0;
-    transform: translate(-50%, -50%) scale(0.98);
+    transform: scale(0.98);
   }
   to {
     opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
+    transform: scale(1);
   }
 }
 

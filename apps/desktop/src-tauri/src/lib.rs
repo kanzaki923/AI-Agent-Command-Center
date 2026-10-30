@@ -140,6 +140,7 @@ pub fn run() {
         .setup(|app| {
             if let Some(w) = app.get_webview_window("main") {
                 let ok = apply_glass(&w);
+                eprintln!("[acc] glass material applied: {ok}");
                 *GLASS.lock().unwrap_or_else(|p| p.into_inner()) = ok;
             }
             // Pre-warm: start the daemon while the WebView boots, so the first

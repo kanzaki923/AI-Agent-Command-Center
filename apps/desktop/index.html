@@ -6,9 +6,17 @@
     <meta name="color-scheme" content="dark light" />
     <title>AI Agent Command Center</title>
     <style>
-      /* Paint the app background before CSS loads (no white flash). */
-      html, body { background: #0b0c0e; margin: 0; }
-      html[data-theme='light'], html[data-theme='light'] body { background: #f3f3f5; }
+      /*
+       * Paint the ground before CSS loads (no white flash). Unlayered, so it outranks the
+       * stylesheet's @layer rules: the colour therefore comes from the token once CSS is in
+       * (translucent under data-glass), and only the fallback is fixed. Body stays clear so
+       * the ground is painted once, not twice.
+       */
+      html { background: var(--bg-app, #0b0c0e); }
+      html[data-theme='light'] { background: var(--bg-app, #f3f3f5); }
+      /* Glass: the shell paints its own translucent grounds, each exactly once. */
+      html[data-glass='on'] { background: transparent; }
+      body { background: transparent; margin: 0; }
     </style>
   </head>
   <body>

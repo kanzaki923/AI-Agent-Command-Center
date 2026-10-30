@@ -61,7 +61,7 @@ export function App() {
   return (
     <MotionConfig reducedMotion={motionConfigValue(reduceMotion)}>
       <TooltipProvider>
-        <div className="flex h-full flex-col bg-app text-fg">
+        <div className="flex h-full flex-col text-fg">
           <TitleBar />
           {everConnected ? (
             <div className="relative flex min-h-0 flex-1">
