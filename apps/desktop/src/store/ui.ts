@@ -5,6 +5,10 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 export type Mode = 'home' | 'session' | 'timeline';
 export type ThemePref = 'dark' | 'light' | 'system';
 export type MotionPref = 'system' | 'on' | 'off';
+/** Where the desktop shows through: the wings (title bar, sidebar, outputs panel) or everything. */
+export type GlassScope = 'wings' | 'all';
+/** How much of the desktop shows through. */
+export type GlassStrength = 'weak' | 'mid' | 'strong';
 
 interface View {
   mode: Mode;
@@ -42,6 +46,8 @@ export interface UiState {
   reduceMotion: MotionPref;
   /** Let the desktop show through the app ground (only when the shell applied a material). */
   glass: 'on' | 'off';
+  glassScope: GlassScope;
+  glassStrength: GlassStrength;
   drafts: Record<string, string>;
   viewedAt: Record<string, string>;
   /** Answers that settled before this (the first run of this store) are not shown as unread. */
@@ -116,6 +122,8 @@ interface UiActions {
   setTheme: (t: ThemePref) => void;
   setReduceMotion: (reduceMotion: MotionPref) => void;
   setGlass: (g: 'on' | 'off') => void;
+  setGlassScope: (s: GlassScope) => void;
+  setGlassStrength: (s: GlassStrength) => void;
   setDraft: (sessionId: string, text: string) => void;
   markViewed: (sessionId: string, at: string) => void;
   toggleCollapsed: (key: string, defaultCollapsed?: boolean) => void;
@@ -168,6 +176,8 @@ const initial: UiState = {
   theme: 'dark',
   reduceMotion: 'system',
   glass: 'on',
+  glassScope: 'wings',
+  glassStrength: 'mid',
   drafts: {},
   viewedAt: {},
   readBaseline: '',
@@ -316,6 +326,8 @@ export const createUiStore = () =>
         setTheme: (theme) => set({ theme }),
         setReduceMotion: (reduceMotion) => set({ reduceMotion }),
         setGlass: (glass) => set({ glass }),
+        setGlassScope: (glassScope) => set({ glassScope }),
+        setGlassStrength: (glassStrength) => set({ glassStrength }),
         setDraft: (sessionId, text) =>
           set((s) => {
             if ((s.drafts[sessionId] ?? '') === text) return s;
@@ -412,6 +424,8 @@ export const createUiStore = () =>
           theme: s.theme,
           reduceMotion: s.reduceMotion,
           glass: s.glass,
+          glassScope: s.glassScope,
+          glassStrength: s.glassStrength,
           sidebarOpen: s.sidebarOpen,
           sidebarWidth: s.sidebarWidth,
           panelWidth: s.panelWidth,

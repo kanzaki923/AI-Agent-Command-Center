@@ -13,7 +13,7 @@ import { notificationPermission, requestNotificationPermission } from '../../lib
 import { isTauri } from '../../lib/platform';
 import { PROFILE_INFO } from '../../model/permissions';
 import { toastError } from '../../store/toast';
-import { type MotionPref, type ThemePref, useUi } from '../../store/ui';
+import { type GlassScope, type GlassStrength, type MotionPref, type ThemePref, useUi } from '../../store/ui';
 import { Button } from '../ui/Button';
 import { Dialog, inputClass } from '../ui/Dialog';
 import { FieldRow, type SegmentOption, Segmented, Stepper, UsdField } from './controls';
@@ -45,6 +45,17 @@ const MOTION_OPTIONS: SegmentOption<MotionPref>[] = [
 const ON_OFF: SegmentOption<'on' | 'off'>[] = [
   { value: 'on', label: 'オン' },
   { value: 'off', label: 'オフ' },
+];
+
+const GLASS_SCOPE_OPTIONS: SegmentOption<GlassScope>[] = [
+  { value: 'wings', label: '翼だけ' },
+  { value: 'all', label: '全体' },
+];
+
+const GLASS_STRENGTH_OPTIONS: SegmentOption<GlassStrength>[] = [
+  { value: 'weak', label: '弱' },
+  { value: 'mid', label: '中' },
+  { value: 'strong', label: '強' },
 ];
 
 type Judge = 'server' | 'client';
@@ -88,6 +99,10 @@ export function SettingsDialog() {
   const setReduceMotion = useUi((s) => s.setReduceMotion);
   const glass = useUi((s) => s.glass);
   const setGlass = useUi((s) => s.setGlass);
+  const glassScope = useUi((s) => s.glassScope);
+  const setGlassScope = useUi((s) => s.setGlassScope);
+  const glassStrength = useUi((s) => s.glassStrength);
+  const setGlassStrength = useUi((s) => s.setGlassStrength);
   const settings = useSettings().data;
   const models = useModels();
   const [editing, setEditing] = useState(false);
@@ -173,6 +188,18 @@ export function SettingsDialog() {
         {isTauri() && (
           <FieldRow label="透け">
             <Segmented<'on' | 'off'> label="透け" value={glass} options={ON_OFF} onChange={setGlass} />
+            {glass === 'on' && (
+              <>
+                <span className="ml-2 text-meta text-fg-3" aria-hidden>
+                  範囲
+                </span>
+                <Segmented<GlassScope> label="透ける範囲" value={glassScope} options={GLASS_SCOPE_OPTIONS} onChange={setGlassScope} />
+                <span className="ml-2 text-meta text-fg-3" aria-hidden>
+                  強さ
+                </span>
+                <Segmented<GlassStrength> label="透けの強さ" value={glassStrength} options={GLASS_STRENGTH_OPTIONS} onChange={setGlassStrength} />
+              </>
+            )}
           </FieldRow>
         )}
       </Group>

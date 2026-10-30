@@ -108,16 +108,35 @@
 
 /*
  * Glass (ui-rework spec §1.3): only when the Tauri shell applied a window material and the
- * setting is on. The app ground (title bar, sidebar, outputs panel) lets the desktop through;
- * the main ground only a little; surfaces stay opaque so text never sits on the wallpaper.
+ * setting is on. The wings (title bar, sidebar, outputs panel) let the desktop through at
+ * --glass-wing; the main ground stays opaque unless the scope is 全体, then --glass-main.
+ * Surfaces stay opaque so text never sits on the wallpaper. Each ground is painted once
+ * (index.html clears html under glass; the shell wrapper paints nothing).
  */
 :root[data-glass='on'] {
-  --bg-app: rgb(11 12 14 / 0.62);
-  --bg-canvas: rgb(16 17 20 / 0.9);
+  --glass-wing: 0.62;
+  --glass-main: 1;
+  --bg-app: rgb(11 12 14 / var(--glass-wing));
+  --bg-canvas: rgb(16 17 20 / var(--glass-main));
+}
+:root[data-glass='on'][data-glass-strength='weak'] {
+  --glass-wing: 0.8;
+}
+:root[data-glass='on'][data-glass-strength='strong'] {
+  --glass-wing: 0.45;
+}
+:root[data-glass='on'][data-glass-scope='all'] {
+  --glass-main: 0.8;
+}
+:root[data-glass='on'][data-glass-scope='all'][data-glass-strength='weak'] {
+  --glass-main: 0.92;
+}
+:root[data-glass='on'][data-glass-scope='all'][data-glass-strength='strong'] {
+  --glass-main: 0.65;
 }
 :root[data-glass='on'][data-theme='light'] {
-  --bg-app: rgb(236 236 239 / 0.7);
-  --bg-canvas: rgb(245 245 247 / 0.92);
+  --bg-app: rgb(236 236 239 / var(--glass-wing));
+  --bg-canvas: rgb(245 245 247 / var(--glass-main));
 }
 
 @theme inline {

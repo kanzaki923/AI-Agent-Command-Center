@@ -73,7 +73,7 @@
 | `--accent-fg` | `#FFFFFF` | 主ボタン上の文字 |
 | `--focus-ring` | `rgb(108 114 255 / 0.65)` | フォーカスリング |
 
-**透け**（`<html data-glass="on">`、`lib/theme.ts`）：Tauri の窓は `transparent: true` で、Rust 側が `window-vibrancy`（Windows 11 は acrylic、だめなら mica。macOS は vibrancy）を当てられたときだけ `get_glass` が真になる。その上で設定「透け」がオンなら、`--bg-app` を `rgb(11 12 14 / 0.62)`、`--bg-canvas` を `rgb(16 17 20 / 0.90)`（ライトは `rgb(243 243 245 / 0.70)` / `rgb(250 250 251 / 0.92)`）にする。面（surface / raised）は不透明のまま。ブラウザ（Vite だけ）と撮影では透けない。
+**透け**（`<html data-glass="on">`、`lib/theme.ts`）：Tauri の窓は `transparent: true` で、Rust 側が `window-vibrancy`（Windows 11 は acrylic、だめなら mica。macOS は vibrancy）を当てられたときだけ `get_glass` が真になる。その上で設定「透け」がオンなら、翼の地 `--bg-app` を半透明にし（`--glass-wing`：弱 0.8 / 中 0.62 / 強 0.45）、範囲が「全体」ならメインの地 `--bg-canvas` も（`--glass-main`：弱 0.92 / 中 0.8 / 強 0.65。「翼だけ」では不透明）。`<html data-glass-scope data-glass-strength>` で切り替え、既定は翼だけ・中。面（surface / raised）は不透明のまま。**地は 1 枚だけ塗る**：透けのとき `html` は透明（`index.html` のインライン style。レイヤー外なので変数で参照する）、シェルの外枠は塗らず、翼は `bg-app`・メインは `bg-canvas` を 1 回ずつ。重ねると 0.62 が 3 枚で 0.95 になり透けなくなる。ブラウザ（Vite だけ）と撮影では透けない。
 
 ### 2.3 色：ライト
 
@@ -683,6 +683,7 @@ OS 設定に加え、アプリ設定「動きを減らす」（既定：シス�
 | 1 日の上限 | `$` の欄（Enter か離れたときに保存。空で上限なし。不正な値は元に戻す） |
 | 右腕の上限 | 右腕自身のモデル費用の 1 日の上限（`settings.assistant.dailyUsd`、既定 $2。0 可、空で上限なし）。`assistant` を返さない古いデーモンでは出さない |
 | 外観 | テーマのアイコン 3 つ（ダーク / ライト / システム）と `動き`（自動 / 減らす / 減らさない） |
+| 透け | Tauri のときだけ。`オン` / `オフ`、オンなら `範囲`（翼だけ / 全体）と `強さ`（弱 / 中 / 強）。変えた瞬間に窓に反映（§2.2） |
 
 `詳細`（既定で閉じる）：`自動判定`（Claude Code の Auto mode）、`判定する場所`（サーバー / 手元）、`判定モデル`（離れたときに保存）、`同時に動くエージェント` / `同時に動く会話`（ステッパー）、`1 回の呼び出しの予約`（`llmCallReserveUsd`、0 可）、`再起動のあと再開`（`autoResume`）、`OS の通知`（未許可なら `許可する`、ブロック中はその語だけ）、`アプリ内の通知`、`ショートカット`（`一覧`）、`診断`（バージョン・データ・プロセス・API と停止 / 再起動ボタン）。値は変えた瞬間に保存する。
 

@@ -1,4 +1,4 @@
-import type { MotionPref, ThemePref } from '../store/ui';
+import type { GlassScope, GlassStrength, MotionPref, ThemePref } from '../store/ui';
 
 export function resolveTheme(pref: ThemePref, systemDark: boolean): 'dark' | 'light' {
   if (pref === 'system') return systemDark ? 'dark' : 'light';
@@ -18,7 +18,13 @@ export function resolveGlass(pref: 'on' | 'off', available: boolean): boolean {
  * applied as soon as it answers.
  */
 export function installThemeSync(
-  read: () => { theme: ThemePref; reduceMotion: MotionPref; glass?: 'on' | 'off' },
+  read: () => {
+    theme: ThemePref;
+    reduceMotion: MotionPref;
+    glass?: 'on' | 'off';
+    glassScope?: GlassScope;
+    glassStrength?: GlassStrength;
+  },
   subscribe: (fn: () => void) => () => void,
   glass?: () => Promise<boolean>,
 ): () => void {
@@ -26,12 +32,20 @@ export function installThemeSync(
   const mq = typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: dark)') : null;
   let glassAvailable = false;
   const apply = () => {
-    const { theme, reduceMotion, glass: glassPref } = read();
+    const { theme, reduceMotion, glass: glassPref, glassScope, glassStrength } = read();
     root.dataset.theme = resolveTheme(theme, mq?.matches ?? true);
     if (reduceMotion === 'system') delete root.dataset.reduceMotion;
     else root.dataset.reduceMotion = reduceMotion;
-    if (resolveGlass(glassPref ?? 'on', glassAvailable)) root.dataset.glass = 'on';
-    else delete root.dataset.glass;
+    if (resolveGlass(glassPref ?? 'on', glassAvailable)) {
+      root.dataset.glass = 'on';
+      // Where and how much (index.css reads these; the defaults are the wings, mid).
+      root.dataset.glassScope = glassScope ?? 'wings';
+      root.dataset.glassStrength = glassStrength ?? 'mid';
+    } else {
+      delete root.dataset.glass;
+      delete root.dataset.glassScope;
+      delete root.dataset.glassStrength;
+    }
   };
   apply();
   let disposed = false;
