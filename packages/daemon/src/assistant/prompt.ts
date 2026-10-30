@@ -19,7 +19,7 @@ export function buildAssistantPrompt(input: { maxTrees: number }): string {
     '',
     'What to do with what they say',
     '- New work: assistant.startWork with their words as `text`, unchanged. Leave `delegate` true (the conversation leads a team) unless it is one small piece or one conversation they want. Give a short `title`. Then answer in one sentence: 「「<title>」を始めます。終わったら知らせます。」 — do not say how many people; the conversation decides.',
-    '- A question about how things stand: answer from the status below in one or two lines (items waiting for them, progress per tree, failures). Call home.get or session.tree only for detail the status does not have.',
+    '- A question about how things stand: answer from the status below in one or two lines (what waits for them, progress per tree, failures). The status already lists every tree, its children and the open items; do not call home.get or session.tree for that.',
     '- 「止めて」 / 「再開して」 naming a tree: session.stop / session.resume with `tree: true` on that root, then confirm in one line.',
     '- Something to repeat (毎朝, 毎週 …): assistant.startWork with `delegate: false` and a short title, then schedule.create on that conversation (cron in the local time zone). Answer with the rhythm and the first run.',
     '- A plain question that needs no agent: answer it yourself, briefly.',
@@ -35,24 +35,47 @@ export function buildAssistantPrompt(input: { maxTrees: number }): string {
   ].join('\n');
 }
 
+/** Children listed under a tree in the status block (the rest is a count). */
+const STATUS_CHILDREN_MAX = 12;
+
 /**
- * One line per tree for the system prompt: id, title, state, progress, what waits. The mock
- * parses these lines (`TREE_LINE` in mockRightHand.ts); keep the shape.
+ * The status for the system prompt: one line per tree (id, title, state, progress, what
+ * waits), its children indented under it (title, state, what it does), and the open items
+ * (questions, approvals, failures) with their titles, so "今どう？" needs no tool call. The
+ * mock parses the tree lines (`TREE_LINE` in mockRightHand.ts); keep their shape.
  */
 export function statusBlock(ctx: DaemonContext): string {
   const snap = buildHomeSnapshot(ctx, { doneWithinHours: 12, maxNodesPerTree: 200 });
   const lines = [
     `${STATUS_HEADING}（出番 ${snap.totals.needsYou} 件・作業中 ${snap.totals.working}・失敗 ${snap.totals.failed}）`,
   ];
+  const attentionById = new Map(snap.attention.map((a) => [a.id, a]));
   for (const t of snap.trees) {
-    const children = t.nodes.filter((n) => n.depth === 1).length;
+    const children = t.nodes.filter((n) => n.depth === 1);
     const finished = t.counts.done + t.counts.review;
     const parts = [`- [${t.root.id}] 「${t.root.title || '無題'}」 state=${t.root.state}`];
-    if (children > 0) parts.push(`progress=${finished}/${children}`);
+    if (children.length > 0) parts.push(`progress=${finished}/${children.length}`);
     if (t.counts.needsYou > 0) parts.push(`needsYou=${t.counts.needsYou}`);
     if (t.counts.failed > 0) parts.push(`failed=${t.counts.failed}`);
     if (t.nextRunAt) parts.push(`nextRun=${t.nextRunAt}`);
     lines.push(parts.join(' '));
+    for (const c of [t.root, ...children.slice(0, STATUS_CHILDREN_MAX)]) {
+      if (c.id !== t.root.id) {
+        lines.push(
+          `    - 「${c.title || '無題'}」 state=${c.state}${c.now ? ` now=${c.now}` : ''}`,
+        );
+      }
+      for (const id of c.attentionIds) {
+        const a = attentionById.get(id);
+        if (a)
+          lines.push(
+            `      ${a.kind === 'question' ? '質問' : a.kind === 'approval' ? '承認' : '出番'}: 「${a.title}」`,
+          );
+      }
+    }
+    if (children.length > STATUS_CHILDREN_MAX) {
+      lines.push(`    - ほか ${children.length - STATUS_CHILDREN_MAX} 人`);
+    }
   }
   if (snap.trees.length === 0) lines.push('- （会話はまだありません）');
   const projects = ctx.repos.projects.find({ where: { archived_at: null }, direction: 'asc' });

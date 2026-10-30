@@ -92,6 +92,7 @@ UI とデーモンは同じ `ACC_HOME` を見る（Vite の開発ミドルウェ
   2. そのチャットを `session.delegate({ sessionId })`（既定 4 人・$3）で指揮役にする（UI ではホームや会話の「任せる」）。git のプロジェクトなら、コードの子は worktree で動き、その成果物を採用すると反映される。
   3. Worker を Claude Code にするには `settings.update({ defaultRuntime: 'claude-agent-sdk' })`（Run ごとなら `task.spawnWorker` の `runtime`）。LiteLLM が設定されていれば SDK もそこを通り、なければ手元の Claude Code のログインを使う。SDK が読み込めないと Worker の Run は理由つきで失敗する。
   4. 費用が発生するのはこの経路だけ。テストでは呼ばない（下記 §6）。
+  5. 右腕だけを本物のモデルで確かめるには `packages/daemon/scripts/real-right-hand.ts`（一時 `ACC_HOME`、キーは環境変数名で渡す、立てた木はモック。`docs/snapshot/20261030_right-hand-real.md`）。
 
 ## 2. パッケージ構成
 

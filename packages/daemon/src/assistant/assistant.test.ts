@@ -6,10 +6,12 @@
 import type { Message, Run } from '@acc/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ApiError } from '../core/errors';
+import { openAttention } from '../home/testutil';
 import { apiTools, methodForToolName } from '../llm';
 import { HUMAN, type TestDaemonNoServer, agentActor, createTestDaemon } from '../testing';
 import { ASSISTANT_TITLE, MAX_TREES_PER_MESSAGE, MOCK_RIGHT_HAND_MODEL } from './permissions';
 import { cronOf } from './mockRightHand';
+import { STATUS_HEADING, statusBlock } from './prompt';
 import { titleFromRequest } from './service';
 
 const daemons: TestDaemonNoServer[] = [];
@@ -237,5 +239,26 @@ describe('mock/right-hand through the real tool loop', () => {
     expect(run.status).toBe('failed');
     expect(run.error?.message).toContain('右腕は今日の上限');
     expect(() => d.ctx.service('assistant').assertWithinDailyLimit()).toThrow(ApiError);
+  });
+});
+
+describe('the status in the system prompt', () => {
+  it('lists each tree with its children and the open items, so 今どう？ needs no tool call', async () => {
+    const d = await daemon();
+    await d.call(HUMAN, 'system.assistant', {});
+    const root = d.ctx.service('sessions').create({ kind: 'chat', title: 'ローンチ準備' }, HUMAN);
+    const child = d.ctx
+      .service('sessions')
+      .create({ kind: 'agent', title: 'FAQ を書く', parentSessionId: root.id }, HUMAN);
+    openAttention(d.ctx, child.id, 'question', '価格を載せますか？');
+    const block = statusBlock(d.ctx);
+    expect(block).toContain(STATUS_HEADING);
+    expect(block).toMatch(
+      /^- \[ses_[0-9a-z]+\] 「ローンチ準備」 state=\w+ progress=0\/1 needsYou=1$/m,
+    );
+    expect(block).toContain('    - 「FAQ を書く」 state=needs_you');
+    expect(block).toContain('      質問: 「価格を載せますか？」');
+    // The assistant itself is not a tree.
+    expect(block).not.toContain(ASSISTANT_TITLE);
   });
 });
