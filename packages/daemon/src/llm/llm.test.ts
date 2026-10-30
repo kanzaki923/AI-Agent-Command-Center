@@ -10,7 +10,7 @@ import { describeGatewayError, gatewayErrorHint } from './gatewayErrors';
 import { MockProvider, mockCallInfo, scripted } from './mock';
 import { OpenAiCompatibleProvider, OpenAiStreamAccumulator } from './openai';
 import { SseParser } from './sse';
-import { apiTools, methodForToolName, toolNameForMethod } from './tools';
+import { apiTools, methodForToolName, paramsJsonSchema, toolNameForMethod } from './tools';
 import { type ChatRequest, LlmError, type LlmStreamEvent } from './types';
 
 // ---------------------------------------------------------------------------
@@ -593,6 +593,12 @@ describe('API tools', () => {
     expect(list.method).toBe('session.list');
     expect(list.parameters).toMatchObject({ type: 'object' });
     expect(list.parameters).not.toHaveProperty('$schema');
+    // Validation-only keys stay out of what the model reads (the dispatcher validates).
+    const text = JSON.stringify(list.parameters);
+    expect(text).not.toMatch(/"(pattern|minLength|maxLength|minimum|maximum)"/);
+    expect(text).toContain('"description":"session id (prefix \\"ses_\\")"');
+    expect(JSON.stringify(paramsJsonSchema('schedule.create'))).not.toContain('"pattern"');
+    expect(JSON.stringify(paramsJsonSchema('session.send'))).not.toContain('tool_result');
     const res = (await list.execute({}, { signal: new AbortController().signal })) as {
       items: unknown[];
     };

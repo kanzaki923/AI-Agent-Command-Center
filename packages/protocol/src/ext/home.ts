@@ -149,7 +149,7 @@ export const homeMethods = {
     params: params({ sessionId: SessionId.describe('Any session of the tree') }),
     result: z.object({ rootSessionId: SessionId, nodes: z.array(SessionCard) }),
     description:
-      'The whole session tree a session belongs to: every session with its state, what it is doing now, spend and outputs. Use it to answer "what is going on".',
+      'The whole session tree a session belongs to: every session with its state, what it is doing now, spend and outputs.',
   },
 } as const satisfies Record<string, MethodDef>;
 

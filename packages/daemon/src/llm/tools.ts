@@ -27,7 +27,47 @@ export function methodForToolName(name: string): string {
 
 const schemaCache = new Map<string, Record<string, unknown>>();
 
-/** JSON Schema of a method's params, as the model should send them (defaults optional). */
+/**
+ * Keys that only validate (the dispatcher re-validates every call with the zod schema):
+ * they cost the model tokens on every call and tell it nothing it can act on. Id patterns
+ * alone were ~30 regexes per tool list; the ISO date-time pattern is 300 characters.
+ */
+const VALIDATION_ONLY_KEYS = [
+  'pattern',
+  'minLength',
+  'maxLength',
+  'minimum',
+  'maximum',
+  'exclusiveMinimum',
+  'exclusiveMaximum',
+  'minItems',
+  'maxItems',
+];
+
+/** Drop validation-only keys everywhere in a JSON Schema (in place). */
+export function stripValidationKeys(node: unknown): unknown {
+  if (Array.isArray(node)) {
+    for (const x of node) stripValidationKeys(x);
+    return node;
+  }
+  if (!node || typeof node !== 'object') return node;
+  const obj = node as Record<string, unknown>;
+  for (const k of VALIDATION_ONLY_KEYS) delete obj[k];
+  for (const [k, v] of Object.entries(obj)) {
+    // `properties` is a map of names: a property called "pattern" must survive.
+    if (k === 'properties' && v && typeof v === 'object') {
+      for (const child of Object.values(v as Record<string, unknown>)) stripValidationKeys(child);
+    } else {
+      stripValidationKeys(v);
+    }
+  }
+  return node;
+}
+
+/**
+ * JSON Schema of the params of a method, as the model should send them (defaults optional):
+ * types, enums, descriptions and what is required, without the validation-only keys.
+ */
 export function paramsJsonSchema(method: MethodName): Record<string, unknown> {
   let schema = schemaCache.get(method);
   if (!schema) {
@@ -36,7 +76,7 @@ export function paramsJsonSchema(method: MethodName): Record<string, unknown> {
       unrepresentable: 'any',
     }) as Record<string, unknown>;
     delete raw.$schema;
-    schema = raw;
+    schema = stripValidationKeys(raw) as Record<string, unknown>;
     schemaCache.set(method, schema);
   }
   return schema;

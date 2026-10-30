@@ -84,7 +84,7 @@ export const costMethods = {
     }),
     result: CostSummary,
     description:
-      'Spend so far, grouped by day, project, session tree or model, with the daily limit. Agents see only their own tree.',
+      'Spend so far, grouped by day, project, session tree or model, with the daily limit.',
   },
   'budget.raise': {
     params: params({ budgetId: BudgetId, addUsd: z.number().positive().max(10_000) }),

@@ -29,7 +29,7 @@ import {
   BudgetAllocation,
   BudgetSubject,
   CapabilityGrant,
-  ContentPart,
+  TextPart,
   DiffFileStat,
   DiffStats,
   GrantLifetime,
@@ -232,9 +232,10 @@ const CommitAuthor = params({
   email: z.string().min(1).max(200),
 }).describe('Git identity for commits made by the daemon');
 
+/** What a user message may carry: text (tool calls and results are never sent in). */
 const ContentInput = z.union([
   z.string().min(1).describe('Plain text'),
-  z.array(ContentPart).min(1).describe('Structured content parts'),
+  z.array(TextPart).min(1).describe('Text parts'),
 ]);
 
 // ---------------------------------------------------------------------------
