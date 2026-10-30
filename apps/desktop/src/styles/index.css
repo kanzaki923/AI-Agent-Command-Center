@@ -118,6 +118,19 @@
   --glass-main: 1;
   --bg-app: rgb(11 12 14 / var(--glass-wing));
   --bg-canvas: rgb(16 17 20 / var(--glass-main));
+  /*
+   * The wallpaper under a translucent ground adds light and noise, so the ink of secondary
+   * text, the hover / selected washes and the hairlines go one step denser than on the opaque
+   * theme (the search field of the title bar, a 4% wash, vanished otherwise).
+   */
+  --text-secondary: #b6b9c0;
+  --text-tertiary: #878a93;
+  --text-disabled: #5a5d66;
+  --bg-hover: rgb(255 255 255 / 0.07);
+  --bg-selected: rgb(255 255 255 / 0.11);
+  --border-subtle: rgb(255 255 255 / 0.1);
+  --border-default: rgb(255 255 255 / 0.14);
+  --border-strong: rgb(255 255 255 / 0.2);
 }
 :root[data-glass='on'][data-glass-strength='weak'] {
   --glass-wing: 0.8;
@@ -135,8 +148,17 @@
   --glass-main: 0.65;
 }
 :root[data-glass='on'][data-theme='light'] {
-  --bg-app: rgb(236 236 239 / var(--glass-wing));
-  --bg-canvas: rgb(245 245 247 / var(--glass-main));
+  /* A darker tint than the opaque light ground, so white surfaces still stand off it. */
+  --bg-app: rgb(220 221 226 / var(--glass-wing));
+  --bg-canvas: rgb(238 238 241 / var(--glass-main));
+  --text-secondary: #474a52;
+  --text-tertiary: #6b6e76;
+  --text-disabled: #a3a6ad;
+  --bg-hover: rgb(0 0 0 / 0.07);
+  --bg-selected: rgb(0 0 0 / 0.1);
+  --border-subtle: rgb(0 0 0 / 0.1);
+  --border-default: rgb(0 0 0 / 0.15);
+  --border-strong: rgb(0 0 0 / 0.22);
 }
 
 @theme inline {

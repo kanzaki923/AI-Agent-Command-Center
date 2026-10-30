@@ -73,7 +73,7 @@
 | `--accent-fg` | `#FFFFFF` | 主ボタン上の文字 |
 | `--focus-ring` | `rgb(108 114 255 / 0.65)` | フォーカスリング |
 
-**透け**（`<html data-glass="on">`、`lib/theme.ts`）：Tauri の窓は `transparent: true` で、Rust 側が `window-vibrancy`（Windows 11 は acrylic、だめなら mica。macOS は vibrancy）を当てられたときだけ `get_glass` が真になる。その上で設定「透け」がオンなら、翼の地 `--bg-app` を半透明にし（`--glass-wing`：弱 0.8 / 中 0.62 / 強 0.45）、範囲が「全体」ならメインの地 `--bg-canvas` も（`--glass-main`：弱 0.92 / 中 0.8 / 強 0.65。「翼だけ」では不透明）。`<html data-glass-scope data-glass-strength>` で切り替え、既定は翼だけ・中。面（surface / raised）は不透明のまま。**地は 1 枚だけ塗る**：透けのとき `html` は透明（`index.html` のインライン style。レイヤー外なので変数で参照する）、シェルの外枠は塗らず、翼は `bg-app`・メインは `bg-canvas` を 1 回ずつ。重ねると 0.62 が 3 枚で 0.95 になり透けなくなる。ブラウザ（Vite だけ）と撮影では透けない。
+**透け**（`<html data-glass="on">`、`lib/theme.ts`）：Tauri の窓は `transparent: true` で、Rust 側が `window-vibrancy`（Windows 11 は acrylic、だめなら mica。macOS は vibrancy）を当てられたときだけ `get_glass` が真になる。その上で設定「透け」がオンなら、翼の地 `--bg-app` を半透明にし（`--glass-wing`：弱 0.8 / 中 0.62 / 強 0.45）、範囲が「全体」ならメインの地 `--bg-canvas` も（`--glass-main`：弱 0.92 / 中 0.8 / 強 0.65。「翼だけ」では不透明）。`<html data-glass-scope data-glass-strength>` で切り替え、既定は翼だけ・中。面（surface / raised）は不透明のまま。壁紙が足す明るさとノイズの分、透けのときは二次・三次の文字のインク、hover / selected の塗り、罫線を一段濃くし、ライトの地の tint は不透明のときより暗く（`rgb(220 221 226)`）して白い面が立つようにする。**地は 1 枚だけ塗る**：透けのとき `html` は透明（`index.html` のインライン style。レイヤー外なので変数で参照する）、シェルの外枠は塗らず、翼は `bg-app`・メインは `bg-canvas` を 1 回ずつ。重ねると 0.62 が 3 枚で 0.95 になり透けなくなる。ブラウザ（Vite だけ）と撮影では透けない。
 
 ### 2.3 色：ライト
 
