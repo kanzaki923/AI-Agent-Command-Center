@@ -8,8 +8,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ApiError } from '../core/errors';
 import { openAttention } from '../home/testutil';
 import { apiTools, methodForToolName } from '../llm';
+import type { ChatRequest } from '../llm/types';
 import { HUMAN, type TestDaemonNoServer, agentActor, createTestDaemon } from '../testing';
 import { ASSISTANT_TITLE, MAX_TREES_PER_MESSAGE, MOCK_RIGHT_HAND_MODEL } from './permissions';
+import { rememberPastRuns } from './history';
 import { cronOf } from './mockRightHand';
 import { STATUS_HEADING, statusBlock } from './prompt';
 import { titleFromRequest } from './service';
@@ -260,5 +262,141 @@ describe('the status in the system prompt', () => {
     expect(block).toContain('      質問: 「価格を載せますか？」');
     // The assistant itself is not a tree.
     expect(block).not.toContain(ASSISTANT_TITLE);
+  });
+});
+
+describe('what the assistant remembers of past runs', () => {
+  const msg = (over: Partial<Message> & Pick<Message, 'role' | 'content'>): Message => ({
+    id: `msg_${String(Math.random()).slice(2, 28).padEnd(26, '0')}`,
+    sessionId: 'ses_00000000000000000000000000',
+    runId: null,
+    author: HUMAN,
+    model: null,
+    createdAt: '2026-10-30T00:00:00.000Z',
+    delivery: 'delivered',
+    meta: null,
+    usage: null,
+    ...over,
+  });
+
+  it('folds the tool calls of a past run into record lines and drops their results; the current run stays whole', () => {
+    const history: Message[] = [
+      msg({ role: 'user', content: [{ type: 'text', text: '準備を進めて' }] }),
+      msg({
+        role: 'assistant',
+        runId: 'run_1',
+        content: [
+          { type: 'reasoning', text: '…' },
+          {
+            type: 'tool_call',
+            toolCallId: 'c1',
+            name: 'assistant.startWork',
+            input: { text: '準備を進めて', title: '準備' },
+          },
+        ],
+      }),
+      msg({
+        role: 'tool',
+        runId: 'run_1',
+        content: [
+          {
+            type: 'tool_result',
+            toolCallId: 'c1',
+            output: { session: { id: 'ses_1', title: '準備', state: 'working', cost: {} } },
+            isError: false,
+          },
+        ],
+      }),
+      msg({
+        role: 'assistant',
+        runId: 'run_1',
+        content: [{ type: 'text', text: '「準備」を始めます。' }],
+      }),
+      msg({ role: 'user', content: [{ type: 'text', text: '止めて' }] }),
+      msg({
+        role: 'assistant',
+        runId: 'run_2',
+        content: [
+          {
+            type: 'tool_call',
+            toolCallId: 'c2',
+            name: 'session.stop',
+            input: { sessionId: 'ses_1', tree: true },
+          },
+        ],
+      }),
+      msg({
+        role: 'tool',
+        runId: 'run_2',
+        content: [
+          {
+            type: 'tool_result',
+            toolCallId: 'c2',
+            output: { error: { code: 'forbidden', message: 'だめ' } },
+            isError: true,
+          },
+        ],
+      }),
+      msg({ role: 'user', content: [{ type: 'text', text: '今どう？' }] }),
+      msg({
+        role: 'assistant',
+        runId: 'run_3',
+        content: [{ type: 'tool_call', toolCallId: 'c3', name: 'home.get', input: {} }],
+      }),
+      msg({
+        role: 'tool',
+        runId: 'run_3',
+        content: [{ type: 'tool_result', toolCallId: 'c3', output: { trees: [] }, isError: false }],
+      }),
+    ];
+    const kept = rememberPastRuns(history, 'run_3');
+    expect(kept.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'assistant',
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+      'tool',
+    ]);
+    const text = (m: Message) =>
+      m.content.map((p) => (p.type === 'text' ? p.text : p.type)).join('|');
+    expect(text(kept[1]!)).toBe(
+      '[assistant.startWork {"text":"準備を進めて","title":"準備"} → ok id="ses_1" title="準備" state="working"]',
+    );
+    expect(text(kept[2]!)).toBe('「準備」を始めます。');
+    expect(text(kept[4]!)).toBe('[session.stop {"sessionId":"ses_1","tree":true} → error: だめ]');
+    // The current run: untouched.
+    expect(kept[6]).toBe(history[8]);
+    expect(kept[7]).toBe(history[9]);
+  });
+
+  it('the model sees two system messages (fixed role, then the status) and no tool results of earlier runs', async () => {
+    const d = await daemon();
+    const { sessionId } = await d.call(HUMAN, 'system.assistant', {});
+    await ask(d, sessionId, '来月のローンチ準備を進めて');
+    const seen: ChatRequest[] = [];
+    d.ctx.service('llm').mock.define('mock/spy', (req) => {
+      seen.push(req);
+      return { text: '見ました。' };
+    });
+    await d.call(HUMAN, 'settings.update', { assistant: { model: 'mock/spy' } });
+    const run = await ask(d, sessionId, '今どう？');
+    expect(run.status).toBe('completed');
+    const req = seen[0]!;
+    const roles = req.messages.map((m) => m.role);
+    expect(roles.slice(0, 2)).toEqual(['system', 'system']);
+    expect(roles).not.toContain('tool');
+    expect((req.messages[0] as { content: string }).content).toContain('You are the assistant');
+    expect((req.messages[0] as { content: string }).content).not.toContain(STATUS_HEADING);
+    expect((req.messages[1] as { content: string }).content).toContain(STATUS_HEADING);
+    const past = req.messages
+      .filter((m) => m.role === 'assistant')
+      .map((m) => (m as { content: string | null }).content ?? '');
+    expect(past[0]).toMatch(
+      /^\[assistant\.startWork .* → ok id="ses_[0-9a-z]+" title="来月のローンチ準備を進めて" state=/m,
+    );
+    expect(past[1]).toBe('「来月のローンチ準備を進めて」を始めます。終わったら知らせます。');
   });
 });

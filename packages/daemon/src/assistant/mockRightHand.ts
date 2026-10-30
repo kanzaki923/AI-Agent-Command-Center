@@ -37,8 +37,11 @@ const tc = (method: string, input: unknown): ToolCall => ({
 });
 
 function parseStatus(req: ChatRequest): { trees: Tree[]; hint: string | null } {
-  const system = req.messages.find((m) => m.role === 'system');
-  const text = system?.role === 'system' ? system.content : '';
+  // The status is in the second system message (service.ts systemPrompts); read them all.
+  const text = req.messages
+    .filter((m) => m.role === 'system')
+    .map((m) => (m as { content: string }).content)
+    .join('\n');
   const trees: Tree[] = [];
   let hint: string | null = null;
   for (const line of text.split('\n')) {

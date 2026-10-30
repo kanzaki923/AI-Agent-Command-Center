@@ -95,18 +95,20 @@ export class AssistantService {
     });
   }
 
-  /** System prompt of a run: the role, the own prompt of the session, the hint, the status. */
-  systemPrompt(session: Session, history: readonly Message[]): string {
+  /**
+   * The two system messages of a run. The first never changes between runs (the role and
+   * the own prompt of the session), so with the tools it is a stable prefix a prompt cache
+   * can hold; the second carries what changes (the hint of the last message, the status of
+   * every tree).
+   */
+  systemPrompts(session: Session, history: readonly Message[]): [string, string] {
     const last = [...history].reverse().find((m) => m.role === 'user');
     const hint = last?.meta?.kind === 'hint' ? `${HINT_LABEL} ${last.meta.text}` : null;
-    return [
-      buildAssistantPrompt({ maxTrees: MAX_TREES_PER_MESSAGE }),
-      session.systemPrompt,
-      hint,
-      statusBlock(this.ctx),
-    ]
+    const fixed = [buildAssistantPrompt({ maxTrees: MAX_TREES_PER_MESSAGE }), session.systemPrompt]
       .filter(Boolean)
       .join('\n\n');
+    const changing = [hint, statusBlock(this.ctx)].filter(Boolean).join('\n\n');
+    return [fixed, changing];
   }
 
   /** `settings.assistant.dailyUsd`: the own calls of the assistant stop for the day at the limit. */

@@ -16,6 +16,7 @@ export {
 export { HINT_LABEL, STATUS_HEADING, buildAssistantPrompt, statusBlock } from './prompt';
 export { AssistantService, titleFromRequest } from './service';
 export { cronOf, mockRightHand } from './mockRightHand';
+export { rememberPastRuns } from './history';
 
 declare module '../core/context' {
   interface Services {

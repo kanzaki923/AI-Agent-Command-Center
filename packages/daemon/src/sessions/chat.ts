@@ -1,6 +1,7 @@
 import type { Message, Run, Session } from '@acc/protocol';
 import type { RunExecutor } from '../contracts';
 import type { DaemonContext } from '../core/context';
+import { rememberPastRuns } from '../assistant/history';
 import { MOCK_RIGHT_HAND_MODEL } from '../assistant/permissions';
 import { invalidParams } from '../core/errors';
 import { apiTools, runToolLoop, toChatMessages } from '../llm';
@@ -68,13 +69,21 @@ export function createChatExecutor(ctx: DaemonContext): RunExecutor {
     const inbox = ctx.hasService('supervisorInbox') ? ctx.service('supervisorInbox') : null;
     inbox?.drain(run.id);
     const history = chatHistory(ctx, run, session);
+    // The assistant remembers past runs by what was said (assistant/history.ts) and gets
+    // its fixed prompt and the changing status as two system messages.
+    const messages = assistant
+      ? [
+          ...assistant
+            .systemPrompts(session, history)
+            .map((content) => ({ role: 'system' as const, content })),
+          ...toChatMessages(rememberPastRuns(history, run.id)),
+        ]
+      : toChatMessages(history, { systemPrompt: session.systemPrompt });
     await runToolLoop({
       ctx,
       ctl,
       model,
-      messages: toChatMessages(history, {
-        systemPrompt: assistant ? assistant.systemPrompt(session, history) : session.systemPrompt,
-      }),
+      messages,
       tools: apiTools(ctx, ctl.actor),
       maxTurns: ctx.settings.get().supervisor.maxModelCallsPerRun,
       failOnTurnLimit: true,
