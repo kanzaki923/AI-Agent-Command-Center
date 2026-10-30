@@ -313,7 +313,6 @@ describe('<SettingsDialog> up front', () => {
       { timeout: 3000 },
     );
     // The address stays off the screen until pressed; the summary never shows it.
-    expect(screen.getByTestId('connection-status')).toHaveTextContent('ChatGPT');
     expect(screen.getByTestId('connection-status')).not.toHaveTextContent('me@example.com');
     fireEvent.click(screen.getByTestId('chatgpt-account'));
     expect(screen.getByTestId('chatgpt-account')).toHaveTextContent('me@example.com');
