@@ -109,8 +109,8 @@ export function connectionStatus(
   const p = settings?.providers;
   if (p?.anthropic.hasApiKey) parts.push('Anthropic');
   if (p?.openai.hasApiKey) parts.push('OpenAI');
-  if (p?.openai.chatgpt)
-    parts.push(`ChatGPT${p.openai.chatgpt.email ? ` ${p.openai.chatgpt.email}` : ''}`);
+  // The account itself stays off the summary: screens get shared and streamed.
+  if (p?.openai.chatgpt) parts.push('ChatGPT');
   if (parts.length === 0) return { tone: 'off', text: 'モック' };
   return { tone, text: parts.join(' · ') };
 }

@@ -84,10 +84,12 @@ export function formatCost(
   source: CostSource,
   opts: { demo?: boolean } = {},
 ): CostView {
-  if (opts.demo) return { text: '$0.00（デモ）', tooltip: 'デモモードでは費用はかかりません', source };
+  if (opts.demo)
+    return { text: '$0.00（デモ）', tooltip: 'デモモードでは費用はかかりません', source };
   if (source === 'unknown') return { text: '—', tooltip: 'コストを取得できない接続です', source };
   const v = usd < 10 ? usd.toFixed(2) : usd.toFixed(1);
-  if (source === 'estimated') return { text: `≈$${v}`, tooltip: 'トークン数からの推定値です', source };
+  if (source === 'estimated')
+    return { text: `≈$${v}`, tooltip: 'トークン数からの推定値です', source };
   return { text: `$${v}`, tooltip: null, source };
 }
 

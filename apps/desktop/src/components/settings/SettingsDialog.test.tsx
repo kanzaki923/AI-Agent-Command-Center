@@ -309,9 +309,14 @@ describe('<SettingsDialog> up front', () => {
     // The browser side finished: the daemon says so.
     status = { state: 'signed_in', email: 'me@example.com', error: null };
     await waitFor(
-      () => expect(screen.getByTestId('chatgpt-account')).toHaveTextContent('me@example.com'),
+      () => expect(screen.getByTestId('chatgpt-account')).toHaveTextContent('サインイン済み'),
       { timeout: 3000 },
     );
+    // The address stays off the screen until pressed; the summary never shows it.
+    expect(screen.getByTestId('connection-status')).toHaveTextContent('ChatGPT');
+    expect(screen.getByTestId('connection-status')).not.toHaveTextContent('me@example.com');
+    fireEvent.click(screen.getByTestId('chatgpt-account'));
+    expect(screen.getByTestId('chatgpt-account')).toHaveTextContent('me@example.com');
     fireEvent.click(screen.getByRole('button', { name: 'サインアウト' }));
     await waitFor(() => expect(calls).toEqual(['signIn', 'signOut']));
     await screen.findByRole('button', { name: 'ChatGPT でサインイン' });

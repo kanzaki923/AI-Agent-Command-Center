@@ -1,6 +1,13 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { dayBucket, formatCost, formatDiffStat, formatElapsed, formatTimestamp, sumUsage } from './format';
+import {
+  dayBucket,
+  formatCost,
+  formatDiffStat,
+  formatElapsed,
+  formatTimestamp,
+  sumUsage,
+} from './format';
 
 describe('formatElapsed', () => {
   it('uses mm:ss under an hour and h:mm:ss above', () => {
@@ -22,7 +29,10 @@ describe('formatCost (reported / estimated / unknown, concept §5.1)', () => {
     });
   });
   it('shows unknown cost as an em dash, never $0.00', () => {
-    expect(formatCost(0, 'unknown')).toMatchObject({ text: '—', tooltip: 'コストを取得できない接続です' });
+    expect(formatCost(0, 'unknown')).toMatchObject({
+      text: '—',
+      tooltip: 'コストを取得できない接続です',
+    });
   });
   it('labels demo mode', () => {
     expect(formatCost(1.5, 'reported', { demo: true }).text).toBe('$0.00（デモ）');
@@ -40,7 +50,10 @@ describe('sumUsage', () => {
     costSource,
   });
   it('is unknown only when nothing was measured', () => {
-    expect(sumUsage([u(0, 'unknown'), u(0, 'unknown')])).toEqual({ costUsd: 0, costSource: 'unknown' });
+    expect(sumUsage([u(0, 'unknown'), u(0, 'unknown')])).toEqual({
+      costUsd: 0,
+      costSource: 'unknown',
+    });
     expect(sumUsage([])).toEqual({ costUsd: 0, costSource: 'unknown' });
   });
   it('becomes an estimate when any part is estimated', () => {

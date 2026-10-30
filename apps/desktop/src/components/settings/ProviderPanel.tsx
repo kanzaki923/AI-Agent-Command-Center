@@ -10,6 +10,7 @@ import { isTauri } from '../../lib/platform';
 import { toastError } from '../../store/toast';
 import { Button } from '../ui/Button';
 import { inputClass } from '../ui/Dialog';
+import { Tooltip } from '../ui/Tooltip';
 import { LiteLlmForm } from './LiteLlmForm';
 import { FieldRow } from './controls';
 
@@ -151,6 +152,8 @@ function openInBrowser(url: string): void {
 function ChatGptRow({ signedIn }: { signedIn: { email: string | null } | null }) {
   const rt = useRuntime();
   const [busy, setBusy] = useState(false);
+  // The address stays off the screen (shared, streamed) until pressed.
+  const [revealed, setRevealed] = useState(false);
   const status = useQuery<ChatGptStatus>({
     queryKey: qk.chatgptStatus,
     queryFn: () => rt.client.call('chatgpt.status', {}),
@@ -190,9 +193,23 @@ function ChatGptRow({ signedIn }: { signedIn: { email: string | null } | null })
     <FieldRow label="ChatGPT" hint="ChatGPT の契約の枠で OpenAI のモデルを使う（API の課金なし）">
       {state === 'signed_in' ? (
         <>
-          <span className="truncate font-mono text-meta text-fg-2" data-testid="chatgpt-account">
-            {email ?? 'サインイン済み'}
-          </span>
+          {email ? (
+            <Tooltip content={revealed ? '押すと隠す' : '押すとアカウントを表示'}>
+              <button
+                type="button"
+                aria-pressed={revealed}
+                onClick={() => setRevealed((v) => !v)}
+                className="truncate rounded-sm px-1 font-mono text-meta text-fg-2 hover:bg-hover hover:text-fg"
+                data-testid="chatgpt-account"
+              >
+                {revealed ? email : 'サインイン済み'}
+              </button>
+            </Tooltip>
+          ) : (
+            <span className="truncate font-mono text-meta text-fg-2" data-testid="chatgpt-account">
+              サインイン済み
+            </span>
+          )}
           <Button size="sm" variant="secondary" disabled={busy} onClick={() => void signOut()}>
             サインアウト
           </Button>
