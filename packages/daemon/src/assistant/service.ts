@@ -11,6 +11,7 @@ import {
   ASSISTANT_TITLE,
   MAX_TREES_PER_MESSAGE,
 } from './permissions';
+import type { AssistantNotifier } from './notify';
 import { HINT_LABEL, buildAssistantPrompt, statusBlock } from './prompt';
 
 /** Longest title taken from a request (the rest is in the conversation). */
@@ -36,6 +37,8 @@ export function titleFromRequest(text: string): string {
  * `ctx.service('assistant')`.
  */
 export class AssistantService {
+  /** Speaks up when a tree ends or fails (notify.ts). Set by the module. */
+  notifier!: AssistantNotifier;
   private cachedId: string | null = null;
   /** Roots started per run of the assistant (`MAX_TREES_PER_MESSAGE`). */
   private readonly started = new Map<string, number>();

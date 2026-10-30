@@ -2,6 +2,7 @@ import { defineMethod } from '../api/registry';
 import { defineModule } from '../module';
 import { mockRightHand } from './mockRightHand';
 import { MOCK_RIGHT_HAND_MODEL } from './permissions';
+import { AssistantNotifier } from './notify';
 import { AssistantService } from './service';
 
 export {
@@ -17,6 +18,7 @@ export { HINT_LABEL, STATUS_HEADING, buildAssistantPrompt, statusBlock } from '.
 export { AssistantService, titleFromRequest } from './service';
 export { cronOf, mockRightHand } from './mockRightHand';
 export { rememberPastRuns } from './history';
+export { AssistantNotifier, NOTICES_PER_HOUR } from './notify';
 
 declare module '../core/context' {
   interface Services {
@@ -38,6 +40,7 @@ export const assistantModule = defineModule({
   register(ctx) {
     const assistant = new AssistantService(ctx);
     ctx.provide('assistant', assistant);
+    assistant.notifier = new AssistantNotifier(ctx, assistant);
     ctx.methods.register(
       defineMethod('system.assistant', {
         handler: () => ({ sessionId: assistant.ensure().id }),
@@ -52,6 +55,7 @@ export const assistantModule = defineModule({
       }),
     );
     ctx.onClose(assistant.start());
+    ctx.onClose(assistant.notifier.start());
     return {
       start() {
         ctx.service('llm').mock.define(MOCK_RIGHT_HAND_MODEL, mockRightHand, {

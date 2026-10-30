@@ -6,13 +6,14 @@
 import type { Message, Run } from '@acc/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ApiError } from '../core/errors';
-import { openAttention } from '../home/testutil';
+import { insertDocument, openAttention } from '../home/testutil';
 import { apiTools, methodForToolName } from '../llm';
 import type { ChatRequest } from '../llm/types';
 import { HUMAN, type TestDaemonNoServer, agentActor, createTestDaemon } from '../testing';
 import { ASSISTANT_TITLE, MAX_TREES_PER_MESSAGE, MOCK_RIGHT_HAND_MODEL } from './permissions';
 import { rememberPastRuns } from './history';
 import { cronOf } from './mockRightHand';
+import { NOTICES_PER_HOUR } from './notify';
 import { STATUS_HEADING, statusBlock } from './prompt';
 import { titleFromRequest } from './service';
 
@@ -398,5 +399,101 @@ describe('what the assistant remembers of past runs', () => {
       /^\[assistant\.startWork .* → ok id="ses_[0-9a-z]+" title="来月のローンチ準備を進めて" state=/m,
     );
     expect(past[1]).toBe('「来月のローンチ準備を進めて」を始めます。終わったら知らせます。');
+  });
+});
+
+describe('the assistant speaks up when a tree ends or fails', () => {
+  const settle = (
+    d: TestDaemonNoServer,
+    root: { id: string; rootSessionId: string },
+    to: 'done' | 'failed',
+    from = 'working',
+  ) => {
+    d.ctx.repos.sessions.update(root.id, (s) => ({ ...s, state: to }));
+    d.ctx.bus.emit({
+      type: 'session.state_changed',
+      actor: HUMAN,
+      payload: {
+        sessionId: root.id,
+        rootSessionId: root.rootSessionId,
+        parentSessionId: null,
+        from: from as 'working',
+        to,
+        stateSince: d.ctx.clock.iso(),
+        now: null,
+      },
+    });
+  };
+  const until = async <T>(fn: () => T | null | undefined | false, ms = 5000): Promise<T> => {
+    const end = Date.now() + ms;
+    for (;;) {
+      const v = fn();
+      if (v) return v;
+      if (Date.now() > end) throw new Error('timed out');
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  };
+
+  it('posts a notice with the outputs and answers it in its own words; children and the assistant itself never do', async () => {
+    const d = await daemon();
+    const { sessionId } = await d.call(HUMAN, 'system.assistant', {});
+    d.ctx.service('assistant').notifier.debounceMs = 0;
+    const root = d.ctx.service('sessions').create({ kind: 'chat', title: 'ローンチ準備' }, HUMAN);
+    const child = d.ctx
+      .service('sessions')
+      .create({ kind: 'agent', title: 'FAQ', parentSessionId: root.id }, HUMAN);
+    insertDocument(d.ctx, child.id, 'FAQ（5 問）');
+    settle(d, root, 'done');
+    const notice = await until(() =>
+      d.ctx.repos.messages
+        .find({ where: { session_id: sessionId } })
+        .find((m) => m.role === 'system'),
+    );
+    expect(notice.meta).toMatchObject({
+      kind: 'wake',
+      items: [
+        {
+          sessionId: root.id,
+          title: 'ローンチ準備',
+          change: 'done',
+          artifactIds: [expect.stringMatching(/^art_/)],
+        },
+      ],
+    });
+    expect(notice.content[0]).toMatchObject({ type: 'text' });
+    expect((notice.content[0] as { text: string }).text).toContain(
+      '「ローンチ準備」が終わりました。できたもの: FAQ（5 問）',
+    );
+    const reply = await until(() =>
+      d.ctx.repos.messages
+        .find({ where: { session_id: sessionId } })
+        .find((m) => m.role === 'assistant'),
+    );
+    expect((reply.content[0] as { text: string }).text).toBe(
+      '「ローンチ準備」が終わりました。できたもの: FAQ（5 問）',
+    );
+
+    // A child settling, or the assistant itself, is nobody's news.
+    settle(d, { id: child.id, rootSessionId: root.id }, 'failed');
+    const me = d.ctx.repos.sessions.require(sessionId);
+    settle(d, me, 'failed');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(
+      d.ctx.repos.messages
+        .find({ where: { session_id: sessionId } })
+        .filter((m) => m.role === 'system'),
+    ).toHaveLength(1);
+  });
+
+  it('skips a root that moved on before the notice and stops at the hourly limit', async () => {
+    const d = await daemon();
+    await d.call(HUMAN, 'system.assistant', {});
+    const n = d.ctx.service('assistant').notifier;
+    const root = d.ctx.service('sessions').create({ kind: 'chat', title: '一瞬' }, HUMAN);
+    d.ctx.repos.sessions.update(root.id, (s) => ({ ...s, state: 'working' }));
+    expect(n.notify(root.id, 'failed')).toBeNull();
+    d.ctx.repos.sessions.update(root.id, (s) => ({ ...s, state: 'failed' }));
+    for (let i = 0; i < NOTICES_PER_HOUR; i++) expect(n.notify(root.id, 'failed')).not.toBeNull();
+    expect(n.notify(root.id, 'failed')).toBeNull();
   });
 });

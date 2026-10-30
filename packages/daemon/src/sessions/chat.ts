@@ -76,7 +76,12 @@ export function createChatExecutor(ctx: DaemonContext): RunExecutor {
           ...assistant
             .systemPrompts(session, history)
             .map((content) => ({ role: 'system' as const, content })),
-          ...toChatMessages(rememberPastRuns(history, run.id)),
+          // Notices (meta.wake) go as user turns, as a supervisor's wakes do.
+          ...toChatMessages(
+            rememberPastRuns(history, run.id).map((m) =>
+              m.meta?.kind === 'wake' ? ({ ...m, role: 'user' } satisfies Message) : m,
+            ),
+          ),
         ]
       : toChatMessages(history, { systemPrompt: session.systemPrompt });
     await runToolLoop({

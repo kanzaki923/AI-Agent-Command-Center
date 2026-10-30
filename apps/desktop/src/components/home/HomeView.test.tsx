@@ -353,6 +353,42 @@ describe('<HomeView>', () => {
     expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: lane.id });
   });
 
+  it('shows what the assistant says by itself (a tree ended) without any ask, and nothing from before this window', async () => {
+    const assistant = session({ kind: 'chat', title: '右腕' });
+    const lane = card({ title: 'ローンチ準備', role: 'supervisor', state: 'done' });
+    const old = message(assistant, { id: 'msg_old', role: 'assistant', content: [{ type: 'text', text: '昔の返事' }] });
+    const now = new Date().toISOString();
+    const notice = message(assistant, {
+      id: 'msg_n',
+      role: 'system',
+      createdAt: now,
+      author: { kind: 'system', component: 'assistant' },
+      content: [{ type: 'text', text: '[状況の更新]\n「ローンチ準備」が終わりました。' }],
+      meta: { kind: 'wake', items: [{ sessionId: lane.id, title: 'ローンチ準備', change: 'done', artifactIds: [] }] },
+    });
+    const said = message(assistant, {
+      id: 'msg_s',
+      role: 'assistant',
+      createdAt: now,
+      content: [{ type: 'text', text: '「ローンチ準備」が終わりました。できたもの: FAQ' }],
+    });
+    useUi.setState({ assistantAskedAt: null });
+    mount({
+      'home.get': () => homeSnapshot({ trees: [homeTree(lane, [], { counts: { ...counts, done: 1 } })] }),
+      'project.list': () => ({ items: [] }),
+      'system.assistant': () => ({ sessionId: assistant.id }),
+      'session.messages': () => ({ items: [old, notice, said], hasMore: false, streaming: null }),
+    });
+    await screen.findByRole('region', { name: 'ローンチ準備' });
+    await vi.waitFor(() =>
+      expect(document.querySelector('[data-assistant-said]')).toHaveTextContent('「ローンチ準備」が終わりました。できたもの: FAQ'),
+    );
+    expect(document.querySelector('[data-assistant-asked]')).toBeNull();
+    expect(document.querySelector('[data-assistant-notice]')).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '「ローンチ準備」' }));
+    expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: lane.id });
+  });
+
   it('Ctrl+Enter speaks to the assistant and opens its conversation', async () => {
     const assistant = session({ kind: 'chat', title: '右腕' });
     const fake = mount({

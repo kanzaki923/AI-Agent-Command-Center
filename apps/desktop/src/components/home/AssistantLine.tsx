@@ -15,31 +15,40 @@ const textOf = (m: ChatMessage | undefined): string =>
     .join('')
     .trim();
 
+/** When this window opened: only what the assistant said since then is shown on home. */
+const OPENED_AT = new Date().toISOString();
+
+/** A notice the daemon posted into the conversation of the assistant (a tree ended or failed). */
+const isNotice = (m: ChatMessage) => m.role === 'system' && m.meta?.kind === 'wake';
+
 /**
- * The voice of the assistant (right-hand spec §2.2): above the home field, the last exchange
- * of this window only — the words of the human in one line, then the reply as it streams in
- * (at most two lines; 開く has the rest). While the assistant works and has said nothing yet,
+ * The voice of the assistant (right-hand spec §2.2, §4): above the home field, the last
+ * exchange of this window only — the words of the human in one line, then the reply as it
+ * streams in (at most two lines; 開く has the rest). When the assistant speaks up by itself
+ * (a tree ended or failed), only its line shows. While it works and has said nothing yet,
  * its mark breathes; a failed run shows its reason. Titles in 「」 that name a lane open it.
  */
 export function AssistantLine({ className }: { className?: string }) {
   const id = useAssistantId();
   const askedAt = useUi((s) => s.assistantAskedAt);
   const openSession = useUi((s) => s.openSession);
-  const messages = useMessages(askedAt ? id : null).data;
-  const streaming = useStreaming(askedAt ? id : null);
+  const messages = useMessages(id).data;
+  const streaming = useStreaming(id);
   const runs = useSessionRuns(id ?? '');
   const trees = useHomeTrees();
-  if (!id || !askedAt || !messages) return null;
+  if (!id || !messages) return null;
 
   let userAt = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]!.role === 'user') {
+    const m = messages[i]!;
+    if (m.role === 'user' || isNotice(m)) {
       userAt = i;
       break;
     }
   }
   const user = messages[userAt];
-  if (!user || user.createdAt < askedAt) return null;
+  if (!user || user.createdAt < (askedAt && askedAt < OPENED_AT ? askedAt : OPENED_AT)) return null;
+  const notice = isNotice(user);
   const reply = messages
     .slice(userAt + 1)
     .filter((m) => m.role === 'assistant' && textOf(m))
@@ -58,10 +67,15 @@ export function AssistantLine({ className }: { className?: string }) {
 
   return (
     <div className={cn('flex min-w-0 flex-col gap-0.5', className)} data-assistant-line>
-      <div className="min-w-0 truncate pl-[30px] text-ui text-fg-3" data-assistant-asked>
-        {textOf(user) || user.local?.text}
-      </div>
-      <div className="flex min-w-0 items-start gap-2 pl-1.5">
+      {!notice && (
+        <div className="min-w-0 truncate pl-[30px] text-ui text-fg-3" data-assistant-asked>
+          {textOf(user) || user.local?.text}
+        </div>
+      )}
+      <div
+        className="flex min-w-0 items-start gap-2 pl-1.5"
+        data-assistant-notice={notice || undefined}
+      >
         <span
           role="img"
           aria-label="右腕"

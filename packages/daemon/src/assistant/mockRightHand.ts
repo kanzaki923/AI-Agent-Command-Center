@@ -1,6 +1,7 @@
 import type { MockCallInfo, MockReply } from '../llm/mock';
 import { toolNameForMethod } from '../llm/tools';
 import type { ChatRequest } from '../llm/types';
+import { WAKE_MARKER } from '../inbox/wake';
 import { HINT_LABEL } from './prompt';
 
 type ToolCall = NonNullable<MockReply['toolCalls']>[number];
@@ -168,6 +169,12 @@ export function mockRightHand(req: ChatRequest, info: MockCallInfo): MockReply {
   const { trees, hint } = parseStatus(req);
   const result = parsed(info);
   const failed = errorOf(result);
+
+  // A notice from the daemon (notify.ts): say what it says, in one line.
+  if (text.startsWith(WAKE_MARKER)) {
+    const said = text.slice(WAKE_MARKER.length).trim().replace(/\s+/g, ' ');
+    return { text: distinct(req, said, `${said} 開いて確かめてください。`) };
+  }
 
   if (info.turn >= 1 && failed) {
     return {

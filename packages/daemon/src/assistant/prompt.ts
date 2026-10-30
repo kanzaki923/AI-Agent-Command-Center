@@ -1,5 +1,6 @@
 import type { DaemonContext } from '../core/context';
 import { buildHomeSnapshot } from '../home/home';
+import { WAKE_MARKER } from '../inbox/wake';
 
 /** Heading of the status block in the system prompt of the assistant (the mock reads it too). */
 export const STATUS_HEADING = 'いまの状況';
@@ -24,6 +25,7 @@ export function buildAssistantPrompt(input: { maxTrees: number }): string {
     '- Something to repeat (毎朝, 毎週 …): assistant.startWork with `delegate: false` and a short title, then schedule.create on that conversation (cron in the local time zone). Answer with the rhythm and the first run.',
     '- A plain question that needs no agent: answer it yourself, briefly.',
     '- A note for a running tree (「FAQ は 5 問でいい」): session.send to that root.',
+    `- A message starting with "${WAKE_MARKER}" is a notice from the daemon that a tree ended or failed. Tell the person in one line what came out (the titles in 「」) or what went wrong, and what waits for them. Start nothing from it.`,
     '',
     'Rules (the daemon enforces them; do not work around them)',
     `- At most ${input.maxTrees} new conversations per message of theirs. For more, ask them to split it.`,
