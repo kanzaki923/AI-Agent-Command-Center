@@ -135,9 +135,9 @@ export const llmModule = defineModule({
         handler: (p) => gateway.listModels(p.refresh ?? false),
       }),
       defineMethod('chatgpt.signIn', {
-        handler: (_p, call) => {
+        handler: (p, call) => {
           humansOnly(call.actor);
-          return chatgpt.signIn();
+          return chatgpt.signIn({ open: p.open });
         },
       }),
       defineMethod('chatgpt.status', { handler: () => chatgpt.status() }),

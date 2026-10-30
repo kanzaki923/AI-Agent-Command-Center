@@ -6,7 +6,7 @@
  * a supervisor can give each child a different one.
  */
 import { z } from 'zod';
-import { type MethodDef, Ok, empty } from '../method';
+import { type MethodDef, Ok, empty, params } from '../method';
 
 /** Where a sign-in with ChatGPT stands (`chatgpt.status`). */
 export const ChatGptState = z.enum(['signed_out', 'waiting', 'signed_in', 'error']);
@@ -23,13 +23,16 @@ export type ChatGptStatus = z.infer<typeof ChatGptStatus>;
 
 export const providerMethods = {
   'chatgpt.signIn': {
-    params: empty(),
+    params: params({
+      /** Have the daemon open the URL with the OS (a client without a browser of its own). */
+      open: z.boolean().default(false),
+    }),
     result: z.object({
       /** Open this in a browser; the daemon waits on a loopback callback. */
       url: z.string(),
     }),
     description:
-      'Start "Sign in with ChatGPT": the daemon opens a loopback listener and returns the authorization URL. Humans only.',
+      'Start "Sign in with ChatGPT": the daemon opens a loopback listener and returns the authorization URL for the client to open. Humans only.',
     tool: false,
     mutates: true,
   },

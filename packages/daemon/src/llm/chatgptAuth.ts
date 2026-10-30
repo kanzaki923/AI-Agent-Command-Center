@@ -49,12 +49,15 @@ function decodeJwtPart(part: string): Record<string, unknown> {
   return JSON.parse(Buffer.from(part, 'base64url').toString('utf8')) as Record<string, unknown>;
 }
 
-/** Open a URL with the OS (never throws; the UI opens it too). */
+/**
+ * Open a URL with the OS (never throws). Not `cmd /c start`: cmd reads the `&` between query
+ * parameters as a command separator and the browser got the URL cut at the first one.
+ */
 function openWithOs(url: string): void {
   try {
     const [cmd, args] =
       process.platform === 'win32'
-        ? ['cmd', ['/c', 'start', '', url]]
+        ? ['rundll32', ['url.dll,FileProtocolHandler', url]]
         : process.platform === 'darwin'
           ? ['open', [url]]
           : ['xdg-open', [url]];
@@ -113,8 +116,11 @@ export class ChatGptAuth {
     return { state: this.lastError ? 'error' : 'signed_out', email: null, error: this.lastError };
   }
 
-  /** Start a sign-in: a loopback listener, the browser, and the wait for the callback. */
-  async signIn(): Promise<{ url: string }> {
+  /**
+   * Start a sign-in: a loopback listener and the wait for the callback. The caller opens the
+   * URL (the desktop app through its own opener); `open` has the daemon open it with the OS.
+   */
+  async signIn(opts: { open?: boolean } = {}): Promise<{ url: string }> {
     this.cancelPending();
     this.lastError = null;
     const verifier = b64url(randomBytes(32));
@@ -153,7 +159,7 @@ export class ChatGptAuth {
     }, this.opts.timeoutMs ?? SIGN_IN_TIMEOUT_MS);
     timer.unref?.();
     this.pending = { state, nonce, verifier, redirectUri, clientId, server, timer };
-    (this.opts.openBrowser ?? openWithOs)(url);
+    if (opts.open) (this.opts.openBrowser ?? openWithOs)(url);
     return { url };
   }
 

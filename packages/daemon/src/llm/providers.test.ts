@@ -630,7 +630,7 @@ describe('Sign in with ChatGPT', () => {
       onChange: () => changes.push(1),
     });
     expect(auth.status()).toEqual({ state: 'signed_out', email: null, error: null });
-    const { url } = await auth.signIn();
+    const { url } = await auth.signIn({ open: true });
     expect(opened).toEqual([url]);
     const u = new URL(url);
     expect(u.origin + u.pathname).toBe(`${f.url}/api/accounts/authorize`);
