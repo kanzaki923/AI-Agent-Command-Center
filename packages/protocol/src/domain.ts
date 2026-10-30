@@ -1041,6 +1041,22 @@ export const AssistantSettings = z.object({
 });
 export type AssistantSettings = z.infer<typeof AssistantSettings>;
 
+/**
+ * One row of the model roster (`settings.modelRules`, snapshot 20261030_model-roster-spec.md):
+ * the assistant and supervisors read the rows top to bottom and give a piece of work the
+ * first model whose `when` fits; `defaultModel` is the last row ("それ以外"). Agents may name
+ * no other model (Core Daemon enforces it).
+ */
+export const ModelRule = z.object({
+  model: z.string().min(1).max(200),
+  /** When to use it, in the person's words (e.g. 「画面の設計・UI の実装」). */
+  when: z.string().max(200).default(''),
+});
+export type ModelRule = z.infer<typeof ModelRule>;
+
+/** Rows of the roster at most. */
+export const MAX_MODEL_RULES = 20;
+
 /** Tokens of a "Sign in with ChatGPT" (secrets; config.json only, never sent to clients). */
 export const ChatGptCredentials = z.object({
   /** The client id OpenAI issued at registration (`oaiapp_…`); reused for later sign-ins. */
@@ -1085,7 +1101,10 @@ export const Settings = z.object({
     anthropic: { apiKey: null, baseUrl: null },
     openai: { apiKey: null, baseUrl: null, chatgpt: null, chatgptHostId: null },
   }),
+  /** The roster's last row ("それ以外"): conversations start on it; null = picked once and saved. */
   defaultModel: z.string().nullable().default(null),
+  /** The model roster, in priority order (ModelRule). */
+  modelRules: z.array(ModelRule).max(MAX_MODEL_RULES).default([]),
   /** Agent runtime for sessions that do not name one (e.g. "claude-agent-sdk"); null = "mock". */
   defaultRuntime: z.string().min(1).nullable().default(null),
   /** Max runs in `running` state at once; the rest wait in `queued`. */
@@ -1201,6 +1220,7 @@ export const SettingsView = z.object({
   autoResume: z.boolean().optional(),
   supervisor: SupervisorSettings.optional(),
   assistant: AssistantSettings.optional(),
+  modelRules: z.array(ModelRule).optional(),
 });
 export type SettingsView = z.infer<typeof SettingsView>;
 
@@ -1208,6 +1228,11 @@ export const ModelInfo = z.object({
   id: z.string(),
   label: z.string().nullable(),
   provider: z.string().nullable(),
+  /**
+   * USD of a typical run on this model (20 calls of 8k in / 800 out), from the price table:
+   * 0 on a plan (ChatGPT), null when the price is unknown. Absent from older daemons.
+   */
+  runUsd: z.number().nullable().optional(),
 });
 export type ModelInfo = z.infer<typeof ModelInfo>;
 

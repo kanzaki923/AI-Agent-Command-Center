@@ -5,6 +5,7 @@ import {
   type AutoModeJudge,
   type ChatGptCredentials,
   DEFAULT_PORT,
+  type ModelRule,
   type PermissionProfile,
   Settings,
   type SettingsView,
@@ -72,6 +73,7 @@ export function withLegacySettings(raw: unknown): unknown {
 export type SettingsPatch = {
   litellm?: { baseUrl?: string | null | undefined; apiKey?: string | null | undefined } | undefined;
   defaultModel?: string | null | undefined;
+  modelRules?: ModelRule[] | undefined;
   defaultRuntime?: string | null | undefined;
   maxConcurrentRuns?: number | undefined;
   maxConcurrentAgents?: number | undefined;
@@ -179,6 +181,13 @@ export class SettingsStore {
     set('defaultModel', next.defaultModel, patch.defaultModel, () => {
       next.defaultModel = patch.defaultModel ?? null;
     });
+    if (
+      patch.modelRules &&
+      JSON.stringify(patch.modelRules) !== JSON.stringify(next.modelRules)
+    ) {
+      next.modelRules = patch.modelRules.map((r) => ({ model: r.model, when: r.when.trim() }));
+      changes.push('modelRules');
+    }
     set('defaultRuntime', next.defaultRuntime, patch.defaultRuntime, () => {
       next.defaultRuntime = patch.defaultRuntime ?? null;
     });
@@ -321,6 +330,7 @@ export function toSettingsView(s: Settings): SettingsView {
       apiKeyMasked: maskSecret(s.litellm.apiKey),
     },
     defaultModel: s.defaultModel,
+    modelRules: s.modelRules.map((r) => ({ ...r })),
     defaultRuntime: s.defaultRuntime,
     maxConcurrentRuns: s.maxConcurrentRuns,
     maxConcurrentAgents: s.maxConcurrentAgents,

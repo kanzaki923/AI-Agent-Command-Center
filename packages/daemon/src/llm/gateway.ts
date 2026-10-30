@@ -6,6 +6,13 @@ import {
   type AnthropicConnection,
   AnthropicProvider,
 } from './anthropic';
+import {
+  FAST_RULE_WHEN,
+  type ModelRole,
+  fallbackModel,
+  initialRoster,
+  typicalRunUsd,
+} from './autoModel';
 import { MOCK_PREFIX, MockProvider } from './mock';
 import { type LiteLlmConnection, OpenAiCompatibleProvider, authHeaders, joinUrl } from './openai';
 import {
@@ -20,6 +27,7 @@ import type {
   ChatToolCall,
   LlmProvider,
   LlmStreamEvent,
+  ModelPricing,
   PricingLookup,
 } from './types';
 
@@ -187,7 +195,7 @@ export class LlmGateway {
       ...(anthropic ?? []),
       ...(openai ?? []),
       ...mock,
-    ]);
+    ]).map((m) => ({ ...m, runUsd: this.runUsd(m) }));
     const anySetUp =
       !!baseUrl || !!this.opts.anthropic?.().apiKey || (await this.openai.auth()) !== null;
     const source: ModelList['source'] = litellm
@@ -198,6 +206,41 @@ export class LlmGateway {
           ? 'config'
           : 'mock';
     return { models, source };
+  }
+
+  /**
+   * A first roster when nobody has made one (autoModel.ts `initialRoster`): picked from the
+   * connected providers' lists; when no list could be fetched, a known model of a keyed
+   * provider. Null when nothing is usable.
+   */
+  async suggestRoster(): Promise<{
+    defaultModel: string;
+    rules: { model: string; when: string }[];
+  } | null> {
+    const { models } = await this.listModels();
+    const pricing = this.opts.pricing ? { pricing: this.opts.pricing } : {};
+    const fallback = (role: ModelRole) =>
+      fallbackModel(
+        { anthropic: !!this.opts.anthropic?.().apiKey, openaiKey: !!this.opts.openai?.().apiKey },
+        role,
+      );
+    const picked = initialRoster(models, pricing);
+    if (picked) return picked;
+    const base = fallback('chat');
+    if (!base) return null;
+    const fast = fallback('assistant');
+    return {
+      defaultModel: base,
+      rules: fast && fast !== base ? [{ model: fast, when: FAST_RULE_WHEN }] : [],
+    };
+  }
+
+  /** USD of a typical run on a listed model: 0 on a plan or a mock, null when unknown. */
+  private runUsd(m: ModelInfo): number | null {
+    if (m.provider === 'chatgpt' || this.isMockModel(m.id)) return 0;
+    const price = this.opts.pricing?.(m.id) as (ModelPricing & { basis?: string }) | null;
+    if (!price || price.basis === 'fallback') return null;
+    return typicalRunUsd(price);
   }
 
   /** The cached list for a provider at an endpoint, or a fresh one; null when it failed. */

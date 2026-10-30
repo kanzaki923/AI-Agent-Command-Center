@@ -1,8 +1,8 @@
-/** `anthropic/claude-sonnet-4-5` -> `sonnet` (compact model label for dense rows). */
+/** `anthropic/claude-sonnet-4-5` -> `sonnet`, `openai/gpt-6-luna` -> `gpt-6-luna` (compact label). */
 export function shortModel(model: string | null | undefined): string {
   if (!model) return '';
   const last = model.split('/').pop() ?? model;
-  const m = /(opus|sonnet|haiku|gpt-[\w.]+|gemini[\w.-]*|o\d[\w-]*|mock[\w-]*)/i.exec(last);
+  const m = /(opus|sonnet|haiku|gpt-[\w.-]+|gemini[\w.-]*|o\d[\w-]*|mock[\w-]*)/i.exec(last);
   return (m?.[1] ?? last).toLowerCase();
 }
 

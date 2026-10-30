@@ -22,7 +22,7 @@ export { SessionService } from './service';
 export {
   createChatExecutor,
   chatHistory,
-  requireChatModel,
+  chooseChatModel,
   resolveChatModel,
   OFFLINE_FALLBACK_MODEL,
 } from './chat';

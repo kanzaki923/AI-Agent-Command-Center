@@ -82,10 +82,10 @@ function mount(view: SettingsView = VIEW, extra: Parameters<typeof createFakeCli
           ? { maxConcurrentChats: patch.maxConcurrentChats }
           : {}),
         ...(patch.defaultModel !== undefined ? { defaultModel: patch.defaultModel } : {}),
+        ...(patch.modelRules !== undefined ? { modelRules: patch.modelRules } : {}),
       };
       return current;
     },
-    ...extra,
     'system.info': () => ({
       version: '0.1.0',
       protocolVersion: 1,
@@ -102,6 +102,7 @@ function mount(view: SettingsView = VIEW, extra: Parameters<typeof createFakeCli
       models: [{ id: 'claude-sonnet', label: null, provider: null }],
       source: 'litellm',
     }),
+    ...extra,
   });
   render(
     <RuntimeProvider runtime={createRuntime(fake.client)}>
@@ -319,6 +320,99 @@ describe('<SettingsDialog> up front', () => {
     fireEvent.click(screen.getByRole('button', { name: 'サインアウト' }));
     await waitFor(() => expect(calls).toEqual(['signIn', 'signOut']));
     await screen.findByRole('button', { name: 'ChatGPT でサインイン' });
+  });
+});
+
+describe('<SettingsDialog> モデル', () => {
+  const ROSTER: SettingsView = {
+    ...VIEW,
+    defaultModel: 'openai/gpt-6-luna',
+    modelRules: [
+      { model: 'anthropic/claude-sonnet-5-5', when: '画面の設計' },
+      { model: 'gemini-3-pro', when: '文章を書く' },
+    ],
+  };
+  const MODELS = {
+    'models.list': () => ({
+      models: [
+        { id: 'anthropic/claude-sonnet-5-5', label: 'Claude Sonnet 5.5', provider: 'anthropic', runUsd: 0.48 },
+        { id: 'gemini-3-pro', label: null, provider: 'litellm', runUsd: null },
+        { id: 'openai/gpt-6-luna', label: 'GPT-6 Luna', provider: 'chatgpt', runUsd: 0 },
+        { id: 'anthropic/claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'anthropic', runUsd: 0.96 },
+      ],
+      source: 'providers',
+    }),
+    'cost.summary': () => ({
+      totalUsd: 3.2,
+      estimated: false,
+      rows: [{ key: 'anthropic/claude-sonnet-5-5', label: 'anthropic/claude-sonnet-5-5', usd: 3.2, estimated: false }],
+      daily: { limitUsd: 20, usedTodayUsd: 0 },
+    }),
+  };
+
+  const openRoster = async () => {
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'モデルを変更' }));
+    });
+    return screen.findByTestId('model-roster');
+  };
+
+  it('sums the roster up, and shows each row with the cost of a run and of the last 30 days', async () => {
+    mount(ROSTER, MODELS);
+    await waitFor(() =>
+      expect(screen.getByTestId('roster-summary')).toHaveTextContent('gpt-6-luna ほか 2'),
+    );
+    await openRoster();
+    const rows = await screen.findAllByTestId('roster-row');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent('Claude Sonnet 5.5');
+    await waitFor(() => expect(rows[0]).toHaveTextContent('約 $0.48/回'));
+    await waitFor(() => expect(rows[0]).toHaveTextContent('30 日 $3.20'));
+    expect(rows[1]).toHaveTextContent('—');
+    expect(screen.getByTestId('roster-otherwise')).toHaveTextContent('GPT-6 Luna');
+    expect(screen.getByTestId('roster-otherwise')).toHaveTextContent('契約枠');
+  });
+
+  it('reorders with Alt+↑, saves a condition on blur, adds and removes rows', async () => {
+    const { updates } = mount(ROSTER, MODELS);
+    await openRoster();
+    await act(async () => {
+      fireEvent.keyDown(screen.getByRole('button', { name: '2 番目を動かす（Alt+↑↓）' }), {
+        key: 'ArrowUp',
+        altKey: true,
+      });
+    });
+    expect(updates.at(-1)).toEqual({
+      modelRules: [
+        { model: 'gemini-3-pro', when: '文章を書く' },
+        { model: 'anthropic/claude-sonnet-5-5', when: '画面の設計' },
+      ],
+    });
+    await waitFor(() =>
+      expect(screen.getAllByTestId('roster-row')[0]).toHaveTextContent('gemini-3-pro'),
+    );
+    const when = await screen.findByLabelText('2 番目を使うとき');
+    fireEvent.change(when, { target: { value: '画面の設計・UI の実装 ' } });
+    await act(async () => {
+      fireEvent.blur(when);
+    });
+    expect(updates.at(-1)).toEqual({
+      modelRules: [
+        { model: 'gemini-3-pro', when: '文章を書く' },
+        { model: 'anthropic/claude-sonnet-5-5', when: '画面の設計・UI の実装' },
+      ],
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'モデルを足す' }));
+    });
+    await waitFor(() => expect(screen.getAllByTestId('roster-row')).toHaveLength(3));
+    expect(updates.at(-1)).toMatchObject({
+      modelRules: [{}, {}, { model: 'anthropic/claude-opus-5-5', when: '' }],
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '1 番目を外す' }));
+    });
+    expect((updates.at(-1) as { modelRules: unknown[] }).modelRules).toHaveLength(2);
   });
 });
 

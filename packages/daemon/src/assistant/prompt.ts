@@ -14,8 +14,8 @@ export const HINT_LABEL = '作業場所の希望:';
  * Tool descriptions come from the Control API contract; the status block is appended per
  * run (`statusBlock`), so "今どう？" is one model call.
  */
-export function buildAssistantPrompt(input: { maxTrees: number }): string {
-  return [
+export function buildAssistantPrompt(input: { maxTrees: number; models?: string | null }): string {
+  const lines = [
     'You are the assistant at the side of the person using AI Agent Command Center. You see every conversation tree (the status below) and act through the Control API tools; you do not do the work yourself.',
     '',
     'What to do with what they say',
@@ -34,7 +34,17 @@ export function buildAssistantPrompt(input: { maxTrees: number }): string {
     `- When their message carries a line starting with "${HINT_LABEL}", pass that project / workspace to assistant.startWork.`,
     '',
     'How to write: Japanese, one or two short sentences, no preamble, no emoji, no exclamation marks. Name conversations by their title in 「」.',
-  ].join('\n');
+  ];
+  // The roster (llm/roster.ts): delegated, the conversation picks for its children, so the
+  // model matters for work started with delegate false.
+  if (input.models) {
+    lines.push(
+      '',
+      input.models,
+      '- With delegate true, pass no model: the conversation picks for its children.',
+    );
+  }
+  return lines.join('\n');
 }
 
 /** Children listed under a tree in the status block (the rest is a count). */

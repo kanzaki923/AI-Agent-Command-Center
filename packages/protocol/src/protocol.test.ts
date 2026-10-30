@@ -128,6 +128,7 @@ describe('settings', () => {
         openai: { apiKey: null, baseUrl: null, chatgpt: null, chatgptHostId: null },
       },
       defaultModel: null,
+      modelRules: [],
       defaultRuntime: null,
       maxConcurrentRuns: 10,
       maxConcurrentAgents: 10,

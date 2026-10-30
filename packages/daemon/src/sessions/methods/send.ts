@@ -2,6 +2,7 @@ import type { ContentPart } from '@acc/protocol';
 import { defineMethod } from '../../api/registry';
 import type { DaemonContext } from '../../core/context';
 import { conflict, invalidParams } from '../../core/errors';
+import { assertRosterModel } from '../../llm/roster';
 import { ACTIVE_RUN_STATUSES } from '../../runs/manager';
 import { sessionScope } from './shared';
 
@@ -26,6 +27,11 @@ export function sessionSend(ctx: DaemonContext) {
         const session = repos.sessions.require(p.sessionId);
         if (session.archivedAt) {
           throw conflict('アーカイブ済みのセッションには送信できません');
+        }
+        if (p.model) {
+          assertRosterModel(ctx, call.actor, p.model, {
+            agentRuntime: session.kind === 'agent' && session.runtime !== 'mock',
+          });
         }
         const content: ContentPart[] =
           typeof p.content === 'string' ? [{ type: 'text', text: p.content }] : p.content;

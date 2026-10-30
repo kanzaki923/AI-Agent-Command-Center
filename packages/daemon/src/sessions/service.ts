@@ -11,6 +11,7 @@ import type {
 } from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
 import { invalidParams } from '../core/errors';
+import { assertRosterModel } from '../llm/roster';
 
 export interface AppendMessageInput {
   sessionId: string;
@@ -93,6 +94,12 @@ export class SessionService {
    */
   create(input: CreateSessionInput, actor: Actor): Session {
     const { ctx } = this;
+    if (input.model) {
+      const runtime = input.runtime ?? ctx.settings.get().defaultRuntime ?? 'mock';
+      assertRosterModel(ctx, actor, input.model, {
+        agentRuntime: input.kind === 'agent' && runtime !== 'mock',
+      });
+    }
     const { repos } = ctx;
     return ctx.db.transaction(() => {
       const project = input.projectId ? repos.projects.require(input.projectId) : null;

@@ -180,14 +180,66 @@ describe('session.send', () => {
     expect((await d.ctx.service('runs').waitForEnd(next.runId!)).status).toBe('completed');
   });
 
-  it('fails with a clear message when LiteLLM is configured but no model is set', async () => {
+  it('fails with a clear message when a provider is configured but offers no model', async () => {
     const d = await daemon();
     await d.call(HUMAN, 'settings.update', { litellm: { baseUrl: 'http://127.0.0.1:9' } });
     const s = await d.call(HUMAN, 'session.create', {});
     const { runId } = await d.call(HUMAN, 'session.send', { sessionId: s.id, content: 'hi' });
     const run = await d.ctx.service('runs').waitForEnd(runId!);
     expect(run).toMatchObject({ status: 'failed', error: { code: 'invalid_params' } });
-    expect(run.error?.message).toContain('モデルが設定されていません');
+    expect(run.error?.message).toContain('使えるモデルを見つけられませんでした');
+  });
+
+  it('picks a first roster from the provider once, saves it, and records the model on the run', async () => {
+    const d = await daemon();
+    const asked: string[] = [];
+    const server: Server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (c: Buffer) => (body += c.toString('utf8')));
+      req.on('end', () => {
+        if (req.url === '/models') {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          const ids = ['text-embedding-3-small', 'gpt-4.1', 'gpt-5.1-mini', 'gpt-5.1'];
+          res.end(JSON.stringify({ data: ids.map((id) => ({ id })) }));
+          return;
+        }
+        asked.push((JSON.parse(body) as { model: string }).model);
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write(
+          `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: 'はい' } }] })}\n\n`,
+        );
+        res.end('data: [DONE]\n\n');
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    cleanups.push(() => new Promise((r) => server.close(r)));
+    const port = (server.address() as AddressInfo).port;
+    await d.call(HUMAN, 'settings.update', { litellm: { baseUrl: `http://127.0.0.1:${port}` } });
+    const s = await d.call(HUMAN, 'session.create', {});
+    const updates: string[] = [];
+    d.ctx.bus.subscribe(undefined, (e: Event) => {
+      if (e.type === 'run.updated' && e.payload.changes.includes('model')) {
+        updates.push(e.payload.run.model ?? '');
+      }
+    });
+    const { runId } = await d.call(HUMAN, 'session.send', { sessionId: s.id, content: 'hi' });
+    const run = await d.ctx.service('runs').waitForEnd(runId!);
+    expect(run).toMatchObject({ status: 'completed', model: 'gpt-5.1' });
+    expect(asked).toEqual(['gpt-5.1']);
+    expect(updates).toEqual(['gpt-5.1']);
+    // Saved once: the standard model is the last row, the fast one a row for light work.
+    expect(await d.call(HUMAN, 'settings.get', {})).toMatchObject({
+      defaultModel: 'gpt-5.1',
+      modelRules: [{ model: 'gpt-5.1-mini', when: '調べもの・要約・定型の作業' }],
+    });
+    // From then on the saved model is used without asking the provider again.
+    const assistant = d.ctx.service('assistant').ensure();
+    const sent = await d.call(HUMAN, 'session.send', { sessionId: assistant.id, content: 'hi' });
+    expect(await d.ctx.service('runs').waitForEnd(sent.runId!)).toMatchObject({
+      status: 'completed',
+      model: 'gpt-5.1',
+    });
+    expect(updates).toEqual(['gpt-5.1']);
   });
 
   it('starts agent runs for agent sessions (executor provided by the runtime module)', async () => {
@@ -415,7 +467,8 @@ describe('session.search', () => {
       });
     add('質問をつくって\n```acc-mock\n[{ "type": "write", "path": "faq.md" }]\n```');
     const note = add('「FAQ を 10 問つくる」（ses_01m64p0w949gvqabcdefghij）から知らせ');
-    const search = async (query: string) => (await d.call(HUMAN, 'session.search', { query })).items;
+    const search = async (query: string) =>
+      (await d.call(HUMAN, 'session.search', { query })).items;
     expect(await search('faq.md')).toEqual([]);
     const [hit] = await search('知らせ');
     expect(hit?.messageId).toBe(note.id);

@@ -39,7 +39,9 @@ import {
   Integration,
   IntegrationStatus,
   Message,
+  MAX_MODEL_RULES,
   ModelInfo,
+  ModelRule,
   PermissionPattern,
   PermissionProfile,
   PermissionRule,
@@ -307,6 +309,11 @@ export const api = defineApi({
         apiKey: z.string().min(1).nullable().optional().describe('null clears the key'),
       }).optional(),
       defaultModel: z.string().min(1).nullable().optional(),
+      modelRules: z
+        .array(ModelRule)
+        .max(MAX_MODEL_RULES)
+        .optional()
+        .describe('The whole roster in priority order (replaces it)'),
       defaultRuntime: z.string().min(1).nullable().optional(),
       maxConcurrentRuns: z.int().min(1).max(64).optional(),
       maxConcurrentAgents: z.int().min(1).max(64).optional(),

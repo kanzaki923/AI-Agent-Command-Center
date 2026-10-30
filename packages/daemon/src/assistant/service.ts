@@ -1,5 +1,6 @@
 import { type Actor, type Message, type Params, type Session, api } from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
+import { assertRosterModel, rosterPromptBlock } from '../llm/roster';
 import { budgetExceeded, forbidden, limitExceeded } from '../core/errors';
 import { dayOf, fromMicro } from '../cost/ledger';
 import { delegateSession } from '../orchestrator/grant';
@@ -107,7 +108,16 @@ export class AssistantService {
   systemPrompts(session: Session, history: readonly Message[]): [string, string] {
     const last = [...history].reverse().find((m) => m.role === 'user');
     const hint = last?.meta?.kind === 'hint' ? `${HINT_LABEL} ${last.meta.text}` : null;
-    const fixed = [buildAssistantPrompt({ maxTrees: MAX_TREES_PER_MESSAGE }), session.systemPrompt]
+    const fixed = [
+      buildAssistantPrompt({
+        maxTrees: MAX_TREES_PER_MESSAGE,
+        models: rosterPromptBlock(
+          this.ctx.settings.get(),
+          this.ctx.hasService('pricing') ? this.ctx.service('pricing').lookup : null,
+        ),
+      }),
+      session.systemPrompt,
+    ]
       .filter(Boolean)
       .join('\n\n');
     const changing = [hint, statusBlock(this.ctx)].filter(Boolean).join('\n\n');
@@ -146,6 +156,12 @@ export class AssistantService {
     const viaAssistant = actor.kind === 'agent' && this.isAssistant(actor.sessionId);
     if (actor.kind === 'agent' && !viaAssistant) {
       throw forbidden('新しい会話を始められるのは人と右腕だけです');
+    }
+    if (p.model) {
+      // The root is an agent when it works alone in a workspace (see below).
+      const agent = !p.delegate && !!p.workspace && p.workspace.kind !== 'none';
+      const runtime = ctx.settings.get().defaultRuntime ?? 'mock';
+      assertRosterModel(ctx, actor, p.model, { agentRuntime: agent && runtime !== 'mock' });
     }
     if (actor.kind === 'agent') {
       const n = this.started.get(actor.runId) ?? 0;

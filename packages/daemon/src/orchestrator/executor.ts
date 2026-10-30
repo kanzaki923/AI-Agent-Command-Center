@@ -20,7 +20,8 @@ import {
   toChatMessages,
   toolNameForMethod,
 } from '../llm';
-import { chatHistory, requireChatModel } from '../sessions/chat';
+import { rosterPromptBlock } from '../llm/roster';
+import { chatHistory, chooseChatModel } from '../sessions/chat';
 import { orchestrationGrants } from './grant';
 
 /** Model calls per orchestrator run of the older preset (blocking waits; now the daemon's limit). */
@@ -49,6 +50,8 @@ export function buildSupervisorPrompt(input: {
   project: Project | null;
   grant: CapabilityGrant | null;
   maxModelCalls: number;
+  /** The model roster (llm/roster.ts rosterPromptBlock), when one is set. */
+  models?: string | null;
 }): string {
   const { project, grant } = input;
   const maxChildren = grant?.limits.maxChildren ?? grant?.limits.maxWorkers;
@@ -89,6 +92,7 @@ export function buildSupervisorPrompt(input: {
       "- To combine several children's code changes, use integration.create (their task ids) and integration.run, then report; a human approves the result.",
     );
   }
+  if (input.models) lines.push('', input.models);
   lines.push('', 'Always write to the user in Japanese.');
   return lines.join('\n');
 }
@@ -235,7 +239,7 @@ export function createOrchestratorExecutor(ctx: DaemonContext): RunExecutor {
   return async (ctl) => {
     const run = ctl.run;
     const session = ctx.repos.sessions.require(run.sessionId);
-    const model = requireChatModel(ctx, run, session);
+    const model = await chooseChatModel(ctx, run, session);
     const { project, grant } = orchestrationContext(ctx, ctl.actor, session.projectId);
     const limits = ctx.settings.get().supervisor;
     const inbox = ctx.hasService('supervisorInbox') ? ctx.service('supervisorInbox') : null;
@@ -268,6 +272,10 @@ export function createOrchestratorExecutor(ctx: DaemonContext): RunExecutor {
       project,
       grant,
       maxModelCalls: limits.maxModelCallsPerRun,
+      models: rosterPromptBlock(
+        ctx.settings.get(),
+        ctx.hasService('pricing') ? ctx.service('pricing').lookup : null,
+      ),
     });
     await runToolLoop({
       ...common,

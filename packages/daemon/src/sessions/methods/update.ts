@@ -2,6 +2,7 @@ import type { Session } from '@acc/protocol';
 import { defineMethod } from '../../api/registry';
 import type { DaemonContext } from '../../core/context';
 import { invalidParams } from '../../core/errors';
+import { assertRosterModel } from '../../llm/roster';
 import { sessionScope } from './shared';
 
 export function sessionUpdate(ctx: DaemonContext) {
@@ -15,6 +16,12 @@ export function sessionUpdate(ctx: DaemonContext) {
     },
     handler: (p, call) =>
       db.transaction(() => {
+        if (p.model) {
+          const s = repos.sessions.require(p.sessionId);
+          assertRosterModel(ctx, call.actor, p.model, {
+            agentRuntime: s.kind === 'agent' && s.runtime !== 'mock',
+          });
+        }
         if (p.projectId) repos.projects.require(p.projectId);
         if (p.workspaceId) repos.workspaces.require(p.workspaceId);
         if (p.workspaceId || p.projectId) {

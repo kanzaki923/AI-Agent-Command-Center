@@ -23,6 +23,7 @@ import {
 import { Button } from '../ui/Button';
 import { Dialog, inputClass } from '../ui/Dialog';
 import { FieldRow, type SegmentOption, Segmented, Stepper, UsdField } from './controls';
+import { ModelRosterPanel, rosterSummary } from './ModelRoster';
 import { ProviderPanel } from './ProviderPanel';
 
 type SettingsPatch = ParamsInput<'settings.update'>;
@@ -143,6 +144,7 @@ export function SettingsDialog() {
   const settings = useSettings().data;
   const models = useModels();
   const [editing, setEditing] = useState(false);
+  const [editingModels, setEditingModels] = useState(false);
   const [more, setMore] = useState(false);
 
   const update = (patch: SettingsPatch) => {
@@ -160,10 +162,13 @@ export function SettingsDialog() {
       open={open}
       onOpenChange={(o) => {
         setOpen(o);
-        if (!o) setEditing(false);
+        if (!o) {
+          setEditing(false);
+          setEditingModels(false);
+        }
       }}
       title="設定"
-      className="w-[520px]"
+      className={editingModels ? 'w-[640px]' : 'w-[520px]'}
     >
       <Group className="pt-0">
         <FieldRow label="接続">
@@ -183,6 +188,26 @@ export function SettingsDialog() {
         {editing && (
           <div className="mt-1 mb-2 rounded-md border border-line-subtle bg-canvas px-3 py-2">
             <ProviderPanel />
+          </div>
+        )}
+        <FieldRow label="モデル" hint="上から順に、最初に当てはまったものを使います">
+          <span className="truncate font-mono text-meta text-fg-2" data-testid="roster-summary">
+            {rosterSummary(settings)}
+          </span>
+          {!editingModels && (
+            <Button
+              size="sm"
+              variant="secondary"
+              aria-label="モデルを変更"
+              onClick={() => setEditingModels(true)}
+            >
+              変更
+            </Button>
+          )}
+        </FieldRow>
+        {editingModels && (
+          <div className="mt-1 mb-2 rounded-md border border-line-subtle bg-canvas px-3 py-2">
+            <ModelRosterPanel settings={settings} onSave={update} />
           </div>
         )}
         {profile && (

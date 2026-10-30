@@ -14,10 +14,10 @@ export const OFFLINE_FALLBACK_MODEL = 'mock/echo';
 export const CHAT_HISTORY_LIMIT = 200;
 
 /**
- * Model for a new chat run: explicit override > session model > settings default >
- * the offline mock when LiteLLM is not configured (null = nothing usable). The assistant
- * (assistant/) reads `settings.assistant.model` before the default and falls back to its own
- * mock.
+ * Model named for a new chat run: explicit override > session model > settings default (the
+ * roster's last row) > the offline mock when no provider is configured. Null = nothing chosen
+ * yet: the first run picks and saves a roster (chooseChatModel). The assistant (assistant/)
+ * reads `settings.assistant.model` before the default and falls back to its own mock.
  */
 export function resolveChatModel(
   ctx: DaemonContext,
@@ -64,7 +64,7 @@ export function createChatExecutor(ctx: DaemonContext): RunExecutor {
         ? ctx.service('assistant')
         : null;
     assistant?.assertWithinDailyLimit();
-    const model = requireChatModel(ctx, run, session);
+    const model = await chooseChatModel(ctx, run, session);
     // Messages that waited for this run are in its history; later ones are injected at the
     // next step (spec 20261029 §3.2, D9).
     const inbox = ctx.hasService('supervisorInbox') ? ctx.service('supervisorInbox') : null;
@@ -98,14 +98,46 @@ export function createChatExecutor(ctx: DaemonContext): RunExecutor {
   };
 }
 
-/** The run's model, or a user-facing error when nothing is configured. */
-export function requireChatModel(ctx: DaemonContext, run: Run, session: Session): string {
-  const model = run.model ?? resolveChatModel(ctx, session);
+/**
+ * The run's model. With nothing chosen yet (a provider is connected but the roster is empty),
+ * a first roster is picked from the providers and saved to the settings (snapshot
+ * 20261030_model-roster-spec.md): from then on it is fixed and only the person changes it, so
+ * nobody has to choose a model before the first message and nothing changes behind their back.
+ * The run records the model (run.updated `["model"]`).
+ */
+export async function chooseChatModel(
+  ctx: DaemonContext,
+  run: Run,
+  session: Session,
+): Promise<string> {
+  const named = run.model ?? resolveChatModel(ctx, session);
+  if (named) return named;
+  const roster = await ctx.service('llm').suggestRoster();
+  // Another run may have saved one meanwhile.
+  const model = resolveChatModel(ctx, session) ?? roster?.defaultModel ?? null;
   if (!model) {
     throw invalidParams(
-      'モデルが設定されていません。セッションか設定で既定のモデルを指定してください',
+      '接続先から使えるモデルを見つけられませんでした。設定の「接続」を確認してください',
     );
   }
+  const s = ctx.settings.get();
+  if (!s.defaultModel && roster) {
+    const changes = ctx.settings.update({
+      defaultModel: roster.defaultModel,
+      ...(s.modelRules.length === 0 ? { modelRules: roster.rules } : {}),
+    });
+    ctx.bus.emit({
+      type: 'settings.updated',
+      actor: { kind: 'system', component: 'llm' },
+      payload: { changes },
+    });
+  }
+  const next = ctx.repos.runs.update(run.id, (r) => ({ ...r, model, updatedAt: ctx.clock.iso() }));
+  ctx.bus.emit({
+    type: 'run.updated',
+    actor: { kind: 'system', component: 'llm' },
+    payload: { run: next, changes: ['model'] },
+  });
   return model;
 }
 
