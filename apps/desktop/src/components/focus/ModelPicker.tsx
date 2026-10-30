@@ -42,9 +42,9 @@ export function ModelPicker({
           disabled={disabled}
           className="flex h-6 items-center gap-1.5 rounded-xs px-1.5 text-meta text-fg-2 hover:bg-hover hover:text-fg disabled:text-fg-4"
         >
-          <Cpu size={12} strokeWidth={1.75} className="text-fg-3" />
+          <Cpu size={12} strokeWidth={2} className="text-fg-3" />
           {current ? shortModel(current) || current : '既定のモデル'}
-          <ChevronDown size={11} strokeWidth={1.75} className="text-fg-4" />
+          <ChevronDown size={11} strokeWidth={2} className="text-fg-4" />
         </button>
       </PopoverTrigger>
       <PopoverContent side="top" className="w-[360px]">

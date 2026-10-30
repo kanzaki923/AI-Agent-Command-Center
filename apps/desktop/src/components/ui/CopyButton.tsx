@@ -54,7 +54,7 @@ export function CopyButton({
         className,
       )}
     >
-      {copied ? <Check size={12} strokeWidth={2} /> : <Copy size={12} strokeWidth={1.75} />}
+      {copied ? <Check size={12} strokeWidth={2} /> : <Copy size={12} strokeWidth={2} />}
       {!iconOnly && (copied ? 'コピーしました' : label)}
     </button>
   );

@@ -71,7 +71,7 @@ interface PaletteItem {
   run: () => void;
 }
 
-const I = (C: typeof House) => <C size={15} strokeWidth={1.5} />;
+const I = (C: typeof House) => <C size={15} strokeWidth={1.75} />;
 
 function Row({ item, onRun }: { item: PaletteItem; onRun: (i: PaletteItem) => void }) {
   return (
@@ -85,7 +85,7 @@ function Row({ item, onRun }: { item: PaletteItem; onRun: (i: PaletteItem) => vo
       <span className="min-w-0 truncate">{item.label}</span>
       {item.hint && <span className="min-w-0 truncate text-fg-3">{item.hint}</span>}
       <span className="flex-1" />
-      {item.nested && <ChevronRight size={14} strokeWidth={1.5} className="text-fg-4" />}
+      {item.nested && <ChevronRight size={14} strokeWidth={1.75} className="text-fg-4" />}
       {item.shortcut && <Kbd id={item.shortcut} />}
     </Command.Item>
   );
@@ -155,7 +155,7 @@ function MessageHits({
           className="group flex min-h-11 flex-col justify-center gap-0.5 rounded-sm px-3 py-1 text-ui data-[selected=true]:bg-selected"
         >
           <span className="flex w-full min-w-0 items-center gap-3">
-            <MessageSquareText size={15} strokeWidth={1.5} className="shrink-0 text-fg-3" />
+            <MessageSquareText size={15} strokeWidth={1.75} className="shrink-0 text-fg-3" />
             <span className="min-w-0 truncate text-fg-2">
               <Highlighted text={h.snippet} terms={terms} />
             </span>
@@ -514,12 +514,12 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
                     'group flex h-9 items-center gap-3 rounded-sm px-3 text-ui text-fg data-[selected=true]:bg-selected',
                   )}
                 >
-                  <Sparkles size={15} strokeWidth={1.5} className="text-accent" />
+                  <Sparkles size={15} strokeWidth={1.75} className="text-accent" />
                   <span className="min-w-0 truncate">
                     AI に頼む：<span className="text-fg-2">「{askText}」</span>
                   </span>
                   <span className="flex-1" />
-                  <CornerDownLeft size={13} strokeWidth={1.5} className="text-fg-4" />
+                  <CornerDownLeft size={13} strokeWidth={1.75} className="text-fg-4" />
                 </Command.Item>
               </Command.Group>
             )}

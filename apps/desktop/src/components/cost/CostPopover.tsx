@@ -119,7 +119,7 @@ function CostContents({ onOpenTree }: { onOpenTree: () => void }) {
           {byModel.map((r) => (
             <li key={r.key} className="px-2 py-1">
               <SpendBar
-                icon={<Cpu size={12} strokeWidth={1.75} className="text-fg-3" aria-hidden />}
+                icon={<Cpu size={12} strokeWidth={2} className="text-fg-3" aria-hidden />}
                 label={modelName(r.label)}
                 usd={r.usd}
                 max={max}

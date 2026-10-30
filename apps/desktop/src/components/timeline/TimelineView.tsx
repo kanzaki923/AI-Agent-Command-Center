@@ -187,7 +187,7 @@ export function TimelineView() {
             aria-label={`「${narrowedTo}」の絞り込みを外す`}
           >
             <span className="truncate">{narrowedTo}</span>
-            <X size={12} strokeWidth={1.75} className="shrink-0 text-fg-3" aria-hidden />
+            <X size={12} strokeWidth={2} className="shrink-0 text-fg-3" aria-hidden />
           </button>
         )}
         <span className="flex-1" />

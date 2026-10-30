@@ -9,14 +9,14 @@ import { DECIDER, PROFILE_INFO, type ToolDecided, deciderTooltip, describeDecisi
 import { Tooltip } from '../ui/Tooltip';
 
 const ICON: Record<ToolCategory, ReactNode> = {
-  read: <FileSearch size={14} strokeWidth={1.5} />,
-  search: <Search size={14} strokeWidth={1.5} />,
-  edit: <FilePen size={14} strokeWidth={1.5} />,
-  run: <Terminal size={14} strokeWidth={1.5} />,
-  web: <Globe size={14} strokeWidth={1.5} />,
-  control: <Workflow size={14} strokeWidth={1.5} />,
-  wait: <Hourglass size={14} strokeWidth={1.5} />,
-  other: <Wrench size={14} strokeWidth={1.5} />,
+  read: <FileSearch size={14} strokeWidth={1.75} />,
+  search: <Search size={14} strokeWidth={1.75} />,
+  edit: <FilePen size={14} strokeWidth={1.75} />,
+  run: <Terminal size={14} strokeWidth={1.75} />,
+  web: <Globe size={14} strokeWidth={1.75} />,
+  control: <Workflow size={14} strokeWidth={1.75} />,
+  wait: <Hourglass size={14} strokeWidth={1.75} />,
+  other: <Wrench size={14} strokeWidth={1.75} />,
 };
 
 export function toolIcon(c: ToolCategory): ReactNode {
@@ -172,11 +172,11 @@ export function ToolLine({ call, nested = false }: { call: ToolCallView; nested?
       >
         <ChevronRight
           size={12}
-          strokeWidth={1.75}
+          strokeWidth={2}
           className={cn('shrink-0 text-fg-4 transition-transform duration-[120ms]', open && 'rotate-90')}
         />
         <span className={cn('shrink-0', failed ? 'text-st-failed' : blocked ? 'text-fg-2' : 'text-fg-3')}>
-          {blocked ? <ShieldBan size={14} strokeWidth={1.5} /> : failed ? <CircleX size={14} strokeWidth={1.5} /> : ICON[d.category]}
+          {blocked ? <ShieldBan size={14} strokeWidth={1.75} /> : failed ? <CircleX size={14} strokeWidth={1.75} /> : ICON[d.category]}
         </span>
         <span className="flex min-w-0 flex-1 items-center gap-2">
           <span className="min-w-0 shrink truncate">{d.label}</span>
@@ -228,11 +228,11 @@ export function ToolGroup({ calls }: { calls: ToolCallView[] }) {
       >
         <ChevronRight
           size={12}
-          strokeWidth={1.75}
+          strokeWidth={2}
           className={cn('shrink-0 text-fg-4 transition-transform duration-[120ms]', open && 'rotate-90')}
         />
         <span className="shrink-0 text-fg-3">
-          <Wrench size={14} strokeWidth={1.5} />
+          <Wrench size={14} strokeWidth={1.75} />
         </span>
         <span className="min-w-0 flex-1 truncate">{summarizeCalls(calls)}</span>
         {blocked.length > 0 && (

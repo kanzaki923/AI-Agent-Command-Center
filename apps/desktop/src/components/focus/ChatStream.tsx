@@ -78,7 +78,7 @@ function Origin({ message }: { message: ChatMessage }) {
   const { titleOf } = use(ConversationContext);
   if (message.meta?.kind === 'schedule') {
     return (
-      <FromLine icon={<Clock size={12} strokeWidth={1.75} aria-label="繰り返し" />}>
+      <FromLine icon={<Clock size={12} strokeWidth={2} aria-label="繰り返し" />}>
         <span className="tabular">{formatClock(message.meta.scheduledFor)}</span>
       </FromLine>
     );
@@ -110,7 +110,7 @@ function UserBlock({ message, editable }: { message: ChatMessage; editable: bool
   if (superseded) {
     return (
       <div className="flex items-center gap-1.5 text-meta text-fg-3">
-        <Pencil size={11} strokeWidth={1.75} />
+        <Pencil size={11} strokeWidth={2} />
         <span className="shrink-0">編集前:</span>
         <span className="min-w-0 truncate line-through decoration-fg-4/60">{text}</span>
       </div>
@@ -163,7 +163,7 @@ function UserBlock({ message, editable }: { message: ChatMessage; editable: bool
         >
           <ChevronRight
             size={12}
-            strokeWidth={1.75}
+            strokeWidth={2}
             className={cn('transition-transform duration-[120ms]', expanded ? '-rotate-90' : 'rotate-90')}
           />
           {expanded ? '折りたたむ' : `全文を表示（${text.split('\n').length} 行）`}
@@ -181,7 +181,7 @@ function UserBlock({ message, editable }: { message: ChatMessage; editable: bool
               }}
               className="flex h-6 items-center gap-1 rounded-xs px-1.5 text-meta text-fg-3 hover:bg-hover hover:text-fg"
             >
-              <Pencil size={11} strokeWidth={1.75} />
+              <Pencil size={11} strokeWidth={2} />
               編集して送り直す
               <Kbd keys="ArrowUp" />
             </button>
@@ -209,10 +209,10 @@ function Reasoning({ text, live = false }: { text: string; live?: boolean }) {
       >
         <ChevronRight
           size={12}
-          strokeWidth={1.75}
+          strokeWidth={2}
           className={cn('transition-transform duration-[120ms]', open && 'rotate-90')}
         />
-        <Brain size={12} strokeWidth={1.75} />
+        <Brain size={12} strokeWidth={2} />
         {live ? '考えています…' : '思考過程'}
         <span className="text-fg-3 tabular">· {chars.toLocaleString()} 文字</span>
       </button>
@@ -245,7 +245,7 @@ function AssistantBlock({ block }: { block: ChatBlock & { kind: 'assistant' } })
               onClick={() => void retry(rt, run)}
               className="flex h-6 items-center gap-1 rounded-xs px-1.5 text-meta text-fg-2 hover:bg-hover hover:text-fg disabled:text-fg-4"
             >
-              <RotateCcw size={11} strokeWidth={1.75} />
+              <RotateCcw size={11} strokeWidth={2} />
               再試行
             </button>
           )}
@@ -270,7 +270,7 @@ function RunError({ run }: { run: Run }) {
       }}
     >
       <div className="flex items-center gap-2 text-ui text-st-failed">
-        <AlertTriangle size={14} strokeWidth={1.5} />
+        <AlertTriangle size={14} strokeWidth={1.75} />
         <span className="min-w-0 flex-1">{headLines(msg, 1)}</span>
         <CopyButton text={msg} iconOnly label="エラーをコピー" />
       </div>

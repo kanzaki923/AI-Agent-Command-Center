@@ -184,16 +184,13 @@ function afterTools(p: Parsed, after: ChatMessage[], info: MockCallInfo): MockRe
   const spawned = done.filter((d) => d.method === 'session.spawn');
   if (spawned.length > 0) {
     const ok = spawned.filter((d) => !d.error);
-    const titles = ok
-      .map((d) => `「${typeof d.input?.title === 'string' ? d.input.title : ''}」`)
-      .join('、');
     if (ok.length === 0) {
       return { text: `作業を任せられませんでした: ${spawned[0]!.error}` };
     }
     const failed = spawned.filter((d) => d.error);
     return {
       text: [
-        `${ok.length} 人に任せました：${titles}。終わったら知らせが届くので、そろったらまとめて報告します。`,
+        `${ok.length} 人に任せました。終わったら知らせが届くので、そろったらまとめて報告します。`,
         ...(failed.length > 0
           ? [`${failed.length} 件は任せられませんでした: ${failed[0]!.error}`]
           : []),

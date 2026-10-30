@@ -5,7 +5,7 @@ import { archiveSession, setPinned } from '../../daemon/actions';
 import { useRuntime } from '../../daemon/runtime';
 import { useSlowNow } from '../../hooks/useNow';
 import { cn } from '../../lib/cn';
-import { STATE_META, formatNextRun, isAlarm, sessionTitle } from '../../lib/states';
+import { STATE_META, formatNextRun, isAlarm, isLongWork, sessionTitle } from '../../lib/states';
 import { useUi, useUnread } from '../../store/ui';
 import { Elapsed } from '../ui/Elapsed';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu';
@@ -93,7 +93,8 @@ function NextRun({ at }: { at: string }) {
 
 /**
  * One conversation in the sidebar tree (spec §4): state icon, title, and on the right the
- * folded children as dots (or the time it has been working, or the next scheduled run).
+ * folded children as dots (or the next scheduled run, or — past ten minutes — how long it has
+ * been working; under that the spinner alone says it works, ui-design §1.8).
  * Children are told by indent alone, no tree lines (ui-rework spec §1.2). Hover /
  * right-click: the row menu.
  */
@@ -115,7 +116,7 @@ export function TreeRow({
   const s = node.session;
   const title = sessionTitle(s);
   const hasChildren = node.children.length > 0;
-  const working = s.state === 'working';
+  const longWork = isLongWork(s.state, s.stateSince, useSlowNow());
   const unread = useUnread(s) && depth === 0;
 
   return (
@@ -149,13 +150,13 @@ export function TreeRow({
       />
       <StateIcon state={s.state} size={ICON} className="pointer-events-none relative" />
       <span className={cn('pointer-events-none relative min-w-0 flex-1 truncate', depth === 0 && 'font-medium', unread && 'text-fg')}>
-        {s.pinned && depth === 0 && <Pin size={11} strokeWidth={1.75} className="mr-1 inline text-fg-3" aria-label="ピン留め" />}
+        {s.pinned && depth === 0 && <Pin size={11} strokeWidth={2} className="mr-1 inline text-fg-3" aria-label="ピン留め" />}
         {title}
       </span>
       {unread && <UnreadDot className="pointer-events-none relative mx-1" />}
       {nextRunAt && <NextRun at={nextRunAt} />}
-      {!hasChildren && working && (
-        <Elapsed since={s.stateSince} settled={false} live className="pointer-events-none relative" />
+      {!hasChildren && longWork && (
+        <Elapsed since={s.stateSince} settled={false} className="pointer-events-none relative" />
       )}
       {hasChildren && <ChildToggle descendants={node.descendants} open={row.open} onToggle={() => onToggle(s.id)} />}
       <Menu open={menuOpen} onOpenChange={setMenuOpen}>
@@ -166,16 +167,16 @@ export function TreeRow({
             aria-label="操作"
             className="relative hidden size-6 shrink-0 items-center justify-center rounded-sm text-fg-3 group-hover:flex hover:bg-selected hover:text-fg data-[state=open]:flex"
           >
-            <MoreHorizontal size={14} strokeWidth={1.5} />
+            <MoreHorizontal size={14} strokeWidth={1.75} />
           </button>
         </MenuTrigger>
         <MenuContent align="end">
           {depth === 0 && (
-            <MenuItem icon={<Pin size={14} strokeWidth={1.5} />} onSelect={() => void setPinned(rt, s, !s.pinned)}>
+            <MenuItem icon={<Pin size={14} strokeWidth={1.75} />} onSelect={() => void setPinned(rt, s, !s.pinned)}>
               {s.pinned ? 'ピン留めを外す' : 'ピン留め'}
             </MenuItem>
           )}
-          <MenuItem icon={<Archive size={14} strokeWidth={1.5} />} shortcut="archive" onSelect={() => void archiveSession(rt, s)}>
+          <MenuItem icon={<Archive size={14} strokeWidth={1.75} />} shortcut="archive" onSelect={() => void archiveSession(rt, s)}>
             アーカイブ
           </MenuItem>
         </MenuContent>

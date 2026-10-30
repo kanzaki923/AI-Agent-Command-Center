@@ -172,7 +172,7 @@ export function NewProjectForm({
               </span>
               {branchText(inspection) && (
                 <span className="flex items-center gap-1 font-mono">
-                  <GitBranch size={11} strokeWidth={1.75} />
+                  <GitBranch size={11} strokeWidth={2} />
                   {branchText(inspection)}
                 </span>
               )}
@@ -313,7 +313,7 @@ function EditProjectForm({ project, onDone }: { project: Project; onDone: () => 
       }}
     >
       <div className="flex items-center gap-2 rounded-sm bg-canvas px-2.5 py-2 font-mono text-meta break-all text-fg-2">
-        <FolderGit2 size={13} strokeWidth={1.5} className="shrink-0 text-fg-3" />
+        <FolderGit2 size={13} strokeWidth={1.75} className="shrink-0 text-fg-3" />
         {project.repoPath ?? 'リポジトリなし'}
       </div>
       <div>
@@ -375,11 +375,11 @@ export function ProjectFacts({ project }: { project: Project }) {
   return (
     <span className="flex min-w-0 items-center gap-3 text-meta text-fg-3">
       <span className="flex items-center gap-1 font-mono">
-        <GitBranch size={12} strokeWidth={1.75} />
+        <GitBranch size={12} strokeWidth={2} />
         {project.defaultBranch ?? '未設定'}
       </span>
       <span className="flex min-w-0 items-center gap-1 font-mono">
-        <TestTube2 size={12} strokeWidth={1.75} />
+        <TestTube2 size={12} strokeWidth={2} />
         <span className="truncate">{project.testCommand ?? 'テストなし'}</span>
       </span>
     </span>

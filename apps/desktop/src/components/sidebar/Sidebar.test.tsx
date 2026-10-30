@@ -90,6 +90,14 @@ describe('<Sidebar> conversation tree', () => {
     expect(item('お詫びメール').querySelector('[data-child-toggle]')).toBeNull();
   });
 
+  it('a child working for over ten minutes says how long on its row', async () => {
+    const { all, kids } = tree();
+    kids[0]!.stateSince = iso(now - 12 * 60_000);
+    mount({ sessions: all });
+    fireEvent.click(await screen.findByRole('button', { name: '子を表示' }));
+    expect(item('競合調査').querySelector('time')).toHaveTextContent('12分');
+  });
+
   it('unfolds children with tree rows, and a row opens its conversation', async () => {
     const { all, kids } = tree();
     mount({ sessions: all });
@@ -97,8 +105,8 @@ describe('<Sidebar> conversation tree', () => {
     fireEvent.click(toggle);
     expect(row('FAQ')).toBeInTheDocument();
     expect(item('競合調査').getAttribute('data-depth')).toBe('1');
-    // A working child without children shows how long it has worked.
-    expect(item('競合調査').querySelector('time')).toHaveTextContent('1分');
+    // A working child under ten minutes shows no time: the spinner alone says it works.
+    expect(item('競合調査').querySelector('time')).toBeNull();
     fireEvent.click(row('FAQ'));
     expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: kids[1]!.id });
     expect(row('FAQ')).toHaveAttribute('aria-current', 'page');

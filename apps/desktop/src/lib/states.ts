@@ -83,6 +83,17 @@ export function isSettled(state: SessionState): boolean {
   return state === 'done' || state === 'idle' || state === 'stopped';
 }
 
+/** Unsettled this long in one state is a milestone: the time appears on the face (ui-design §1.8). */
+export const LONG_WORK_MS = 10 * 60_000;
+
+/**
+ * Whether an unsettled session (working, supervising, waiting) has been in its state long
+ * enough to say so on the face; settled ones say when they finished instead.
+ */
+export function isLongWork(state: SessionState, stateSince: string | null | undefined, now: number): boolean {
+  return !isSettled(state) && !!stateSince && now - Date.parse(stateSince) >= LONG_WORK_MS;
+}
+
 // ---------------------------------------------------------------------------------- icons
 
 export const ROLE_META: Record<SessionRole, { icon: LucideIcon; label: string; filled: boolean }> = {

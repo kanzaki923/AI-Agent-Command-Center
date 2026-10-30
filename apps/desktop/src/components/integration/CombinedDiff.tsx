@@ -22,10 +22,10 @@ export function fileKind(f: DiffFile): 'added' | 'deleted' | 'modified' {
 export function FileKindIcon({ f }: { f: DiffFile }) {
   const k = fileKind(f);
   if (k === 'added')
-    return <FilePlus2 size={13} strokeWidth={1.5} className="shrink-0 text-st-completed" />;
+    return <FilePlus2 size={13} strokeWidth={1.75} className="shrink-0 text-st-completed" />;
   if (k === 'deleted')
-    return <FileMinus2 size={13} strokeWidth={1.5} className="shrink-0 text-st-failed" />;
-  return <FileDiff size={13} strokeWidth={1.5} className="shrink-0 text-fg-3" />;
+    return <FileMinus2 size={13} strokeWidth={1.75} className="shrink-0 text-st-failed" />;
+  return <FileDiff size={13} strokeWidth={1.75} className="shrink-0 text-fg-3" />;
 }
 
 /** Split `src/auth/session.ts` into a quiet directory and a readable file name. */

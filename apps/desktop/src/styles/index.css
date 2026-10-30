@@ -691,6 +691,24 @@
 .md h4 {
   font-size: 14px;
 }
+/* The side panel (成果物): nothing in a document outranks the app's own titles. */
+.md-compact {
+  font-size: 13px;
+  line-height: 20px;
+}
+.md-compact > * + * {
+  margin-top: 8px;
+}
+.md-compact h1 {
+  font-size: 15px;
+}
+.md-compact h2 {
+  font-size: 14px;
+}
+.md-compact h3,
+.md-compact h4 {
+  font-size: 13px;
+}
 .md ul,
 .md ol {
   padding-left: 22px;

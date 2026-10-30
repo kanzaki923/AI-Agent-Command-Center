@@ -118,13 +118,13 @@ function ChangeIcon({ change }: { change: WakeItemView['change'] }) {
   if (change === 'budget') {
     return (
       <span role="img" aria-label="予算" className="inline-flex text-st-needs_you">
-        <Coins size={13} strokeWidth={2} aria-hidden />
+        <Coins size={13} strokeWidth={1.75} aria-hidden />
       </span>
     );
   }
   return (
     <span role="img" aria-label="回答" className="inline-flex text-fg-2">
-      <CornerDownLeft size={13} strokeWidth={2} aria-hidden />
+      <CornerDownLeft size={13} strokeWidth={1.75} aria-hidden />
     </span>
   );
 }
@@ -157,7 +157,7 @@ export function WakeCard({ items }: { items: WakeItemView[] }) {
       >
         <ChevronRight
           size={12}
-          strokeWidth={1.75}
+          strokeWidth={2}
           className={cn('shrink-0 text-fg-4 transition-transform duration-[120ms]', open && 'rotate-90')}
         />
         <span className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden">

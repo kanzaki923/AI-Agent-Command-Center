@@ -116,7 +116,7 @@ export function ProfilePicker({
 export function HardRulesNote() {
   return (
     <p className="mt-1.5 flex gap-1.5 text-meta text-fg-3">
-      <ShieldCheck size={12} strokeWidth={1.75} className="mt-0.5 shrink-0" />
+      <ShieldCheck size={12} strokeWidth={2} className="mt-0.5 shrink-0" />
       {HARD_RULES_LINE}
     </p>
   );
@@ -143,7 +143,7 @@ export function RememberedRules({ projectId }: { projectId: string }) {
     <ul className="flex flex-col overflow-hidden rounded-sm border border-line-subtle" data-testid="remembered-rules">
       {rules.map((r: PermissionRule) => (
         <li key={r.id} className="flex min-h-9 items-center gap-2 border-b border-line-subtle px-2.5 py-1.5 last:border-b-0">
-          <Repeat size={12} strokeWidth={1.75} className="shrink-0 text-fg-3" />
+          <Repeat size={12} strokeWidth={2} className="shrink-0 text-fg-3" />
           <span className="min-w-0 flex-1">
             <span className="block truncate text-ui text-fg">{r.description}</span>
             <span className="flex items-center gap-1.5 text-meta text-fg-3">
@@ -195,9 +195,9 @@ export function RunDecisionsChip({ run }: { run: Run }) {
           className="flex h-6 shrink-0 items-center gap-1.5 rounded-xs px-1.5 text-meta text-fg-3 hover:bg-hover hover:text-fg-2"
         >
           {summary && summary.blocked > 0 ? (
-            <ShieldBan size={12} strokeWidth={1.75} className="text-fg-2" />
+            <ShieldBan size={12} strokeWidth={2} className="text-fg-2" />
           ) : (
-            <ShieldCheck size={12} strokeWidth={1.75} />
+            <ShieldCheck size={12} strokeWidth={2} />
           )}
           <span className="tabular">{summary ? decisionSummaryText(summary) : '自動判断 0 件'}</span>
         </button>
@@ -237,7 +237,7 @@ export function RunDecisionsChip({ run }: { run: Run }) {
                   return (
                     <li key={`${b.toolCallId ?? ''}:${i}`} className="text-meta">
                       <div className="flex items-center gap-1.5 text-fg-2">
-                        <ShieldBan size={11} strokeWidth={1.75} className="shrink-0" />
+                        <ShieldBan size={11} strokeWidth={2} className="shrink-0" />
                         <span className="truncate font-mono">{b.summary ?? b.toolName}</span>
                         <span className="ml-auto shrink-0 text-fg-3">{DECIDER[b.decidedBy].badge}</span>
                       </div>

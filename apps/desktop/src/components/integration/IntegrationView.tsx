@@ -163,7 +163,7 @@ function Target({ branch }: { branch: string | null | undefined }) {
         className="flex shrink-0 items-center gap-1 font-mono text-meta text-fg-3"
         data-testid="target"
       >
-        <GitMerge size={12} strokeWidth={1.75} aria-hidden />
+        <GitMerge size={12} strokeWidth={2} aria-hidden />
         {branch}
       </span>
     </Tooltip>
@@ -355,7 +355,7 @@ function IntegrationReview({ integ }: { integ: Integration }) {
                 <li key={f} className="flex items-center gap-1.5 font-mono text-meta text-fg-2">
                   <TriangleAlert
                     size={11}
-                    strokeWidth={1.75}
+                    strokeWidth={2}
                     className="shrink-0 text-st-failed"
                     aria-hidden
                   />
@@ -434,7 +434,7 @@ function IntegrationBar({ integ }: { integ: Integration }) {
             {state === 'done' ? (
               <CircleCheck
                 size={14}
-                strokeWidth={2}
+                strokeWidth={1.75}
                 className="shrink-0 text-st-done"
                 aria-hidden
               />

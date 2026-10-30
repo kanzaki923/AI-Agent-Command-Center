@@ -48,8 +48,9 @@ export function attentionKeyAction(
 /**
  * One attention item on one line (spec §1.4): kind icon, the conversation (press to open it),
  * the title, choice buttons (1–4, approvals Y / N), a reply field when text is accepted
- * (Enter opens it) and the detail when there is one (▸). Answering is optimistic: the row
- * leaves at once and comes back with a toast if the answer fails.
+ * (Enter opens it) and the detail when there is one (▸). The key labels appear only on the
+ * selected row, the one those keys act on. Answering is optimistic: the row leaves at once
+ * and comes back with a toast if the answer fails.
  */
 export function AttentionRow({
   attention,
@@ -149,14 +150,14 @@ export function AttentionRow({
               key={c.id}
               size="sm"
               variant={TONE_VARIANT[c.tone]}
-              shortcutKeys={choiceKey(attention, i)}
+              shortcutKeys={selected ? choiceKey(attention, i) : undefined}
               onClick={() => answer({ choiceId: c.id })}
             >
               {c.label}
             </Button>
           ))}
           {attention.allowText && !replying && (
-            <Button size="sm" variant="ghost" shortcutKeys="Enter" onClick={() => setReplying(true)}>
+            <Button size="sm" variant="ghost" shortcutKeys={selected ? 'Enter' : undefined} onClick={() => setReplying(true)}>
               返信
             </Button>
           )}

@@ -91,12 +91,12 @@ function ProjectMenu({ project }: { project: Project }) {
           aria-label={`${project.name} の操作`}
           className="relative hidden size-6 shrink-0 items-center justify-center rounded-sm text-fg-3 group-hover:flex hover:bg-selected hover:text-fg data-[state=open]:flex"
         >
-          <MoreHorizontal size={14} strokeWidth={1.5} />
+          <MoreHorizontal size={14} strokeWidth={1.75} />
         </button>
       </MenuTrigger>
       <MenuContent align="end">
         <MenuItem
-          icon={<Plus size={14} strokeWidth={1.5} />}
+          icon={<Plus size={14} strokeWidth={1.75} />}
           onSelect={() => {
             setProject(project.id);
             newChat();
@@ -105,13 +105,13 @@ function ProjectMenu({ project }: { project: Project }) {
           新しい会話
         </MenuItem>
         <MenuItem
-          icon={<Pencil size={14} strokeWidth={1.5} />}
+          icon={<Pencil size={14} strokeWidth={1.75} />}
           onSelect={() => setProjectDialog({ kind: 'edit', projectId: project.id })}
         >
           プロジェクトを編集
         </MenuItem>
         <MenuSeparator />
-        <MenuItem icon={<FolderPlus size={14} strokeWidth={1.5} />} onSelect={() => setProjectDialog({ kind: 'new' })}>
+        <MenuItem icon={<FolderPlus size={14} strokeWidth={1.75} />} onSelect={() => setProjectDialog({ kind: 'new' })}>
           プロジェクトを追加
         </MenuItem>
       </MenuContent>

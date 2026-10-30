@@ -97,7 +97,7 @@ function KindIcon({ icon: Icon, label, color, dim }: { icon: LucideIcon; label: 
         className={cn('flex size-4 shrink-0 items-center justify-center', dim && 'opacity-55')}
         style={{ color }}
       >
-        <Icon size={14} strokeWidth={1.9} aria-hidden />
+        <Icon size={14} strokeWidth={1.75} aria-hidden />
       </span>
     </Tooltip>
   );

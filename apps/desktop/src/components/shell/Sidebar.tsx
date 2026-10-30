@@ -65,8 +65,8 @@ export function Sidebar() {
   return (
     <nav aria-label="サイドバー" className="relative flex h-full shrink-0 flex-col bg-app" style={{ width }} data-region="sidebar">
       <div className="flex flex-col gap-px px-2 pt-1">
-        <NavRow icon={<Plus size={15} strokeWidth={1.5} />} label="新しい会話" shortcut="newChat" active={drafting} onClick={() => newChat()} />
-        <NavRow icon={<House size={15} strokeWidth={1.5} />} label="ホーム" shortcut="modeHome" active={mode === 'home'} onClick={goHome}>
+        <NavRow icon={<Plus size={15} strokeWidth={1.75} />} label="新しい会話" shortcut="newChat" active={drafting} onClick={() => newChat()} />
+        <NavRow icon={<House size={15} strokeWidth={1.75} />} label="ホーム" shortcut="modeHome" active={mode === 'home'} onClick={goHome}>
           {needsYou > 0 && (
             <span className="flex items-center gap-0.5 text-meta text-st-needs_you group-hover:hidden">
               <Hand size={12} strokeWidth={2} aria-hidden />
@@ -74,7 +74,7 @@ export function Sidebar() {
             </span>
           )}
         </NavRow>
-        <NavRow icon={<Rows3 size={15} strokeWidth={1.5} />} label="タイムライン" shortcut="modeTimeline" active={mode === 'timeline'} onClick={openTimeline} />
+        <NavRow icon={<Rows3 size={15} strokeWidth={1.75} />} label="タイムライン" shortcut="modeTimeline" active={mode === 'timeline'} onClick={openTimeline} />
       </div>
 
       <div className="mt-3 min-h-0 flex-1 overflow-y-auto border-t border-line-subtle px-2 pt-2 pb-2">
@@ -87,7 +87,7 @@ export function Sidebar() {
           onClick={() => setSettingsOpen(true)}
           className="flex h-7 flex-1 items-center gap-2 rounded-sm px-2 hover:bg-hover hover:text-fg focus-inset"
         >
-          <Settings size={15} strokeWidth={1.5} className="text-fg-3" />
+          <Settings size={15} strokeWidth={1.75} className="text-fg-3" />
           <span className="flex-1 text-left">設定</span>
         </button>
         <ConnectionDot />

@@ -65,7 +65,7 @@ export function TitleBar() {
         onClick={() => openPalette()}
         className="flex h-7 w-[320px] items-center gap-2 rounded-sm border border-line-subtle bg-hover px-2.5 text-ui text-fg-3 transition-colors duration-[120ms] hover:border-line hover:text-fg-2 hover:duration-0"
       >
-        <Search size={14} strokeWidth={1.5} />
+        <Search size={14} strokeWidth={1.75} />
         <span className="flex-1 text-left">検索・コマンド</span>
         <Kbd id="palette" />
       </button>
@@ -100,7 +100,7 @@ export function TitleBar() {
               className="flex h-6 items-center gap-1 rounded-sm px-1.5 text-meta font-medium text-st-needs_you"
               style={{ background: 'color-mix(in oklch, var(--st-needs_you) 14%, transparent)' }}
             >
-              <Hand size={13} strokeWidth={2} aria-hidden />
+              <Hand size={13} strokeWidth={1.75} aria-hidden />
               <NumberRoll value={needsYou} />
             </button>
           </Tooltip>

@@ -127,9 +127,9 @@ describe('mock supervisor', () => {
       ]),
     );
     expect(r.toolCalls ?? []).toEqual([]);
-    expect(r.text).toContain(
-      '3 人に任せました：「競合の価格を調べる」、「FAQ を書く」、「告知文を書く」',
-    );
+    // The plan card already names the children; the words say what happens next.
+    expect(r.text).toContain('3 人に任せました。');
+    expect(r.text).not.toContain('「競合の価格を調べる」');
   });
 
   it('a wake with some children working: progress only; all finished: the final report without tools', () => {

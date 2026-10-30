@@ -177,7 +177,7 @@ function LaneFacts({ tree, withBand, childCount }: { tree: HomeTree; withBand: b
       <span className="flex w-[84px] items-center justify-end gap-1 text-meta text-fg-3">
         {tree.nextRunAt && (
           <>
-            <Clock size={12} strokeWidth={1.75} aria-label="次回" />
+            <Clock size={12} strokeWidth={2} aria-label="次回" />
             <span className="tabular whitespace-nowrap">{formatNextRun(tree.nextRunAt, now)}</span>
           </>
         )}

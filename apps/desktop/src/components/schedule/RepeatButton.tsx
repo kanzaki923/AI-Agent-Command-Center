@@ -159,7 +159,7 @@ function RepeatSettings({
         <ol aria-label="次の予定" className="flex flex-col gap-1" data-testid="repeat-preview">
           {(trigger && !preview.isError ? (preview.data ?? []) : []).map((t) => (
             <li key={t} className="flex items-center gap-2 text-meta text-fg-2 tabular">
-              <Clock size={12} strokeWidth={1.75} className="text-fg-3" />
+              <Clock size={12} strokeWidth={2} className="text-fg-3" />
               {formatFireTime(t, now)}
             </li>
           ))}

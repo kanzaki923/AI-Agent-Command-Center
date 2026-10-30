@@ -27,7 +27,7 @@ export function OutputBody({ output }: { output: Artifact }) {
     case 'document':
       return output.data.format === 'markdown' ? (
         <div className="selectable px-4 py-3">
-          <Markdown text={output.data.content} />
+          <Markdown text={output.data.content} compact />
         </div>
       ) : (
         <pre className="selectable px-4 py-3 text-ui whitespace-pre-wrap text-fg">
@@ -118,7 +118,7 @@ function LinkCard({ url, label }: { url: string; label: string }) {
         onClick={() => openWebUrl(url)}
         className="group flex w-full items-start gap-3 rounded-md border border-line-subtle bg-surface px-3 py-2.5 text-left hover:border-line-strong hover:bg-hover"
       >
-        <Link size={16} strokeWidth={1.75} className="mt-0.5 shrink-0 text-accent" aria-hidden />
+        <Link size={16} strokeWidth={1.5} className="mt-0.5 shrink-0 text-accent" aria-hidden />
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="truncate text-ui font-medium text-fg">{label}</span>
           <span className="truncate font-mono text-meta text-fg-3">{url}</span>
@@ -172,7 +172,7 @@ function FilesView({ output }: { output: Extract<Artifact, { kind: 'files' }> })
                   current?.path === f.path && files.length > 1 ? 'bg-selected' : 'hover:bg-hover',
                 )}
               >
-                <File size={13} strokeWidth={1.5} className="shrink-0 text-fg-3" aria-hidden />
+                <File size={13} strokeWidth={1.75} className="shrink-0 text-fg-3" aria-hidden />
                 <span className="min-w-0 flex-1 truncate font-mono text-meta">
                   {i >= 0 && <span className="text-fg-3">{f.path.slice(0, i + 1)}</span>}
                   <span className="text-fg">{f.path.slice(i + 1)}</span>
@@ -228,7 +228,7 @@ function FilePreview({
   }
   return kind === 'markdown' ? (
     <div className="selectable px-4 py-3">
-      <Markdown text={text} />
+      <Markdown text={text} compact />
     </div>
   ) : (
     <pre className="selectable overflow-x-auto px-4 py-3 font-mono text-code whitespace-pre text-fg">

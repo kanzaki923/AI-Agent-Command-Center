@@ -59,7 +59,7 @@ export function ResolvedLine({ approval }: { approval: Approval }) {
       {ok ? '承認しました' : '拒否しました'}
       {remembered && (
         <span className="flex items-center gap-1" data-testid="remembered-scope">
-          · <Repeat size={11} strokeWidth={1.75} />
+          · <Repeat size={11} strokeWidth={2} />
           {REMEMBERED_TEXT[remembered.scope]}
         </span>
       )}
@@ -232,7 +232,7 @@ export function useApprovalControls(
             <Button
               variant="ghost"
               shortcut="approveAlways"
-              icon={<Repeat size={12} strokeWidth={1.75} />}
+              icon={<Repeat size={12} strokeWidth={2} />}
               onClick={() => setRemembering(true)}
               disabled={!connected}
               hint={disabledHint ?? '承認して、この Run・Task・プロジェクトでは同じ操作を確認しないようにします'}

@@ -111,7 +111,7 @@ function PhaseStatus({
     case 'adopted':
       return (
         <span className="flex items-center gap-1.5 text-ui text-st-done" data-phase="adopted">
-          <CircleCheck size={14} strokeWidth={2} aria-hidden />
+          <CircleCheck size={14} strokeWidth={1.75} aria-hidden />
           {code ? '反映済み' : '採用済み'}
         </span>
       );
@@ -258,7 +258,7 @@ export function ReviewBar({
           <Button
             variant="primary"
             size={full ? 'lg' : 'md'}
-            icon={<Check size={14} strokeWidth={2} />}
+            icon={<Check size={14} strokeWidth={1.75} />}
             shortcutKeys={full ? 'Mod+Enter' : undefined}
             hint={code ? '採用して反映' : undefined}
             disabled={!connected}

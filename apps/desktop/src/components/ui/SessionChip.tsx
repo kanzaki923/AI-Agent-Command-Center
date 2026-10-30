@@ -3,14 +3,13 @@ import { useState } from 'react';
 import { useAttentionItems } from '../../daemon/home';
 import { useSlowNow } from '../../hooks/useNow';
 import { cn } from '../../lib/cn';
-import { OUTPUT_META, STATE_META, formatSince, formatUsd, isAlarm, isSettled, sessionTitle } from '../../lib/states';
+import { LONG_WORK_MS, OUTPUT_META, STATE_META, formatSince, formatUsd, isAlarm, isLongWork, isSettled, sessionTitle } from '../../lib/states';
 import { Elapsed } from './Elapsed';
 import { OutputIcon, RoleIcon } from './SemanticIcons';
 import { StateIcon } from './StateIcon';
 import { Tooltip } from './Tooltip';
 
-/** Working this long on one state shows the time on the chip itself (ui-rework spec §2). */
-export const LONG_WORK_MS = 10 * 60_000;
+export { LONG_WORK_MS };
 
 /**
  * One session as a chip (ui-rework spec §2): the home lanes (`md`) and a conversation's row
@@ -60,7 +59,7 @@ export function SessionChip({
   const since = card.stateSince ? formatSince(card.stateSince, Math.max(now, Date.parse(card.stateSince)), isSettled(card.state)) : null;
   const cost = formatUsd(card.costUsd);
   const tip = [meta.label, since, cost].filter(Boolean).join(' · ');
-  const longWork = working && !!card.stateSince && now - Date.parse(card.stateSince) >= LONG_WORK_MS;
+  const longWork = isLongWork(card.state, card.stateSince, now);
 
   return (
     <Tooltip content={tip}>

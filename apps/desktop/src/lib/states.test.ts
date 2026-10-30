@@ -10,6 +10,7 @@ import {
   formatNextRun,
   formatSince,
   formatUsd,
+  isLongWork,
   isSettled,
   sessionTitle,
   sortByState,
@@ -53,6 +54,16 @@ describe('states vocabulary (spec §1.1)', () => {
     expect(['done', 'idle', 'stopped'].every((s) => isSettled(s as SessionState))).toBe(true);
     expect(isSettled('working')).toBe(false);
     expect(isSettled('needs_you')).toBe(false);
+  });
+
+  it('calls work long only when it has been working for ten minutes (ui-design §1.8)', () => {
+    const now = Date.now();
+    const ago = (ms: number) => new Date(now - ms).toISOString();
+    expect(isLongWork('working', ago(9 * 60_000), now)).toBe(false);
+    expect(isLongWork('working', ago(10 * 60_000), now)).toBe(true);
+    expect(isLongWork('supervising', ago(60 * 60_000), now)).toBe(true);
+    expect(isLongWork('done', ago(60 * 60_000), now)).toBe(false);
+    expect(isLongWork('working', null, now)).toBe(false);
   });
 });
 

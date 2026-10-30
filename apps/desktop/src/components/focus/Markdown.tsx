@@ -1,6 +1,7 @@
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { type Token, type Tokens, lexer } from 'marked';
 import { type ReactNode, memo } from 'react';
+import { cn } from '../../lib/cn';
 import { isTauri } from '../../lib/platform';
 import { CopyButton } from '../ui/CopyButton';
 import { highlight } from './highlight';
@@ -317,11 +318,14 @@ export function Markdown({
   text,
   streaming = false,
   streamId,
+  compact = false,
 }: {
   text: string;
   streaming?: boolean;
   /** The streaming message id: keys the incremental lexing cache. */
   streamId?: string;
+  /** The side panel's scale: smaller type and headings that stay under the app's own. */
+  compact?: boolean;
 }) {
   let tokens: Token[];
   if (streaming && streamId) {
@@ -339,7 +343,7 @@ export function Markdown({
   })();
   const caret = streaming ? <Caret at={text.length} /> : undefined;
   return (
-    <div className={streaming ? 'md md-streaming selectable' : 'md selectable'}>
+    <div className={cn('md selectable', streaming && 'md-streaming', compact && 'md-compact')}>
       {tokens.map((t, i) => {
         const closed = !streaming || i !== lastIdx || (t.type === 'code' && fenceClosed(t.raw));
         return (

@@ -237,7 +237,7 @@ function WorkspaceToggle({
               className="flex h-6 max-w-40 items-center gap-1 rounded-sm bg-selected px-1.5 text-meta text-fg-2 hover:text-fg disabled:hover:text-fg-2"
             >
               <span className="truncate">{project.name}</span>
-              {fits.length > 1 && <ChevronDown size={12} strokeWidth={1.75} className="shrink-0" />}
+              {fits.length > 1 && <ChevronDown size={12} strokeWidth={2} className="shrink-0" />}
             </button>
           </MenuTrigger>
           <MenuContent align="end">

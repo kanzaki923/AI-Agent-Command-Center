@@ -132,7 +132,7 @@ function Panel({
               {met ? (
                 <CircleCheck
                   size={13}
-                  strokeWidth={2}
+                  strokeWidth={1.75}
                   className="mt-px shrink-0 text-st-done"
                   aria-label="満たした"
                 />

@@ -163,7 +163,7 @@ function Board({ trees, attention }: { trees: HomeTree[]; attention: Attention[]
           })}
         </div>
       </div>
-      <div className="shrink-0 border-t border-line-subtle px-6 py-3">
+      <div className="shrink-0 px-6 pt-1 pb-3">
         <HomeComposer />
       </div>
     </div>

@@ -33,11 +33,11 @@ function SuggestionChip({ text, onSend, onDismiss }: { text: string; onSend: () 
       >
         <span className="min-w-0 truncate">{text}</span>
         <span className="flex items-center text-fg-3 group-hover:text-fg-2">
-          <CornerDownLeft size={12} strokeWidth={1.75} aria-label="送信" />
+          <CornerDownLeft size={12} strokeWidth={2} aria-label="送信" />
         </span>
       </button>
       <button type="button" onClick={onDismiss} aria-label="提案を閉じる" className="flex size-6 items-center justify-center rounded-full text-fg-3 hover:text-fg-2">
-        <X size={12} strokeWidth={1.75} />
+        <X size={12} strokeWidth={2} />
       </button>
     </motion.div>
   );
@@ -221,7 +221,7 @@ export function Composer({
       )}
       {editing && (
         <div className="mb-1.5 flex h-6 items-center gap-1.5 px-1 text-meta text-fg-3" data-testid="editing-banner">
-          <Pencil size={12} strokeWidth={1.75} className="text-accent" />
+          <Pencil size={12} strokeWidth={2} className="text-accent" />
           <span className="text-fg-2">編集して送り直す</span>
           <span className="flex-1" />
           <button
@@ -251,7 +251,7 @@ export function Composer({
           <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
             {attachments.map((a) => (
               <span key={a.id} className="flex h-6 items-center gap-1.5 rounded-xs bg-selected pr-1 pl-2 text-meta text-fg-2">
-                <FileText size={12} strokeWidth={1.75} />
+                <FileText size={12} strokeWidth={2} />
                 貼り付けたテキスト · {a.lines}行
                 <button
                   type="button"
@@ -344,7 +344,7 @@ export function Composer({
                   }}
                   className="flex size-7 items-center justify-center rounded-sm bg-accent text-accent-fg hover:bg-accent-hover disabled:bg-selected disabled:text-fg-4"
                 >
-                  <ArrowUp size={14} strokeWidth={2} />
+                  <ArrowUp size={14} strokeWidth={1.75} />
                 </button>
               </span>
             </Tooltip>

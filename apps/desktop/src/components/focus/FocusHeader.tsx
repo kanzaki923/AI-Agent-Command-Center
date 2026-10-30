@@ -3,11 +3,12 @@ import { ArrowUp, MoreHorizontal, Pin, Play, Square } from 'lucide-react';
 import { useState } from 'react';
 import { archiveSession, renameSession, resumeTree, setPinned, stopTree } from '../../daemon/actions';
 import { useHomeSelect } from '../../daemon/home';
+import { useSlowNow } from '../../hooks/useNow';
 import { useSessions } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { type SessionTree, treeRelations } from '../../daemon/tree';
 import { cn } from '../../lib/cn';
-import { STATE_META, formatUsd, isSettled, sessionTitle } from '../../lib/states';
+import { STATE_META, formatUsd, isLongWork, isSettled, sessionTitle } from '../../lib/states';
 import { useUi } from '../../store/ui';
 import { DelegateButton } from '../delegate/DelegateButton';
 import { RepeatButton } from '../schedule/RepeatButton';
@@ -193,6 +194,7 @@ export function FocusHeader({
   const control = treeControl(session, subtree);
   const meta = STATE_META[session.state];
   const costShown = !!budget || !!formatUsd(used);
+  const longWork = isLongWork(session.state, session.stateSince, useSlowNow());
   const meter = <CostMeter usedUsd={used} limitUsd={budget?.limitUsd ?? null} committedUsd={budget?.committedUsd} estimated={estimated} />;
 
   return (
@@ -203,10 +205,12 @@ export function FocusHeader({
         <Tooltip content={session.now ? `${meta.label} · ${session.now}` : meta.label}>
           <span className="flex shrink-0 items-center gap-1.5" data-testid="session-state" data-state={session.state}>
             <StateIcon state={session.state} size={14} />
-            <Elapsed since={session.stateSince} settled={isSettled(session.state)} live={session.state === 'working'} />
+            {(isSettled(session.state) || longWork) && (
+              <Elapsed since={session.stateSince} settled={isSettled(session.state)} />
+            )}
           </span>
         </Tooltip>
-        {session.pinned && <Pin size={12} strokeWidth={1.75} className="shrink-0 text-fg-3" aria-label="ピン留め" />}
+        {session.pinned && <Pin size={12} strokeWidth={2} className="shrink-0 text-fg-3" aria-label="ピン留め" />}
         <span className="flex-1" />
         {hasChildren && costShown ? (
           <Popover open={costOpen} onOpenChange={setCostOpen}>
@@ -227,18 +231,18 @@ export function FocusHeader({
           {root && <RepeatButton sessionId={session.id} />}
           {control === 'stop' && (
             <IconButton label="止める" disabled={!connected} onClick={() => void stopTree(rt, session.id)}>
-              <Square size={13} strokeWidth={2} />
+              <Square size={13} strokeWidth={1.75} />
             </IconButton>
           )}
           {control === 'resume' && (
             <IconButton label="再開" disabled={!connected} onClick={() => void resumeTree(rt, session.id)}>
-              <Play size={14} strokeWidth={2} />
+              <Play size={14} strokeWidth={1.75} />
             </IconButton>
           )}
           <Menu>
             <MenuTrigger asChild>
               <IconButton label="その他の操作">
-                <MoreHorizontal size={15} strokeWidth={1.5} />
+                <MoreHorizontal size={15} strokeWidth={1.75} />
               </IconButton>
             </MenuTrigger>
             <MenuContent align="end">

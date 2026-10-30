@@ -45,7 +45,7 @@ export function Dialog({
               aria-label="閉じる"
               className="flex size-7 items-center justify-center rounded-sm text-fg-3 hover:bg-hover hover:text-fg"
             >
-              <X size={15} strokeWidth={1.5} />
+              <X size={15} strokeWidth={1.75} />
             </D.Close>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">{children}</div>

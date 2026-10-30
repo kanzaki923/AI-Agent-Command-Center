@@ -5,10 +5,10 @@ import type { DiffFile } from '../../model/diff';
 
 function FileIcon({ f }: { f: DiffFile }) {
   if (f.deletions === 0 && f.additions > 0 && f.lines.every((l) => l.kind !== 'context'))
-    return <FilePlus2 size={13} strokeWidth={1.5} className="shrink-0 text-st-completed" />;
+    return <FilePlus2 size={13} strokeWidth={1.75} className="shrink-0 text-st-completed" />;
   if (f.additions === 0 && f.deletions > 0)
-    return <FileMinus2 size={13} strokeWidth={1.5} className="shrink-0 text-st-failed" />;
-  return <FileDiff size={13} strokeWidth={1.5} className="shrink-0 text-fg-3" />;
+    return <FileMinus2 size={13} strokeWidth={1.75} className="shrink-0 text-st-failed" />;
+  return <FileDiff size={13} strokeWidth={1.75} className="shrink-0 text-fg-3" />;
 }
 
 export function DiffStatText({ additions, deletions }: { additions: number; deletions: number }) {
@@ -87,7 +87,7 @@ export function DiffBrowser({ files }: { files: DiffFile[] }) {
             aria-label="ファイルの一覧へ"
             className="flex h-8 shrink-0 items-center gap-1.5 border-b border-line-subtle px-2 text-left text-fg-2 hover:text-fg"
           >
-            <ChevronLeft size={14} strokeWidth={1.5} className="shrink-0" />
+            <ChevronLeft size={14} strokeWidth={1.75} className="shrink-0" />
             <span className="min-w-0 flex-1 truncate font-mono text-meta">{file.path}</span>
             <DiffStatText additions={file.additions} deletions={file.deletions} />
           </button>
