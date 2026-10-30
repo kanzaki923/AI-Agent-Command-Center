@@ -23,7 +23,7 @@ import {
 import { Button } from '../ui/Button';
 import { Dialog, inputClass } from '../ui/Dialog';
 import { FieldRow, type SegmentOption, Segmented, Stepper, UsdField } from './controls';
-import { LiteLlmForm } from './LiteLlmForm';
+import { ProviderPanel } from './ProviderPanel';
 
 type SettingsPatch = ParamsInput<'settings.update'>;
 
@@ -88,18 +88,31 @@ const JUDGE_OPTIONS: SegmentOption<Judge>[] = [
   { value: 'client', label: '手元', hint: '1 回約 $0.01' },
 ];
 
-/** Where the LLM connection stands: a dot and the endpoint. */
+/**
+ * Where the models come from, in one line: the LiteLLM host with its model count, then the
+ * other providers that are set up (Anthropic, OpenAI, ChatGPT with its account), or モック.
+ */
 export function connectionStatus(
   settings: SettingsView | undefined,
   models: { models: unknown[]; source: string } | undefined,
   failed: boolean,
 ): { tone: 'ok' | 'off' | 'error'; text: string } {
+  const parts: string[] = [];
+  let tone: 'ok' | 'off' | 'error' = 'ok';
   const url = settings?.litellm.baseUrl;
-  if (!url) return { tone: 'off', text: 'モック' };
-  const host = url.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
-  if (failed) return { tone: 'error', text: host };
-  const n = models?.source === 'litellm' ? models.models.length : 0;
-  return { tone: n > 0 ? 'ok' : 'error', text: n > 0 ? `${host} · ${n} モデル` : host };
+  if (url) {
+    const host = url.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+    const n = models?.source === 'litellm' ? models.models.length : 0;
+    if (failed || n === 0) tone = 'error';
+    parts.push(n > 0 ? `${host} · ${n} モデル` : host);
+  }
+  const p = settings?.providers;
+  if (p?.anthropic.hasApiKey) parts.push('Anthropic');
+  if (p?.openai.hasApiKey) parts.push('OpenAI');
+  if (p?.openai.chatgpt)
+    parts.push(`ChatGPT${p.openai.chatgpt.email ? ` ${p.openai.chatgpt.email}` : ''}`);
+  if (parts.length === 0) return { tone: 'off', text: 'モック' };
+  return { tone, text: parts.join(' · ') };
 }
 
 const DOT = { ok: 'bg-st-done', off: 'bg-st-idle', error: 'bg-st-failed' } as const;
@@ -168,12 +181,8 @@ export function SettingsDialog() {
           )}
         </FieldRow>
         {editing && (
-          <div className="mt-1 mb-2 rounded-md border border-line-subtle bg-canvas p-3">
-            <LiteLlmForm
-              compact
-              onDone={() => setEditing(false)}
-              onCancel={() => setEditing(false)}
-            />
+          <div className="mt-1 mb-2 rounded-md border border-line-subtle bg-canvas px-3 py-2">
+            <ProviderPanel />
           </div>
         )}
         {profile && (

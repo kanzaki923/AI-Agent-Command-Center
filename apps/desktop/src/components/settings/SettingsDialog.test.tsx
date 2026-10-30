@@ -1,4 +1,4 @@
-import type { SettingsView } from '@acc/protocol';
+import type { ChatGptStatus, SettingsView } from '@acc/protocol';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
@@ -24,26 +24,68 @@ const VIEW: SettingsView = {
   limits: { dailyUsd: 20, timezone: 'Asia/Tokyo' },
   autoResume: true,
   assistant: { model: null, dailyUsd: 2 },
+  providers: {
+    anthropic: { baseUrl: null, hasApiKey: false, apiKeyMasked: null },
+    openai: { baseUrl: null, hasApiKey: false, apiKeyMasked: null, chatgpt: null },
+  },
 };
 
-function mount(view: SettingsView = VIEW) {
+function mount(view: SettingsView = VIEW, extra: Parameters<typeof createFakeClient>[0] = {}) {
   let current = view;
   const updates: unknown[] = [];
   const fake = createFakeClient({
     'settings.get': () => current,
     'settings.update': (p) => {
       updates.push(p);
-      const patch = p as Partial<SettingsView>;
-      // Like the daemon: autoMode and limits are merged field by field.
+      const patch = p as Partial<SettingsView> & {
+        providers?: { anthropic?: { apiKey?: string | null }; openai?: { apiKey?: string | null } };
+      };
+      // Like the daemon: autoMode, limits and providers are merged field by field; keys come back masked.
+      const providers =
+        current.providers && patch.providers ? structuredClone(current.providers) : undefined;
+      const masked = (key: string | null) => ({
+        hasApiKey: key !== null,
+        apiKeyMasked: key ? `sk-…${key.slice(-4)}` : null,
+      });
+      const a = patch.providers?.anthropic?.apiKey;
+      if (providers && a !== undefined)
+        providers.anthropic = { ...providers.anthropic, ...masked(a) };
+      const o = patch.providers?.openai?.apiKey;
+      if (providers && o !== undefined) providers.openai = { ...providers.openai, ...masked(o) };
       current = {
         ...current,
-        ...patch,
-        ...(patch.autoMode && current.autoMode ? { autoMode: { ...current.autoMode, ...patch.autoMode } } : {}),
-        ...(patch.limits && current.limits ? { limits: { ...current.limits, ...patch.limits } } : {}),
-        ...(patch.assistant && current.assistant ? { assistant: { ...current.assistant, ...patch.assistant } } : {}),
+        ...(patch.autoMode && current.autoMode
+          ? { autoMode: { ...current.autoMode, ...patch.autoMode } }
+          : {}),
+        ...(patch.limits && current.limits
+          ? { limits: { ...current.limits, ...patch.limits } }
+          : {}),
+        ...(patch.assistant && current.assistant
+          ? { assistant: { ...current.assistant, ...patch.assistant } }
+          : {}),
+        ...(providers ? { providers } : {}),
+        ...(patch.defaultPermissionProfile
+          ? { defaultPermissionProfile: patch.defaultPermissionProfile }
+          : {}),
+        ...(patch.litellm ? { litellm: { ...current.litellm, ...patch.litellm } } : {}),
+        ...(patch.autoResume !== undefined ? { autoResume: patch.autoResume } : {}),
+        ...(patch.autoResumeOrchestrators !== undefined
+          ? { autoResumeOrchestrators: patch.autoResumeOrchestrators }
+          : {}),
+        ...(patch.llmCallReserveUsd !== undefined
+          ? { llmCallReserveUsd: patch.llmCallReserveUsd }
+          : {}),
+        ...(patch.maxConcurrentAgents !== undefined
+          ? { maxConcurrentAgents: patch.maxConcurrentAgents }
+          : {}),
+        ...(patch.maxConcurrentChats !== undefined
+          ? { maxConcurrentChats: patch.maxConcurrentChats }
+          : {}),
+        ...(patch.defaultModel !== undefined ? { defaultModel: patch.defaultModel } : {}),
       };
       return current;
     },
+    ...extra,
     'system.info': () => ({
       version: '0.1.0',
       protocolVersion: 1,
@@ -56,7 +98,10 @@ function mount(view: SettingsView = VIEW) {
       methods: ['system.shutdown'],
       stats: { projects: 0, sessions: 0, activeRuns: 0, lastEventSeq: 0 },
     }),
-    'models.list': () => ({ models: [{ id: 'claude-sonnet', label: null, provider: null }], source: 'litellm' }),
+    'models.list': () => ({
+      models: [{ id: 'claude-sonnet', label: null, provider: null }],
+      source: 'litellm',
+    }),
   });
   render(
     <RuntimeProvider runtime={createRuntime(fake.client)}>
@@ -75,7 +120,12 @@ const openDetails = async () => {
 };
 
 beforeEach(() => {
-  useUi.setState({ settingsOpen: true, shortcutsOpen: false, theme: 'dark', reduceMotion: 'system' });
+  useUi.setState({
+    settingsOpen: true,
+    shortcutsOpen: false,
+    theme: 'dark',
+    reduceMotion: 'system',
+  });
   useConfirm.setState({ request: null });
 });
 
@@ -101,7 +151,13 @@ describe('connectionStatus', () => {
       text: '127.0.0.1:4000 · 2 モデル',
     });
     expect(connectionStatus(VIEW, undefined, true).tone).toBe('error');
-    expect(connectionStatus({ ...VIEW, litellm: { baseUrl: null, hasApiKey: false, apiKeyMasked: null } }, undefined, false)).toEqual({
+    expect(
+      connectionStatus(
+        { ...VIEW, litellm: { baseUrl: null, hasApiKey: false, apiKeyMasked: null } },
+        undefined,
+        false,
+      ),
+    ).toEqual({
       tone: 'off',
       text: 'モック',
     });
@@ -111,7 +167,11 @@ describe('connectionStatus', () => {
 describe('<SettingsDialog> up front', () => {
   it('shows only connection, 任せ方, the daily limit and appearance; the rest is folded', async () => {
     mount();
-    await waitFor(() => expect(screen.getByTestId('connection-status')).toHaveTextContent('127.0.0.1:4000 · 1 モデル'));
+    await waitFor(() =>
+      expect(screen.getByTestId('connection-status')).toHaveTextContent(
+        '127.0.0.1:4000 · 1 モデル',
+      ),
+    );
     expect(screen.getByRole('radiogroup', { name: '任せ方' })).toBeInTheDocument();
     expect(screen.getByLabelText('1 日の上限')).toHaveValue('20');
     expect(screen.getByRole('radiogroup', { name: 'テーマ' })).toBeInTheDocument();
@@ -184,13 +244,77 @@ describe('<SettingsDialog> up front', () => {
     expect(useUi.getState().theme).toBe('light');
   });
 
-  it('opens the connection form with 変更 and folds it with 取り消し', async () => {
+  it('変更 opens the providers side by side; the LiteLLM row opens its form and folds it with 取り消し', async () => {
     mount();
     fireEvent.click(await screen.findByRole('button', { name: '変更' }));
+    const panel = screen.getByTestId('provider-panel');
+    expect(within(panel).getByText('127.0.0.1:4000')).toBeInTheDocument();
+    expect(within(panel).getAllByText('未設定')).toHaveLength(2);
+    expect(within(panel).getByRole('button', { name: 'ChatGPT でサインイン' })).toBeInTheDocument();
+    fireEvent.click(within(panel).getByRole('button', { name: '変更' }));
     expect(screen.getByLabelText('LiteLLM Proxy の URL')).toHaveValue('http://127.0.0.1:4000');
     expect(screen.getByRole('button', { name: '確かめる' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '取り消し' }));
     expect(screen.queryByLabelText('LiteLLM Proxy の URL')).toBeNull();
+  });
+
+  it('saves a provider key through the daemon and shows it masked; 外す clears it', async () => {
+    const { updates } = mount();
+    fireEvent.click(await screen.findByRole('button', { name: '変更' }));
+    const panel = screen.getByTestId('provider-panel');
+    const buttons = within(panel).getAllByRole('button', { name: '設定' });
+    fireEvent.click(buttons[0]!);
+    const input = screen.getByLabelText('Anthropic の API キー');
+    fireEvent.change(input, { target: { value: 'sk-ant-api03-secretsecret1234' } });
+    fireEvent.submit(input.closest('form')!);
+    await waitFor(() =>
+      expect(updates).toContainEqual({
+        providers: { anthropic: { apiKey: 'sk-ant-api03-secretsecret1234' } },
+      }),
+    );
+    await waitFor(() => expect(within(panel).getByText('sk-…1234')).toBeInTheDocument());
+    expect(screen.getByTestId('connection-status')).toHaveTextContent('Anthropic');
+    fireEvent.click(within(panel).getByRole('button', { name: '外す' }));
+    await waitFor(() =>
+      expect(updates).toContainEqual({ providers: { anthropic: { apiKey: null } } }),
+    );
+  });
+
+  it('signs in with ChatGPT: the daemon gives a URL, the row waits, then shows the account', async () => {
+    let status: ChatGptStatus = { state: 'signed_out', email: null, error: null };
+    const calls: string[] = [];
+    mount(VIEW, {
+      'chatgpt.status': () => status,
+      'chatgpt.signIn': () => {
+        calls.push('signIn');
+        status = { state: 'waiting', email: null, error: null };
+        return { url: 'https://auth.openai.com/api/accounts/authorize?x=1' };
+      },
+      'chatgpt.signOut': () => {
+        calls.push('signOut');
+        status = { state: 'signed_out', email: null, error: null };
+        return { ok: true };
+      },
+    });
+    const opened: string[] = [];
+    window.open = ((url: string) => {
+      opened.push(url);
+      return null;
+    }) as typeof window.open;
+    fireEvent.click(await screen.findByRole('button', { name: '変更' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'ChatGPT でサインイン' }));
+    await waitFor(() => expect(calls).toEqual(['signIn']));
+    expect(opened).toEqual(['https://auth.openai.com/api/accounts/authorize?x=1']);
+    await screen.findByText('ブラウザで続けてください');
+    // The browser side finished: the daemon says so.
+    status = { state: 'signed_in', email: 'me@example.com', error: null };
+    await waitFor(
+      () => expect(screen.getByTestId('chatgpt-account')).toHaveTextContent('me@example.com'),
+      { timeout: 3000 },
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'サインアウト' }));
+    await waitFor(() => expect(calls).toEqual(['signIn', 'signOut']));
+    await screen.findByRole('button', { name: 'ChatGPT でサインイン' });
   });
 });
 
@@ -208,7 +332,9 @@ describe('<SettingsDialog> 詳細', () => {
     await act(async () => {
       fireEvent.blur(input);
     });
-    await waitFor(() => expect(updates).toContainEqual({ autoMode: { classifierModel: 'claude-sonnet' } }));
+    await waitFor(() =>
+      expect(updates).toContainEqual({ autoMode: { classifierModel: 'claude-sonnet' } }),
+    );
     const auto = screen.getByRole('radiogroup', { name: '自動判定' });
     await act(async () => {
       fireEvent.click(within(auto).getByRole('radio', { name: 'オフ' }));
@@ -257,7 +383,9 @@ describe('<SettingsDialog> 詳細', () => {
     await act(async () => {
       fireEvent.click(screen.getByTestId('shutdown-daemon'));
     });
-    await waitFor(() => expect(useConfirm.getState().request?.title).toBe('Core Daemon を停止しますか？'));
+    await waitFor(() =>
+      expect(useConfirm.getState().request?.title).toBe('Core Daemon を停止しますか？'),
+    );
   });
 
   it('works with an older daemon that reports no profiles, limits or auto mode', async () => {
@@ -271,7 +399,9 @@ describe('<SettingsDialog> 詳細', () => {
     expect(await screen.findByTestId('connection-status')).toHaveTextContent('モック');
     expect(screen.queryByRole('radiogroup', { name: '任せ方' })).toBeNull();
     await openDetails();
-    expect(within(screen.getByRole('group', { name: '同時に動くエージェント' })).getByText('8')).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('group', { name: '同時に動くエージェント' })).getByText('8'),
+    ).toBeInTheDocument();
     expect(screen.queryByRole('radiogroup', { name: '自動判定' })).toBeNull();
   });
 });

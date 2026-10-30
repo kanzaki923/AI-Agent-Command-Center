@@ -76,10 +76,34 @@ export function normalizeModelName(model: string): string {
     .replace(/-\d{8}(?=-|$)/g, '');
 }
 
+/**
+ * OpenAI list prices (2026-10, API billing; a ChatGPT plan is not billed per call). Cached
+ * input is a tenth. Newer names fall through to the highest known price.
+ */
+const OPENAI_BUILTIN: [RegExp, ModelPrice][] = [
+  [/gpt-5-pro/, p(15, 120, 15)],
+  [/gpt-5-nano/, p(0.05, 0.4, 0.005)],
+  [/gpt-5-mini/, p(0.25, 2, 0.025)],
+  [/gpt-5/, p(1.25, 10, 0.125)],
+  [/gpt-4-1-nano/, p(0.1, 0.4, 0.025)],
+  [/gpt-4-1-mini/, p(0.4, 1.6, 0.1)],
+  [/gpt-4-1/, p(2, 8, 0.5)],
+  [/gpt-4o-mini/, p(0.15, 0.6, 0.075)],
+  [/gpt-4o/, p(2.5, 10, 1.25)],
+  [/o3-pro/, p(20, 80, 20)],
+  [/o4-mini|o3-mini/, p(1.1, 4.4, 0.275)],
+  [/^o3/, p(2, 8, 0.5)],
+];
+
 export function builtinPrice(model: string): ModelPrice | null {
   const name = normalizeModelName(model);
-  if (!/claude|opus|sonnet|haiku|fable|mythos/.test(name)) return null;
-  return BUILTIN.find(([re]) => re.test(name))?.[1] ?? null;
+  if (/claude|opus|sonnet|haiku|fable|mythos/.test(name)) {
+    return BUILTIN.find(([re]) => re.test(name))?.[1] ?? null;
+  }
+  if (/^(gpt|o\d|codex)/.test(name)) {
+    return OPENAI_BUILTIN.find(([re]) => re.test(name))?.[1] ?? null;
+  }
+  return null;
 }
 
 /** The most expensive price known (built-in table and LiteLLM's answers). */

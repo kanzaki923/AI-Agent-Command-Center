@@ -77,7 +77,8 @@ describe('session.delegate / session.undelegate', () => {
       await repo.cleanup();
       restore();
     }
-  });
+    // A git repository plus a daemon: well under a second alone, several under a full run.
+  }, 20_000);
 
   it('is for humans and chats only; delegating again replaces the grant and keeps the budget', async () => {
     d = await createTestDaemon();

@@ -280,7 +280,7 @@ describe('what the assistant remembers of past runs', () => {
     ...over,
   });
 
-  it('folds the tool calls of a past run into record lines and drops their results; the current run stays whole', () => {
+  it('keeps the calls of a past run, cuts their results to a digest and drops reasoning; the current run stays whole', () => {
     const history: Message[] = [
       msg({ role: 'user', content: [{ type: 'text', text: '準備を進めて' }] }),
       msg({
@@ -351,26 +351,36 @@ describe('what the assistant remembers of past runs', () => {
       }),
     ];
     const kept = rememberPastRuns(history, 'run_3');
-    expect(kept.map((m) => m.role)).toEqual([
-      'user',
-      'assistant',
-      'assistant',
-      'user',
-      'assistant',
-      'user',
-      'assistant',
-      'tool',
+    expect(kept.map((m) => m.role)).toEqual(history.map((m) => m.role));
+    // The call stays a call (no reasoning); its result is the digest, not the Session.
+    expect(kept[1]!.content).toEqual([
+      {
+        type: 'tool_call',
+        toolCallId: 'c1',
+        name: 'assistant.startWork',
+        input: { text: '準備を進めて', title: '準備' },
+      },
     ]);
-    const text = (m: Message) =>
-      m.content.map((p) => (p.type === 'text' ? p.text : p.type)).join('|');
-    expect(text(kept[1]!)).toBe(
-      '[assistant.startWork {"text":"準備を進めて","title":"準備"} → ok id="ses_1" title="準備" state="working"]',
-    );
-    expect(text(kept[2]!)).toBe('「準備」を始めます。');
-    expect(text(kept[4]!)).toBe('[session.stop {"sessionId":"ses_1","tree":true} → error: だめ]');
+    expect(kept[2]!.content).toEqual([
+      {
+        type: 'tool_result',
+        toolCallId: 'c1',
+        output: { ok: true, id: 'ses_1', title: '準備', state: 'working' },
+        isError: false,
+      },
+    ]);
+    expect(kept[3]!.content).toEqual([{ type: 'text', text: '「準備」を始めます。' }]);
+    expect(kept[6]!.content).toEqual([
+      {
+        type: 'tool_result',
+        toolCallId: 'c2',
+        output: { error: { message: 'だめ' } },
+        isError: true,
+      },
+    ]);
     // The current run: untouched.
-    expect(kept[6]).toBe(history[8]);
-    expect(kept[7]).toBe(history[9]);
+    expect(kept[8]).toBe(history[8]);
+    expect(kept[9]).toBe(history[9]);
   });
 
   it('the model sees two system messages (fixed role, then the status) and no tool results of earlier runs', async () => {
@@ -388,17 +398,25 @@ describe('what the assistant remembers of past runs', () => {
     const req = seen[0]!;
     const roles = req.messages.map((m) => m.role);
     expect(roles.slice(0, 2)).toEqual(['system', 'system']);
-    expect(roles).not.toContain('tool');
+    // The result of the earlier startWork went as its digest, not the whole Session.
+    const results = req.messages.filter((m) => m.role === 'tool') as { content: string }[];
+    expect(results).toHaveLength(1);
+    expect(JSON.parse(results[0]!.content)).toMatchObject({
+      ok: true,
+      title: '来月のローンチ準備を進めて',
+    });
+    expect(results[0]!.content).not.toContain('createdBy');
     expect((req.messages[0] as { content: string }).content).toContain('You are the assistant');
     expect((req.messages[0] as { content: string }).content).not.toContain(STATUS_HEADING);
     expect((req.messages[1] as { content: string }).content).toContain(STATUS_HEADING);
-    const past = req.messages
-      .filter((m) => m.role === 'assistant')
-      .map((m) => (m as { content: string | null }).content ?? '');
-    expect(past[0]).toMatch(
-      /^\[assistant\.startWork .* → ok id="ses_[0-9a-z]+" title="来月のローンチ準備を進めて" state=/m,
+    const past = req.messages.filter((m) => m.role === 'assistant') as {
+      content: string | null;
+      toolCalls?: { name: string }[];
+    }[];
+    expect(past[0]!.toolCalls?.map((c) => c.name)).toEqual(['assistant__startWork']);
+    expect(past[1]!.content).toBe(
+      '「来月のローンチ準備を進めて」を始めます。終わったら知らせます。',
     );
-    expect(past[1]).toBe('「来月のローンチ準備を進めて」を始めます。終わったら知らせます。');
   });
 });
 

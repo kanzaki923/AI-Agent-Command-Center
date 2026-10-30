@@ -1,14 +1,35 @@
 import { defineMethod } from '../api/registry';
+import { forbidden } from '../core/errors';
 import { defineModule } from '../module';
+import { ChatGptAuth, newHostId } from './chatgptAuth';
 import { LlmGateway } from './gateway';
 import { PriceBook } from './pricing';
 
 export {
   LlmGateway,
+  providerOf,
+  type ProviderId,
   type CompleteOptions,
   type ModelList,
   type LlmGatewayOptions,
 } from './gateway';
+export {
+  AnthropicProvider,
+  AnthropicStreamAccumulator,
+  ANTHROPIC_PREFIX,
+  toMessagesBody,
+  type AnthropicConnection,
+} from './anthropic';
+export {
+  OpenAiResponsesProvider,
+  ResponsesStreamAccumulator,
+  OPENAI_PREFIX,
+  toResponsesBody,
+  type OpenAiAuth,
+  type OpenAiConnection,
+} from './openaiResponses';
+export { ChatGptAuth, newHostId, type ChatGptAuthOptions, type ChatGptStore } from './chatgptAuth';
+export { fetchSse, retrying } from './http';
 export {
   MockProvider,
   MOCK_PREFIX,
@@ -56,6 +77,8 @@ export * from './types';
 declare module '../core/context' {
   interface Services {
     llm: LlmGateway;
+    /** "Sign in with ChatGPT": the plan token the OpenAI provider uses. */
+    chatgpt: ChatGptAuth;
   }
 }
 
@@ -74,8 +97,29 @@ export const llmModule = defineModule({
       now: () => ctx.clock.now(),
     });
     ctx.provide('pricing', prices);
+    const chatgpt = new ChatGptAuth({
+      store: {
+        get: () => ctx.settings.chatgpt(),
+        set: (c) => ctx.settings.setChatGpt(c),
+        hostId: () => ctx.settings.chatgptHostId(newHostId),
+      },
+      log: ctx.log.child('chatgpt'),
+      now: () => ctx.clock.now(),
+      // Key names only: the UI refetches settings.get, which masks everything.
+      onChange: () =>
+        ctx.bus.emit({
+          type: 'settings.updated',
+          actor: { kind: 'system', component: 'chatgpt' },
+          payload: { changes: ['providers.openai.chatgpt'] },
+        }),
+    });
+    ctx.provide('chatgpt', chatgpt);
+    ctx.onClose(() => chatgpt.close());
     const gateway = new LlmGateway({
       connection: () => ctx.settings.get().litellm,
+      anthropic: () => ctx.settings.get().providers.anthropic,
+      openai: () => ctx.settings.get().providers.openai,
+      chatgptToken: () => chatgpt.accessToken(),
       pricing: prices.lookup,
       defaultModel: () => ctx.settings.get().defaultModel,
       log: ctx.log.child('llm'),
@@ -83,9 +127,26 @@ export const llmModule = defineModule({
     });
     ctx.provide('llm', gateway);
 
+    const humansOnly = (actor: { kind: string }) => {
+      if (actor.kind !== 'human') throw forbidden('ChatGPT のサインインを扱えるのは人間だけです');
+    };
     ctx.methods.register(
       defineMethod('models.list', {
         handler: (p) => gateway.listModels(p.refresh ?? false),
+      }),
+      defineMethod('chatgpt.signIn', {
+        handler: (_p, call) => {
+          humansOnly(call.actor);
+          return chatgpt.signIn();
+        },
+      }),
+      defineMethod('chatgpt.status', { handler: () => chatgpt.status() }),
+      defineMethod('chatgpt.signOut', {
+        handler: async (_p, call) => {
+          humansOnly(call.actor);
+          await chatgpt.signOut();
+          return { ok: true as const };
+        },
       }),
     );
   },

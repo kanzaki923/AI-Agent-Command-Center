@@ -41,7 +41,13 @@ describe('model prices', () => {
       cacheWritePerMTok: 3.75,
     });
     expect(builtinPrice('claude-haiku-4-5')).toMatchObject({ inputPerMTok: 1, outputPerMTok: 5 });
-    expect(builtinPrice('gpt-4.1')).toBeNull();
+    // OpenAI names have their own table (openai/… through the Responses API).
+    expect(builtinPrice('gpt-4.1')).toMatchObject({ inputPerMTok: 2, outputPerMTok: 8 });
+    expect(builtinPrice('openai/gpt-5-mini')).toMatchObject({
+      inputPerMTok: 0.25,
+      cacheReadPerMTok: 0.025,
+    });
+    expect(builtinPrice('gemini-2.5-pro')).toBeNull();
     expect(builtinPrice('team-sonnet')).toBeNull();
   });
 

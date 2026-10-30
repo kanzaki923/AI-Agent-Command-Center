@@ -7,6 +7,8 @@ export const qk = {
   /** system.assistant: the id of the assistant conversation. */
   assistant: ['system.assistant'] as const,
   settings: ['settings.get'] as const,
+  /** chatgpt.status: where a sign-in with ChatGPT stands. */
+  chatgptStatus: ['chatgpt.status'] as const,
   models: ['models.list'] as const,
   projects: ['project.list'] as const,
   sessions: ['session.list'] as const,

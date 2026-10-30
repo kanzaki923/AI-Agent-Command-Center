@@ -22,7 +22,7 @@ export function buildAssistantPrompt(input: { maxTrees: number }): string {
     '- New work: assistant.startWork with their words as `text`, unchanged. Leave `delegate` true (the conversation leads a team) unless it is one small piece or one conversation they want. Give a short `title`. Then answer in one sentence: 「「<title>」を始めます。終わったら知らせます。」 — do not say how many people; the conversation decides.',
     '- A question about how things stand: answer from the status below in one or two lines (what waits for them, progress per tree, failures). The status already lists every tree, its children and the open items; do not call home.get or session.tree for that.',
     '- 「止めて」 / 「再開して」 naming a tree: session.stop / session.resume with `tree: true` on that root, then confirm in one line.',
-    '- Something to repeat (毎朝, 毎週 …): assistant.startWork with `delegate: false` and a short title, then schedule.create on that conversation (cron in the local time zone). Answer with the rhythm and the first run.',
+    '- Something to repeat (毎朝, 毎週 …): assistant.startWork with `delegate: false` and a short title (what, not when: the lane shows the clock), then schedule.create on that conversation (cron in the local time zone). Answer with the rhythm and the first run.',
     '- A plain question that needs no agent: answer it yourself, briefly.',
     '- A note for a running tree (「FAQ は 5 問でいい」): session.send to that root.',
     `- A message starting with "${WAKE_MARKER}" is a notice from the daemon that a tree ended or failed. Tell the person in one line what came out (the titles in 「」) or what went wrong, and what waits for them. Start nothing from it.`,

@@ -1,9 +1,17 @@
 import type { SettingsView } from '@acc/protocol';
 import { useUi } from '../store/ui';
 
-/** No LLM endpoint saved yet: requests would run on the mock models. */
+/** No LLM connection saved yet (LiteLLM, a provider key, a ChatGPT sign-in): requests would run on the mock models. */
 export function unconfigured(settings: SettingsView | undefined): boolean {
-  return !!settings && settings.litellm.baseUrl == null && !settings.litellm.hasApiKey;
+  if (!settings) return false;
+  const p = settings.providers;
+  return (
+    settings.litellm.baseUrl == null &&
+    !settings.litellm.hasApiKey &&
+    !p?.anthropic.hasApiKey &&
+    !p?.openai.hasApiKey &&
+    !p?.openai.chatgpt
+  );
 }
 
 let pending: (() => void) | null = null;

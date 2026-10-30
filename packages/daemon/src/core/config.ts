@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
   type AutoModeJudge,
+  type ChatGptCredentials,
   DEFAULT_PORT,
   type PermissionProfile,
   Settings,
@@ -91,7 +92,25 @@ export type SettingsPatch = {
     | undefined;
   assistant?:
     { model?: string | null | undefined; dailyUsd?: number | null | undefined } | undefined;
+  providers?:
+    | {
+        anthropic?:
+          { apiKey?: string | null | undefined; baseUrl?: string | null | undefined } | undefined;
+        openai?:
+          { apiKey?: string | null | undefined; baseUrl?: string | null | undefined } | undefined;
+      }
+    | undefined;
 };
+
+/** Whether any model provider is set up (else chats fall back to the offline mocks). */
+export function isLlmConfigured(s: Settings): boolean {
+  return !!(
+    s.litellm.baseUrl ||
+    s.providers.anthropic.apiKey ||
+    s.providers.openai.apiKey ||
+    s.providers.openai.chatgpt
+  );
+}
 
 /**
  * Settings persisted in config.json. Environment overrides (not persisted):
@@ -206,6 +225,24 @@ export class SettingsStore {
         next.defaultPermissionProfile = patch.defaultPermissionProfile!;
       },
     );
+    if (patch.providers?.anthropic) {
+      const a = patch.providers.anthropic;
+      set('providers.anthropic.apiKey', next.providers.anthropic.apiKey, a.apiKey, () => {
+        next.providers.anthropic.apiKey = a.apiKey ?? null;
+      });
+      set('providers.anthropic.baseUrl', next.providers.anthropic.baseUrl, a.baseUrl, () => {
+        next.providers.anthropic.baseUrl = a.baseUrl ?? null;
+      });
+    }
+    if (patch.providers?.openai) {
+      const o = patch.providers.openai;
+      set('providers.openai.apiKey', next.providers.openai.apiKey, o.apiKey, () => {
+        next.providers.openai.apiKey = o.apiKey ?? null;
+      });
+      set('providers.openai.baseUrl', next.providers.openai.baseUrl, o.baseUrl, () => {
+        next.providers.openai.baseUrl = o.baseUrl ?? null;
+      });
+    }
     if (patch.assistant) {
       const a = patch.assistant;
       set('assistant.model', next.assistant.model, a.model, () => {
@@ -241,6 +278,32 @@ export class SettingsStore {
     this.file = valid;
     return changes;
   }
+
+  /** The ChatGPT sign-in (secrets), or null. */
+  chatgpt(): ChatGptCredentials | null {
+    return this.get().providers.openai.chatgpt;
+  }
+
+  /** Store (or forget) the ChatGPT sign-in. */
+  setChatGpt(credentials: ChatGptCredentials | null): void {
+    const next: ConfigFile = structuredClone(this.file);
+    next.providers.openai.chatgpt = credentials;
+    const valid = ConfigFile.parse(next);
+    writeJsonAtomic(this.path, valid);
+    this.file = valid;
+  }
+
+  /** The stable host id for ChatGPT registration, made on first use (`make` gives a new one). */
+  chatgptHostId(make: () => string): string {
+    const cur = this.file.providers.openai.chatgptHostId;
+    if (cur) return cur;
+    const next: ConfigFile = structuredClone(this.file);
+    next.providers.openai.chatgptHostId = make();
+    const valid = ConfigFile.parse(next);
+    writeJsonAtomic(this.path, valid);
+    this.file = valid;
+    return valid.providers.openai.chatgptHostId!;
+  }
 }
 
 export function maskSecret(secret: string | null): string | null {
@@ -268,6 +331,19 @@ export function toSettingsView(s: Settings): SettingsView {
     autoResume: s.autoResume,
     supervisor: { ...s.supervisor },
     assistant: { ...s.assistant },
+    providers: {
+      anthropic: {
+        baseUrl: s.providers.anthropic.baseUrl,
+        hasApiKey: !!s.providers.anthropic.apiKey,
+        apiKeyMasked: maskSecret(s.providers.anthropic.apiKey),
+      },
+      openai: {
+        baseUrl: s.providers.openai.baseUrl,
+        hasApiKey: !!s.providers.openai.apiKey,
+        apiKeyMasked: maskSecret(s.providers.openai.apiKey),
+        chatgpt: s.providers.openai.chatgpt ? { email: s.providers.openai.chatgpt.email } : null,
+      },
+    },
     llmCallReserveUsd: s.llmCallReserveUsd,
     defaultPermissionProfile: s.defaultPermissionProfile,
     autoMode: {

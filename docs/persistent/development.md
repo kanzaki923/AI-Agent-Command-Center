@@ -87,7 +87,7 @@ UI とデーモンは同じ `ACC_HOME` を見る（Vite の開発ミドルウェ
 
 - **右腕に頼む（費用なし）**：ホームの入力欄に打ったものは右腕（`system.assistant` の会話。LiteLLM 未設定なら `mock/right-hand`）へ行く。「来月のローンチ準備を進めて」で木が 1 本生まれ、「今どう？」で 1〜2 行の状況、「ローンチ準備を止めて」で止まる、「毎朝 9 時に昨日のまとめを作って」で繰り返しができる。右腕の会話はサイドバーの固定行から（`architecture.md` §2.20）。
 - **オフライン（費用なし）**：UI の初回画面で「デモモードで試す」を選ぶ（または `system.setupDemo` を呼ぶ）。`<ACC_HOME>/demo/launch-demo` に git なしのフォルダと「デモ: 新製品ローンチ準備」（`mock/orchestrator` + `session.delegate`）ができるので、下書きの目標をそのまま送る。指揮役が 3 人に任せ、終わるたびに起こされて進み具合を答え、そろったら最終報告で止まる。コードの流れは git のプロジェクトで任せると試せる：`mock/orchestrator` の指揮役は 1 人をコードの子（worktree。テストの実行は慎重のプロファイルなら承認）にし、その成果物を採用すると反映される（`e2e:slice`）。
-- **本物の経路**：設定（または `ACC_LITELLM_BASE_URL` / `ACC_LITELLM_API_KEY`）で LiteLLM Proxy の URL とキーを入れる。
+- **本物の経路**：設定の「接続」で、LiteLLM Proxy の URL とキー（または `ACC_LITELLM_BASE_URL` / `ACC_LITELLM_API_KEY`）、Anthropic の API キー（モデルは `anthropic/claude-…`）、OpenAI の API キー（`openai/gpt-…`）、ChatGPT のサインイン（契約の枠で `openai/…` を使う）のどれでも、いくつでも。コーディングエージェント（Claude Code）は LiteLLM があればそこを、なければ Anthropic のキー、なければ手元のログインを使う。
   1. 自分のプロジェクトを追加し（`testCommand` を設定すると統合後に検証される）、チャットを作ってモデルに LiteLLM のモデル名（例 `claude-sonnet-4`）を選ぶ。
   2. そのチャットを `session.delegate({ sessionId })`（既定 4 人・$3）で指揮役にする（UI ではホームや会話の「任せる」）。git のプロジェクトなら、コードの子は worktree で動き、その成果物を採用すると反映される。
   3. Worker を Claude Code にするには `settings.update({ defaultRuntime: 'claude-agent-sdk' })`（Run ごとなら `task.spawnWorker` の `runtime`）。LiteLLM が設定されていれば SDK もそこを通り、なければ手元の Claude Code のログインを使う。SDK が読み込めないと Worker の Run は理由つきで失敗する。

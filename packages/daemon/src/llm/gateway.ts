@@ -1,11 +1,36 @@
 import { EMPTY_USAGE, type ModelInfo } from '@acc/protocol';
 import type { Logger } from '../core/log';
+import {
+  ANTHROPIC_DEFAULT_BASE_URL,
+  ANTHROPIC_PREFIX,
+  type AnthropicConnection,
+  AnthropicProvider,
+} from './anthropic';
 import { MOCK_PREFIX, MockProvider } from './mock';
 import { type LiteLlmConnection, OpenAiCompatibleProvider, authHeaders, joinUrl } from './openai';
-import type { ChatRequest, ChatResult, ChatToolCall, LlmStreamEvent, PricingLookup } from './types';
+import {
+  OPENAI_DEFAULT_BASE_URL,
+  OPENAI_PREFIX,
+  type OpenAiConnection,
+  OpenAiResponsesProvider,
+} from './openaiResponses';
+import type {
+  ChatRequest,
+  ChatResult,
+  ChatToolCall,
+  LlmProvider,
+  LlmStreamEvent,
+  PricingLookup,
+} from './types';
 
 export interface LlmGatewayOptions {
+  /** LiteLLM (models without a prefix). */
   connection: () => LiteLlmConnection;
+  /** Anthropic (`anthropic/…`). */
+  anthropic?: () => AnthropicConnection;
+  /** OpenAI (`openai/…`), by key or by a ChatGPT plan token. */
+  openai?: () => OpenAiConnection;
+  chatgptToken?: () => Promise<string | null>;
   /** Settings default model; listed even when LiteLLM is unreachable. */
   defaultModel?: () => string | null;
   log: Logger;
@@ -13,7 +38,7 @@ export interface LlmGatewayOptions {
   pricing?: PricingLookup;
   /** See OpenAiProviderOptions.idleTimeoutMs. */
   idleTimeoutMs?: number;
-  /** How long a successful /models answer is reused (default 5 min). */
+  /** How long a successful model list is reused (default 5 min). */
   modelsTtlMs?: number;
   now?: () => number;
 }
@@ -26,27 +51,55 @@ export interface CompleteOptions {
 
 export interface ModelList {
   models: ModelInfo[];
-  /** litellm: LiteLLM answered; config: LiteLLM configured but unreachable; mock: not configured. */
-  source: 'litellm' | 'config' | 'mock';
+  /**
+   * litellm: LiteLLM answered; providers: no LiteLLM, but Anthropic / OpenAI models are
+   * listed; config: LiteLLM configured but unreachable; mock: nothing configured.
+   */
+  source: 'litellm' | 'providers' | 'config' | 'mock';
 }
 
+/** Which provider a model name belongs to, by its prefix (none = LiteLLM). */
+export type ProviderId = 'mock' | 'anthropic' | 'openai' | 'litellm';
+
+export function providerOf(model: string): ProviderId {
+  if (model.startsWith(MOCK_PREFIX)) return 'mock';
+  if (model.startsWith(ANTHROPIC_PREFIX)) return 'anthropic';
+  if (model.startsWith(OPENAI_PREFIX)) return 'openai';
+  return 'litellm';
+}
+
+const NONE = { apiKey: null, baseUrl: null };
+
 /**
- * The LLM Gateway (`ctx.service('llm')`). Routes `mock/*` models to the built-in mock
- * provider and everything else to LiteLLM's OpenAI-compatible API.
+ * The LLM Gateway (`ctx.service('llm')`). Routes a model by its prefix: `mock/*` to the
+ * built-in mock, `anthropic/*` to the Messages API, `openai/*` to the Responses API, and
+ * everything else to LiteLLM's OpenAI-compatible API. Several providers live side by side,
+ * so a supervisor can give each child a different one.
  */
 export class LlmGateway {
   readonly mock = new MockProvider();
-  private readonly openai: OpenAiCompatibleProvider;
+  readonly anthropic: AnthropicProvider;
+  readonly openai: OpenAiResponsesProvider;
+  private readonly litellm: OpenAiCompatibleProvider;
   private readonly fetchImpl: typeof fetch;
-  private modelsCache: { baseUrl: string; at: number; models: ModelInfo[] } | null = null;
+  private readonly modelsCache = new Map<string, { at: number; models: ModelInfo[] }>();
 
   constructor(private readonly opts: LlmGatewayOptions) {
     this.fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
-    this.openai = new OpenAiCompatibleProvider({
-      connection: opts.connection,
+    const shared = {
       fetch: this.fetchImpl,
       ...(opts.pricing ? { pricing: opts.pricing } : {}),
       ...(opts.idleTimeoutMs !== undefined ? { idleTimeoutMs: opts.idleTimeoutMs } : {}),
+    };
+    this.litellm = new OpenAiCompatibleProvider({ connection: opts.connection, ...shared });
+    this.anthropic = new AnthropicProvider({
+      connection: opts.anthropic ?? (() => NONE),
+      ...shared,
+    });
+    this.openai = new OpenAiResponsesProvider({
+      connection: opts.openai ?? (() => NONE),
+      ...(opts.chatgptToken ? { chatgptToken: opts.chatgptToken } : {}),
+      ...shared,
     });
   }
 
@@ -54,11 +107,22 @@ export class LlmGateway {
     return model.startsWith(MOCK_PREFIX);
   }
 
+  provider(model: string): LlmProvider {
+    switch (providerOf(model)) {
+      case 'mock':
+        return this.mock;
+      case 'anthropic':
+        return this.anthropic;
+      case 'openai':
+        return this.openai;
+      default:
+        return this.litellm;
+    }
+  }
+
   /** Normalized event stream for one model call. */
   stream(req: ChatRequest, signal: AbortSignal): AsyncIterable<LlmStreamEvent> {
-    return this.isMockModel(req.model)
-      ? this.mock.stream(req, signal)
-      : this.openai.stream(req, signal);
+    return this.provider(req.model).stream(req, signal);
   }
 
   /** Run one model call to completion, forwarding text/reasoning fragments as they arrive. */
@@ -99,8 +163,8 @@ export class LlmGateway {
   }
 
   /**
-   * LiteLLM `/models` (cached; failures are tolerated) + the settings default model + mock
-   * models. Never throws.
+   * Every configured provider's models (each list cached; failures are tolerated), the
+   * settings default model, and the mock models. Never throws.
    */
   async listModels(refresh = false): Promise<ModelList> {
     const { baseUrl, apiKey } = this.opts.connection();
@@ -111,32 +175,126 @@ export class LlmGateway {
         ? [{ id: configured, label: null, provider: 'config' }, ...models]
         : models;
 
-    if (!baseUrl) return { models: withConfigured(mock), source: 'mock' };
+    const [litellm, anthropic, openai] = await Promise.all([
+      baseUrl
+        ? this.cached('litellm', baseUrl, refresh, () => this.fetchLiteLlm(baseUrl, apiKey))
+        : Promise.resolve(null),
+      this.fetchAnthropicList(refresh),
+      this.fetchOpenAiList(refresh),
+    ]);
+    const models = withConfigured([
+      ...(litellm ?? []),
+      ...(anthropic ?? []),
+      ...(openai ?? []),
+      ...mock,
+    ]);
+    const anySetUp =
+      !!baseUrl || !!this.opts.anthropic?.().apiKey || (await this.openai.auth()) !== null;
+    const source: ModelList['source'] = litellm
+      ? 'litellm'
+      : anthropic || openai
+        ? 'providers'
+        : anySetUp
+          ? 'config'
+          : 'mock';
+    return { models, source };
+  }
 
+  /** The cached list for a provider at an endpoint, or a fresh one; null when it failed. */
+  private async cached(
+    provider: string,
+    key: string,
+    refresh: boolean,
+    load: () => Promise<ModelInfo[]>,
+  ): Promise<ModelInfo[] | null> {
+    const cacheKey = `${provider}:${key}`;
     const now = this.opts.now?.() ?? Date.now();
     const ttl = this.opts.modelsTtlMs ?? 5 * 60_000;
-    const cache = this.modelsCache;
-    if (!refresh && cache && cache.baseUrl === baseUrl && now - cache.at < ttl) {
-      return { models: withConfigured([...cache.models, ...mock]), source: 'litellm' };
-    }
+    const hit = this.modelsCache.get(cacheKey);
+    if (!refresh && hit && now - hit.at < ttl) return hit.models;
     try {
-      const res = await this.fetchImpl(joinUrl(baseUrl, 'models'), {
-        headers: { accept: 'application/json', ...authHeaders(apiKey) },
+      const models = await load();
+      this.modelsCache.set(cacheKey, { at: now, models });
+      return models;
+    } catch (err) {
+      this.opts.log.warn(`failed to list ${provider} models`, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
+  private async fetchLiteLlm(baseUrl: string, apiKey: string | null): Promise<ModelInfo[]> {
+    const res = await this.fetchImpl(joinUrl(baseUrl, 'models'), {
+      headers: { accept: 'application/json', ...authHeaders(apiKey) },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = (await res.json()) as { data?: { id?: unknown }[] };
+    return (body.data ?? [])
+      .map((m) => m.id)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0)
+      .map((id) => ({ id, label: null, provider: 'litellm' }));
+  }
+
+  private fetchAnthropicList(refresh: boolean): Promise<ModelInfo[] | null> {
+    const { apiKey, baseUrl } = this.opts.anthropic?.() ?? NONE;
+    if (!apiKey) return Promise.resolve(null);
+    const base = (baseUrl ?? ANTHROPIC_DEFAULT_BASE_URL).replace(/\/+$/, '').replace(/\/v1$/, '');
+    return this.cached('anthropic', base, refresh, async () => {
+      const res = await this.fetchImpl(`${base}/v1/models?limit=100`, {
+        headers: {
+          accept: 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
         signal: AbortSignal.timeout(5000),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = (await res.json()) as { data?: { id?: unknown }[] };
-      const models: ModelInfo[] = (body.data ?? [])
+      const body = (await res.json()) as { data?: { id?: unknown; display_name?: unknown }[] };
+      return (body.data ?? [])
+        .filter((m): m is { id: string; display_name?: unknown } => typeof m.id === 'string')
+        .map((m) => ({
+          id: `${ANTHROPIC_PREFIX}${m.id}`,
+          label: typeof m.display_name === 'string' ? m.display_name : null,
+          provider: 'anthropic',
+        }));
+    });
+  }
+
+  private async fetchOpenAiList(refresh: boolean): Promise<ModelInfo[] | null> {
+    const auth = await this.openai.auth();
+    if (!auth) return null;
+    const base = auth.baseUrl || OPENAI_DEFAULT_BASE_URL;
+    const token = auth.kind === 'key' ? auth.apiKey : auth.token;
+    return this.cached(`openai-${auth.kind}`, base, refresh, async () => {
+      const res = await this.fetchImpl(`${base}/models`, {
+        headers: { accept: 'application/json', authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as {
+        data?: { id?: unknown }[];
+        // The plan token's list: slugs with a display name and a visibility.
+        models?: { slug?: unknown; display_name?: unknown; visibility?: unknown }[];
+      };
+      const provider = auth.kind === 'chatgpt' ? 'chatgpt' : 'openai';
+      if (Array.isArray(body.models)) {
+        return body.models
+          .filter(
+            (m): m is { slug: string; display_name?: unknown; visibility?: unknown } =>
+              typeof m.slug === 'string' && (m.visibility === undefined || m.visibility === 'list'),
+          )
+          .map((m) => ({
+            id: `${OPENAI_PREFIX}${m.slug}`,
+            label: typeof m.display_name === 'string' ? m.display_name : null,
+            provider,
+          }));
+      }
+      return (body.data ?? [])
         .map((m) => m.id)
         .filter((id): id is string => typeof id === 'string' && id.length > 0)
-        .map((id) => ({ id, label: null, provider: 'litellm' }));
-      this.modelsCache = { baseUrl, at: now, models };
-      return { models: withConfigured([...models, ...mock]), source: 'litellm' };
-    } catch (err) {
-      this.opts.log.warn('failed to list LiteLLM models', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return { models: withConfigured(mock), source: 'config' };
-    }
+        .map((id) => ({ id: `${OPENAI_PREFIX}${id}`, label: null, provider }));
+    });
   }
 }

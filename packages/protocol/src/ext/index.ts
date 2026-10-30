@@ -7,6 +7,7 @@ export * from './attention';
 export * from './cost';
 export * from './home';
 export * from './outputs';
+export * from './providers';
 export * from './schedule';
 export * from './spawn';
 export * from './supervisor';

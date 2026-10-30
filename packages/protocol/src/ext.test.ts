@@ -545,6 +545,9 @@ describe('ext methods', () => {
       'cost.raiseDaily',
       'session.setBudget',
       'system.assistant',
+      'chatgpt.signIn',
+      'chatgpt.status',
+      'chatgpt.signOut',
       'project.inspectFolder',
     ] as const) {
       expect(api[name].tool, name).toBe(false);

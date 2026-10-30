@@ -123,6 +123,10 @@ describe('settings', () => {
   it('fills defaults from empty config', () => {
     expect(Settings.parse({})).toEqual({
       litellm: { baseUrl: null, apiKey: null },
+      providers: {
+        anthropic: { apiKey: null, baseUrl: null },
+        openai: { apiKey: null, baseUrl: null, chatgpt: null, chatgptHostId: null },
+      },
       defaultModel: null,
       defaultRuntime: null,
       maxConcurrentRuns: 10,

@@ -60,7 +60,11 @@ export function useSettings() {
 
 export function useModels() {
   const rt = useRuntime();
-  return useQuery<{ models: ModelInfo[]; source: 'litellm' | 'config' | 'mock' | 'none' }>({
+  return useQuery<{
+    models: ModelInfo[];
+    /** As models.list, plus `none`: configured but nothing answered. */
+    source: 'litellm' | 'providers' | 'config' | 'mock' | 'none';
+  }>({
     queryKey: qk.models,
     queryFn: () =>
       rt.callOr('models.list', {}, { models: [], source: 'config' }).then((r) =>

@@ -11,11 +11,24 @@ import { silentLogger } from '../src/core/log';
 const MODEL = process.argv[2] ?? 'claude-haiku-5-5';
 const OUT = process.argv[3] ?? join(process.cwd(), 'real-right-hand.txt');
 const HUMAN: Actor = { kind: 'human', client: 'real-check' };
-// The same variables the daemon itself reads; the base URL defaults to the OpenAI-compatible
-// endpoint of Anthropic, so no LiteLLM is needed for this check.
-const key = process.env.ACC_LITELLM_API_KEY;
+// Which provider the model names decides which key is needed: `anthropic/…` takes
+// ACC_ANTHROPIC_API_KEY (the Messages API), `openai/…` ACC_OPENAI_API_KEY (the Responses
+// API), anything else goes through ACC_LITELLM_BASE_URL / ACC_LITELLM_API_KEY (defaulting to
+// the OpenAI-compatible endpoint of Anthropic, so no LiteLLM is needed for a Claude check).
+const provider = MODEL.startsWith('anthropic/')
+  ? 'anthropic'
+  : MODEL.startsWith('openai/')
+    ? 'openai'
+    : 'litellm';
+const key =
+  provider === 'anthropic'
+    ? process.env.ACC_ANTHROPIC_API_KEY
+    : provider === 'openai'
+      ? process.env.ACC_OPENAI_API_KEY
+      : process.env.ACC_LITELLM_API_KEY;
 const baseUrl = process.env.ACC_LITELLM_BASE_URL ?? 'https://api.anthropic.com/v1';
-if (!key) throw new Error('ACC_LITELLM_API_KEY is not set');
+if (!key)
+  throw new Error(`the key for ${provider} is not set (ACC_${provider.toUpperCase()}_API_KEY)`);
 
 const home = mkdtempSync(join(tmpdir(), 'acc-real-'));
 // Beside ACC_HOME: the data folder of the app cannot be a workspace.
@@ -33,7 +46,7 @@ const daemon = await startDaemon({
   home,
   log: silentLogger,
   port: 0,
-  env: { ACC_LITELLM_BASE_URL: baseUrl, ACC_LITELLM_API_KEY: key },
+  env: provider === 'litellm' ? { ACC_LITELLM_BASE_URL: baseUrl, ACC_LITELLM_API_KEY: key } : {},
 });
 const call = daemon.call.bind(daemon);
 try {
@@ -42,6 +55,8 @@ try {
     defaultModel: 'mock/orchestrator',
     assistant: { model: MODEL, dailyUsd: 1 },
     limits: { dailyUsd: 1 },
+    ...(provider === 'anthropic' ? { providers: { anthropic: { apiKey: key } } } : {}),
+    ...(provider === 'openai' ? { providers: { openai: { apiKey: key } } } : {}),
   });
   const project = await call(HUMAN, 'project.create', { name: 'メモ帳', folderPath: folder });
   const { sessionId } = await call(HUMAN, 'system.assistant', {});

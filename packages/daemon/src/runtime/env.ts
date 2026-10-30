@@ -82,7 +82,9 @@ export type ModelRouting =
       /** LiteLLM model_name; null = let the CLI choose (it then calls its own default names). */
       model: string | null;
     }
-  | { kind: 'claude-login'; model: string | null };
+  | { kind: 'claude-login'; model: string | null }
+  /** An Anthropic API key of the user (settings.providers.anthropic), no proxy. */
+  | { kind: 'anthropic-key'; apiKey: string; model: string | null };
 
 /**
  * LiteLLM when a base URL is configured; otherwise the user's normal Claude Code login.
@@ -103,7 +105,10 @@ export function resolveModelRouting(
     };
   }
   const m = model ?? null;
-  return { kind: 'claude-login', model: m && looksLikeClaudeModel(m) ? m : null };
+  const claude = m && looksLikeClaudeModel(m) ? m.replace(/^anthropic\//, '') : null;
+  const apiKey = settings.providers.anthropic.apiKey;
+  if (apiKey) return { kind: 'anthropic-key', apiKey, model: claude };
+  return { kind: 'claude-login', model: claude };
 }
 
 export function looksLikeClaudeModel(model: string): boolean {
@@ -156,6 +161,9 @@ export function buildChildEnv(
   copyAllowed(parent, opts.allowlist ?? BASE_ENV_ALLOWLIST, env);
   if (routing.kind === 'claude-login') {
     copyAllowed(parent, CLAUDE_LOGIN_ENV, env);
+  } else if (routing.kind === 'anthropic-key') {
+    env.ANTHROPIC_API_KEY = routing.apiKey;
+    if (routing.model) env.ANTHROPIC_MODEL = routing.model;
   } else {
     env.ANTHROPIC_BASE_URL = routing.baseUrl;
     if (routing.apiKey) env.ANTHROPIC_AUTH_TOKEN = routing.apiKey;

@@ -61,6 +61,7 @@ import {
 import { Event, EventFilter } from './events';
 import { attentionMethods } from './ext/attention';
 import { assistantMethods } from './ext/assistant';
+import { providerMethods } from './ext/providers';
 import { costMethods } from './ext/cost';
 import { StreamingMessage, homeMethods } from './ext/home';
 import { outputsMethods } from './ext/outputs';
@@ -334,6 +335,16 @@ export const api = defineApi({
         model: z.string().min(1).nullable().optional().describe('null follows defaultModel'),
         dailyUsd: z.number().min(0).nullable().optional().describe('null removes the limit'),
       }).optional(),
+      providers: params({
+        anthropic: params({
+          apiKey: z.string().min(1).nullable().optional().describe('null clears the key'),
+          baseUrl: z.url().nullable().optional(),
+        }).optional(),
+        openai: params({
+          apiKey: z.string().min(1).nullable().optional().describe('null clears the key'),
+          baseUrl: z.url().nullable().optional(),
+        }).optional(),
+      }).optional(),
     }),
     result: SettingsView,
     description: 'Update daemon settings (persisted to config.json).',
@@ -344,9 +355,14 @@ export const api = defineApi({
     params: params({ refresh: z.boolean().optional() }),
     result: z.object({
       models: z.array(ModelInfo),
-      source: z.enum(['litellm', 'config', 'mock']),
+      /**
+       * litellm: LiteLLM answered; providers: no LiteLLM, but Anthropic / OpenAI models are
+       * listed; config: LiteLLM configured but unreachable; mock: nothing configured.
+       */
+      source: z.enum(['litellm', 'providers', 'config', 'mock']),
     }),
-    description: 'List models available through the LLM gateway.',
+    description:
+      'List models available through the LLM gateway. Ids carry the provider as a prefix (anthropic/…, openai/…, mock/…; none = LiteLLM).',
   },
 
   // ---- project ----
@@ -1055,6 +1071,7 @@ export const api = defineApi({
   ...scheduleMethods,
   ...homeMethods,
   ...assistantMethods,
+  ...providerMethods,
 });
 
 export type Api = typeof api;

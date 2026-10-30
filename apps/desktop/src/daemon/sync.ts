@@ -335,6 +335,7 @@ export function applyEvent(qc: QueryClient, streams: Streams, event: Event): voi
     case 'settings.updated':
       void qc.invalidateQueries({ queryKey: qk.settings });
       void qc.invalidateQueries({ queryKey: qk.models });
+      void qc.invalidateQueries({ queryKey: qk.chatgptStatus });
       return;
 
     case 'orchestrator.decision':

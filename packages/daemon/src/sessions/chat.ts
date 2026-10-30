@@ -3,6 +3,7 @@ import type { RunExecutor } from '../contracts';
 import type { DaemonContext } from '../core/context';
 import { rememberPastRuns } from '../assistant/history';
 import { MOCK_RIGHT_HAND_MODEL } from '../assistant/permissions';
+import { isLlmConfigured } from '../core/config';
 import { invalidParams } from '../core/errors';
 import { apiTools, runToolLoop, toChatMessages } from '../llm';
 
@@ -30,7 +31,7 @@ export function resolveChatModel(
     session.model ??
     (assistant ? s.assistant.model : null) ??
     s.defaultModel ??
-    (s.litellm.baseUrl ? null : assistant ? MOCK_RIGHT_HAND_MODEL : OFFLINE_FALLBACK_MODEL)
+    (isLlmConfigured(s) ? null : assistant ? MOCK_RIGHT_HAND_MODEL : OFFLINE_FALLBACK_MODEL)
   );
 }
 

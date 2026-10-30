@@ -1041,6 +1041,38 @@ export const AssistantSettings = z.object({
 });
 export type AssistantSettings = z.infer<typeof AssistantSettings>;
 
+/** Tokens of a "Sign in with ChatGPT" (secrets; config.json only, never sent to clients). */
+export const ChatGptCredentials = z.object({
+  /** The client id OpenAI issued at registration (`oaiapp_…`); reused for later sign-ins. */
+  clientId: z.string(),
+  /** Rotates on every refresh; valid 30 days. */
+  refreshToken: z.string(),
+  accessToken: z.string().nullable().default(null),
+  /** ISO time the access token expires. */
+  expiresAt: z.string().nullable().default(null),
+  /** From the ID token. */
+  email: z.string().nullable().default(null),
+  sub: z.string().nullable().default(null),
+});
+export type ChatGptCredentials = z.infer<typeof ChatGptCredentials>;
+
+const KeyedProvider = z.object({
+  apiKey: z.string().nullable().default(null),
+  /** Override of the provider's own endpoint (proxies, regions); null = the public one. */
+  baseUrl: z.string().nullable().default(null),
+});
+
+/** Providers beside LiteLLM (ext/providers.ts). */
+export const ProviderSettings = z.object({
+  anthropic: KeyedProvider.default({ apiKey: null, baseUrl: null }),
+  openai: KeyedProvider.extend({
+    chatgpt: ChatGptCredentials.nullable().default(null),
+    /** Stable opaque id of this host for ChatGPT registration (`urn:uuid:…`), made once. */
+    chatgptHostId: z.string().nullable().default(null),
+  }).default({ apiKey: null, baseUrl: null, chatgpt: null, chatgptHostId: null }),
+});
+export type ProviderSettings = z.infer<typeof ProviderSettings>;
+
 /** Persisted in `$ACC_HOME/config.json`. Never sent to clients as-is (see SettingsView). */
 export const Settings = z.object({
   litellm: z
@@ -1049,6 +1081,10 @@ export const Settings = z.object({
       apiKey: z.string().nullable().default(null),
     })
     .default({ baseUrl: null, apiKey: null }),
+  providers: ProviderSettings.default({
+    anthropic: { apiKey: null, baseUrl: null },
+    openai: { apiKey: null, baseUrl: null, chatgpt: null, chatgptHostId: null },
+  }),
   defaultModel: z.string().nullable().default(null),
   /** Agent runtime for sessions that do not name one (e.g. "claude-agent-sdk"); null = "mock". */
   defaultRuntime: z.string().min(1).nullable().default(null),
@@ -1116,6 +1152,22 @@ export const Settings = z.object({
 });
 export type Settings = z.infer<typeof Settings>;
 
+const KeyedProviderView = z.object({
+  baseUrl: z.string().nullable(),
+  hasApiKey: z.boolean(),
+  apiKeyMasked: z.string().nullable(),
+});
+
+/** Providers as the API shows them: keys masked, the ChatGPT account by email only. */
+export const ProviderSettingsView = z.object({
+  anthropic: KeyedProviderView,
+  openai: KeyedProviderView.extend({
+    /** The signed-in ChatGPT account, or null. */
+    chatgpt: z.object({ email: z.string().nullable() }).nullable(),
+  }),
+});
+export type ProviderSettingsView = z.infer<typeof ProviderSettingsView>;
+
 /** Settings as returned by the API: secrets masked. */
 export const SettingsView = z.object({
   litellm: z.object({
@@ -1124,6 +1176,8 @@ export const SettingsView = z.object({
     /** e.g. "sk-…a1b2"; null when no key. */
     apiKeyMasked: z.string().nullable(),
   }),
+  /** Absent from older daemons. */
+  providers: ProviderSettingsView.optional(),
   defaultModel: z.string().nullable(),
   defaultRuntime: z.string().nullable(),
   maxConcurrentRuns: z.int(),

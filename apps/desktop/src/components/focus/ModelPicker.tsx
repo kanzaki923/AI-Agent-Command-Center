@@ -56,7 +56,7 @@ export function ModelPicker({
           <Command.List className="max-h-72 overflow-y-auto p-1">
             <Command.Empty className="px-3 py-4 text-ui text-fg-3">
               {models.data?.source === 'none' || list.length === 0
-                ? 'モデル一覧を取得できませんでした。設定で LiteLLM の接続を確認してください。'
+                ? 'モデル一覧を取得できませんでした。設定で接続を確認してください。'
                 : '一致するモデルはありません'}
             </Command.Empty>
             {sorted.map((m) => (
