@@ -43,6 +43,8 @@ export interface LlmGatewayOptions {
   log: Logger;
   fetch?: typeof fetch;
   pricing?: PricingLookup;
+  /** See OpenAiProviderOptions.deploymentOf. */
+  deploymentOf?: (model: string) => string | null;
   /** See OpenAiProviderOptions.idleTimeoutMs. */
   idleTimeoutMs?: number;
   /** How long a successful model list is reused (default 5 min). */
@@ -98,7 +100,12 @@ export class LlmGateway {
       ...(opts.pricing ? { pricing: opts.pricing } : {}),
       ...(opts.idleTimeoutMs !== undefined ? { idleTimeoutMs: opts.idleTimeoutMs } : {}),
     };
-    this.litellm = new OpenAiCompatibleProvider({ connection: opts.connection, ...shared });
+    this.litellm = new OpenAiCompatibleProvider({
+      connection: opts.connection,
+      log: opts.log,
+      ...(opts.deploymentOf ? { deploymentOf: opts.deploymentOf } : {}),
+      ...shared,
+    });
     this.anthropic = new AnthropicProvider({
       connection: opts.anthropic ?? (() => NONE),
       ...shared,

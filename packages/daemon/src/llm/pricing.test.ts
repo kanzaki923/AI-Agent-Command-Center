@@ -97,6 +97,9 @@ describe('model prices', () => {
       cacheReadPerMTok: expect.closeTo(0.3, 9) as number,
       cacheWritePerMTok: 3.75,
     });
+    // What is behind a name (it decides the prompt-cache marks on the LiteLLM path).
+    expect(book.deploymentOf('team-sonnet')).toBe('anthropic/claude-sonnet-4-5');
+    expect(book.deploymentOf('premium')).toBeNull();
     expect(book.quote('claude-opus-4-1', { refresh: false })).toMatchObject({
       basis: 'builtin',
       outputPerMTok: 75,

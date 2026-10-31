@@ -8,10 +8,15 @@ import { LlmGateway } from './gateway';
 import { toChatMessages } from './messages';
 import { describeGatewayError, gatewayErrorHint } from './gatewayErrors';
 import { MockProvider, mockCallInfo, scripted } from './mock';
-import { OpenAiCompatibleProvider, OpenAiStreamAccumulator } from './openai';
+import {
+  OpenAiCompatibleProvider,
+  OpenAiStreamAccumulator,
+  hoistsLaterSystem,
+  toWireRequest,
+} from './openai';
 import { SseParser } from './sse';
 import { apiTools, methodForToolName, paramsJsonSchema, toolNameForMethod } from './tools';
-import { type ChatRequest, LlmError, type LlmStreamEvent } from './types';
+import { type ChatRequest, LlmError, type LlmStreamEvent, type ModelPricing } from './types';
 
 // ---------------------------------------------------------------------------
 // Fake OpenAI-compatible server (local HTTP, no real network)
@@ -772,6 +777,28 @@ describe('thinking blocks (Anthropic extended thinking via LiteLLM)', () => {
     });
   });
 
+  it('does not double a block whose signed piece repeats the whole text (LiteLLM 1.105)', () => {
+    const acc = new OpenAiStreamAccumulator('m', null);
+    const delta = (d: Record<string, unknown>) =>
+      acc.handle(JSON.stringify({ choices: [{ index: 0, delta: d }] }));
+    for (const [text, signature] of [
+      ['考え', undefined],
+      ['ます', undefined],
+      ['考えます', 'sig1'],
+      ['次へ', undefined],
+      ['次へ', 'sig2'],
+    ] as const) {
+      delta({ thinking_blocks: [{ type: 'thinking', thinking: text, ...(signature ? { signature } : {}) }] });
+    }
+    expect(acc.finish()[0]).toEqual({
+      type: 'thinking_blocks',
+      blocks: [
+        { type: 'thinking', thinking: '考えます', signature: 'sig1' },
+        { type: 'thinking', thinking: '次へ', signature: 'sig2' },
+      ],
+    });
+  });
+
   it('sends them back with the tool-use turn of a chat run', async () => {
     const server = await fakeServer((_req, body, res) => {
       const sent = JSON.parse(body) as { messages: { role: string }[] };
@@ -963,5 +990,180 @@ describe('LiteLLM key budgets and retries', () => {
       code: 'llm_unreachable',
     });
     expect(tries).toBe(2);
+  });
+});
+
+describe('prompt-cache marks for Claude behind LiteLLM', () => {
+  const MARK = { type: 'ephemeral' };
+  /** Where the marks are: `index:role`, `index:call id`, `tool name`. */
+  const marked = (body: Record<string, unknown>) => {
+    const at: string[] = [];
+    (body.messages as Record<string, unknown>[]).forEach((m, i) => {
+      if (m.cache_control) at.push(`${i}:${String(m.role)}`);
+      for (const c of (m.tool_calls as Record<string, unknown>[] | undefined) ?? []) {
+        if (c.cache_control) at.push(`${i}:call ${String(c.id)}`);
+      }
+    });
+    for (const t of (body.tools as Record<string, unknown>[] | undefined) ?? []) {
+      if (t.cache_control) at.push(`tool ${(t.function as { name: string }).name}`);
+    }
+    return at;
+  };
+  const tools = [
+    { name: 'a', description: 'a', parameters: { type: 'object' } },
+    { name: 'b', description: 'b', parameters: { type: 'object' } },
+  ];
+  // Two leading systems, the history, the per-run context, then a tool loop after it.
+  const conversation: ChatRequest = {
+    model: 'claude-sonnet-5-5',
+    tools,
+    messages: [
+      { role: 'system', content: 'role' },
+      { role: 'system', content: 'more role' },
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: null, toolCalls: [{ id: 'c1', name: 'a', arguments: '{}' }] },
+      { role: 'tool', toolCallId: 'c1', content: 'r1' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'user', content: 'q2' },
+      { role: 'system', content: 'per-run context' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          { id: 'c2', name: 'a', arguments: '{}' },
+          { id: 'c3', name: 'b', arguments: '{}' },
+        ],
+      },
+    ],
+  };
+
+  it('marks the last tool, the first system, the message before the per-run context and the last one', () => {
+    const body = toWireRequest(conversation, { cache: true });
+    expect(marked(body)).toEqual(['0:system', '6:user', '8:call c3', 'tool b']);
+    // The tool mark at the top level (Bedrock reads only that one), a call's on the call.
+    expect((body.tools as unknown[])[1]).toEqual({
+      type: 'function',
+      function: { name: 'b', description: 'b', parameters: { type: 'object' } },
+      cache_control: MARK,
+    });
+    expect((body.messages as unknown[])[8]).not.toHaveProperty('cache_control');
+    // Without the option (not a Claude deployment), nothing is marked.
+    expect(marked(toWireRequest(conversation))).toEqual([]);
+  });
+
+  it('never sends more than 4 marks and skips what cannot carry one', () => {
+    // An empty answer carries no mark (LiteLLM would make up a text for it).
+    const short = toWireRequest(
+      {
+        model: 'claude-x',
+        tools,
+        messages: [
+          { role: 'system', content: 'role' },
+          { role: 'user', content: 'q' },
+          { role: 'assistant', content: '' },
+        ],
+      },
+      { cache: true },
+    );
+    expect(marked(short)).toEqual(['0:system', 'tool b']);
+    const long = toWireRequest(
+      {
+        ...conversation,
+        messages: [
+          ...conversation.messages,
+          { role: 'tool', toolCallId: 'c2', content: 'r2' },
+          { role: 'tool', toolCallId: 'c3', content: 'r3' },
+          { role: 'system', content: 'another note' },
+        ],
+      },
+      { cache: true },
+    );
+    expect(marked(long)).toEqual(['0:system', '6:user', '10:tool', 'tool b']);
+  });
+
+  it('marks Claude deployments only, learning what is behind an alias from LiteLLM', async () => {
+    const deployments: Record<string, string> = {
+      'claude-sonnet-5-5': 'anthropic/claude-sonnet-5-5',
+      'team-sonnet': 'anthropic/claude-sonnet-5-5',
+      'gpt-5.6': 'openai/gpt-5.6',
+    };
+    const server = await fakeServer((_r, body, res) => {
+      const model = (JSON.parse(body) as { model: string }).model;
+      res.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'x-litellm-model-name': deployments[model] ?? model,
+        'x-litellm-version': '1.105.1',
+      });
+      res.end(sse({ choices: [{ index: 0, delta: { content: 'ok' } }] }) + sse('[DONE]'));
+    });
+    const warnings: unknown[] = [];
+    const p = new OpenAiCompatibleProvider({
+      connection: () => ({ baseUrl: server.url, apiKey: null }),
+      deploymentOf: (m) => (m === 'from-model-info' ? 'bedrock/us.anthropic.claude-sonnet-5' : null),
+      log: { ...silentLogger, warn: (msg, data) => warnings.push([msg, data]) },
+    });
+    const marks = async (model: string) => {
+      await collect(p.stream({ ...conversation, model }, new AbortController().signal));
+      return marked(JSON.parse(server.requests.at(-1)!.body) as Record<string, unknown>).length;
+    };
+    expect(await marks('claude-sonnet-5-5')).toBe(4);
+    expect(await marks('gpt-5.6')).toBe(0);
+    // An alias: unknown at first, marked once LiteLLM said it is a Claude deployment.
+    expect(await marks('team-sonnet')).toBe(0);
+    expect(await marks('team-sonnet')).toBe(4);
+    // /model/info knew it before the first call.
+    expect(await marks('from-model-info')).toBe(4);
+    expect(warnings).toEqual([]);
+  });
+
+  it('warns once when LiteLLM is older than 1.104 (it moves the per-run context to the top)', async () => {
+    const server = await fakeServer((_r, _b, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'x-litellm-version': '1.103.4' });
+      res.end(sse('[DONE]'));
+    });
+    const warnings: unknown[] = [];
+    const p = new OpenAiCompatibleProvider({
+      connection: () => ({ baseUrl: server.url, apiKey: null }),
+      log: { ...silentLogger, warn: (msg, data) => warnings.push([msg, data]) },
+    });
+    for (let i = 0; i < 2; i++) await collect(p.stream(req(), new AbortController().signal));
+    expect(warnings).toEqual([[expect.stringContaining('1.104.0'), { version: '1.103.4' }]]);
+    expect(hoistsLaterSystem('1.103.10')).toBe(true);
+    expect(hoistsLaterSystem('1.104.0')).toBe(false);
+    expect(hoistsLaterSystem('2.0.0')).toBe(false);
+    expect(hoistsLaterSystem('dev')).toBe(false);
+  });
+
+  it('estimates cache reads and writes at their own prices', () => {
+    // LiteLLM's shape for Anthropic: prompt_tokens includes the reads and the writes.
+    const usage = {
+      prompt_tokens: 7100,
+      completion_tokens: 10,
+      prompt_tokens_details: { cached_tokens: 5000 },
+      cache_read_input_tokens: 5000,
+      cache_creation_input_tokens: 2000,
+    };
+    const estimate = (price: ModelPricing) => {
+      const acc = new OpenAiStreamAccumulator('m', null, () => price);
+      acc.handle(JSON.stringify({ choices: [], usage }));
+      return acc.finish().find((e) => e.type === 'usage');
+    };
+    expect(
+      estimate({ inputPerMTok: 3, outputPerMTok: 15, cacheReadPerMTok: 0.3, cacheWritePerMTok: 6 }),
+    ).toMatchObject({
+      usage: {
+        inputTokens: 7100,
+        cacheReadTokens: 5000,
+        cacheWriteTokens: 2000,
+        costUsd: expect.closeTo((100 * 3 + 5000 * 0.3 + 2000 * 6 + 10 * 15) / 1e6, 12) as number,
+        costSource: 'estimated',
+      },
+    });
+    // Without cache prices: a tenth for reads, 1.25x for writes.
+    expect(estimate({ inputPerMTok: 3, outputPerMTok: 15 })).toMatchObject({
+      usage: {
+        costUsd: expect.closeTo((100 * 3 + 5000 * 0.3 + 2000 * 3.75 + 150) / 1e6, 12) as number,
+      },
+    });
   });
 });

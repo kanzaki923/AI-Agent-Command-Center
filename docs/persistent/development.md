@@ -201,10 +201,21 @@ packages/cli        @acc/cli       `acc` コマンド
   - **SDK を上げたら**：`pnpm --filter @acc/daemon record:sdk-fixtures` で記録し直し（パスは `<REPO>` などに置き換え、ダミーのトークン・ユーザー名・ローカルパスが残っていたら書き出さない）、`pnpm check` を通す。挙動の違いは契約テストが落ちて分かる。
 - **本物の LiteLLM との契約テスト**（`llm/litellm-contract.test.ts`、任意）：本物の LiteLLM Proxy を `127.0.0.1` で起動し（`runtime/claude/contract/litellmProxy.ts`。ダミーのマスターキー、環境変数は許可リストだけ、`LITELLM_TELEMETRY=False`・`LITELLM_LOCAL_MODEL_COST_MAP=True`、外向きは拒否プロキシ）、上流を偽 Anthropic API に向けて、デーモンの LLM Gateway（`/chat/completions`）と Claude Agent SDK（`/v1/messages`）の両方を通す。費用なし。`ACC_LITELLM_BIN` が `litellm` の実行ファイルを指すときだけ動き、`pnpm check` では飛ばす。
   ```sh
-  python -m venv <どこか>/litellm-venv && <どこか>/litellm-venv/Scripts/pip install "litellm[proxy]"   # macOS / Linux は bin/
-  ACC_LITELLM_BIN=<どこか>/litellm-venv/Scripts/litellm.exe pnpm --filter @acc/daemon test:litellm-contract
+  python -m venv <どこか>/litellm-venv   # 使い捨て。リポジトリの外に
+  ACC_LITELLM_BIN=<どこか>/litellm-venv/Scripts/litellm.exe pnpm --filter @acc/daemon test:litellm-contract   # macOS / Linux は bin/
   ```
-  LiteLLM 1.106 の wheel には tiktoken の `cl100k_base` が入っておらず、オフラインだと起動後の最初の呼び出しがダウンロードを試みて 500 になる。そのときは `cl100k_base` のキャッシュ（ファイル名は URL の SHA-1 `9b5ad71b2ce5302211f9c61530b329a4922fc6a4`。tiktoken が SHA-256 を検証する）を置いたディレクトリを `ACC_LITELLM_TIKTOKEN_CACHE` で渡す（`CUSTOM_TIKTOKEN_CACHE_DIR` になる）。結果は `docs/snapshot/20261029_litellm-contract.md`。
+  - **入れ方**：LiteLLM は PyPI で改ざんされた版が出たことがあるので、次のように入れる（手順と実例は `docs/snapshot/20261031_litellm-prompt-caching-verified.md`）。
+    1. 公開から 2 週間以上たった版を、版を固定して入れる。
+    2. wheel を GitHub のタグのソースと突き合わせる。
+    3. 依存も、同じ日付より前の版に絞る。
+    4. `--require-hashes --only-binary :all:` で入れる。
+    5. pip は API キーのない環境変数で動かす。
+    6. 入れた後、`.pth` を確かめる。
+  - **tiktoken**：Windows の wheel に同梱の `cl100k_base`（`litellm_core_utils/tokenizers/9b5ad71b2ce5302211f9c61530b329a4922fc6a4`）は改行が CRLF で、tiktoken の SHA-256 検証に落ちる。tiktoken はそれを消してダウンロードを試みるので、オフラインでは起動に失敗する。
+    - 改行を LF に直したファイルを置いたディレクトリを `ACC_LITELLM_TIKTOKEN_CACHE` で渡す（`CUSTOM_TIKTOKEN_CACHE_DIR` になる）。
+    - 直したファイルの SHA-256 は `223921b7…` になる。
+  - プロンプトキャッシュの印の検査は LiteLLM 1.104 以上が前提（1.103 では、後ろのシステムメッセージが先頭に移るので落ちる）。
+  - 結果は `docs/snapshot/20261029_litellm-contract.md` と `20261031_litellm-prompt-caching-verified.md`。
 - Run の Executor は `ctx.service('runs').registerExecutor(kind, fn)` で差し替えられる（後勝ち）。
 
 ## 7. 約束ごと

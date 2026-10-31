@@ -110,9 +110,11 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // ---------------------------------------------------------------------------------------
 
 describe.skipIf(!bin)('LLM gateway through a real LiteLLM (fake Anthropic upstream)', () => {
+  // No retries of our own: what is counted here is LiteLLM's (ours: llm.test.ts).
   const provider = (idleTimeoutMs?: number) =>
     new OpenAiCompatibleProvider({
       connection: () => ({ baseUrl: ll.url, apiKey: LITELLM_MASTER_KEY }),
+      retry: { maxRetries: 0 },
       ...(idleTimeoutMs ? { idleTimeoutMs } : {}),
     });
   const req = (model: string, content: string): ChatRequest => ({
@@ -193,6 +195,71 @@ describe.skipIf(!bin)('LLM gateway through a real LiteLLM (fake Anthropic upstre
     const up = sb.api.bodies.at(-1)!;
     expect(up.body).toMatchObject({ model: UPSTREAM.sonnet, stream: true, max_tokens: 64000 });
     expect(up.headers['x-api-key']).toBe('<redacted>');
+  });
+
+  it('puts prompt-cache marks where Anthropic reads them (LiteLLM 1.104+), and only for Claude', async () => {
+    route(() => ({ content: [{ type: 'text', text: 'ok' }] }));
+    const tools = ['a', 'b'].map((name) => ({
+      name,
+      description: name,
+      parameters: { type: 'object', properties: {} },
+    }));
+    const conversation = (model: string): ChatRequest => ({
+      model,
+      tools,
+      messages: [
+        { role: 'system', content: 'role' },
+        { role: 'user', content: 'q1' },
+        { role: 'assistant', content: 'a1' },
+        { role: 'user', content: 'q2' },
+        { role: 'system', content: 'per-run context' },
+        { role: 'assistant', content: null, toolCalls: [{ id: 'c1', name: 'b', arguments: '{}' }] },
+        { role: 'tool', toolCallId: 'c1', content: 'r1' },
+      ],
+    });
+    type Block = { type?: string; text?: string; name?: string; cache_control?: unknown };
+    /** Every block that reached the upstream, in order, with `*` when it carries a mark. */
+    const blocks = () => {
+      const body = sb.api.bodies.at(-1)!.body;
+      const label = (b: Block) =>
+        `${b.type === 'text' ? b.text : b.type === 'tool_use' ? `use ${b.name}` : b.type}${b.cache_control ? '*' : ''}`;
+      const content = (c: unknown) => (typeof c === 'string' ? [{ type: 'text', text: c }] : c) as Block[];
+      return {
+        tools: (body.tools as Block[]).map((t) => `${t.name}${t.cache_control ? '*' : ''}`),
+        system: content(body.system).map(label),
+        messages: (body.messages ?? []).map((m) => `${m.role}: ${content(m.content).map(label).join(' | ')}`),
+      };
+    };
+    const p = new OpenAiCompatibleProvider({
+      connection: () => ({ baseUrl: ll.url, apiKey: LITELLM_MASTER_KEY }),
+    });
+    const send = (model: string) =>
+      (async () => {
+        for await (const _ of p.stream(conversation(model), new AbortController().signal)) {
+          // drain
+        }
+      })();
+
+    await send('claude-sonnet-4-5');
+    // The marks: last tool, the system, the message before the per-run context, the last one.
+    // The per-run context stays after the history (Sonnet 4.5 has no mid-conversation system,
+    // so LiteLLM turns it into a labelled user text).
+    expect(blocks()).toEqual({
+      tools: ['a', 'b*'],
+      system: ['role*'],
+      messages: [
+        'user: q1',
+        'assistant: a1',
+        expect.stringMatching(/^user: q2\* \| Operator note .* \| per-run context$/) as string,
+        'assistant: use b',
+        'user: tool_result*',
+      ],
+    });
+    // An alias: LiteLLM says what is behind it in the first answer; marks from the second call.
+    await send('team-sonnet');
+    expect(blocks().tools).toEqual(['a', 'b']);
+    await send('team-sonnet');
+    expect(blocks().tools).toEqual(['a', 'b*']);
   });
 
   it('lists the models LiteLLM serves', async () => {

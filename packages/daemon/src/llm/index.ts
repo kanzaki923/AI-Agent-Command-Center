@@ -121,6 +121,7 @@ export const llmModule = defineModule({
       openai: () => ctx.settings.get().providers.openai,
       chatgptToken: () => chatgpt.accessToken(),
       pricing: prices.lookup,
+      deploymentOf: prices.deploymentOf,
       defaultModel: () => ctx.settings.get().defaultModel,
       log: ctx.log.child('llm'),
       now: () => ctx.clock.now(),

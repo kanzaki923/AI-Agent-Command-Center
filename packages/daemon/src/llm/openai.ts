@@ -1,4 +1,5 @@
 import type { CostSource, Usage } from '@acc/protocol';
+import type { Logger } from '../core/log';
 import { describeGatewayError, gatewayErrorHint } from './gatewayErrors';
 import { SseParser } from './sse';
 import {
@@ -29,6 +30,12 @@ export interface OpenAiProviderOptions {
   idleTimeoutMs?: number;
   /** Retries of calls that failed before any token arrived (429 / 5xx / connection). */
   retry?: RetryOptions;
+  /**
+   * The deployment behind a LiteLLM model name (`litellm_params.model` from `/model/info`,
+   * e.g. `team-sonnet` → `anthropic/claude-sonnet-4-5`), when known. Decides the cache marks.
+   */
+  deploymentOf?: (model: string) => string | null;
+  log?: Logger;
 }
 
 export interface RetryOptions {
@@ -71,6 +78,28 @@ export function parseRetryAfter(value: string | null, now = Date.now()): number 
 
 /** LiteLLM puts the computed cost of a call in this response header. */
 export const LITELLM_COST_HEADER = 'x-litellm-response-cost';
+/** The deployment's model of a call (e.g. `anthropic/claude-sonnet-5-5`). */
+export const LITELLM_MODEL_HEADER = 'x-litellm-model-name';
+export const LITELLM_VERSION_HEADER = 'x-litellm-version';
+
+/**
+ * Before 1.104.0 LiteLLM moves every system message into Anthropic's top-level `system`, so
+ * the per-run context at the end of a conversation lands in front of the history and the
+ * history cache never hits (docs/snapshot/20261031_litellm-prompt-caching-verified.md).
+ */
+export function hoistsLaterSystem(version: string): boolean {
+  const m = /^(\d+)\.(\d+)\./.exec(version.trim());
+  if (!m) return false;
+  const major = Number(m[1]);
+  return major < 1 || (major === 1 && Number(m[2]) < 104);
+}
+
+/**
+ * Cache marks go to Claude deployments only: LiteLLM passes them as they are to an
+ * OpenAI-compatible upstream, and turns them into paid explicit caching on GPT-5.6+ and
+ * Gemini.
+ */
+export const isClaudeDeployment = (model: string): boolean => /claude/i.test(model);
 
 export function joinUrl(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
@@ -112,18 +141,66 @@ export function toWireMessages(messages: ChatMessage[]): unknown[] {
   });
 }
 
-export function toWireRequest(req: ChatRequest): Record<string, unknown> {
+const CACHE_MARK = { type: 'ephemeral' } as const;
+type WireObject = Record<string, unknown>;
+
+/**
+ * Prompt-cache marks in the shape LiteLLM carries to Anthropic (checked against a real
+ * LiteLLM, docs/snapshot/20261031_litellm-prompt-caching-verified.md), at the places the
+ * Anthropic path marks: the first system message, the last message before the first later
+ * system message (the anchor: the history up to there is the same in the next run) and the
+ * last message (a tool loop resends everything). With the last tool, 4 marks at most:
+ * LiteLLM does not drop extra ones and the API rejects them.
+ */
+function markForCache(source: ChatMessage[], wire: WireObject[]): void {
+  let leading = 0;
+  while (source[leading]?.role === 'system') leading++;
+  const later = source.findIndex((m, i) => i >= leading && m.role === 'system');
+  let last = -1;
+  for (let i = source.length - 1; i >= leading; i--) {
+    if (source[i]!.role !== 'system') {
+      last = i;
+      break;
+    }
+  }
+  const targets = new Set<number>();
+  if (leading > 0) targets.add(0);
+  if (later > leading) targets.add(later - 1);
+  if (last >= 0) targets.add(last);
+  for (const i of targets) {
+    const m = wire[i]!;
+    const calls = m.tool_calls as WireObject[] | undefined;
+    if (calls && calls.length > 0) {
+      // On the message itself the mark is lost when the content is null (and lands on a text
+      // LiteLLM makes up when it is ''); on the call it reaches the tool_use block.
+      calls[calls.length - 1] = { ...calls.at(-1), cache_control: CACHE_MARK };
+    } else if (typeof m.content === 'string' && m.content !== '') {
+      m.cache_control = CACHE_MARK;
+    }
+  }
+}
+
+/** `cache`: add prompt-cache marks (Claude deployments only, see isClaudeDeployment). */
+export function toWireRequest(
+  req: ChatRequest,
+  opts: { cache?: boolean } = {},
+): Record<string, unknown> {
+  const messages = toWireMessages(req.messages) as WireObject[];
+  if (opts.cache) markForCache(req.messages, messages);
   const body: Record<string, unknown> = {
     model: req.model,
-    messages: toWireMessages(req.messages),
+    messages,
     stream: true,
     stream_options: { include_usage: true },
   };
   if (req.tools && req.tools.length > 0) {
-    body.tools = req.tools.map((t) => ({
+    const tools: WireObject[] = req.tools.map((t) => ({
       type: 'function',
       function: { name: t.name, description: t.description, parameters: t.parameters },
     }));
+    // At the top level, not inside `function`: Bedrock reads only this one.
+    if (opts.cache) tools[tools.length - 1]!.cache_control = CACHE_MARK;
+    body.tools = tools;
   }
   if (req.temperature !== undefined) body.temperature = req.temperature;
   if (req.maxTokens !== undefined) body.max_tokens = req.maxTokens;
@@ -233,8 +310,8 @@ export class OpenAiStreamAccumulator {
 
   /**
    * LiteLLM streams Anthropic thinking as `thinking_blocks` fragments: text pieces of the
-   * current block, then an empty piece carrying its signature (observed with 1.106).
-   * Fragments are joined into whole blocks; a signature closes a block.
+   * current block, then a piece carrying its signature, empty (1.106) or repeating the whole
+   * text (1.105). Fragments are joined into whole blocks; a signature closes a block.
    */
   private addThinking(raw: unknown): void {
     if (!raw || typeof raw !== 'object') return;
@@ -242,8 +319,12 @@ export class OpenAiStreamAccumulator {
     const last = this.thinking.at(-1);
     if (b.type === 'thinking' && last?.type === 'thinking' && !last.signature) {
       const prev = typeof last.thinking === 'string' ? last.thinking : '';
-      if (typeof b.thinking === 'string') last.thinking = prev + b.thinking;
-      if (typeof b.signature === 'string' && b.signature) last.signature = b.signature;
+      const signature = typeof b.signature === 'string' && b.signature ? b.signature : null;
+      if (typeof b.thinking === 'string') {
+        // The text the signature signs: a closing piece that restates it is not appended.
+        last.thinking = signature && prev && b.thinking.startsWith(prev) ? b.thinking : prev + b.thinking;
+      }
+      if (signature) last.signature = signature;
       return;
     }
     this.thinking.push({ ...b });
@@ -274,7 +355,17 @@ export class OpenAiStreamAccumulator {
   private resolveUsage(): Usage {
     const inputTokens = Math.max(0, Math.round(num(this.usage?.prompt_tokens) ?? 0));
     const outputTokens = Math.max(0, Math.round(num(this.usage?.completion_tokens) ?? 0));
-    const usageCost = num(this.usage?.cost);
+    // prompt_tokens includes the cached part (LiteLLM, for Anthropic models too).
+    const u = this.usage;
+    const read = Math.min(
+      inputTokens,
+      Math.max(
+        num(u?.prompt_tokens_details?.cached_tokens) ?? 0,
+        num(u?.cache_read_input_tokens) ?? 0,
+      ),
+    );
+    const write = Math.min(inputTokens - read, num(u?.cache_creation_input_tokens) ?? 0);
+    const usageCost = num(u?.cost);
     let costUsd = 0;
     let costSource: CostSource = 'unknown';
     if (usageCost !== null && usageCost >= 0) {
@@ -290,22 +381,22 @@ export class OpenAiStreamAccumulator {
     } else {
       const price = this.pricing?.(this.model);
       if (price && inputTokens + outputTokens > 0) {
+        // Cache reads and writes at their own prices, not at the input price.
+        const cacheRead = price.cacheReadPerMTok ?? price.inputPerMTok * 0.1;
+        const cacheWrite = price.cacheWritePerMTok ?? price.inputPerMTok * 1.25;
         costUsd =
-          (inputTokens * price.inputPerMTok + outputTokens * price.outputPerMTok) / 1_000_000;
+          ((inputTokens - read - write) * price.inputPerMTok +
+            read * cacheRead +
+            write * cacheWrite +
+            outputTokens * price.outputPerMTok) /
+          1_000_000;
         costSource = 'estimated';
       }
     }
-    // prompt_tokens includes the cached part (LiteLLM, for Anthropic models too).
-    const u = this.usage;
-    const read = Math.max(
-      num(u?.prompt_tokens_details?.cached_tokens) ?? 0,
-      num(u?.cache_read_input_tokens) ?? 0,
-    );
-    const write = num(u?.cache_creation_input_tokens) ?? 0;
     return {
       inputTokens,
       outputTokens,
-      ...cacheCounts(Math.min(read, inputTokens), Math.min(write, inputTokens)),
+      ...cacheCounts(read, write),
       costUsd,
       costSource,
     };
@@ -316,6 +407,9 @@ export class OpenAiStreamAccumulator {
 export class OpenAiCompatibleProvider implements LlmProvider {
   readonly id = 'litellm';
   private readonly fetchImpl: typeof fetch;
+  /** `baseUrl model` → the deployment LiteLLM answered with (LITELLM_MODEL_HEADER). */
+  private readonly deployments = new Map<string, string>();
+  private readonly warnedVersions = new Set<string>();
 
   constructor(private readonly opts: OpenAiProviderOptions) {
     this.fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
@@ -341,6 +435,31 @@ export class OpenAiCompatibleProvider implements LlmProvider {
         if (wait === null) throw err;
         await (retry.sleep ?? sleep)(wait, signal);
       }
+    }
+  }
+
+  /**
+   * Whether a call gets cache marks: its deployment is a Claude model. The deployment comes
+   * from LiteLLM's answer to an earlier call, else `/model/info`, else the name itself (so an
+   * alias like `team-sonnet` gets marks once LiteLLM has said what is behind it).
+   */
+  private cacheable(baseUrl: string, model: string): boolean {
+    const deployment =
+      this.deployments.get(`${baseUrl} ${model}`) ?? this.opts.deploymentOf?.(model) ?? model;
+    return isClaudeDeployment(deployment);
+  }
+
+  /** Remembers the deployment of a model; warns once about a LiteLLM that hoists. */
+  private learn(baseUrl: string, model: string, headers: Headers): void {
+    const deployment = headers.get(LITELLM_MODEL_HEADER)?.trim();
+    if (deployment) this.deployments.set(`${baseUrl} ${model}`, deployment);
+    const version = headers.get(LITELLM_VERSION_HEADER)?.trim();
+    if (version && hoistsLaterSystem(version) && !this.warnedVersions.has(version)) {
+      this.warnedVersions.add(version);
+      this.opts.log?.warn(
+        'LiteLLM before 1.104.0 moves later system messages to the top: the history prompt cache will not hit',
+        { version },
+      );
     }
   }
 
@@ -387,7 +506,7 @@ export class OpenAiCompatibleProvider implements LlmProvider {
             accept: 'text/event-stream',
             ...authHeaders(apiKey),
           },
-          body: JSON.stringify(toWireRequest(req)),
+          body: JSON.stringify(toWireRequest(req, { cache: this.cacheable(baseUrl, req.model) })),
           signal: ctl.signal,
         });
         if (!res.ok) {
@@ -406,6 +525,7 @@ export class OpenAiCompatibleProvider implements LlmProvider {
       } finally {
         disarm();
       }
+      this.learn(baseUrl, req.model, res.headers);
       if (!res.body) throw new LlmError('llm_stream_error', 'LLM の応答が空でした');
 
       const acc = new OpenAiStreamAccumulator(

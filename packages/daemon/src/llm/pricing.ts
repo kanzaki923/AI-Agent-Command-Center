@@ -144,6 +144,8 @@ const perM = (v: unknown): number | null =>
  */
 export class PriceBook {
   private litellm = new Map<string, ModelPrice>();
+  /** LiteLLM model name → its deployment (`litellm_params.model`). */
+  private deployments = new Map<string, string>();
   private fetchedFor: string | null = null;
   private fetchedAt = -Infinity;
   private failedAt = -Infinity;
@@ -178,6 +180,9 @@ export class PriceBook {
    */
   readonly lookup: PricingLookup = (model) => this.quote(model, { refresh: false });
 
+  /** The deployment behind a LiteLLM model name, from the cached `/model/info` (no request). */
+  readonly deploymentOf = (model: string): string | null => this.deployments.get(model) ?? null;
+
   /** Fetch `/model/info` now (tests, and the background refresh). Never throws. */
   async refresh(): Promise<void> {
     const { baseUrl, apiKey } = this.opts.connection();
@@ -190,7 +195,11 @@ export class PriceBook {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = (await res.json()) as { data?: WireModelInfo[] };
       const next = new Map<string, ModelPrice>();
+      const deployments = new Map<string, string>();
       for (const m of body.data ?? []) {
+        if (typeof m.model_name === 'string' && typeof m.litellm_params?.model === 'string') {
+          deployments.set(m.model_name, m.litellm_params.model);
+        }
         const input = perM(m.model_info?.input_cost_per_token);
         const output = perM(m.model_info?.output_cost_per_token);
         if (input === null || output === null) continue;
@@ -209,6 +218,7 @@ export class PriceBook {
         }
       }
       this.litellm = next;
+      this.deployments = deployments;
       this.fetchedFor = baseUrl;
       this.fetchedAt = this.now();
     } catch (err) {
@@ -226,7 +236,10 @@ export class PriceBook {
     const fresh =
       this.fetchedFor === baseUrl && now - this.fetchedAt < (this.opts.ttlMs ?? 60 * 60_000);
     if (fresh || now - this.failedAt < (this.opts.retryMs ?? 5 * 60_000)) return;
-    if (this.fetchedFor !== baseUrl) this.litellm = new Map();
+    if (this.fetchedFor !== baseUrl) {
+      this.litellm = new Map();
+      this.deployments = new Map();
+    }
     this.inflight = this.refresh().finally(() => {
       this.inflight = null;
     });

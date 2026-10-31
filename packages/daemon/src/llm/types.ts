@@ -73,6 +73,9 @@ export interface LlmProvider {
 export interface ModelPricing {
   inputPerMTok: number;
   outputPerMTok: number;
+  /** Cache reads / writes (default 0.1x / 1.25x the input price). */
+  cacheReadPerMTok?: number;
+  cacheWritePerMTok?: number;
 }
 export type PricingLookup = (model: string) => ModelPricing | null;
 
