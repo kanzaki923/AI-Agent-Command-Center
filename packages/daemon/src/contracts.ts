@@ -6,6 +6,7 @@
  * `ctx.service(name)` at call time. Change a contract only together with every
  * implementer and caller.
  */
+import type { CallLog } from './cost/calls';
 import type {
   Actor,
   Approval,
@@ -515,6 +516,9 @@ export interface LedgerEntry {
   costUsd: number;
   inputTokens?: number;
   outputTokens?: number;
+  /** Parts of inputTokens read from / written to the prompt cache. */
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
   source: CostSource;
 }
 
@@ -568,6 +572,8 @@ declare module './core/context' {
     outputs: OutputsService;
     attention: AttentionService;
     ledger: LedgerService;
+    /** The LLM call log (src/cost/calls.ts). */
+    callLog: CallLog;
     scheduler: SchedulerService;
     sessionState: SessionStateService;
     streams: StreamsService;

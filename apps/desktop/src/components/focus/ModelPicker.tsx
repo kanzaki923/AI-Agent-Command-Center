@@ -2,9 +2,8 @@ import type { ModelInfo } from '@acc/protocol';
 import { Command } from 'cmdk';
 import { Check, ChevronDown, Cpu } from 'lucide-react';
 import { useModels } from '../../daemon/queries';
-import { relativeCost, shortModel } from '../../lib/models';
+import { priceText, relativeCost, shortModel } from '../../lib/models';
 import { useUi } from '../../store/ui';
-import { runCostText } from '../settings/ModelRoster';
 import { Kbd } from '../ui/Kbd';
 import { Tooltip } from '../ui/Tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/Menu';
@@ -75,8 +74,8 @@ export function ModelPicker({
       <span className="w-4 text-accent">{m.id === current && <Check size={13} />}</span>
       <span className="min-w-0 flex-1 truncate">{m.label ?? m.id}</span>
       {m.provider && <span className="text-meta text-fg-3">{m.provider}</span>}
-      <span className="w-[72px] text-right text-meta text-fg-3 tabular">
-        {m.runUsd === undefined ? relativeCost(m.id) : runCostText(m)}
+      <span className="w-[104px] text-right text-meta text-fg-3 tabular">
+        {m.price === undefined ? relativeCost(m.id) : priceText(m)}
       </span>
     </Command.Item>
   );

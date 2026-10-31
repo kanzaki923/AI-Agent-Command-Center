@@ -179,6 +179,8 @@ describe.skipIf(!bin)('LLM gateway through a real LiteLLM (fake Anthropic upstre
     expect(cached.find((e) => e.type === 'usage')).toMatchObject({
       usage: {
         inputTokens: 7100,
+        cacheReadTokens: 5000,
+        cacheWriteTokens: 2000,
         costUsd: expect.closeTo(0.00945, 9) as number,
         costSource: 'reported',
       },

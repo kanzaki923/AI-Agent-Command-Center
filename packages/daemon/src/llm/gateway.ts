@@ -11,7 +11,6 @@ import {
   type ModelRole,
   fallbackModel,
   initialRoster,
-  typicalRunUsd,
 } from './autoModel';
 import { MOCK_PREFIX, MockProvider } from './mock';
 import { type LiteLlmConnection, OpenAiCompatibleProvider, authHeaders, joinUrl } from './openai';
@@ -195,7 +194,7 @@ export class LlmGateway {
       ...(anthropic ?? []),
       ...(openai ?? []),
       ...mock,
-    ]).map((m) => ({ ...m, runUsd: this.runUsd(m) }));
+    ]).map((m) => ({ ...m, price: this.priceOf(m) }));
     const anySetUp =
       !!baseUrl || !!this.opts.anthropic?.().apiKey || (await this.openai.auth()) !== null;
     const source: ModelList['source'] = litellm
@@ -235,12 +234,13 @@ export class LlmGateway {
     };
   }
 
-  /** USD of a typical run on a listed model: 0 on a plan or a mock, null when unknown. */
-  private runUsd(m: ModelInfo): number | null {
-    if (m.provider === 'chatgpt' || this.isMockModel(m.id)) return 0;
+  /** List price per 1M tokens of a listed model: 0 for a mock, null on a plan or unknown. */
+  private priceOf(m: ModelInfo): ModelInfo['price'] {
+    if (this.isMockModel(m.id)) return { inputPerMTok: 0, outputPerMTok: 0 };
+    if (m.provider === 'chatgpt') return null;
     const price = this.opts.pricing?.(m.id) as (ModelPricing & { basis?: string }) | null;
     if (!price || price.basis === 'fallback') return null;
-    return typicalRunUsd(price);
+    return { inputPerMTok: price.inputPerMTok, outputPerMTok: price.outputPerMTok };
   }
 
   /** The cached list for a provider at an endpoint, or a fresh one; null when it failed. */

@@ -15,6 +15,9 @@ export interface LedgerRow {
   cost_micro: number;
   input_tokens: number;
   output_tokens: number;
+  /** Parts of input_tokens read from / written to the prompt cache. */
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
   source: CostSource;
 }
 
@@ -49,6 +52,12 @@ export function dayOf(iso: string, timeZone: string): string {
   }
 }
 
+/** A token count as stored: corrections may take tokens back, other rows never go below 0. */
+function tokens(component: LedgerComponent, n: number | undefined): number {
+  const v = Math.round(n ?? 0);
+  return component === 'adjust' ? v : Math.max(0, v);
+}
+
 /** Plain SQL access to the usage ledger (not an entity table: rows are append-only facts). */
 export class LedgerStore {
   constructor(private readonly db: Db) {}
@@ -56,8 +65,9 @@ export class LedgerStore {
   insert(row: NewLedgerRow): number {
     return this.db.run(
       `INSERT INTO usage_ledger (ts, day, session_id, root_session_id, project_id, run_id, model,
-         component, cost_micro, input_tokens, output_tokens, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         component, cost_micro, input_tokens, output_tokens, cache_read_tokens,
+         cache_write_tokens, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.ts,
         row.day,
@@ -75,6 +85,8 @@ export class LedgerStore {
         row.component === 'adjust'
           ? Math.round(row.output_tokens)
           : Math.max(0, Math.round(row.output_tokens)),
+        tokens(row.component, row.cache_read_tokens),
+        tokens(row.component, row.cache_write_tokens),
         row.source,
       ],
     ).lastInsertRowid;

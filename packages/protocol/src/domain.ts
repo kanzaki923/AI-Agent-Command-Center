@@ -449,8 +449,13 @@ export const RunStopReason = z.enum([
 export type RunStopReason = z.infer<typeof RunStopReason>;
 
 export const Usage = z.object({
+  /** All input, the cached part included. */
   inputTokens: z.int().nonnegative(),
   outputTokens: z.int().nonnegative(),
+  /** Input read from the provider's prompt cache (part of inputTokens). */
+  cacheReadTokens: z.int().nonnegative().optional(),
+  /** Input written to the prompt cache (part of inputTokens; Anthropic). */
+  cacheWriteTokens: z.int().nonnegative().optional(),
   /** USD. Meaningless when costSource is "unknown" (then 0). */
   costUsd: z.number().nonnegative(),
   costSource: CostSource,
@@ -1232,10 +1237,10 @@ export const ModelInfo = z.object({
   label: z.string().nullable(),
   provider: z.string().nullable(),
   /**
-   * USD of a typical run on this model (20 calls of 8k in / 800 out), from the price table:
-   * 0 on a plan (ChatGPT), null when the price is unknown. Absent from older daemons.
+   * List price in USD per 1M tokens, from the price table. null when there is no per-token
+   * price (a ChatGPT plan) or it is unknown. Absent from older daemons.
    */
-  runUsd: z.number().nullable().optional(),
+  price: z.object({ inputPerMTok: z.number(), outputPerMTok: z.number() }).nullable().optional(),
 });
 export type ModelInfo = z.infer<typeof ModelInfo>;
 

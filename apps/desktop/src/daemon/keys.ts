@@ -50,6 +50,8 @@ export const qk = {
   outputContent: (artifactId: string, path: string | null) => ['artifact.read', artifactId, path ?? ''] as const,
   /** cost.summary for one set of params. */
   cost: (params: unknown) => ['cost.summary', params] as const,
+  /** usage.stats for one range. */
+  usage: (range: unknown) => ['usage.stats', range] as const,
   /** schedule.list of one owner session, or of every session (`''`). */
   schedules: (sessionId: string) => ['schedule.list', sessionId] as const,
   /** schedule.preview of one trigger. */

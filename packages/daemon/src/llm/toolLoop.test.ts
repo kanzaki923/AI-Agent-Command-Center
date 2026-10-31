@@ -41,6 +41,7 @@ function fakes(replies: (Reply | ((req: ChatRequest) => Reply))[]) {
   } as unknown as LlmGateway;
   const appended: unknown[] = [];
   const ctl = {
+    run: { id: 'run_1', sessionId: 'ses_1', kind: 'chat' },
     signal: new AbortController().signal,
     reserveBudget: () => ({ amountUsd: 0, settle: () => undefined, cancel: () => undefined }),
     setActivity: () => undefined,
@@ -49,7 +50,11 @@ function fakes(replies: (Reply | ((req: ChatRequest) => Reply))[]) {
     toolCalled: () => undefined,
     toolResult: () => undefined,
   } as unknown as RunController;
-  const ctx = { ids: { next: () => `msg_${++ids}` } } as unknown as DaemonContext;
+  const ctx = {
+    ids: { next: () => `msg_${++ids}` },
+    clock: { now: () => 0 },
+    hasService: () => false,
+  } as unknown as DaemonContext;
   const tool = (name: string): LoopTool => ({
     name,
     description: name,

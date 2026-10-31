@@ -1,4 +1,4 @@
-import type { CostGroupBy, CostRange, CostSummary } from '@acc/protocol';
+import type { CostGroupBy, CostRange, CostSummary, UsageStats } from '@acc/protocol';
 import { useQuery } from '@tanstack/react-query';
 import { toastError } from '../store/toast';
 import { qk } from './keys';
@@ -21,6 +21,17 @@ export function useCostSummary(params: CostQuery, opts: { enabled?: boolean } = 
   return useQuery<CostSummary>({
     queryKey: qk.cost(p),
     queryFn: () => rt.client.call('cost.summary', p),
+    enabled: opts.enabled ?? true,
+    staleTime: 2_000,
+  });
+}
+
+/** `usage.stats`: per model in a range, spend, tokens (cached part too) and calls. */
+export function useUsageStats(range: CostRange, opts: { enabled?: boolean } = {}) {
+  const rt = useRuntime();
+  return useQuery<UsageStats>({
+    queryKey: qk.usage(range),
+    queryFn: () => rt.client.call('usage.stats', { range }),
     enabled: opts.enabled ?? true,
     staleTime: 2_000,
   });

@@ -220,9 +220,9 @@ describe('<FocusView> flow', () => {
       }),
       'models.list': () => ({
         models: [
-          { id: 'anthropic/claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'anthropic', runUsd: 0.96 },
-          { id: 'openai/gpt-6-luna', label: 'GPT-6 Luna', provider: 'chatgpt', runUsd: 0 },
-          { id: 'anthropic/claude-sonnet-5-5', label: 'Claude Sonnet 5.5', provider: 'anthropic', runUsd: 0.48 },
+          { id: 'anthropic/claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'anthropic', price: { inputPerMTok: 5, outputPerMTok: 25 } },
+          { id: 'openai/gpt-6-luna', label: 'GPT-6 Luna', provider: 'chatgpt', price: null },
+          { id: 'anthropic/claude-sonnet-5-5', label: 'Claude Sonnet 5.5', provider: 'anthropic', price: { inputPerMTok: 3, outputPerMTok: 15 } },
         ],
         source: 'providers',
       }),

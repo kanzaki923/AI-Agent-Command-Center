@@ -17,6 +17,7 @@ import {
   type GlassScope,
   type GlassStrength,
   type MotionPref,
+  type SettingsTab,
   type ThemePref,
   useUi,
 } from '../../store/ui';
@@ -25,6 +26,7 @@ import { Dialog, inputClass } from '../ui/Dialog';
 import { FieldRow, type SegmentOption, Segmented, Stepper, UsdField } from './controls';
 import { ModelRosterPanel, rosterSummary } from './ModelRoster';
 import { ProviderPanel } from './ProviderPanel';
+import { UsageStatsPanel } from './UsageStats';
 
 type SettingsPatch = ParamsInput<'settings.update'>;
 
@@ -118,6 +120,11 @@ export function connectionStatus(
 
 const DOT = { ok: 'bg-st-done', off: 'bg-st-idle', error: 'bg-st-failed' } as const;
 
+const TABS: readonly { value: SettingsTab; label: string }[] = [
+  { value: 'general', label: '一般' },
+  { value: 'usage', label: '利用統計' },
+];
+
 function Group({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cn('flex flex-col gap-1.5 py-3', className)}>{children}</div>;
 }
@@ -131,6 +138,8 @@ export function SettingsDialog() {
   const rt = useRuntime();
   const open = useUi((s) => s.settingsOpen);
   const setOpen = useUi((s) => s.setSettingsOpen);
+  const tab = useUi((s) => s.settingsTab);
+  const setTab = useUi((s) => s.setSettingsTab);
   const theme = useUi((s) => s.theme);
   const setTheme = useUi((s) => s.setTheme);
   const reduceMotion = useUi((s) => s.reduceMotion);
@@ -168,8 +177,29 @@ export function SettingsDialog() {
         }
       }}
       title="設定"
-      className={editingModels ? 'w-[640px]' : 'w-[520px]'}
+      className={editingModels || tab === 'usage' ? 'w-[640px]' : 'w-[520px]'}
     >
+      <div role="tablist" aria-label="設定の画面" className="-mt-1 mb-1 flex gap-4 border-b border-line-subtle">
+        {TABS.map((t) => (
+          <button
+            key={t.value}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.value}
+            onClick={() => setTab(t.value)}
+            className={cn(
+              '-mb-px h-8 border-b-2 text-ui',
+              tab === t.value ? 'border-accent text-fg' : 'border-transparent text-fg-3 hover:text-fg-2',
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {tab === 'usage' ? (
+        <UsageStatsPanel />
+      ) : (
+        <>
       <Group className="pt-0">
         <FieldRow label="接続">
           <span
@@ -304,6 +334,8 @@ export function SettingsDialog() {
         </button>
         {more && <Details settings={settings} update={update} />}
       </div>
+        </>
+      )}
     </Dialog>
   );
 }

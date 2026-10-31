@@ -13,6 +13,7 @@ import {
   isAbortError,
   sleep,
 } from './types';
+import { cacheCounts } from './usage';
 
 export interface LiteLlmConnection {
   baseUrl: string | null;
@@ -145,7 +146,16 @@ interface WireChunk {
     };
     finish_reason?: unknown;
   }[];
-  usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; cost?: unknown } | null;
+  usage?: {
+    prompt_tokens?: unknown;
+    completion_tokens?: unknown;
+    cost?: unknown;
+    /** OpenAI's (and LiteLLM's) cached part of prompt_tokens. */
+    prompt_tokens_details?: { cached_tokens?: unknown } | null;
+    /** What LiteLLM passes through from Anthropic. */
+    cache_read_input_tokens?: unknown;
+    cache_creation_input_tokens?: unknown;
+  } | null;
 }
 
 const num = (v: unknown): number | null =>
@@ -285,7 +295,20 @@ export class OpenAiStreamAccumulator {
         costSource = 'estimated';
       }
     }
-    return { inputTokens, outputTokens, costUsd, costSource };
+    // prompt_tokens includes the cached part (LiteLLM, for Anthropic models too).
+    const u = this.usage;
+    const read = Math.max(
+      num(u?.prompt_tokens_details?.cached_tokens) ?? 0,
+      num(u?.cache_read_input_tokens) ?? 0,
+    );
+    const write = num(u?.cache_creation_input_tokens) ?? 0;
+    return {
+      inputTokens,
+      outputTokens,
+      ...cacheCounts(Math.min(read, inputTokens), Math.min(write, inputTokens)),
+      costUsd,
+      costSource,
+    };
   }
 }
 

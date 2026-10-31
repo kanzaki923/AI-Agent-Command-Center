@@ -10,7 +10,7 @@ import {
   assertRosterModel,
   rosterModels,
   rosterPromptBlock,
-  runUsdOf,
+  priceOf,
 } from './roster';
 
 const cleanups: (() => unknown)[] = [];
@@ -83,13 +83,16 @@ describe('the model roster', () => {
     expect(agentCanUse(behindLiteLlm, 'anthropic/claude-sonnet-5-5')).toBe(false);
   });
 
-  it('prices a typical run: 0 on a ChatGPT plan, null when unknown', () => {
+  it('prices per 1M tokens: a plan on a ChatGPT plan, null when unknown', () => {
     const pricing = (m: string) =>
       m.includes('sonnet')
         ? { inputPerMTok: 2, outputPerMTok: 10 }
         : { inputPerMTok: 99, outputPerMTok: 99, basis: 'fallback' };
-    expect(runUsdOf(roster, 'anthropic/claude-sonnet-5-5', pricing)).toBeCloseTo(0.48);
-    expect(runUsdOf(roster, 'gemini-3-pro', pricing)).toBeNull();
+    expect(priceOf(roster, 'anthropic/claude-sonnet-5-5', pricing)).toEqual({
+      inputPerMTok: 2,
+      outputPerMTok: 10,
+    });
+    expect(priceOf(roster, 'gemini-3-pro', pricing)).toBeNull();
     const plan = settings({
       ...roster,
       providers: {
@@ -107,7 +110,7 @@ describe('the model roster', () => {
         },
       },
     });
-    expect(runUsdOf(plan, 'openai/gpt-6-luna', pricing)).toBe(0);
+    expect(priceOf(plan, 'openai/gpt-6-luna', pricing)).toBe('plan');
   });
 
   it('tells the supervisor the order, the cost and which rows an agent can use', () => {
@@ -116,9 +119,9 @@ describe('the model roster', () => {
     const block = rosterPromptBlock(roster, pricing)!;
     expect(block).toContain('take the model of the first row whose "when" fits');
     expect(block).toContain(
-      '2. anthropic/claude-sonnet-5-5 — when: 画面の設計・UI の実装 — about $0.48 per typical run; agent: yes',
+      '2. anthropic/claude-sonnet-5-5 — when: 画面の設計・UI の実装 — $2 in / $10 out per 1M tokens; agent: yes',
     );
-    expect(block).toContain('3. gemini-3-pro — when: 文章を書く・直す — cost unknown; agent: no');
+    expect(block).toContain('3. gemini-3-pro — when: 文章を書く・直す — price unknown; agent: no');
     expect(block).toContain('- Otherwise: openai/gpt-6-luna');
     const prompt = buildSupervisorPrompt({
       project: null,

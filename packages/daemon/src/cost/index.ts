@@ -1,3 +1,4 @@
+import type { Actor } from '@acc/protocol';
 import { defineMethod } from '../api/registry';
 import { forbidden } from '../core/errors';
 import type { DaemonContext } from '../core/context';
@@ -6,13 +7,22 @@ import { ownTreeOnly } from '../policy/grants';
 import { backfillLedgerFromRuns, recomputeSessionCosts } from './backfill';
 import { BudgetReturns } from './returns';
 import { COST_SYSTEM, UsageLedger } from './service';
+import { CallLog } from './calls';
 import { costSummary } from './summary';
+
+/** The whole-app usage is not one tree's: only a human, or an agent that sees every tree. */
+function humansOrAll(ctx: DaemonContext, actor: Actor): void {
+  if (actor.kind === 'agent' && ownTreeOnly(ctx, actor)) {
+    throw forbidden('利用統計を見られるのは人間と右腕だけです');
+  }
+}
 
 export { LedgerStore, dayOf, fromMicro, toMicro, weakestSource, type LedgerRow } from './ledger';
 export { backfillLedgerFromRuns, recomputeSessionCosts } from './backfill';
 export { UsageLedger, COST_SYSTEM, DAILY_LIMIT } from './service';
 export { BudgetReturns } from './returns';
 export { costSummary, rangeWhere } from './summary';
+export { CALL_LOG_DAYS, CallLog, promptShape, type LlmCallInput } from './calls';
 export { KeyedThrottle } from './throttle';
 export { setSessionBudget } from './sessionBudget';
 
@@ -105,10 +115,60 @@ CREATE TABLE cost_notices (
 );
 `,
     },
+    {
+      // How much input came from the prompt cache (older rows: unknown, counted as none).
+      id: 'cost/0003_cache_tokens',
+      sql: `
+ALTER TABLE usage_ledger ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE usage_ledger ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0;
+`,
+    },
+    {
+      // One row per model call the daemon makes (cost/calls.ts), kept CALL_LOG_DAYS.
+      id: 'cost/0004_llm_calls',
+      sql: `
+CREATE TABLE llm_calls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  day TEXT NOT NULL,
+  run_id TEXT,
+  session_id TEXT,
+  root_session_id TEXT,
+  role TEXT NOT NULL,
+  turn INTEGER NOT NULL,
+  model TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  status TEXT NOT NULL,
+  error_code TEXT,
+  finish_reason TEXT,
+  duration_ms INTEGER NOT NULL,
+  first_token_ms INTEGER,
+  input_tokens INTEGER NOT NULL,
+  cache_read_tokens INTEGER NOT NULL,
+  cache_write_tokens INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  cost_micro INTEGER NOT NULL,
+  cost_source TEXT NOT NULL,
+  messages INTEGER NOT NULL,
+  tools INTEGER NOT NULL,
+  tools_hash TEXT NOT NULL,
+  system_hash TEXT NOT NULL,
+  prefix_messages INTEGER NOT NULL,
+  prefix_hash TEXT NOT NULL,
+  prefix_continues INTEGER,
+  gap_ms INTEGER
+);
+CREATE INDEX llm_calls_session ON llm_calls(session_id, id);
+CREATE INDEX llm_calls_day ON llm_calls(day);
+CREATE INDEX llm_calls_run ON llm_calls(run_id);
+`,
+    },
   ],
   register(ctx) {
     const ledger = new UsageLedger(ctx);
     ctx.provide('ledger', ledger);
+    const callLog = new CallLog(ctx);
+    ctx.provide('callLog', callLog);
     ctx.onClose(() => ledger.close());
 
     ctx.methods.register(
@@ -129,6 +189,26 @@ CREATE TABLE cost_notices (
           }),
       }),
 
+      defineMethod('usage.stats', {
+        handler: (p, call) => {
+          humansOrAll(ctx, call.actor);
+          return callLog.stats(p.range);
+        },
+      }),
+
+      defineMethod('usage.calls', {
+        handler: (p, call) => {
+          humansOrAll(ctx, call.actor);
+          return {
+            calls: callLog.list({
+              ...(p.sessionId ? { sessionId: p.sessionId } : {}),
+              ...(p.runId ? { runId: p.runId } : {}),
+              limit: p.limit,
+            }),
+          };
+        },
+      }),
+
       defineMethod('cost.raiseDaily', {
         handler: (p, call) => ledger.raiseToday(p.addUsd, call.actor),
       }),
@@ -144,6 +224,8 @@ CREATE TABLE cost_notices (
     const returns = new BudgetReturns(ctx);
     return {
       start() {
+        const pruned = callLog.prune();
+        if (pruned > 0) ctx.log.info('old LLM calls pruned', { rows: pruned });
         const rows = backfillLedgerFromRuns(ctx);
         const sessions = recomputeSessionCosts(ctx);
         if (rows > 0 || sessions > 0) ctx.log.info('usage ledger backfilled', { rows, sessions });

@@ -302,7 +302,13 @@ describe('Anthropic Messages API', () => {
     const usage = (events.find((e) => e.type === 'usage') as { usage: Record<string, unknown> })
       .usage;
     // 100 fresh + 5000 cached + 1000 written in; 40 out.
-    expect(usage).toMatchObject({ inputTokens: 6100, outputTokens: 40, costSource: 'estimated' });
+    expect(usage).toMatchObject({
+      inputTokens: 6100,
+      outputTokens: 40,
+      cacheReadTokens: 5000,
+      cacheWriteTokens: 1000,
+      costSource: 'estimated',
+    });
     const expected = (100 * 3 + 40 * 15 + 5000 * 0.3 + 1000 * 3.75) / 1_000_000;
     expect(usage.costUsd).toBeCloseTo(expected, 9);
     expect(events.at(-1)).toEqual({ type: 'finish', reason: 'tool_calls' });
@@ -499,7 +505,12 @@ describe('OpenAI Responses API', () => {
     });
     const usage = (events.find((e) => e.type === 'usage') as { usage: Record<string, unknown> })
       .usage;
-    expect(usage).toMatchObject({ inputTokens: 1000, outputTokens: 50, costSource: 'estimated' });
+    expect(usage).toMatchObject({
+      inputTokens: 1000,
+      outputTokens: 50,
+      cacheReadTokens: 800,
+      costSource: 'estimated',
+    });
     expect(usage.costUsd).toBeCloseTo((200 * 0.25 + 50 * 2 + 800 * 0.025) / 1_000_000, 9);
     expect(events.at(-1)).toEqual({ type: 'finish', reason: 'tool_calls' });
     // The reasoning item goes back whole on the next turn.
@@ -559,6 +570,7 @@ describe('OpenAI Responses API', () => {
     expect((events.find((e) => e.type === 'usage') as { usage: unknown }).usage).toEqual({
       inputTokens: 1000,
       outputTokens: 50,
+      cacheReadTokens: 800,
       costUsd: 0,
       costSource: 'reported',
     });

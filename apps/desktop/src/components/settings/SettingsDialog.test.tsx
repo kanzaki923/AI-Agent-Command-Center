@@ -7,6 +7,15 @@ import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
 import { TooltipProvider } from '../ui/Tooltip';
 import { connectionStatus, SettingsDialog } from './SettingsDialog';
+import {
+  cacheShare,
+  costPerMTok,
+  dayLabel,
+  dayParts,
+  formatSpend,
+  formatTokens,
+  seriesColors,
+} from './UsageStats';
 import { parseUsd } from './controls';
 
 const VIEW: SettingsView = {
@@ -123,6 +132,8 @@ const openDetails = async () => {
 beforeEach(() => {
   useUi.setState({
     settingsOpen: true,
+    settingsTab: 'general',
+    usageView: 'chart',
     shortcutsOpen: false,
     theme: 'dark',
     reduceMotion: 'system',
@@ -142,6 +153,67 @@ describe('parseUsd', () => {
     expect(parseUsd('-1')).toBeUndefined();
     expect(parseUsd('101', { max: 100 })).toBeUndefined();
     expect(parseUsd('abc')).toBeUndefined();
+  });
+});
+
+describe('cacheShare', () => {
+  it('is the percent of the logged input read from the prompt cache, none without logged calls', () => {
+    expect(cacheShare({ inputTokens: 1000, readTokens: 616, writeTokens: 0 })).toBe(62);
+    expect(cacheShare({ inputTokens: 500, readTokens: 0, writeTokens: 0 })).toBe(0);
+    expect(cacheShare(null)).toBeNull();
+  });
+
+  it('writes tokens short and a day as month/day', () => {
+    expect(formatTokens(950)).toBe('950');
+    expect(formatTokens(12_340)).toBe('12k');
+    expect(formatTokens(4_500_000)).toBe('4.5M');
+    expect(dayLabel('2026-10-02')).toBe('10/2');
+  });
+
+  it('gives the four biggest spenders a colour each and folds the rest of a day into その他', () => {
+    const row = (model: string, usd: number) => ({
+      model,
+      usd,
+      estimated: false,
+      inputTokens: 1,
+      outputTokens: 1,
+      calls: 0,
+      failedCalls: 0,
+      prefixBreaks: 0,
+      cache: null,
+    });
+    const colors = seriesColors([row('a', 1), row('b', 5), row('c', 3), row('d', 2), row('e', 0.5), row('plan', 0)]);
+    expect([...colors]).toEqual([
+      ['b', 'var(--series-1)'],
+      ['c', 'var(--series-2)'],
+      ['d', 'var(--series-3)'],
+      ['a', 'var(--series-4)'],
+    ]);
+    const day = {
+      day: '2026-10-31',
+      usd: 3,
+      inputTokens: 0,
+      outputTokens: 0,
+      models: [
+        { model: 'a', usd: 1 },
+        { model: 'e', usd: 0.5 },
+        { model: 'b', usd: 1.5 },
+      ],
+    };
+    expect(dayParts(day, colors).map((p) => [p.model, p.usd])).toEqual([
+      ['b', 1.5],
+      ['a', 1],
+      ['その他', 0.5],
+    ]);
+  });
+
+  it('writes spend with two decimals so the points line up, and what 1M tokens cost', () => {
+    expect(formatSpend(0)).toBe('$0.00');
+    expect(formatSpend(0.001, true)).toBe('<$0.01');
+    expect(formatSpend(8.2, true)).toBe('≈$8.20');
+    expect(formatSpend(1234.5)).toBe('$1,234.50');
+    expect(costPerMTok({ usd: 3, inputTokens: 900_000, outputTokens: 100_000 })).toBe(3);
+    expect(costPerMTok({ usd: 0, inputTokens: 900_000, outputTokens: 0 })).toBeNull();
   });
 });
 
@@ -335,18 +407,12 @@ describe('<SettingsDialog> モデル', () => {
   const MODELS = {
     'models.list': () => ({
       models: [
-        { id: 'anthropic/claude-sonnet-5-5', label: 'Claude Sonnet 5.5', provider: 'anthropic', runUsd: 0.48 },
-        { id: 'gemini-3-pro', label: null, provider: 'litellm', runUsd: null },
-        { id: 'openai/gpt-6-luna', label: 'GPT-6 Luna', provider: 'chatgpt', runUsd: 0 },
-        { id: 'anthropic/claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'anthropic', runUsd: 0.96 },
+        { id: 'anthropic/claude-sonnet-5-5', label: 'Claude Sonnet 5.5', provider: 'anthropic', price: { inputPerMTok: 3, outputPerMTok: 15 } },
+        { id: 'gemini-3-pro', label: null, provider: 'litellm', price: null },
+        { id: 'openai/gpt-6-luna', label: 'GPT-6 Luna', provider: 'chatgpt', price: null },
+        { id: 'anthropic/claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'anthropic', price: { inputPerMTok: 5, outputPerMTok: 25 } },
       ],
       source: 'providers',
-    }),
-    'cost.summary': () => ({
-      totalUsd: 3.2,
-      estimated: false,
-      rows: [{ key: 'anthropic/claude-sonnet-5-5', label: 'anthropic/claude-sonnet-5-5', usd: 3.2, estimated: false }],
-      daily: { limitUsd: 20, usedTodayUsd: 0 },
     }),
   };
 
@@ -357,7 +423,7 @@ describe('<SettingsDialog> モデル', () => {
     return screen.findByTestId('model-roster');
   };
 
-  it('sums the roster up, and shows each row with the cost of a run and of the last 30 days', async () => {
+  it('sums the roster up, and shows each row with its list price per 1M tokens', async () => {
     mount(ROSTER, MODELS);
     await waitFor(() =>
       expect(screen.getByTestId('roster-summary')).toHaveTextContent('gpt-6-luna ほか 2'),
@@ -366,9 +432,13 @@ describe('<SettingsDialog> モデル', () => {
     const rows = await screen.findAllByTestId('roster-row');
     expect(rows).toHaveLength(2);
     expect(rows[0]).toHaveTextContent('Claude Sonnet 5.5');
-    await waitFor(() => expect(rows[0]).toHaveTextContent('約 $0.48/回'));
-    await waitFor(() => expect(rows[0]).toHaveTextContent('30 日 $3.20'));
+    // Input and output: two right-aligned cells with two decimals, so the points line up.
+    await waitFor(() => expect(rows[0]).toHaveTextContent('$3.00$15.00'));
+    expect(within(rows[0]!).getByTestId('roster-cost').children).toHaveLength(2);
+    // What was spent is not a setting: it lives under 利用統計.
+    expect(rows[0]).not.toHaveTextContent('30 日');
     expect(rows[1]).toHaveTextContent('—');
+    expect(within(rows[1]!).getByTestId('roster-cost').children).toHaveLength(1);
     expect(screen.getByTestId('roster-otherwise')).toHaveTextContent('GPT-6 Luna');
     expect(screen.getByTestId('roster-otherwise')).toHaveTextContent('契約枠');
   });
@@ -433,6 +503,145 @@ describe('<SettingsDialog> モデル', () => {
       fireEvent.click(screen.getByRole('button', { name: '1 番目を外す' }));
     });
     expect((updates.at(-1) as { modelRules: unknown[] }).modelRules).toHaveLength(2);
+  });
+});
+
+describe('<SettingsDialog> 利用統計', () => {
+  const STATS = {
+    'usage.stats': (p: Record<string, unknown>) => ({
+      totalUsd: p.range === '30d' ? 3.2 : 0,
+      estimated: false,
+      rows:
+        p.range === '30d'
+          ? [
+              {
+                model: 'anthropic/claude-sonnet-5-5',
+                usd: 3.2,
+                estimated: false,
+                inputTokens: 120_000,
+                outputTokens: 4_200,
+                calls: 31,
+                failedCalls: 0,
+                prefixBreaks: 2,
+                cache: { inputTokens: 120_000, readTokens: 90_000, writeTokens: 8_000 },
+              },
+              {
+                model: 'claude-sonnet-5',
+                usd: 1.1,
+                estimated: true,
+                inputTokens: 40_000,
+                outputTokens: 900,
+                calls: 0,
+                failedCalls: 0,
+                prefixBreaks: 0,
+                cache: null,
+              },
+              {
+                model: 'openai/gpt-6-luna',
+                usd: 0,
+                estimated: false,
+                inputTokens: 900_000,
+                outputTokens: 40_000,
+                calls: 80,
+                failedCalls: 0,
+                prefixBreaks: 0,
+                cache: { inputTokens: 900_000, readTokens: 600_000, writeTokens: 0 },
+              },
+            ]
+          : [],
+      days:
+        p.range === '30d'
+          ? [
+              { day: '2026-10-29', usd: 0, inputTokens: 0, outputTokens: 0, models: [] },
+              {
+                day: '2026-10-30',
+                usd: 1.2,
+                inputTokens: 100_000,
+                outputTokens: 4_000,
+                models: [{ model: 'claude-sonnet-5', usd: 1.1 }, { model: 'anthropic/claude-sonnet-5-5', usd: 0.1 }],
+              },
+              {
+                day: '2026-10-31',
+                usd: 3.1,
+                inputTokens: 60_000,
+                outputTokens: 1_100,
+                models: [{ model: 'anthropic/claude-sonnet-5-5', usd: 3.1 }],
+              },
+            ]
+          : [],
+    }),
+    'models.list': () => ({
+      models: [{ id: 'openai/gpt-6-luna', label: 'GPT-6 Luna', provider: 'chatgpt', price: null }],
+      source: 'providers',
+    }),
+  };
+
+  const width = (bar: HTMLElement, part: string) =>
+    (bar.querySelector(`[data-part="${part}"]`) as HTMLElement).style.width;
+
+  it('is its own tab with spend first: per day, then per model beside its tokens', async () => {
+    mount(VIEW, STATS);
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('tab', { name: '利用統計' }));
+    });
+    expect(screen.queryByText('1 日の上限')).toBeNull();
+    const bars = await screen.findAllByTestId('usage-bar');
+    expect(screen.getByTestId('usage-total')).toHaveTextContent('$3.20');
+    // Most spend first; each bar on its own scale.
+    expect(bars[0]).toHaveTextContent('sonnet');
+    expect(bars[0]).toHaveTextContent('$3.20');
+    expect(bars[0]).toHaveTextContent('124k');
+    expect(width(bars[0]!, 'spend')).toBe('max(2px, 100%)');
+    expect(bars[1]).toHaveTextContent('≈$1.10');
+    // A plan: no spend bar, the longest tokens bar, and 契約枠 instead of $0.
+    await waitFor(() => expect(bars[2]).toHaveTextContent('契約枠'));
+    expect(width(bars[2]!, 'spend')).toBe('0px');
+    expect(width(bars[2]!, 'tokens')).toBe('max(2px, 100%)');
+    expect(screen.getByTestId('usage-legend')).toHaveTextContent('費用トークン');
+    // A model has one colour: its swatch, its spend bar and its part of the days.
+    const swatch = (bar: HTMLElement) => within(bar).getByTestId<HTMLElement>('usage-swatch').style.background;
+    expect(swatch(bars[0]!)).toBe('var(--series-1)');
+    expect(swatch(bars[1]!)).toBe('var(--series-2)');
+    expect(swatch(bars[2]!)).toBe('transparent');
+    // Spend per day, stacked by model (the first series at the base); the peak is labelled.
+    const columns = screen.getAllByTestId('usage-day');
+    expect(columns[0]!.children).toHaveLength(0);
+    expect([...columns[1]!.children].map((c) => c.getAttribute('data-part'))).toEqual([
+      'anthropic/claude-sonnet-5-5',
+      'claude-sonnet-5',
+    ]);
+    const days = screen.getByTestId('usage-days');
+    expect(days).toHaveTextContent('$3.10');
+    expect(days).toHaveTextContent('10/29');
+    expect(days).toHaveTextContent('10/31');
+    expect(screen.getByRole('radio', { name: 'グラフ' })).toBeChecked();
+  });
+
+  it('shows the figures as a table on request, and remembers that', async () => {
+    mount(VIEW, STATS);
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('tab', { name: '利用統計' }));
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('radio', { name: '表' }));
+    });
+    expect(useUi.getState().usageView).toBe('table');
+    const rows = await screen.findAllByTestId('usage-row');
+    expect(rows[0]).toHaveTextContent('sonnet');
+    expect(rows[0]).toHaveTextContent('$3.20');
+    expect(rows[0]).toHaveTextContent('31');
+    expect(rows[0]).toHaveTextContent('120k');
+    // $3.20 for 124.2k tokens.
+    expect(within(rows[0]!).getByTestId('usage-per-m')).toHaveTextContent('$25.76');
+    expect(within(rows[0]!).getByTestId('usage-cache')).toHaveTextContent('75%!');
+    // An agent's model: its calls are Claude Code's, not counted here.
+    expect(rows[1]).toHaveTextContent('≈$1.10');
+    expect(within(rows[1]!).getByTestId('usage-cache')).toHaveTextContent('—');
+    expect(within(rows[2]!).getByTestId('usage-per-m')).toHaveTextContent('—');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('radio', { name: '今日' }));
+    });
+    expect(await screen.findByText('この期間はまだ使っていません')).toBeInTheDocument();
   });
 });
 

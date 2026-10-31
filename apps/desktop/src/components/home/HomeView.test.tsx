@@ -453,9 +453,9 @@ describe('<HomeView>', () => {
       'settings.get': () => ({ defaultModel: 'openai/gpt-6.1-sol', modelRules: [{ model: 'openai/gpt-6-luna', when: '調べもの' }] }),
       'models.list': () => ({
         models: [
-          { id: 'openai/gpt-6.1-sol', label: 'GPT-6.1-Sol', provider: 'chatgpt', runUsd: 0 },
-          { id: 'openai/gpt-6-luna', label: 'GPT-6-Luna', provider: 'chatgpt', runUsd: 0 },
-          { id: 'openai/gpt-6-astra', label: 'GPT-6-Astra', provider: 'chatgpt', runUsd: 0 },
+          { id: 'openai/gpt-6.1-sol', label: 'GPT-6.1-Sol', provider: 'chatgpt', price: null },
+          { id: 'openai/gpt-6-luna', label: 'GPT-6-Luna', provider: 'chatgpt', price: null },
+          { id: 'openai/gpt-6-astra', label: 'GPT-6-Astra', provider: 'chatgpt', price: null },
         ],
         source: 'providers',
       }),

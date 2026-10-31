@@ -63,6 +63,8 @@ export class UsageLedger implements LedgerService {
         cost_micro: micro,
         input_tokens: input,
         output_tokens: output,
+        cache_read_tokens: entry.cacheReadTokens ?? 0,
+        cache_write_tokens: entry.cacheWriteTokens ?? 0,
         source: entry.source,
       });
       if (session) this.addToSessions(session.id, micro, entry.source);

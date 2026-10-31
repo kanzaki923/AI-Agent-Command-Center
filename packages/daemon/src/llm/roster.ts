@@ -1,7 +1,6 @@
 import type { Actor, ModelRule, Settings } from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
 import { invalidParams } from '../core/errors';
-import { typicalRunUsd } from './autoModel';
 import { providerOf } from './gateway';
 import type { ModelPricing } from './types';
 
@@ -56,29 +55,31 @@ export function assertRosterModel(
   }
 }
 
-/** USD of a typical run, 0 on a ChatGPT plan, null when the price is unknown. */
-export function runUsdOf(
+/** List price per 1M tokens, `plan` on a ChatGPT plan (or offline), null when unknown. */
+export function priceOf(
   s: Settings,
   model: string,
   pricing: ((model: string) => (ModelPricing & { basis?: string }) | null) | null,
-): number | null {
+): ModelPricing | 'plan' | null {
   const provider = providerOf(model);
-  if (provider === 'mock') return 0;
-  if (provider === 'openai' && s.providers.openai.chatgpt) return 0;
+  if (provider === 'mock') return 'plan';
+  if (provider === 'openai' && s.providers.openai.chatgpt) return 'plan';
   const price = pricing?.(model) ?? null;
   if (!price || price.basis === 'fallback') return null;
-  return typicalRunUsd(price);
+  return { inputPerMTok: price.inputPerMTok, outputPerMTok: price.outputPerMTok };
 }
 
-function costLabel(usd: number | null): string {
-  if (usd === null) return 'cost unknown';
-  if (usd === 0) return 'no cost per call (plan or offline)';
-  return `about $${usd < 0.1 ? usd.toFixed(3) : usd.toFixed(2)} per typical run`;
+const usd = (n: number) => `$${Number(n.toFixed(3))}`;
+
+function costLabel(price: ModelPricing | 'plan' | null): string {
+  if (price === null) return 'price unknown';
+  if (price === 'plan') return 'no cost per call (plan or offline)';
+  return `${usd(price.inputPerMTok)} in / ${usd(price.outputPerMTok)} out per 1M tokens`;
 }
 
 /**
  * The roster for a system prompt (the assistant's and a supervisor's): numbered rows with
- * their "when", the cost of a typical run and whether an agent can use the model. Changes
+ * their "when", the list price per 1M tokens and whether an agent can use the model. Changes
  * only when the settings do, so it stays inside the cacheable prefix.
  */
 export function rosterPromptBlock(
@@ -88,11 +89,11 @@ export function rosterPromptBlock(
   const rules: ModelRule[] = s.modelRules;
   if (rules.length === 0 && !s.defaultModel) return null;
   const row = (model: string) =>
-    `${costLabel(runUsdOf(s, model, pricing))}; agent: ${agentCanUse(s, model) ? 'yes' : 'no'}`;
+    `${costLabel(priceOf(s, model, pricing))}; agent: ${agentCanUse(s, model) ? 'yes' : 'no'}`;
   const lines = [
     'Models (the person set this list; only these may be used)',
     '- For each piece of work you start, go down the list and take the model of the first row whose "when" fits; pass it as `model`. When no row fits, pass no model: the last row is used.',
-    '- Skip a row whose typical run would not fit in the budget the piece gets; take the next one that fits.',
+    '- A piece reads far more tokens than it writes. When its budget is small, skip a row whose price would not fit and take the next one that does.',
     '- A piece done by an agent (mode agent, or a workspace) needs a model with "agent: yes".',
   ];
   rules.forEach((r, i) => {

@@ -1,11 +1,24 @@
-import { type ContentPart, EMPTY_USAGE, type RunStopReason, type Usage } from '@acc/protocol';
+import {
+  type ContentPart,
+  EMPTY_USAGE,
+  type LlmCallRole,
+  type RunStopReason,
+  type Usage,
+} from '@acc/protocol';
 import type { ApprovalRequest, RunController } from '../contracts';
 import type { DaemonContext } from '../core/context';
 import { ApiError } from '../core/errors';
-import type { LlmGateway } from './gateway';
+import type { LlmCallInput } from '../cost/calls';
+import { type LlmGateway, providerOf } from './gateway';
 import { stringifyToolOutput } from './messages';
 import { type LoopTool, methodForToolName } from './tools';
-import { type ChatMessage, type ChatToolCall, abortError, isAbortError } from './types';
+import {
+  type ChatMessage,
+  type ChatToolCall,
+  LlmError,
+  abortError,
+  isAbortError,
+} from './types';
 
 export interface ToolLoopOptions {
   ctx: DaemonContext;
@@ -63,6 +76,14 @@ export function addUsage(a: Usage, b: Partial<Usage>): Usage {
     costUsd: a.costUsd + (b.costUsd ?? 0),
     costSource: b.costSource ?? a.costSource,
   };
+}
+
+/** Who made a call, for the call log: the assistant, a supervisor or a conversation. */
+function callRole(ctx: DaemonContext, ctl: RunController): LlmCallRole {
+  if (ctx.hasService('assistant') && ctx.service('assistant').isAssistant(ctl.run.sessionId)) {
+    return 'assistant';
+  }
+  return ctl.run.kind === 'orchestrator' ? 'supervisor' : 'chat';
 }
 
 /** Same tool calls or same text this many replies in a row → loop_detected. */
@@ -191,6 +212,26 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
     let partial = '';
     ctl.setActivity(turn === 0 ? '応答を生成しています' : 'ツールの結果をもとに考えています');
     let result;
+    const startedAt = ctx.clock.now();
+    let firstTokenAt: number | null = null;
+    // A snapshot: the loop adds to `messages` after the call.
+    const sent = [...messages];
+    const logCall = (call: Pick<LlmCallInput, 'status' | 'usage'> & Partial<LlmCallInput>) =>
+      ctx.hasService('callLog') &&
+      ctx.service('callLog').record({
+        runId: ctl.run.id,
+        sessionId: ctl.run.sessionId,
+        role: callRole(ctx, ctl),
+        turn,
+        model,
+        provider: providerOf(model),
+        startedAt,
+        endedAt: ctx.clock.now(),
+        firstTokenAt,
+        messages: sent,
+        tools: specs,
+        ...call,
+      });
     try {
       result = await gateway.complete(
         {
@@ -202,13 +243,27 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
         {
           signal: ctl.signal,
           onText: (t) => {
+            firstTokenAt ??= ctx.clock.now();
             partial += t;
             ctl.emitDelta(messageId, t);
           },
-          onReasoning: (t) => ctl.emitDelta(messageId, t, 'reasoning'),
+          onReasoning: (t) => {
+            firstTokenAt ??= ctx.clock.now();
+            ctl.emitDelta(messageId, t, 'reasoning');
+          },
         },
       );
     } catch (err) {
+      logCall({
+        status: isAbortError(err) || ctl.signal.aborted ? 'cancelled' : 'error',
+        errorCode:
+          err instanceof ApiError || err instanceof LlmError
+            ? err.code
+            : err instanceof Error
+              ? err.name
+              : 'error',
+        usage: null,
+      });
       // No usage was reported for a failed call: free the reservation.
       hold.cancel();
       // Keep what the user already saw streaming (e.g. cancelled mid-reply).
@@ -222,6 +277,7 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
       }
       throw err;
     }
+    logCall({ status: 'ok', usage: result.usage, finishReason: result.finishReason });
     hold.settle(result.usage);
     usage = addUsage(usage, result.usage);
     text = result.text;

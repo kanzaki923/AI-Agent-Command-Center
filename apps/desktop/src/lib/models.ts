@@ -1,3 +1,5 @@
+import type { ModelInfo } from '@acc/protocol';
+
 /** `anthropic/claude-sonnet-4-5` -> `sonnet`, `openai/gpt-6-luna` -> `gpt-6-luna` (compact label). */
 export function shortModel(model: string | null | undefined): string {
   if (!model) return '';
@@ -12,4 +14,30 @@ export function relativeCost(id: string): string {
   if (/opus|gpt-5(?!-mini)|o1|o3(?!-mini)|ultra/.test(s)) return '$$$';
   if (/haiku|mini|flash|nano|mock|lite|small/.test(s)) return '$';
   return '$$';
+}
+
+/** What a list price is per (the tooltip of the price columns). */
+export const PRICE_UNIT = '100 万トークンあたりの値段';
+
+/**
+ * `$0.10` / `$2.00` / `$10.00`: always two decimals, so right-aligned figures line up on
+ * the point (three only below a cent, which list prices hardly are).
+ */
+export function priceUsd(n: number): string {
+  return `$${n > 0 && n < 0.01 ? n.toFixed(3) : n.toFixed(2)}`;
+}
+
+/** Input and output price per 1M tokens, or null on a ChatGPT plan or when unknown. */
+export function priceParts(
+  info: Pick<ModelInfo, 'provider' | 'price'> | undefined,
+): [string, string] | null {
+  if (info?.provider === 'chatgpt' || !info?.price) return null;
+  return [priceUsd(info.price.inputPerMTok), priceUsd(info.price.outputPerMTok)];
+}
+
+/** `$2.00 / $10.00` (per 1M tokens, input / output), `契約枠` on a ChatGPT plan, `—` unknown. */
+export function priceText(info: Pick<ModelInfo, 'provider' | 'price'> | undefined): string {
+  if (info?.provider === 'chatgpt') return '契約枠';
+  const parts = priceParts(info);
+  return parts ? `${parts[0]} / ${parts[1]}` : '—';
 }

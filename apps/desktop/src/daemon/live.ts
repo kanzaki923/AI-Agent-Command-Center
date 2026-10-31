@@ -232,7 +232,10 @@ export function createLiveViews(qc: QueryClient, opts: LiveViewsOptions = {}) {
         case 'session.cost_updated':
         case 'cost.limit_reached':
         case 'settings.updated':
-          debounce('cost', slowMs, () => void qc.invalidateQueries({ queryKey: ['cost.summary'] }));
+          debounce('cost', slowMs, () => {
+            void qc.invalidateQueries({ queryKey: ['cost.summary'] });
+            void qc.invalidateQueries({ queryKey: ['usage.stats'] });
+          });
           break;
         default:
           break;

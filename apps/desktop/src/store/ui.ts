@@ -1,6 +1,11 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
+/** Tabs of the settings dialog: what to set, and what was used. */
+export type SettingsTab = 'general' | 'usage';
+/** How 利用統計 shows the use: bars, or a table of the figures. */
+export type UsageView = 'chart' | 'table';
+
 /** The three screens (ui-redesign spec §2): home (the app's face), one conversation, the timeline. */
 export type Mode = 'home' | 'session' | 'timeline';
 export type ThemePref = 'dark' | 'light' | 'system';
@@ -40,6 +45,10 @@ export interface UiState {
   paletteQuery: string;
   palettePages: string[];
   settingsOpen: boolean;
+  /** Tab of the settings dialog (back to 一般 when it closes). */
+  settingsTab: SettingsTab;
+  /** Chart or table under 利用統計 (kept). */
+  usageView: UsageView;
   shortcutsOpen: boolean;
   modelPickerOpen: boolean;
   theme: ThemePref;
@@ -116,7 +125,10 @@ interface UiActions {
   setPaletteQuery: (q: string) => void;
   pushPalettePage: (page: string) => void;
   popPalettePage: () => void;
-  setSettingsOpen: (open: boolean) => void;
+  /** Open (on a tab) or close the settings dialog. */
+  setSettingsOpen: (open: boolean, tab?: SettingsTab) => void;
+  setSettingsTab: (tab: SettingsTab) => void;
+  setUsageView: (view: UsageView) => void;
   setShortcutsOpen: (open: boolean) => void;
   setModelPickerOpen: (open: boolean) => void;
   setTheme: (t: ThemePref) => void;
@@ -171,6 +183,8 @@ const initial: UiState = {
   paletteQuery: '',
   palettePages: [],
   settingsOpen: false,
+  settingsTab: 'general',
+  usageView: 'chart',
   shortcutsOpen: false,
   modelPickerOpen: false,
   theme: 'dark',
@@ -320,7 +334,10 @@ export const createUiStore = () =>
         setPaletteQuery: (paletteQuery) => set({ paletteQuery }),
         pushPalettePage: (page) => set((s) => ({ palettePages: [...s.palettePages, page], paletteQuery: '' })),
         popPalettePage: () => set((s) => ({ palettePages: s.palettePages.slice(0, -1), paletteQuery: '' })),
-        setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
+        setSettingsOpen: (settingsOpen, tab) =>
+          set({ settingsOpen, settingsTab: tab ?? (settingsOpen ? get().settingsTab : 'general') }),
+        setSettingsTab: (settingsTab) => set({ settingsTab }),
+        setUsageView: (usageView) => set({ usageView }),
         setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
         setModelPickerOpen: (modelPickerOpen) => set({ modelPickerOpen }),
         setTheme: (theme) => set({ theme }),
@@ -440,6 +457,7 @@ export const createUiStore = () =>
           suggestions: s.suggestions,
           notifyOs: s.notifyOs,
           notifyInApp: s.notifyInApp,
+          usageView: s.usageView,
         }),
       },
     ),

@@ -43,6 +43,16 @@
   --st-stopped: #8a8f98;
   --st-idle: #5d616a;
 
+  /*
+   * Chart series (利用統計): categorical, assigned in this order and never cycled; a fifth
+   * series folds into その他 (--text-tertiary). Stepped for each surface and validated
+   * (CVD and contrast) with the dataviz validator.
+   */
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+
   --shadow-1: none;
   --shadow-2: 0 8px 24px rgb(0 0 0 / 0.45);
   --shadow-3: 0 24px 64px rgb(0 0 0 / 0.6);
@@ -98,6 +108,11 @@
   --st-done: #17804a;
   --st-stopped: #6b7079;
   --st-idle: #a2a5ac;
+
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
 
   --shadow-1: 0 1px 2px rgb(0 0 0 / 0.04);
   --shadow-2: 0 8px 24px rgb(0 0 0 / 0.1), 0 0 0 1px rgb(0 0 0 / 0.06);

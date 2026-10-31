@@ -2,6 +2,7 @@ import type { CostSource, Usage } from '@acc/protocol';
 import { errorBody, fetchSse, parseJson, redactSecrets, retrying, str } from './http';
 import type { RetryOptions } from './openai';
 import { type ModelPrice, costOf } from './pricing';
+import { cacheCounts } from './usage';
 import {
   type ChatRequest,
   type ChatToolCall,
@@ -317,7 +318,7 @@ export class ResponsesStreamAccumulator {
     const outputTokens = n(this.usage?.output_tokens);
     const cached = Math.min(inputTokens, n(this.usage?.input_tokens_details?.cached_tokens));
     if (this.auth === 'chatgpt') {
-      return { inputTokens, outputTokens, costUsd: 0, costSource: 'reported' };
+      return { inputTokens, outputTokens, ...cacheCounts(cached), costUsd: 0, costSource: 'reported' };
     }
     let costUsd = 0;
     let costSource: CostSource = 'unknown';
@@ -335,7 +336,7 @@ export class ResponsesStreamAccumulator {
       );
       costSource = 'estimated';
     }
-    return { inputTokens, outputTokens, costUsd, costSource };
+    return { inputTokens, outputTokens, ...cacheCounts(cached), costUsd, costSource };
   }
 }
 

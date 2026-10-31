@@ -3,6 +3,7 @@ import type { AgentEvent } from '../../contracts';
 import { asRecord, asString, describeToolActivity } from '../tools';
 import { describeGatewayError, gatewayErrorHint } from '../../llm/gatewayErrors';
 import { type ModelPrice, costOf } from '../../llm/pricing';
+import { cacheCounts } from '../../llm/usage';
 
 /**
  * Claude Agent SDK message stream -> AgentEvent (see
@@ -15,8 +16,17 @@ export interface UsageTotals {
   inputTokens: number;
   outputTokens: number;
   costUsd: number;
+  /** Parts of inputTokens from the prompt cache; absent when the baseline is not known. */
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
 }
-export const ZERO_TOTALS: UsageTotals = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+export const ZERO_TOTALS: UsageTotals = {
+  inputTokens: 0,
+  outputTokens: 0,
+  costUsd: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+};
 
 /**
  * `code` of a failed turn: `budget_exceeded` (the `maxBudgetUsd` cap stopped it) and
@@ -36,6 +46,8 @@ interface CallUsage {
   sentMicro: number;
   sentIn: number;
   sentOut: number;
+  sentRead: number;
+  sentWrite: number;
 }
 
 const RESULT_ERRORS: Record<string, string> = {
@@ -533,6 +545,8 @@ export class ClaudeMessageNormalizer {
       sentMicro: 0,
       sentIn: 0,
       sentOut: 0,
+      sentRead: 0,
+      sentWrite: 0,
     };
     this.calls.set(id, c);
     // The same counts repeat on every content block's message: keep the largest seen.
@@ -556,11 +570,15 @@ export class ClaudeMessageNormalizer {
       micro: costMicro - c.sentMicro,
       input: inTok - c.sentIn,
       output: c.output - c.sentOut,
+      read: c.cacheRead - c.sentRead,
+      write: c.cacheWrite - c.sentWrite,
     };
     if (d.micro <= 0 && d.input <= 0 && d.output <= 0) return [];
     c.sentMicro = Math.max(c.sentMicro, costMicro);
     c.sentIn = Math.max(c.sentIn, inTok);
     c.sentOut = Math.max(c.sentOut, c.output);
+    c.sentRead = Math.max(c.sentRead, c.cacheRead);
+    c.sentWrite = Math.max(c.sentWrite, c.cacheWrite);
     return [
       {
         type: 'usage',
@@ -568,6 +586,7 @@ export class ClaudeMessageNormalizer {
         usage: {
           inputTokens: Math.max(0, d.input),
           outputTokens: Math.max(0, d.output),
+          ...cacheCounts(d.read, d.write),
           costUsd: Math.max(0, d.micro) / 1_000_000,
           costSource: 'estimated',
         },
@@ -642,24 +661,34 @@ export class ClaudeMessageNormalizer {
     const modelUsage = asRecord(msg.modelUsage);
     let input = 0;
     let output = 0;
+    let read = 0;
+    let write = 0;
     const entries = modelUsage ? Object.values(modelUsage) : [];
     if (entries.length > 0) {
       for (const raw of entries) {
         const u = asRecord(raw);
         if (!u) continue;
-        input += num(u.inputTokens) + num(u.cacheReadInputTokens) + num(u.cacheCreationInputTokens);
+        read += num(u.cacheReadInputTokens);
+        write += num(u.cacheCreationInputTokens);
+        input += num(u.inputTokens);
         output += num(u.outputTokens);
       }
     } else {
       const u = asRecord(msg.usage);
-      input =
-        num(u?.input_tokens) +
-        num(u?.cache_read_input_tokens) +
-        num(u?.cache_creation_input_tokens);
+      read = num(u?.cache_read_input_tokens);
+      write = num(u?.cache_creation_input_tokens);
+      input = num(u?.input_tokens);
       output = num(u?.output_tokens);
     }
+    input += read + write;
     const cost = num(msg.total_cost_usd);
-    const next: UsageTotals = { inputTokens: input, outputTokens: output, costUsd: cost };
+    const next: UsageTotals = {
+      inputTokens: input,
+      outputTokens: output,
+      costUsd: cost,
+      cacheReadTokens: read,
+      cacheWriteTokens: write,
+    };
     const zeroed = next.inputTokens === 0 && next.outputTokens === 0 && next.costUsd === 0;
     const failed = msg.subtype !== 'success' || msg.is_error === true;
     // A zeroed error result says nothing about the session's totals: keep the baseline.
@@ -675,13 +704,22 @@ export class ClaudeMessageNormalizer {
     };
     this.totals = next;
     if (delta.inputTokens === 0 && delta.outputTokens === 0 && delta.costUsd === 0) return null;
+    // Cache counts only against a known baseline (totals restored after a restart have none):
+    // otherwise the estimates of this run stand.
+    const cache =
+      prev.cacheReadTokens !== undefined && prev.cacheWriteTokens !== undefined
+        ? {
+            cacheReadTokens: Math.max(0, Math.round(read - prev.cacheReadTokens)),
+            cacheWriteTokens: Math.max(0, Math.round(write - prev.cacheWriteTokens)),
+          }
+        : {};
     return {
       type: 'usage',
       // Replaces this run's estimates (the CLI's totals cover every call of the query).
       phase: 'final',
       // The CLI prices tokens with its own table (an estimate, not a bill). "unknown" when it
       // had no price for a model (e.g. a gateway alias): costUSD is then a guess.
-      usage: { ...delta, costSource: costSourceOf(entries) },
+      usage: { ...delta, ...cache, costSource: costSourceOf(entries) },
     };
   }
 

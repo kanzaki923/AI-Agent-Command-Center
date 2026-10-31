@@ -43,6 +43,8 @@ export function backfillLedgerFromRuns(ctx: DaemonContext): number {
         cost_micro: toMicro(run.usage.costUsd),
         input_tokens: run.usage.inputTokens,
         output_tokens: run.usage.outputTokens,
+        cache_read_tokens: run.usage.cacheReadTokens ?? 0,
+        cache_write_tokens: run.usage.cacheWriteTokens ?? 0,
         source: run.usage.costSource,
       });
     }

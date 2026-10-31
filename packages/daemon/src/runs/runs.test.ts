@@ -567,6 +567,27 @@ describe('usage and budget', () => {
     expect(two).toMatchObject({ inputTokens: 11, costSource: 'estimated' });
     expect(two.costUsd).toBeCloseTo(0.15);
     expect(mergeUsage(two, { costSource: 'reported' }, false).costSource).toBe('estimated');
+    // Cache counts appear once reported and add up like the rest.
+    expect(two).not.toHaveProperty('cacheReadTokens');
+    const cached = mergeUsage(two, { inputTokens: 100, cacheReadTokens: 80 }, false);
+    expect(mergeUsage(cached, { inputTokens: 50, cacheReadTokens: 40, cacheWriteTokens: 10 }, false))
+      .toMatchObject({ inputTokens: 161, cacheReadTokens: 120, cacheWriteTokens: 10 });
+  });
+
+  it('books the cache counts of a chat call in the ledger', async () => {
+    d = await createTestDaemon();
+    d.ctx.service('llm').mock.chunkDelayMs = 0;
+    d.ctx.service('llm').mock.define('mock/cached', () => ({
+      text: 'はい',
+      usage: { inputTokens: 1000, cacheReadTokens: 900, cacheWriteTokens: 50 },
+    }));
+    const s = await d.call(HUMAN, 'session.create', { title: 'c', model: 'mock/cached' });
+    const sent = await d.call(HUMAN, 'session.send', { sessionId: s.id, content: 'やあ' });
+    const run = await d.ctx.service('runs').waitForEnd(sent.runId!);
+    expect(run.usage).toMatchObject({ inputTokens: 1000, cacheReadTokens: 900, cacheWriteTokens: 50 });
+    expect(
+      d.ctx.db.get('SELECT cache_read_tokens AS r, cache_write_tokens AS w FROM usage_ledger WHERE run_id = ?', [run.id]),
+    ).toEqual({ r: 900, w: 50 });
   });
 
   it('accumulates usage, records spend and stops the run when the budget is exhausted', async () => {

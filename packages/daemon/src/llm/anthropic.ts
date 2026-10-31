@@ -3,6 +3,7 @@ import { errorBody, fetchSse, parseJson, redactSecrets, retrying, str } from './
 import type { RetryOptions } from './openai';
 import { APP_NOTE_LABEL } from './messages';
 import { type ModelPrice, costOf } from './pricing';
+import { cacheCounts } from './usage';
 import {
   type ChatMessage,
   type ChatRequest,
@@ -306,7 +307,13 @@ export class AnthropicStreamAccumulator {
       });
       costSource = 'estimated';
     }
-    return { inputTokens, outputTokens: output, costUsd, costSource };
+    return {
+      inputTokens,
+      outputTokens: output,
+      ...cacheCounts(cacheRead, cacheWrite),
+      costUsd,
+      costSource,
+    };
   }
 }
 

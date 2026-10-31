@@ -108,6 +108,8 @@ describe.skipIf(!cli).concurrent('Claude Agent SDK contract (real CLI, fake API)
           usage: {
             inputTokens: 2000,
             outputTokens: 30,
+            cacheReadTokens: 800,
+            cacheWriteTokens: 0,
             costUsd: expect.any(Number) as number,
             costSource: 'estimated',
           },

@@ -62,6 +62,8 @@ describe('ClaudeMessageNormalizer (recorded streams)', () => {
       usage: {
         inputTokens: 2000,
         outputTokens: 30,
+        cacheReadTokens: 800,
+        cacheWriteTokens: 0,
         costUsd: expect.closeTo(0.00429, 9),
         costSource: 'estimated',
       },
@@ -71,6 +73,8 @@ describe('ClaudeMessageNormalizer (recorded streams)', () => {
       inputTokens: 2000,
       outputTokens: 30,
       costUsd: expect.closeTo(0.00429, 9),
+      cacheReadTokens: 800,
+      cacheWriteTokens: 0,
     });
   });
 
@@ -230,6 +234,8 @@ describe('ClaudeMessageNormalizer (recorded streams)', () => {
         usage: {
           inputTokens: 2000,
           outputTokens: 10,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
           costUsd: expect.closeTo(0.00615, 9),
           costSource: 'estimated',
         },
@@ -239,7 +245,17 @@ describe('ClaudeMessageNormalizer (recorded streams)', () => {
       inputTokens: 3000,
       outputTokens: 20,
       costUsd: expect.closeTo(0.0093, 9),
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
     });
+  });
+
+  it('leaves out cache counts against totals restored without them (after a restart)', () => {
+    const restored = { inputTokens: 1000, outputTokens: 10, costUsd: 0.003 };
+    const second = normalize(R.RESUME_SECOND, new ClaudeMessageNormalizer(CWD, restored));
+    const [final] = ofType(second.events, 'usage');
+    expect(final!.usage).not.toHaveProperty('cacheReadTokens');
+    expect(final!.usage).toMatchObject({ inputTokens: 2000 });
   });
 
   // Not recorded (needs a real sub-agent run): hand-written, minimal.

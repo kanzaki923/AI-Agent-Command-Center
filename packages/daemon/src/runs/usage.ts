@@ -45,9 +45,16 @@ export function mergeUsage(
         : cur.costSource;
   }
   const part = (v: number | undefined) => (signed ? (v ?? 0) : Math.max(0, v ?? 0));
+  const sum = (a: number | undefined, b: number | undefined) =>
+    Math.max(0, (a ?? 0) + Math.round(part(b)));
+  // The cache counts appear once a provider reports them (older usage has none).
+  const cache = (key: 'cacheReadTokens' | 'cacheWriteTokens') =>
+    cur[key] !== undefined || delta[key] !== undefined ? { [key]: sum(cur[key], delta[key]) } : {};
   return {
-    inputTokens: Math.max(0, cur.inputTokens + Math.round(part(delta.inputTokens))),
-    outputTokens: Math.max(0, cur.outputTokens + Math.round(part(delta.outputTokens))),
+    inputTokens: sum(cur.inputTokens, delta.inputTokens),
+    outputTokens: sum(cur.outputTokens, delta.outputTokens),
+    ...cache('cacheReadTokens'),
+    ...cache('cacheWriteTokens'),
     costUsd: Math.max(0, (micro(cur.costUsd) + micro(part(delta.costUsd))) / MICRO),
     costSource,
   };
@@ -80,6 +87,8 @@ interface PendingEstimate {
   costMicro: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
 }
 
 /**
@@ -129,10 +138,19 @@ export class UsageAccountant {
     if (opts.component === 'classifier') {
       this.book(a, { ...delta, costSource: delta.costSource ?? 'estimated' }, actor, 'classifier');
     } else if (opts.phase === 'estimate') {
-      const p = this.estimates.get(a) ?? { costMicro: 0, inputTokens: 0, outputTokens: 0 };
+      const p = this.estimates.get(a) ?? {
+        costMicro: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      };
+      const n = (v: number | undefined) => Math.max(0, Math.round(v ?? 0));
       p.costMicro += micro(Math.max(0, delta.costUsd ?? 0));
-      p.inputTokens += Math.max(0, Math.round(delta.inputTokens ?? 0));
-      p.outputTokens += Math.max(0, Math.round(delta.outputTokens ?? 0));
+      p.inputTokens += n(delta.inputTokens);
+      p.outputTokens += n(delta.outputTokens);
+      p.cacheReadTokens += n(delta.cacheReadTokens);
+      p.cacheWriteTokens += n(delta.cacheWriteTokens);
       this.estimates.set(a, p);
       this.book(a, { ...delta, costSource: delta.costSource ?? 'estimated' }, actor, base);
     } else {
@@ -150,6 +168,13 @@ export class UsageAccountant {
           {
             inputTokens: Math.round(delta.inputTokens ?? 0) - p.inputTokens,
             outputTokens: Math.round(delta.outputTokens ?? 0) - p.outputTokens,
+            // A final figure without cache counts leaves the estimated ones as they are.
+            ...(delta.cacheReadTokens !== undefined
+              ? { cacheReadTokens: Math.round(delta.cacheReadTokens) - p.cacheReadTokens }
+              : {}),
+            ...(delta.cacheWriteTokens !== undefined
+              ? { cacheWriteTokens: Math.round(delta.cacheWriteTokens) - p.cacheWriteTokens }
+              : {}),
             costUsd: cost / MICRO,
             ...(delta.costSource ? { costSource: delta.costSource } : {}),
           },
@@ -216,6 +241,8 @@ export class UsageAccountant {
           costUsd: clamp(delta.costUsd),
           inputTokens: clamp(delta.inputTokens),
           outputTokens: clamp(delta.outputTokens),
+          cacheReadTokens: clamp(delta.cacheReadTokens),
+          cacheWriteTokens: clamp(delta.cacheWriteTokens),
           source: delta.costSource ?? 'unknown',
         });
       }
