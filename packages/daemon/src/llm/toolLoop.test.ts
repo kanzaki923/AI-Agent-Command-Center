@@ -13,7 +13,7 @@ import { LOOP_REPEATS, RunStopError, runToolLoop } from './toolLoop';
 import type { LoopTool } from './tools';
 import type { ChatMessage, ChatRequest, ChatResult } from './types';
 
-type Reply = { text?: string; calls?: { name: string; args?: unknown }[] };
+type Reply = { text?: string; calls?: { name: string; args?: unknown }[]; finish?: string };
 
 function fakes(replies: (Reply | ((req: ChatRequest) => Reply))[]) {
   const requests: ChatRequest[] = [];
@@ -34,16 +34,21 @@ function fakes(replies: (Reply | ((req: ChatRequest) => Reply))[]) {
           arguments: JSON.stringify(c.args ?? {}),
         })),
         thinkingBlocks: [],
-        usage: EMPTY_USAGE,
-        finishReason: null,
+        usage: { ...EMPTY_USAGE, inputTokens: 100, costUsd: 0.01, costSource: 'reported' },
+        finishReason: r.finish ?? null,
       });
     },
   } as unknown as LlmGateway;
   const appended: unknown[] = [];
+  const settled: unknown[] = [];
   const ctl = {
     run: { id: 'run_1', sessionId: 'ses_1', kind: 'chat' },
     signal: new AbortController().signal,
-    reserveBudget: () => ({ amountUsd: 0, settle: () => undefined, cancel: () => undefined }),
+    reserveBudget: () => ({
+      amountUsd: 0,
+      settle: (u: unknown) => settled.push(u),
+      cancel: () => undefined,
+    }),
     setActivity: () => undefined,
     emitDelta: () => undefined,
     appendMessage: (m: unknown) => appended.push(m),
@@ -61,7 +66,7 @@ function fakes(replies: (Reply | ((req: ChatRequest) => Reply))[]) {
     parameters: { type: 'object' },
     execute: () => Promise.resolve({ ok: true }),
   });
-  return { gateway, ctl, ctx, requests, appended, tool };
+  return { gateway, ctl, ctx, requests, appended, settled, tool };
 }
 
 const user = (content: string): ChatMessage => ({ role: 'user', content });
@@ -202,6 +207,39 @@ describe('runToolLoop: daemon limits', () => {
       maxTurns: 5,
     });
     expect(off.stopReason).toBe('max_turns');
+  });
+});
+
+describe('runToolLoop: a refusal', () => {
+  const run = (f: ReturnType<typeof fakes>) =>
+    runToolLoop({
+      ctx: f.ctx,
+      ctl: f.ctl,
+      gateway: f.gateway,
+      model: 'm',
+      messages: [user('x')],
+      tools: [f.tool('a')],
+    });
+
+  it('fails the run with llm_refused instead of ending with an empty reply, and counts the cost', async () => {
+    const f = fakes([{ finish: 'content_filter' }]);
+    await expect(run(f)).rejects.toMatchObject({
+      name: 'LlmError',
+      code: 'llm_refused',
+      message: expect.stringContaining('断りました'),
+    });
+    expect(f.appended).toEqual([]);
+    expect(f.settled).toMatchObject([{ costUsd: 0.01 }]);
+    expect(f.requests).toHaveLength(1);
+  });
+
+  it('keeps what the model said before it stopped, and runs none of its tool calls', async () => {
+    const f = fakes([{ text: '途中まで', calls: [{ name: 'a' }], finish: 'content_filter' }]);
+    await expect(run(f)).rejects.toMatchObject({ code: 'llm_refused' });
+    expect(f.appended).toMatchObject([
+      { role: 'assistant', content: [{ type: 'text', text: '途中まで' }] },
+    ]);
+    expect(f.requests).toHaveLength(1);
   });
 });
 

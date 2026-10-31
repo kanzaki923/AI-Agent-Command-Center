@@ -42,6 +42,12 @@ interface WireMessage {
 }
 
 const CACHE = { cache_control: { type: 'ephemeral' } } as const;
+/** Anthropic's stop_reason → the finish reason every provider reports (OpenAI's words). */
+const FINISH_REASONS: Record<string, string> = {
+  tool_use: 'tool_calls',
+  max_tokens: 'length',
+  refusal: 'content_filter',
+};
 /** Blocks that may carry a cache mark (not thinking blocks). */
 const CACHEABLE = new Set(['text', 'tool_use', 'tool_result', 'image', 'document']);
 
@@ -272,14 +278,7 @@ export class AnthropicStreamAccumulator {
     if (this.thinking.length > 0) out.push({ type: 'thinking_blocks', blocks: this.thinking });
     for (const toolCall of this.calls) out.push({ type: 'tool_call', toolCall });
     out.push({ type: 'usage', usage: this.resolveUsage() });
-    const reason =
-      this.stopReason === 'tool_use'
-        ? 'tool_calls'
-        : this.stopReason === 'max_tokens'
-          ? 'length'
-          : this.stopReason === null
-            ? null
-            : 'stop';
+    const reason = this.stopReason === null ? null : (FINISH_REASONS[this.stopReason] ?? 'stop');
     out.push({ type: 'finish', reason });
     return out;
   }

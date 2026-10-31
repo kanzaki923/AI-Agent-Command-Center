@@ -94,6 +94,9 @@ const STOP_MESSAGES: Record<'turn_limit' | 'loop_detected', (n: number) => strin
   loop_detected: () => '同じ操作か同じ返事を繰り返していたため止めました',
 };
 
+const REFUSED_MESSAGE =
+  'モデルが安全上の判断で応答を断りました。内容や言い方を変えて、もう一度送ってください';
+
 /**
  * Thrown when the daemon stops a run on its own (turn limit, loop). `code` becomes the run's
  * statusReason and error code (runs/manager.ts).
@@ -281,6 +284,19 @@ export async function runToolLoop(opts: ToolLoopOptions): Promise<ToolLoopResult
     hold.settle(result.usage);
     usage = addUsage(usage, result.usage);
     text = result.text;
+    if (result.finishReason === 'content_filter') {
+      // A refusal otherwise ends the run as done with an empty reply: say so instead. Not
+      // retried (the same request is refused again); what it said before stopping is kept.
+      if (result.text) {
+        ctl.appendMessage({
+          id: messageId,
+          role: 'assistant',
+          content: [{ type: 'text', text: result.text }],
+          model,
+        });
+      }
+      throw new LlmError('llm_refused', REFUSED_MESSAGE);
+    }
 
     const calls = result.toolCalls.map((tc) => ({
       tc,

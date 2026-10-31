@@ -52,6 +52,10 @@ export type LlmStreamEvent =
   /** Reasoning blocks to send back with this turn (see ChatMessage.thinkingBlocks). */
   | { type: 'thinking_blocks'; blocks: unknown[] }
   | { type: 'usage'; usage: Usage }
+  /**
+   * OpenAI's words: `stop`, `length`, `tool_calls`, `content_filter` (the model refused, e.g.
+   * Anthropic's `refusal`), or what the provider sent.
+   */
   | { type: 'finish'; reason: string | null };
 
 export interface ChatResult {
@@ -93,7 +97,9 @@ export class LlmError extends Error {
       | 'llm_timeout'
       | 'llm_model_not_found'
       /** LiteLLM's own budget on the key / team / user is used up (not retried). */
-      | 'llm_quota_exceeded',
+      | 'llm_quota_exceeded'
+      /** The model refused to answer (safety filter); the same request would be refused again. */
+      | 'llm_refused',
     message: string,
     readonly status?: number,
     /** The server's Retry-After, when it sent one (ms). */

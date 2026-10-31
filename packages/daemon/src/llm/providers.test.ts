@@ -10,11 +10,15 @@ import type { ChatGptCredentials } from '@acc/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { silentLogger } from '../core/log';
 import { HUMAN, type TestDaemonNoServer, createTestDaemon } from '../testing';
-import { AnthropicProvider, toMessagesBody } from './anthropic';
+import { AnthropicProvider, AnthropicStreamAccumulator, toMessagesBody } from './anthropic';
 import { ChatGptAuth } from './chatgptAuth';
 import { LlmGateway, providerOf } from './gateway';
 import { APP_NOTE_LABEL } from './messages';
-import { OpenAiResponsesProvider, toResponsesBody } from './openaiResponses';
+import {
+  OpenAiResponsesProvider,
+  ResponsesStreamAccumulator,
+  toResponsesBody,
+} from './openaiResponses';
 import { type ChatRequest, LlmError, type LlmStreamEvent } from './types';
 
 type Handler = (req: IncomingMessage, body: string, res: ServerResponse) => void | Promise<void>;
@@ -855,5 +859,39 @@ describe('gateway routing and settings', () => {
     // A configured provider means no offline fallback: the chat has no model until one is named.
     const { resolveChatModel } = await import('../sessions/chat');
     expect(resolveChatModel(d.ctx, chat)).toBeNull();
+  });
+});
+
+describe('a refusal is reported as content_filter by every provider', () => {
+  it('Anthropic: stop_reason refusal', () => {
+    const acc = new AnthropicStreamAccumulator('claude-opus-5-5');
+    acc.handle(
+      'message_start',
+      JSON.stringify({ type: 'message_start', message: { usage: { input_tokens: 10 } } }),
+    );
+    acc.handle(
+      'message_delta',
+      JSON.stringify({
+        type: 'message_delta',
+        delta: { stop_reason: 'refusal' },
+        usage: { output_tokens: 0 },
+      }),
+    );
+    const events = acc.handle('message_stop', JSON.stringify({ type: 'message_stop' }));
+    expect(events.at(-1)).toEqual({ type: 'finish', reason: 'content_filter' });
+  });
+
+  it('OpenAI Responses: incomplete with reason content_filter (max_output_tokens stays length)', () => {
+    const finish = (reason: string) =>
+      new ResponsesStreamAccumulator('gpt-5.5', 'key')
+        .handle(
+          JSON.stringify({
+            type: 'response.incomplete',
+            response: { status: 'incomplete', incomplete_details: { reason } },
+          }),
+        )
+        .at(-1);
+    expect(finish('content_filter')).toEqual({ type: 'finish', reason: 'content_filter' });
+    expect(finish('max_output_tokens')).toEqual({ type: 'finish', reason: 'length' });
   });
 });

@@ -268,7 +268,11 @@ export class ResponsesStreamAccumulator {
       case 'response.incomplete':
         this.usage = ev.response?.usage;
         this.finish =
-          ev.response?.incomplete_details?.reason === 'max_output_tokens' ? 'length' : 'stop';
+          ev.response?.incomplete_details?.reason === 'max_output_tokens'
+            ? 'length'
+            : ev.response?.incomplete_details?.reason === 'content_filter'
+              ? 'content_filter'
+              : 'stop';
         this.done = true;
         return this.finishEvents();
       case 'response.failed': {
