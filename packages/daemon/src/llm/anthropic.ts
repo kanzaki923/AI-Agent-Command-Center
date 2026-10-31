@@ -1,6 +1,7 @@
 import type { CostSource, Usage } from '@acc/protocol';
 import { errorBody, fetchSse, parseJson, redactSecrets, retrying, str } from './http';
 import type { RetryOptions } from './openai';
+import { APP_NOTE_LABEL } from './messages';
 import { type ModelPrice, costOf } from './pricing';
 import {
   type ChatMessage,
@@ -40,6 +41,8 @@ interface WireMessage {
 }
 
 const CACHE = { cache_control: { type: 'ephemeral' } } as const;
+/** Blocks that may carry a cache mark (not thinking blocks). */
+const CACHEABLE = new Set(['text', 'tool_use', 'tool_result', 'image', 'document']);
 
 function parseArgs(args: string): unknown {
   try {
@@ -67,10 +70,17 @@ export function toMessagesBody(req: ChatRequest): Record<string, unknown> {
     else messages.push({ role, content: [...blocks] });
   };
   let leading = true;
+  // The last block before the first later system message (what changes per run, e.g. the
+  // status of the trees): the history up to there is the same in the next run.
+  let anchor: Block | null = null;
   for (const m of req.messages) {
     if (m.role === 'system') {
       if (leading) system.push({ type: 'text', text: m.content });
-      else push('user', [{ type: 'text', text: m.content }]);
+      else {
+        anchor ??= messages.at(-1)?.content.at(-1) ?? null;
+        // It travels as a user turn: labelled, so it is not taken for the person's words.
+        push('user', [{ type: 'text', text: `${APP_NOTE_LABEL}\n${m.content}` }]);
+      }
       continue;
     }
     leading = false;
@@ -91,6 +101,12 @@ export function toMessagesBody(req: ChatRequest): Record<string, unknown> {
     }
   }
   if (system.length > 0) system[0] = { ...system[0], ...CACHE };
+  // The history: read back up to the anchor in the next run, and up to the last block on the
+  // next call of this run (a tool loop resends everything). 4 marks at most: last tool,
+  // system, anchor, last block.
+  for (const block of [anchor, messages.at(-1)?.content.at(-1)]) {
+    if (block && CACHEABLE.has(String(block.type))) Object.assign(block, CACHE);
+  }
   const tools = (req.tools ?? []).map((t) => ({
     name: t.name,
     description: t.description,

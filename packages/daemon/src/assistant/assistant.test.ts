@@ -388,13 +388,13 @@ describe('what the assistant remembers of past runs', () => {
     expect(kept[9]).toBe(history[9]);
   });
 
-  it('the model sees two system messages (fixed role, then the status) and no tool results of earlier runs', async () => {
+  it('the model sees the fixed role first and the status last (after the history), and no tool results of earlier runs', async () => {
     const d = await daemon();
     const { sessionId } = await d.call(HUMAN, 'system.assistant', {});
     await ask(d, sessionId, '来月のローンチ準備を進めて');
     const seen: ChatRequest[] = [];
     d.ctx.service('llm').mock.define('mock/spy', (req) => {
-      seen.push(req);
+      seen.push({ ...req, messages: [...req.messages] });
       return { text: '見ました。' };
     });
     await d.call(HUMAN, 'settings.update', { assistant: { model: 'mock/spy' } });
@@ -402,7 +402,10 @@ describe('what the assistant remembers of past runs', () => {
     expect(run.status).toBe('completed');
     const req = seen[0]!;
     const roles = req.messages.map((m) => m.role);
-    expect(roles.slice(0, 2)).toEqual(['system', 'system']);
+    // Role first, status last: the role and the history stay one prefix for the prompt cache.
+    expect(roles[0]).toBe('system');
+    expect(roles.at(-1)).toBe('system');
+    expect(roles.filter((r) => r === 'system')).toHaveLength(2);
     // The result of the earlier startWork went as its digest, not the whole Session.
     const results = req.messages.filter((m) => m.role === 'tool') as { content: string }[];
     expect(results).toHaveLength(1);
@@ -413,7 +416,7 @@ describe('what the assistant remembers of past runs', () => {
     expect(results[0]!.content).not.toContain('createdBy');
     expect((req.messages[0] as { content: string }).content).toContain('You are the assistant');
     expect((req.messages[0] as { content: string }).content).not.toContain(STATUS_HEADING);
-    expect((req.messages[1] as { content: string }).content).toContain(STATUS_HEADING);
+    expect((req.messages.at(-1) as { content: string }).content).toContain(STATUS_HEADING);
     const past = req.messages.filter((m) => m.role === 'assistant') as {
       content: string | null;
       toolCalls?: { name: string }[];
@@ -562,7 +565,7 @@ describe('a model the person chose for a request', () => {
       'mock/picker',
       scripted([
         (req) => {
-          seen.push(req);
+          seen.push({ ...req, messages: [...req.messages] });
           return {
             text: '',
             toolCalls: [
@@ -592,7 +595,7 @@ describe('a model the person chose for a request', () => {
     expect((await d.ctx.service('runs').waitForEnd(r.runId!)).status).toBe('completed');
     // The assistant was told, and the daemon gave the new conversation that model even though
     // the assistant named another (and it is outside the roster: the person may choose any).
-    expect((seen[0]!.messages[1] as { content: string }).content).toContain(
+    expect((seen[0]!.messages.at(-1) as { content: string }).content).toContain(
       'モデルの指定: openai/gpt-6-astra',
     );
     const started = d.ctx.repos.sessions.find({}).filter((s) => s.title === '調べもの');

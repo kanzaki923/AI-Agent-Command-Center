@@ -40,7 +40,7 @@ type Item = Record<string, unknown>;
 
 /**
  * Responses API body (https://platform.openai.com/docs/api-reference/responses): system
- * messages become `instructions`; the conversation is `input` items — messages, the
+ * messages become `instructions` (a later one, a `developer` item in place); the conversation is `input` items — messages, the
  * `function_call` items of earlier turns with their `function_call_output`, and the
  * reasoning items the model returned with a tool call (sent back whole, encrypted, since
  * nothing is stored server side). A ChatGPT plan token forbids `temperature` and
@@ -54,7 +54,10 @@ export function toResponsesBody(
   const input: Item[] = [];
   for (const m of req.messages) {
     if (m.role === 'system') {
-      instructions.push(m.content);
+      // Leading system messages are the instructions; a later one (what changes per run, e.g.
+      // the status of the trees) stays where it is, so the prefix before it can be cached.
+      if (input.length === 0) instructions.push(m.content);
+      else input.push({ role: 'developer', content: m.content });
     } else if (m.role === 'user') {
       input.push({ role: 'user', content: m.content });
     } else if (m.role === 'tool') {

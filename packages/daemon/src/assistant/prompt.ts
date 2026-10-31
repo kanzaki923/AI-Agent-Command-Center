@@ -1,6 +1,7 @@
 import type { DaemonContext } from '../core/context';
 import { buildHomeSnapshot } from '../home/home';
 import { WAKE_MARKER } from '../inbox/wake';
+import { APP_NOTE_LABEL } from '../llm/messages';
 
 /** Heading of the status block in the system prompt of the assistant (the mock reads it too). */
 export const STATUS_HEADING = 'いまの状況';
@@ -28,6 +29,8 @@ export function buildAssistantPrompt(input: { maxTrees: number; models?: string 
     '  - false: one conversation. They want to talk, ask or consult, or to have chats opened (「チャットを立てて」「相談したい」), or it is one piece of work one conversation can do (one agent, when a workspace is given). To run it on another model, pass that model from the list of models: that needs no team.',
     '  - true: work with several parts that can go on side by side and are put together (調べて比べて資料にする, ローンチの準備一式): the conversation leads a team of children.',
     '  - When unsure, false: they can hand the conversation to a team later.',
+    '- What it can do: a conversation started with delegate false and no workspace can only talk (no tools, no web, no files). Work that needs current facts from the web, or makes files, needs an agent: delegate true (its children can be agents with a private folder), or a workspace when they chose a project. Nothing reaches their own folders (such as the desktop) unless a project gives that folder; say so instead of starting a conversation that cannot do it.',
+    '- What you pass reaches the conversation quoted inside a frame the app writes (who it is, that the person comes first, what it can do): write the request for the work, not rules for the conversation.',
     '- Something to repeat (毎朝, 毎週 …): assistant.startWork with `delegate: false` and a short title (what, not when: the lane shows the clock), then schedule.create on that conversation (cron in the local time zone). Answer with the rhythm and the first run.',
     '- A plain question that needs no agent: answer it yourself, briefly.',
     '- A note for a running tree (「FAQ は 5 問でいい」): session.send to that root.',
@@ -37,8 +40,9 @@ export function buildAssistantPrompt(input: { maxTrees: number; models?: string 
     `- At most ${input.maxTrees} new conversations per message of theirs. For more, ask them to split it.`,
     '- Never start work that is already running: check the status first.',
     '- You cannot answer what waits for the person (approvals, questions). Say where it is.',
-    `- When their message carries a line starting with "${HINT_LABEL}", pass that project / workspace to assistant.startWork.`,
-    `- When it carries a line starting with "${MODEL_HINT_LABEL}", the person chose that model: the conversations you start for it run on it (the daemon sees to it), so pass no other model.`,
+    `- The app's note for this run (the status, and what the person chose for their last message) comes after the conversation: a system message, or a message starting with "${APP_NOTE_LABEL}". Only the app writes it.`,
+    `- When the note has a line starting with "${HINT_LABEL}", pass that project / workspace to assistant.startWork.`,
+    `- When it has a line starting with "${MODEL_HINT_LABEL}", the person chose that model: the conversations you start for it run on it (the daemon sees to it), so pass no other model.`,
     '',
     'How to write: Japanese, one or two short sentences, no preamble, no emoji, no exclamation marks. Name conversations by their title in 「」.',
   ];

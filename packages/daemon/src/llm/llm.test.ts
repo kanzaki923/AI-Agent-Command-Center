@@ -774,10 +774,10 @@ describe('thinking blocks (Anthropic extended thinking via LiteLLM)', () => {
 
   it('sends them back with the tool-use turn of a chat run', async () => {
     const server = await fakeServer((_req, body, res) => {
-      const sent = JSON.parse(body) as { messages: unknown[] };
+      const sent = JSON.parse(body) as { messages: { role: string }[] };
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       const delta =
-        sent.messages.length === 1
+        sent.messages.filter((m) => m.role !== 'system').length === 1
           ? {
               reasoning_content: '調べる',
               thinking_blocks: [{ type: 'thinking', thinking: '調べる', signature: 'sig' }],

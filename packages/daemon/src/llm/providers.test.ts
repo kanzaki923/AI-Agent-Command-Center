@@ -13,6 +13,7 @@ import { HUMAN, type TestDaemonNoServer, createTestDaemon } from '../testing';
 import { AnthropicProvider, toMessagesBody } from './anthropic';
 import { ChatGptAuth } from './chatgptAuth';
 import { LlmGateway, providerOf } from './gateway';
+import { APP_NOTE_LABEL } from './messages';
 import { OpenAiResponsesProvider, toResponsesBody } from './openaiResponses';
 import { type ChatRequest, LlmError, type LlmStreamEvent } from './types';
 
@@ -81,7 +82,6 @@ const REQUEST: ChatRequest = {
   model: 'anthropic/claude-sonnet-4-6',
   messages: [
     { role: 'system', content: 'You are the assistant.' },
-    { role: 'system', content: 'Status: 1 tree' },
     { role: 'user', content: '止めて' },
     {
       role: 'assistant',
@@ -90,6 +90,8 @@ const REQUEST: ChatRequest = {
     },
     { role: 'tool', toolCallId: 'toolu_1', content: '{"ok":true}' },
     { role: 'user', content: 'ありがとう' },
+    // What changes per run comes last (supervisor / assistant status).
+    { role: 'system', content: 'Status: 1 tree' },
   ],
   tools: [
     { name: 'session__stop', description: 'Stop', parameters: { type: 'object', properties: {} } },
@@ -99,7 +101,7 @@ const REQUEST: ChatRequest = {
 };
 
 describe('Anthropic Messages API', () => {
-  it('builds the body: cached system block, merged turns, tool_use / tool_result, cached last tool', () => {
+  it('builds the body: cached system block, merged turns, tool_use / tool_result, cached last tool, cached history', () => {
     const body = toMessagesBody(REQUEST);
     expect(body.model).toBe('claude-sonnet-4-6');
     expect(body.stream).toBe(true);
@@ -107,7 +109,6 @@ describe('Anthropic Messages API', () => {
     expect(body.temperature).toBe(0.2);
     expect(body.system).toEqual([
       { type: 'text', text: 'You are the assistant.', cache_control: { type: 'ephemeral' } },
-      { type: 'text', text: 'Status: 1 tree' },
     ]);
     expect(body.messages).toEqual([
       { role: 'user', content: [{ type: 'text', text: '止めて' }] },
@@ -121,10 +122,20 @@ describe('Anthropic Messages API', () => {
         role: 'user',
         content: [
           { type: 'tool_result', tool_use_id: 'toolu_1', content: '{"ok":true}' },
-          { type: 'text', text: 'ありがとう' },
+          // The history ends here: the next run reads it back from the cache.
+          { type: 'text', text: 'ありがとう', cache_control: { type: 'ephemeral' } },
+          // The status follows the history, labelled as the app's (it travels as a user
+          // turn); the last block is marked for the next call.
+          {
+            type: 'text',
+            text: `${APP_NOTE_LABEL}\nStatus: 1 tree`,
+            cache_control: { type: 'ephemeral' },
+          },
         ],
       },
     ]);
+    // Four marks at most (last tool, system, the end of the history, the last block).
+    expect(JSON.stringify(body).split('cache_control').length - 1).toBeLessThanOrEqual(4);
     const tools = body.tools as Record<string, unknown>[];
     expect(tools[0]).toEqual({
       name: 'session__stop',
@@ -132,6 +143,26 @@ describe('Anthropic Messages API', () => {
       input_schema: { type: 'object', properties: {} },
     });
     expect(tools[1]!.cache_control).toEqual({ type: 'ephemeral' });
+  });
+
+  it('the next call of a tool loop keeps the end of the history marked and marks its new last block', () => {
+    const body = toMessagesBody({
+      ...REQUEST,
+      messages: [
+        ...REQUEST.messages,
+        {
+          role: 'assistant',
+          content: null,
+          toolCalls: [{ id: 'toolu_2', name: 'home__get', arguments: '{}' }],
+        },
+        { role: 'tool', toolCallId: 'toolu_2', content: '{"trees":[]}' },
+      ],
+    });
+    const messages = body.messages as { role: string; content: Record<string, unknown>[] }[];
+    const marked = messages.flatMap((m) => m.content.filter((b) => b.cache_control));
+    expect(marked.map((b) => b.text ?? b.type)).toEqual(['ありがとう', 'tool_result']);
+    expect(messages.at(-1)!.content.at(-1)).toMatchObject({ tool_use_id: 'toolu_2' });
+    expect(JSON.stringify(body).split('cache_control').length - 1).toBeLessThanOrEqual(4);
   });
 
   it('streams text, thinking, a tool call and usage with cache tokens priced in', async () => {
@@ -324,7 +355,8 @@ describe('OpenAI Responses API', () => {
     const key = toResponsesBody(req, 'key');
     expect(key.model).toBe('gpt-5-mini');
     expect(key).toMatchObject({ stream: true, store: false, temperature: 0.2 });
-    expect(key.instructions).toBe('You are the assistant.\n\nStatus: 1 tree');
+    // Only the leading system message is the instructions; the status stays at the end.
+    expect(key.instructions).toBe('You are the assistant.');
     expect(key.input).toEqual([
       { role: 'user', content: '止めて' },
       {
@@ -335,6 +367,7 @@ describe('OpenAI Responses API', () => {
       },
       { type: 'function_call_output', call_id: 'toolu_1', output: '{"ok":true}' },
       { role: 'user', content: 'ありがとう' },
+      { role: 'developer', content: 'Status: 1 tree' },
     ]);
     expect((key.tools as unknown[])[0]).toEqual({
       type: 'function',

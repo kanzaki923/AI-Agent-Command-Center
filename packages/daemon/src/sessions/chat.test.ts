@@ -292,10 +292,16 @@ describe('session.send', () => {
       usage: { inputTokens: 9, outputTokens: 3, costUsd: 0.002, costSource: 'reported' },
     });
     const sent = JSON.parse(bodies[0]!) as { messages: unknown[]; tools?: unknown };
-    expect(sent.messages).toEqual([
-      { role: 'system', content: '丁寧に' },
-      { role: 'user', content: '質問' },
-    ]);
+    // The daemon's frame, with the person's own instructions for the conversation inside.
+    expect(sent.messages).toHaveLength(2);
+    expect(sent.messages[0]).toMatchObject({
+      role: 'system',
+      content: expect.stringContaining('This frame is written by the app'),
+    });
+    expect((sent.messages[0] as { content: string }).content).toContain(
+      'Instructions the person set for this conversation\n丁寧に',
+    );
+    expect(sent.messages[1]).toEqual({ role: 'user', content: '質問' });
     expect(sent.tools).toBeUndefined(); // no grants -> plain chat
     const msgs = await d.call(HUMAN, 'session.messages', { sessionId: s.id });
     expect(texts(msgs.items).at(-1)).toEqual(['assistant', '本物っぽい']);

@@ -473,8 +473,11 @@ function describeTree(children: TreeNode[]): string {
 
 function parse(req: ChatRequest): Parsed {
   const tools = new Set((req.tools ?? []).map((t) => methodForToolName(t.name)));
-  const system = req.messages.find((m) => m.role === 'system');
-  const content = system?.role === 'system' ? system.content : '';
+  // The role comes first and the tree snapshot last (executor.ts supervisorMessages): read both.
+  const content = req.messages
+    .filter((m) => m.role === 'system')
+    .map((m) => (m as { content: string }).content)
+    .join('\n');
   const projectId =
     new RegExp(`${PROJECT_ID_LABEL}\\s*(prj_[0-9a-z]{26})`).exec(content)?.[1] ?? null;
   const hasRepository = new RegExp(`${REPOSITORY_LABEL}\\s*yes`).test(content);

@@ -16,6 +16,7 @@ import { textOfParts } from '../llm/messages';
 import type { ChatMessage } from '../llm/types';
 import { ACTIVE_RUN_STATUSES } from '../runs/manager';
 import { resolveChatModel } from '../sessions/chat';
+import { speakerLabel, speakerOf } from '../sessions/framing';
 import { sessionBudgetId } from '../sessions/methods/shared';
 import { isSupervisor, runKindFor, setSupervision } from './supervision';
 import { CHILD_UPDATE_STATES, INJECTED_PREFIX, currentState, wakeEntries, wakeText } from './wake';
@@ -251,10 +252,16 @@ export class Inbox implements InboxService {
    */
   injectedMessages(runId: string): ChatMessage[] {
     const out: ChatMessage[] = [];
+    const sessionId = this.ctx.repos.runs.get(runId)?.sessionId;
+    const session = sessionId ? this.ctx.repos.sessions.get(sessionId) : undefined;
     for (const item of this.drain(runId)) {
       const message = item.refs.messageId ? this.ctx.repos.messages.get(item.refs.messageId) : null;
       const text = message ? textOfParts(message.content) : '';
-      if (text) out.push({ role: 'user', content: `${INJECTED_PREFIX}\n${text}` });
+      if (!message || !text) continue;
+      // Who sent it, as in the history: an unlabeled message is the person's.
+      const speaker = session ? speakerOf(this.ctx, session, message) : null;
+      const body = speaker ? `${speakerLabel(speaker)} ${text}` : text;
+      out.push({ role: 'user', content: `${INJECTED_PREFIX}\n${body}` });
     }
     return out;
   }

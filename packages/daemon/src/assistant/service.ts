@@ -101,9 +101,9 @@ export class AssistantService {
 
   /**
    * The two system messages of a run. The first never changes between runs (the role and
-   * the own prompt of the session), so with the tools it is a stable prefix a prompt cache
-   * can hold; the second carries what changes (the hint of the last message, the status of
-   * every tree).
+   * the own prompt of the session) and goes first; the second carries what changes (the
+   * hint of the last message, the status of every tree) and goes after the history, so
+   * tools, the first and the history stay a prefix a prompt cache can hold.
    */
   systemPrompts(session: Session, history: readonly Message[]): [string, string] {
     const last = [...history].reverse().find((m) => m.role === 'user');

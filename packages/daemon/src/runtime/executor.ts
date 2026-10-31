@@ -22,6 +22,13 @@ import { RuntimeSessionStore } from './state';
 import { approvalDetailFor, approvalTitleFor, truncate } from './tools';
 import { ruleMatcher } from './rules';
 import { spendCapUsd } from '../runs/usage';
+import {
+  briefInFrame,
+  conversationFrame,
+  requesterOf,
+  speakerLabel,
+  speakerOf,
+} from '../sessions/framing';
 
 /**
  * The "agent" RunExecutor: runs a coding-agent runtime in the run's workspace and turns its
@@ -72,6 +79,8 @@ async function executeAgentRun(
     workspace: workspace.kind,
     readRoots,
     brief: !!session.brief,
+    // The request is told once, here; the frame names who asked and points at it.
+    ...(task && briefInFrame(session) ? { from: requesterOf(ctx, session) } : {}),
   });
   if (!prompt) throw new Error('エージェントに渡す指示がありません');
 
@@ -100,7 +109,9 @@ async function executeAgentRun(
     // What the run may still spend (budget room, today's limit): runtimes stop at it.
     maxBudgetUsd: spendCapUsd(ctx, run),
     prompt,
-    systemPrompt: session.systemPrompt ?? undefined,
+    // The daemon's frame (who it is, who speaks, what it can do; a parent's request is only
+    // quoted), appended to the runtime's own system prompt.
+    systemPrompt: conversationFrame(ctx, session, { kind: 'agent' }),
     model,
     resumeSessionId,
     signal,
@@ -310,7 +321,10 @@ function triggerText(
     .map((p) => p.text)
     .join('\n')
     .trim();
-  return text || null;
+  if (!text) return null;
+  // Who sent it, when it was not the person (sessions/framing.ts).
+  const speaker = speakerOf(ctx, session, msg);
+  return speaker ? `${speakerLabel(speaker)} ${text}` : text;
 }
 
 /**
@@ -328,10 +342,14 @@ export function buildAgentPrompt(input: {
   readRoots?: readonly string[];
   /** A spawned child: how to finish (its last answer is kept as its output). */
   brief?: boolean;
+  /** Who asked for the task (e.g. 監督役「X」), named in its heading. */
+  from?: string;
 }): string {
   const { task, instructions } = input;
   if (!task) return instructions?.trim() ?? '';
-  const parts = [`# タスク: ${task.title}`];
+  const parts = [
+    input.from ? `# ${input.from}からの依頼: ${task.title}` : `# タスク: ${task.title}`,
+  ];
   if (task.description.trim()) parts.push('', task.description.trim());
   if (task.acceptanceCriteria.length > 0) {
     parts.push('', '## 完了条件', ...task.acceptanceCriteria.map((c) => `- ${c}`));

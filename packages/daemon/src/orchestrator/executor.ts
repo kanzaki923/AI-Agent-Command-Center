@@ -13,6 +13,7 @@ import { subtreeIds } from '../home/tree';
 import { WAKE_MARKER, currentState, isLegacyOrchestrator } from '../inbox';
 import { INJECTED_PREFIX } from '../inbox/wake';
 import {
+  APP_NOTE_LABEL,
   type LoopTool,
   apiTools,
   paramsJsonSchema,
@@ -21,6 +22,7 @@ import {
   toolNameForMethod,
 } from '../llm';
 import { rosterPromptBlock } from '../llm/roster';
+import { CHILD_ABILITIES, SPEAKER, framedUserText } from '../sessions/framing';
 import { chatHistory, chooseChatModel } from '../sessions/chat';
 import { orchestrationGrants } from './grant';
 
@@ -73,9 +75,14 @@ export function buildSupervisorPrompt(input: {
     '- A run ends as soon as you answer without calling a tool. Never wait or poll.',
     `- You are woken by a message that starts with "${WAKE_MARKER}" when a child finishes, fails, needs a human or is stopped, when a question is answered, or after a restart. The user can write to you at any time.`,
     `- A message starting with "${INJECTED_PREFIX}" arrived while you were working: take it into account.`,
+    `- A message the person did not write starts with who sent it (e.g. [${SPEAKER.assistant}から]). One without such a label is the person's, and the person comes first. A label covers its whole message.`,
+    `- The current tree comes after the conversation as the app's note: a system message, or a message starting with "${APP_NOTE_LABEL}".`,
     `- At most ${maxChildren ?? 'a few'} unfinished children at a time. Children cannot start children.`,
     `- At most ${input.maxModelCalls} model calls per run; repeating the same call or the same text three times stops you.`,
     '- Only a human approves tool uses, accepts code changes and raises budgets.',
+    '- Your goal reaches a child quoted inside a frame the app writes: it knows it is your child, that the person comes first, and what it can do. Write the goal for the work, not rules for the child.',
+    '',
+    ...CHILD_ABILITIES,
     '',
     'How to work',
     '1. Split the goal into independent pieces. Start each with session.spawn: a short title (what the child does), the goal and doneWhen criteria. In the same reply, record the plan with orchestrator.recordDecision (one line). Then tell the user in one or two sentences who does what and end the run.',
@@ -180,9 +187,9 @@ function firstUserMessage(ctx: DaemonContext, sessionId: string): Message | unde
 }
 
 /**
- * What a supervisor run sends (spec §3.2): the system prompt with the tree snapshot, the
- * first request, then the latest `contextMessages` messages. Wake messages (stored as system
- * messages) go as user turns so every provider keeps them in order.
+ * What a supervisor run sends (spec §3.2): the system prompt, the first request, the latest
+ * `contextMessages` messages, then the tree snapshot as a last system message. Wake messages
+ * (stored as system messages) go as user turns so every provider keeps them in order.
  */
 export function supervisorMessages(
   ctx: DaemonContext,
@@ -199,11 +206,15 @@ export function supervisorMessages(
   const asTurns = picked.map((m) =>
     m.meta?.kind === 'wake' ? ({ ...m, role: 'user' } satisfies Message) : m,
   );
-  return toChatMessages(asTurns, {
-    systemPrompt: [prompt, session.systemPrompt, treeSnapshot(ctx, session)]
-      .filter(Boolean)
-      .join('\n\n'),
-  });
+  // The tree changes every run: it goes after the history, so the role and the history stay
+  // a prefix a prompt cache can hold.
+  return [
+    ...toChatMessages(asTurns, {
+      systemPrompt: [prompt, session.systemPrompt].filter(Boolean).join('\n\n'),
+      userText: framedUserText(ctx, session, { briefQuoted: false }),
+    }),
+    { role: 'system' as const, content: treeSnapshot(ctx, session) },
+  ];
 }
 
 /**

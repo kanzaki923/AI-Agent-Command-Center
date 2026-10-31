@@ -5,6 +5,7 @@ import { rememberPastRuns } from '../assistant/history';
 import { MOCK_RIGHT_HAND_MODEL } from '../assistant/permissions';
 import { isLlmConfigured } from '../core/config';
 import { invalidParams } from '../core/errors';
+import { conversationFrame, framedUserText } from './framing';
 import { apiTools, runToolLoop, toChatMessages } from '../llm';
 
 /** Model used when nothing is configured and LiteLLM is not set up (works offline). */
@@ -70,27 +71,34 @@ export function createChatExecutor(ctx: DaemonContext): RunExecutor {
     const inbox = ctx.hasService('supervisorInbox') ? ctx.service('supervisorInbox') : null;
     inbox?.drain(run.id);
     const history = chatHistory(ctx, run, session);
-    // The assistant remembers past runs by what was said (assistant/history.ts) and gets
-    // its fixed prompt and the changing status as two system messages.
+    const tools = apiTools(ctx, ctl.actor);
+    // The assistant remembers past runs by what was said (assistant/history.ts). Its fixed
+    // prompt comes first and the status of this run last, after the history: the fixed
+    // prompt and the history stay one unchanged prefix a prompt cache can hold.
+    const prompts = assistant?.systemPrompts(session, history);
     const messages = assistant
       ? [
-          ...assistant
-            .systemPrompts(session, history)
-            .map((content) => ({ role: 'system' as const, content })),
+          { role: 'system' as const, content: prompts![0] },
           // Notices (meta.wake) go as user turns, as a supervisor's wakes do.
           ...toChatMessages(
             rememberPastRuns(history, run.id).map((m) =>
               m.meta?.kind === 'wake' ? ({ ...m, role: 'user' } satisfies Message) : m,
             ),
+            { userText: framedUserText(ctx, session, { briefQuoted: false }) },
           ),
+          { role: 'system' as const, content: prompts![1] },
         ]
-      : toChatMessages(history, { systemPrompt: session.systemPrompt });
+      : toChatMessages(history, {
+          // The daemon's frame; a parent's request is quoted in it, never taken as the frame.
+          systemPrompt: conversationFrame(ctx, session, { kind: 'chat', tools: tools.length }),
+          userText: framedUserText(ctx, session, { briefQuoted: true }),
+        });
     await runToolLoop({
       ctx,
       ctl,
       model,
       messages,
-      tools: apiTools(ctx, ctl.actor),
+      tools,
       maxTurns: ctx.settings.get().supervisor.maxModelCallsPerRun,
       failOnTurnLimit: true,
       ...(inbox ? { inject: () => inbox.injectedMessages(run.id) } : {}),

@@ -2,6 +2,12 @@ import type { ContentPart, Message } from '@acc/protocol';
 import { toolNameForMethod } from './tools';
 import type { ChatMessage, ChatToolCall } from './types';
 
+/**
+ * Label of the app's note for a run (the status that goes after the history) where a provider
+ * cannot take a system message there and it travels as a user turn (Anthropic).
+ */
+export const APP_NOTE_LABEL = '[アプリから]';
+
 /** Max characters of one tool result sent back to the model. */
 export const MAX_TOOL_OUTPUT_CHARS = 20_000;
 
@@ -47,7 +53,14 @@ const MISSING_RESULT = JSON.stringify({
  */
 export function toChatMessages(
   history: Message[],
-  opts: { systemPrompt?: string | null } = {},
+  opts: {
+    systemPrompt?: string | null;
+    /**
+     * The text of a user message as the model hears it, e.g. with who sent it in front
+     * (sessions/framing.ts). Default: the text as stored.
+     */
+    userText?: (m: Message, text: string) => string;
+  } = {},
 ): ChatMessage[] {
   const out: ChatMessage[] = [];
   if (opts.systemPrompt) out.push({ role: 'system', content: opts.systemPrompt });
@@ -89,8 +102,9 @@ export function toChatMessages(
       continue;
     }
     if (m.role === 'user' || m.role === 'system') {
-      const text = textOfParts(m.content);
-      if (!text) continue;
+      const stored = textOfParts(m.content);
+      if (!stored) continue;
+      const text = m.role === 'user' && opts.userText ? opts.userText(m, stored) : stored;
       if (open) held.push({ role: m.role, content: text });
       else out.push({ role: m.role, content: text });
       continue;
