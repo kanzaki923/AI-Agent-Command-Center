@@ -16,6 +16,7 @@ import {
   APP_NOTE_LABEL,
   type LoopTool,
   apiTools,
+  historyWindow,
   paramsJsonSchema,
   runToolLoop,
   toChatMessages,
@@ -188,7 +189,8 @@ function firstUserMessage(ctx: DaemonContext, sessionId: string): Message | unde
 
 /**
  * What a supervisor run sends (spec §3.2): the system prompt, the first request, the latest
- * `contextMessages` messages, then the tree snapshot as a last system message. Wake messages
+ * messages (at most `contextMessages`, historyWindow), then the tree snapshot as a last system
+ * message. Wake messages
  * (stored as system messages) go as user turns so every provider keeps them in order.
  */
 export function supervisorMessages(
@@ -199,7 +201,7 @@ export function supervisorMessages(
   contextMessages: number,
 ) {
   const history = chatHistory(ctx, run, session);
-  let recent = history.slice(-contextMessages);
+  let recent = historyWindow(history, contextMessages);
   while (recent[0]?.role === 'tool') recent = recent.slice(1);
   const first = firstUserMessage(ctx, session.id);
   const picked = first && !recent.some((m) => m.id === first.id) ? [first, ...recent] : recent;

@@ -1,6 +1,7 @@
 import type { CostSource, Usage } from '@acc/protocol';
 import type { Logger } from '../core/log';
 import { describeGatewayError, gatewayErrorHint } from './gatewayErrors';
+import { lastLaterSystem } from './messages';
 import { SseParser } from './sse';
 import {
   type ChatMessage,
@@ -147,15 +148,15 @@ type WireObject = Record<string, unknown>;
 /**
  * Prompt-cache marks in the shape LiteLLM carries to Anthropic (checked against a real
  * LiteLLM, docs/snapshot/20261031_litellm-prompt-caching-verified.md), at the places the
- * Anthropic path marks: the first system message, the last message before the first later
- * system message (the anchor: the history up to there is the same in the next run) and the
+ * Anthropic path marks: the first system message, the last message before the last run of later
+ * system messages (the anchor: the history up to there is the same in the next run) and the
  * last message (a tool loop resends everything). With the last tool, 4 marks at most:
  * LiteLLM does not drop extra ones and the API rejects them.
  */
 function markForCache(source: ChatMessage[], wire: WireObject[]): void {
   let leading = 0;
   while (source[leading]?.role === 'system') leading++;
-  const later = source.findIndex((m, i) => i >= leading && m.role === 'system');
+  const later = lastLaterSystem(source);
   let last = -1;
   for (let i = source.length - 1; i >= leading; i--) {
     if (source[i]!.role !== 'system') {

@@ -8,6 +8,39 @@ import type { ChatMessage, ChatToolCall } from './types';
  */
 export const APP_NOTE_LABEL = '[アプリから]';
 
+/**
+ * How many of the latest `total` messages a run sends: at most `max`, cut in steps of half of
+ * it. The start moves only once every `max / 2` new messages, so the runs in between send the
+ * same history and the prompt cache reads it back; cut one at a time, every run sent it all
+ * again (real API: docs/snapshot/20261031_supervisor-window-cache.md).
+ */
+export function windowLength(total: number, max: number): number {
+  if (total <= max) return total;
+  const step = Math.max(1, Math.floor(max / 2));
+  return total - Math.ceil((total - max) / step) * step;
+}
+
+/**
+ * Where the last run of later system messages starts (-1 if none): what changes per run (the
+ * status of the trees) comes last, so the history before it is what the next run sends again.
+ * An earlier one (a resume notice in the history) must not pin that point.
+ */
+export function lastLaterSystem(messages: readonly { role: string }[]): number {
+  let leading = 0;
+  while (messages[leading]?.role === 'system') leading++;
+  for (let i = messages.length - 1; i >= leading; i--) {
+    if (messages[i]!.role !== 'system') continue;
+    while (i - 1 >= leading && messages[i - 1]!.role === 'system') i--;
+    return i;
+  }
+  return -1;
+}
+
+/** The latest messages of a history (windowLength). */
+export function historyWindow<T>(history: T[], max: number): T[] {
+  return history.slice(history.length - windowLength(history.length, max));
+}
+
 /** Max characters of one tool result sent back to the model. */
 export const MAX_TOOL_OUTPUT_CHARS = 20_000;
 

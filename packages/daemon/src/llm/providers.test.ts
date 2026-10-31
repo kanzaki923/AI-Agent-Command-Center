@@ -10,7 +10,12 @@ import type { ChatGptCredentials } from '@acc/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { silentLogger } from '../core/log';
 import { HUMAN, type TestDaemonNoServer, createTestDaemon } from '../testing';
-import { AnthropicProvider, AnthropicStreamAccumulator, toMessagesBody } from './anthropic';
+import {
+  AnthropicProvider,
+  AnthropicStreamAccumulator,
+  acceptsMidSystem,
+  toMessagesBody,
+} from './anthropic';
 import { ChatGptAuth } from './chatgptAuth';
 import { LlmGateway, providerOf } from './gateway';
 import { APP_NOTE_LABEL } from './messages';
@@ -167,6 +172,144 @@ describe('Anthropic Messages API', () => {
     expect(marked.map((b) => b.text ?? b.type)).toEqual(['ありがとう', 'tool_result']);
     expect(messages.at(-1)!.content.at(-1)).toMatchObject({ tool_use_id: 'toolu_2' });
     expect(JSON.stringify(body).split('cache_control').length - 1).toBeLessThanOrEqual(4);
+  });
+
+  describe('a later system message on a model that takes one (Claude 5.x)', () => {
+    const MODERN: ChatRequest = { ...REQUEST, model: 'anthropic/claude-haiku-5-5' };
+    type Wire = { role: string; content: Record<string, unknown>[] }[];
+    const markedText = (messages: Wire) =>
+      messages.flatMap((m) =>
+        m.content.filter((b) => b.cache_control).map((b) => b.text ?? b.type),
+      );
+
+    it('sends the status as a role: system message after the history, which then ends its message', () => {
+      expect(acceptsMidSystem('claude-haiku-5-5')).toBe(true);
+      expect(acceptsMidSystem('claude-haiku-4-5')).toBe(false);
+      const messages = toMessagesBody(MODERN).messages as Wire;
+      // The last user turn ends with the history: the next run reads it back from the cache
+      // (a block cached mid-message is not read where the message ends: real API).
+      expect(messages.at(-2)!.content.at(-1)).toEqual({
+        type: 'text',
+        text: 'ありがとう',
+        cache_control: { type: 'ephemeral' },
+      });
+      // The status carries no mark: it is different in every run.
+      expect(messages.at(-1)).toEqual({
+        role: 'system',
+        content: [{ type: 'text', text: 'Status: 1 tree' }],
+      });
+      expect(markedText(messages)).toEqual(['ありがとう']);
+    });
+
+    it('keeps it in place during the tool loop, and marks the new last block', () => {
+      const messages = toMessagesBody({
+        ...MODERN,
+        messages: [
+          ...MODERN.messages,
+          {
+            role: 'assistant',
+            content: null,
+            toolCalls: [{ id: 'toolu_2', name: 'home__get', arguments: '{}' }],
+          },
+          { role: 'tool', toolCallId: 'toolu_2', content: '{"trees":[]}' },
+        ],
+      }).messages as Wire;
+      expect(messages.map((m) => m.role)).toEqual([
+        'user',
+        'assistant',
+        'user',
+        'system',
+        'assistant',
+        'user',
+      ]);
+      expect(markedText(messages)).toEqual(['ありがとう', 'tool_result']);
+    });
+
+    it('sends a notice where the API takes no system message as the labelled text, and anchors before the last one', () => {
+      const messages = toMessagesBody({
+        ...MODERN,
+        messages: [
+          { role: 'system', content: 'You are the assistant.' },
+          { role: 'user', content: 'q1' },
+          { role: 'assistant', content: 'a1' },
+          // After an assistant turn and before a user turn: not allowed as role: system.
+          { role: 'system', content: 'Resumed.' },
+          { role: 'user', content: 'q2' },
+          { role: 'system', content: 'Status: 2 trees' },
+        ],
+      }).messages as Wire;
+      expect(messages).toEqual([
+        { role: 'user', content: [{ type: 'text', text: 'q1' }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'a1' }] },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: `${APP_NOTE_LABEL}\nResumed.` },
+            { type: 'text', text: 'q2', cache_control: { type: 'ephemeral' } },
+          ],
+        },
+        { role: 'system', content: [{ type: 'text', text: 'Status: 2 trees' }] },
+      ]);
+    });
+
+    it('a model that answers 400 to it gets the labelled text, then and from then on', async () => {
+      const f = await fake((_req, body, res) => {
+        const roles = (JSON.parse(body) as { messages: { role: string }[] }).messages.map(
+          (m) => m.role,
+        );
+        if (roles.includes('system')) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              type: 'error',
+              error: {
+                type: 'invalid_request_error',
+                message: "role 'system' is not supported on this model",
+              },
+            }),
+          );
+          return;
+        }
+        sse(res, [
+          {
+            event: 'message_start',
+            data: { type: 'message_start', message: { usage: { input_tokens: 5 } } },
+          },
+          {
+            event: 'message_delta',
+            data: {
+              type: 'message_delta',
+              delta: { stop_reason: 'end_turn' },
+              usage: { output_tokens: 1 },
+            },
+          },
+          { event: 'message_stop', data: { type: 'message_stop' } },
+        ]);
+      });
+      const provider = new AnthropicProvider({
+        connection: () => ({ apiKey: 'sk-ant-test', baseUrl: f.url }),
+        retry: { maxRetries: 0 },
+      });
+      const req = { ...REQUEST, model: 'anthropic/claude-haiku-6' };
+      expect((await collect(provider.stream(req, signal()))).at(-1)).toEqual({
+        type: 'finish',
+        reason: 'stop',
+      });
+      expect((await collect(provider.stream(req, signal()))).at(-1)).toEqual({
+        type: 'finish',
+        reason: 'stop',
+      });
+      const sent = f.requests.map((r) =>
+        (JSON.parse(r.body) as { messages: { role: string }[] }).messages
+          .map((m) => m.role)
+          .join(','),
+      );
+      expect(sent).toEqual([
+        'user,assistant,user,system',
+        'user,assistant,user',
+        'user,assistant,user',
+      ]);
+    });
   });
 
   it('streams text, thinking, a tool call and usage with cache tokens priced in', async () => {

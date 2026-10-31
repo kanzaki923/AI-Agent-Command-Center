@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import type { RunController } from '../contracts';
 import type { DaemonContext } from '../core/context';
 import type { LlmGateway } from './gateway';
-import { toChatMessages } from './messages';
+import { historyWindow, toChatMessages, windowLength } from './messages';
 import { LOOP_REPEATS, RunStopError, runToolLoop } from './toolLoop';
 import type { LoopTool } from './tools';
 import type { ChatMessage, ChatRequest, ChatResult } from './types';
@@ -240,6 +240,18 @@ describe('runToolLoop: a refusal', () => {
       { role: 'assistant', content: [{ type: 'text', text: '途中まで' }] },
     ]);
     expect(f.requests).toHaveLength(1);
+  });
+});
+
+describe('historyWindow: the latest messages, cut in steps', () => {
+  it('keeps at most max, and moves the start only once every max / 2 new messages', () => {
+    const lengths = [30, 40, 41, 50, 59, 60, 61, 80, 81].map((n) => windowLength(n, 40));
+    expect(lengths).toEqual([30, 40, 21, 30, 39, 40, 21, 40, 21]);
+    // Consecutive runs between two cuts send the same first message: one prefix to cache.
+    const starts = [41, 43, 59, 60].map((n) => n - windowLength(n, 40));
+    expect(new Set(starts)).toEqual(new Set([20]));
+    expect(historyWindow([1, 2, 3, 4, 5], 4)).toEqual([3, 4, 5]);
+    expect(historyWindow([1, 2, 3], 1)).toEqual([3]);
   });
 });
 

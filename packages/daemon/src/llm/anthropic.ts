@@ -1,7 +1,7 @@
 import type { CostSource, Usage } from '@acc/protocol';
 import { errorBody, fetchSse, parseJson, redactSecrets, retrying, str } from './http';
 import type { RetryOptions } from './openai';
-import { APP_NOTE_LABEL } from './messages';
+import { APP_NOTE_LABEL, lastLaterSystem } from './messages';
 import { type ModelPrice, costOf } from './pricing';
 import { cacheCounts } from './usage';
 import {
@@ -37,7 +37,7 @@ export interface AnthropicProviderOptions {
 
 type Block = Record<string, unknown>;
 interface WireMessage {
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   content: Block[];
 }
 
@@ -60,14 +60,37 @@ function parseArgs(args: string): unknown {
 }
 
 /**
+ * Models that take a `role: "system"` message inside `messages` (checked on the real API
+ * 2026-10-31: Haiku 5.5, Sonnet 5 / 5.5, Opus 5.5 do; Haiku 4.5 answers 400). A model that
+ * answers 400 anyway is sent the labelled user text from then on (AnthropicProvider).
+ */
+export function acceptsMidSystem(model: string): boolean {
+  return /(?:opus|sonnet|haiku)-(?:[5-9]|\d{2})|opus-4-8|fable|mythos/i.test(model);
+}
+
+/** The 400 of a model that does not take a mid-conversation system message. */
+const MID_SYSTEM_REJECTED = /role 'system' is not supported/i;
+
+/**
  * Messages API body for a request (https://docs.anthropic.com/en/api/messages): leading
  * system messages become system blocks (the first marked for the prompt cache, so the
  * unchanging role of a supervisor or the assistant is read at a tenth of the price), tool
  * calls and results become `tool_use` / `tool_result` blocks, neighbours of one role are
  * merged (the API wants user and assistant to alternate), reasoning blocks of a turn are
  * sent back as they came. The last tool carries the cache mark too.
+ *
+ * A later system message stays a `role: "system"` message where the model takes one and the
+ * API allows it there (right after a user turn, last or before an assistant turn); else it
+ * travels as a labelled user text. Only the first keeps the cache across runs: a block the
+ * cache stored in the middle of a message is not read back where that message ends (real API,
+ * snapshot 20261031_supervisor-window-cache.md), and the run's status text after the last
+ * user turn is gone in the next run.
  */
-export function toMessagesBody(req: ChatRequest): Record<string, unknown> {
+export function toMessagesBody(
+  req: ChatRequest,
+  opts: { midSystem?: boolean } = {},
+): Record<string, unknown> {
+  const midSystem = opts.midSystem ?? acceptsMidSystem(req.model);
   const system: Block[] = [];
   const messages: WireMessage[] = [];
   const push = (role: WireMessage['role'], blocks: Block[]) => {
@@ -76,21 +99,29 @@ export function toMessagesBody(req: ChatRequest): Record<string, unknown> {
     if (last && last.role === role) last.content.push(...blocks);
     else messages.push({ role, content: [...blocks] });
   };
-  let leading = true;
-  // The last block before the first later system message (what changes per run, e.g. the
-  // status of the trees): the history up to there is the same in the next run.
+  const src = req.messages;
+  let leadingCount = 0;
+  while (src[leadingCount]?.role === 'system') leadingCount++;
+  const lastLater = lastLaterSystem(src);
   let anchor: Block | null = null;
-  for (const m of req.messages) {
+  for (const [i, m] of src.entries()) {
     if (m.role === 'system') {
-      if (leading) system.push({ type: 'text', text: m.content });
-      else {
-        anchor ??= messages.at(-1)?.content.at(-1) ?? null;
-        // It travels as a user turn: labelled, so it is not taken for the person's words.
-        push('user', [{ type: 'text', text: `${APP_NOTE_LABEL}\n${m.content}` }]);
+      if (i < leadingCount) {
+        system.push({ type: 'text', text: m.content });
+        continue;
       }
+      if (i === lastLater) anchor = messages.at(-1)?.content.at(-1) ?? null;
+      let next = i + 1;
+      while (src[next]?.role === 'system') next++;
+      const native =
+        midSystem &&
+        (messages.at(-1)?.role === 'user' || messages.at(-1)?.role === 'system') &&
+        (next === src.length || src[next]!.role === 'assistant');
+      if (native) push('system', [{ type: 'text', text: m.content }]);
+      // A user turn otherwise: labelled, so it is not taken for the person's words.
+      else push('user', [{ type: 'text', text: `${APP_NOTE_LABEL}\n${m.content}` }]);
       continue;
     }
-    leading = false;
     if (m.role === 'user') {
       push('user', [{ type: 'text', text: m.content }]);
     } else if (m.role === 'tool') {
@@ -110,8 +141,9 @@ export function toMessagesBody(req: ChatRequest): Record<string, unknown> {
   if (system.length > 0) system[0] = { ...system[0], ...CACHE };
   // The history: read back up to the anchor in the next run, and up to the last block on the
   // next call of this run (a tool loop resends everything). 4 marks at most: last tool,
-  // system, anchor, last block.
-  for (const block of [anchor, messages.at(-1)?.content.at(-1)]) {
+  // system, anchor, last block (not of a system message: that one changes every run).
+  const lastTurn = messages.findLast((w) => w.role !== 'system');
+  for (const block of [anchor, lastTurn?.content.at(-1)]) {
     if (block && CACHEABLE.has(String(block.type))) Object.assign(block, CACHE);
   }
   const tools = (req.tools ?? []).map((t) => ({
@@ -320,13 +352,30 @@ export class AnthropicStreamAccumulator {
 export class AnthropicProvider implements LlmProvider {
   readonly id = 'anthropic';
 
+  /** Models that answered 400 to a mid-conversation system message (see acceptsMidSystem). */
+  private readonly noMidSystem = new Set<string>();
+
   constructor(private readonly opts: AnthropicProviderOptions) {}
 
-  stream(req: ChatRequest, signal: AbortSignal): AsyncIterable<LlmStreamEvent> {
-    return retrying(() => this.attempt(req, signal), signal, this.opts.retry);
+  async *stream(req: ChatRequest, signal: AbortSignal): AsyncIterable<LlmStreamEvent> {
+    const midSystem = acceptsMidSystem(req.model) && !this.noMidSystem.has(req.model);
+    try {
+      yield* retrying(() => this.attempt(req, signal, midSystem), signal, this.opts.retry);
+    } catch (err) {
+      // Refused before any token: send the same request with the labelled user texts.
+      if (!midSystem || !(err instanceof LlmError) || !MID_SYSTEM_REJECTED.test(err.message)) {
+        throw err;
+      }
+      this.noMidSystem.add(req.model);
+      yield* retrying(() => this.attempt(req, signal, false), signal, this.opts.retry);
+    }
   }
 
-  private async *attempt(req: ChatRequest, signal: AbortSignal): AsyncIterable<LlmStreamEvent> {
+  private async *attempt(
+    req: ChatRequest,
+    signal: AbortSignal,
+    midSystem: boolean,
+  ): AsyncIterable<LlmStreamEvent> {
     const { apiKey, baseUrl } = this.opts.connection();
     if (!apiKey) {
       throw new LlmError(
@@ -339,7 +388,7 @@ export class AnthropicProvider implements LlmProvider {
     const messages = fetchSse({
       url: `${base}/v1/messages`,
       headers: { 'x-api-key': apiKey, 'anthropic-version': ANTHROPIC_VERSION },
-      body: toMessagesBody(req),
+      body: toMessagesBody(req, { midSystem }),
       signal,
       name: 'Anthropic',
       httpError,

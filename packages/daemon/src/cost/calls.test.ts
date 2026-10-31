@@ -20,16 +20,28 @@ const user = (content: string): ChatMessage => ({ role: 'user', content });
 const said = (content: string): ChatMessage => ({ role: 'assistant', content });
 
 describe('the shape of a prompt', () => {
-  it('ends the cacheable part at the first system message after the history', () => {
+  it('ends the cacheable part at the last system messages after the history', () => {
     const shape = promptShape([sys('role'), user('a'), said('b'), sys('status')], []);
     expect(shape.prefixMessages).toBe(3);
+    // A notice earlier in the history does not end it (the cache marks are placed the same way).
+    const notice = [
+      sys('role'),
+      user('a'),
+      sys('resumed'),
+      said('b'),
+      user('c'),
+      sys('x'),
+      sys('status'),
+    ];
+    expect(promptShape(notice, []).prefixMessages).toBe(5);
     expect(shape.chain).toHaveLength(5);
     // Without a later system message, everything stays for the next call.
     expect(promptShape([sys('role'), user('a')], []).prefixMessages).toBe(2);
     // The chain covers the tools too.
-    const other = promptShape([sys('role'), user('a'), said('b'), sys('status')], [
-      { name: 't', description: 'd', parameters: {} },
-    ]);
+    const other = promptShape(
+      [sys('role'), user('a'), said('b'), sys('status')],
+      [{ name: 't', description: 'd', parameters: {} }],
+    );
     expect(other.chain[3]).not.toBe(shape.chain[3]);
     expect(other.systemHash).toBe(shape.systemHash);
   });

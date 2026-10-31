@@ -11,6 +11,7 @@ import type {
 } from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
 import type { SqlValue } from '../core/db';
+import { lastLaterSystem } from '../llm/messages';
 import type { ChatMessage, ToolSpec } from '../llm/types';
 import { dayOf, fromMicro, toMicro } from './ledger';
 import { rangeWhere } from './summary';
@@ -87,9 +88,9 @@ export function promptShape(messages: readonly ChatMessage[], tools: readonly To
     system.update(JSON.stringify(messages[leading]));
     leading++;
   }
-  // The history up to the first later system message stays the same in the next call (the
-  // status that changes per run goes after it).
-  let prefix = messages.findIndex((m, i) => i >= leading && m.role === 'system');
+  // The history up to the last later system messages stays the same in the next call (the
+  // status that changes per run goes after it; the cache marks are placed the same way).
+  let prefix = lastLaterSystem(messages);
   if (prefix === -1) prefix = messages.length;
   const chain = [toolsHash];
   for (const m of messages) {

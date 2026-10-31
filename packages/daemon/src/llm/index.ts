@@ -55,7 +55,14 @@ export {
   type ModelPrice,
   type PriceQuote,
 } from './pricing';
-export { APP_NOTE_LABEL, toChatMessages, stringifyToolOutput, textOfParts } from './messages';
+export {
+  APP_NOTE_LABEL,
+  historyWindow,
+  stringifyToolOutput,
+  textOfParts,
+  toChatMessages,
+  windowLength,
+} from './messages';
 export {
   apiTools,
   methodForToolName,

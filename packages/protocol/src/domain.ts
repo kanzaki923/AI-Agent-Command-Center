@@ -1035,7 +1035,10 @@ export const SupervisorSettings = z.object({
   maxWakesPerHour: z.int().min(1).max(1000).default(30),
   /** How long wake items are gathered before a supervisor is woken. */
   wakeDebounceMs: z.int().min(0).max(60_000).default(1500),
-  /** Latest messages sent to a supervisor each run (plus the tree snapshot and the goal). */
+  /**
+   * Latest messages sent to a supervisor each run, at most (plus the tree snapshot and the
+   * goal). Cut in steps of half, so between `contextMessages / 2` and this many.
+   */
   contextMessages: z.int().min(1).max(1000).default(40),
 });
 export type SupervisorSettings = z.infer<typeof SupervisorSettings>;

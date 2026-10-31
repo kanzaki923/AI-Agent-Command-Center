@@ -788,7 +788,11 @@ describe('thinking blocks (Anthropic extended thinking via LiteLLM)', () => {
       ['次へ', undefined],
       ['次へ', 'sig2'],
     ] as const) {
-      delta({ thinking_blocks: [{ type: 'thinking', thinking: text, ...(signature ? { signature } : {}) }] });
+      delta({
+        thinking_blocks: [
+          { type: 'thinking', thinking: text, ...(signature ? { signature } : {}) },
+        ],
+      });
     }
     expect(acc.finish()[0]).toEqual({
       type: 'thinking_blocks',
@@ -1074,11 +1078,14 @@ describe('prompt-cache marks for Claude behind LiteLLM', () => {
           { role: 'tool', toolCallId: 'c2', content: 'r2' },
           { role: 'tool', toolCallId: 'c3', content: 'r3' },
           { role: 'system', content: 'another note' },
+          { role: 'assistant', content: 'a3' },
         ],
       },
       { cache: true },
     );
-    expect(marked(long)).toEqual(['0:system', '6:user', '10:tool', 'tool b']);
+    // The anchor is before the last system message: an earlier one (here the old per-run
+    // context, in a stored history a resume notice) does not pin it.
+    expect(marked(long)).toEqual(['0:system', '10:tool', '12:assistant', 'tool b']);
   });
 
   it('marks Claude deployments only, learning what is behind an alias from LiteLLM', async () => {
@@ -1099,7 +1106,8 @@ describe('prompt-cache marks for Claude behind LiteLLM', () => {
     const warnings: unknown[] = [];
     const p = new OpenAiCompatibleProvider({
       connection: () => ({ baseUrl: server.url, apiKey: null }),
-      deploymentOf: (m) => (m === 'from-model-info' ? 'bedrock/us.anthropic.claude-sonnet-5' : null),
+      deploymentOf: (m) =>
+        m === 'from-model-info' ? 'bedrock/us.anthropic.claude-sonnet-5' : null,
       log: { ...silentLogger, warn: (msg, data) => warnings.push([msg, data]) },
     });
     const marks = async (model: string) => {

@@ -6,7 +6,7 @@ import { MOCK_RIGHT_HAND_MODEL } from '../assistant/permissions';
 import { isLlmConfigured } from '../core/config';
 import { invalidParams } from '../core/errors';
 import { conversationFrame, framedUserText } from './framing';
-import { apiTools, runToolLoop, toChatMessages } from '../llm';
+import { apiTools, runToolLoop, toChatMessages, windowLength } from '../llm';
 
 /** Model used when nothing is configured and LiteLLM is not set up (works offline). */
 export const OFFLINE_FALLBACK_MODEL = 'mock/echo';
@@ -149,15 +149,20 @@ export async function chooseChatModel(
   return model;
 }
 
-/** Latest messages of the session for a run, without partial output of retried attempts. */
+/**
+ * Latest messages of the session for a run (at most CHAT_HISTORY_LIMIT, cut in steps:
+ * windowLength), without partial output of retried attempts.
+ */
 export function chatHistory(ctx: DaemonContext, run: Run, session: Session): Message[] {
   const skip = retryChain(ctx, run);
+  const total = ctx.repos.messages.count({ where: { session_id: session.id } });
   return ctx.repos.messages
     .find({
       where: { session_id: session.id },
       orderBy: 'id',
       direction: 'desc',
-      limit: CHAT_HISTORY_LIMIT,
+      // Cut in steps (windowLength), so the history stays a prefix the prompt cache can hold.
+      limit: windowLength(total, CHAT_HISTORY_LIMIT),
     })
     .reverse()
     .filter((m) => !m.runId || !skip.has(m.runId));
