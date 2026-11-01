@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { allowlistedEnv } from '../runtime/env';
+import { allowlistedEnv, system32 } from '../runtime/env';
 
 export interface CommandResult {
   exitCode: number | null;
@@ -52,7 +52,7 @@ export function redactSecrets(
 /** Kill a process and everything it spawned (shell + test runner + workers). */
 function killTree(pid: number): void {
   if (process.platform === 'win32') {
-    const k = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
+    const k = spawn(system32('taskkill.exe'), ['/pid', String(pid), '/T', '/F'], {
       stdio: 'ignore',
       windowsHide: true,
     });

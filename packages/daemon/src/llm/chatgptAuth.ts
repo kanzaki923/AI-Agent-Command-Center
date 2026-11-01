@@ -4,6 +4,7 @@ import { type Server, type ServerResponse, createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { ChatGptCredentials, ChatGptStatus } from '@acc/protocol';
 import type { Logger } from '../core/log';
+import { system32 } from '../runtime/env';
 
 /** Where the OSS flow of "Sign in with ChatGPT" lives (developers.openai.com/siwc). */
 export const CHATGPT_AUTH_BASE = 'https://auth.openai.com';
@@ -57,7 +58,7 @@ function openWithOs(url: string): void {
   try {
     const [cmd, args] =
       process.platform === 'win32'
-        ? ['rundll32', ['url.dll,FileProtocolHandler', url]]
+        ? [system32('rundll32.exe'), ['url.dll,FileProtocolHandler', url]]
         : process.platform === 'darwin'
           ? ['open', [url]]
           : ['xdg-open', [url]];

@@ -1,3 +1,5 @@
+import { statSync } from 'node:fs';
+import path from 'node:path';
 import type { Settings } from '@acc/protocol';
 
 /**
@@ -180,6 +182,9 @@ export function buildChildEnv(
   // the CLI exits, or reported in a notification turn after our result). Observed against
   // the real CLI: with this set, the Agent tool waits for the sub-agent.
   env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = '1';
+  // cmd.exe would otherwise look a program up in the current directory (the workspace the
+  // agent writes) before PATH; with this set it runs one there only when named as `.\x`.
+  env.NoDefaultCurrentDirectoryInExePath = '1';
   if (opts.clientApp) env.CLAUDE_AGENT_SDK_CLIENT_APP = opts.clientApp;
   return env;
 }
@@ -187,4 +192,45 @@ export function buildChildEnv(
 /** Variable names only (safe to log). */
 export function envKeys(env: Record<string, string>): string[] {
   return Object.keys(env).sort();
+}
+
+/**
+ * A program by absolute path, from the absolute PATH entries only. A bare name spawned on
+ * Windows is searched in the child's cwd before PATH, and the cwds the daemon spawns in are
+ * folders agents write to: a `git.exe` dropped there would run in place of git, outside every
+ * tool check. A relative entry (`.`, or `\bin` without a drive) is a cwd again, so it does
+ * not count. Windows entries may be quoted. Without an extension on Windows, `.com` then
+ * `.exe` (what a spawn would try).
+ */
+export function findOnPath(
+  name: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  isFile: (p: string) => boolean = defaultIsFile,
+): string | null {
+  const win = platform === 'win32';
+  const paths = win ? path.win32 : path.posix;
+  const names = win && !paths.extname(name) ? [`${name}.com`, `${name}.exe`] : [name];
+  for (const raw of (env.PATH || env.Path || '').split(paths.delimiter)) {
+    const dir = win ? raw.replaceAll('"', '').trim() : raw;
+    if (!(win ? /^([A-Za-z]:[\\/]|\\\\)/.test(dir) : paths.isAbsolute(dir))) continue;
+    for (const n of names) {
+      const candidate = paths.join(dir, n);
+      if (isFile(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+function defaultIsFile(p: string): boolean {
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** A Windows system program (`taskkill.exe`) by absolute path, never looked up by name. */
+export function system32(exe: string, env: NodeJS.ProcessEnv = process.env): string {
+  return path.win32.join(env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows', 'System32', exe);
 }

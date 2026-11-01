@@ -18,9 +18,28 @@ function checkRepoPath(path: string | null | undefined, field = 'repoPath'): voi
  * How much agents may do without asking is a human's call: an agent with project.update
  * must not move its own project to a looser profile.
  */
-function checkProfileChange(profile: unknown, actor: Actor): void {
-  if (profile !== undefined && actor.kind === 'agent') {
+/**
+ * What bounds the agents of a project is the human's to set: its tool permissions, the
+ * folders they may work in (an agent's folder must lie in `folderPath`), and the test
+ * command the daemon runs in a shell.
+ */
+function checkHumanOnly(
+  p: {
+    permissionProfile?: unknown;
+    repoPath?: unknown;
+    folderPath?: unknown;
+    testCommand?: unknown;
+  },
+  actor: Actor,
+): void {
+  if (actor.kind !== 'agent') return;
+  if (p.permissionProfile !== undefined) {
     throw forbidden('権限プロファイルを変えられるのは人間だけです');
+  }
+  if (p.repoPath !== undefined || p.folderPath !== undefined || p.testCommand !== undefined) {
+    throw forbidden(
+      'プロジェクトのリポジトリ・フォルダ・テストコマンドを決められるのは人間だけです',
+    );
   }
 }
 
@@ -44,7 +63,7 @@ export const projectsModule = defineModule({
           db.transaction(() => {
             checkRepoPath(p.repoPath);
             checkRepoPath(p.folderPath, 'folderPath');
-            checkProfileChange(p.permissionProfile, call.actor);
+            checkHumanOnly(p, call.actor);
             const now = ctx.clock.iso();
             const project = repos.projects.insert({
               id: ctx.ids.next('project'),
@@ -89,7 +108,7 @@ export const projectsModule = defineModule({
           db.transaction(() => {
             checkRepoPath(p.repoPath);
             checkRepoPath(p.folderPath, 'folderPath');
-            checkProfileChange(p.permissionProfile, call.actor);
+            checkHumanOnly(p, call.actor);
             const changes: string[] = [];
             const project = repos.projects.update(p.projectId, (cur) => {
               const next: Project = { ...cur };

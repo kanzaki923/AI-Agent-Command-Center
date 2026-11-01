@@ -377,12 +377,18 @@ export const api = defineApi({
     params: params({
       name: z.string().min(1).max(200),
       description: z.string().max(10_000).optional(),
-      repoPath: z.string().min(1).optional().describe('Absolute path of a local git repository'),
+      repoPath: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Absolute path of a local git repository. Humans only'),
       folderPath: z
         .string()
         .min(1)
         .optional()
-        .describe('Absolute path of an ordinary folder the agents may read (no git needed)'),
+        .describe(
+          'Absolute path of an ordinary folder the agents may read (no git needed). Humans only',
+        ),
       defaultBranch: z.string().min(1).optional(),
       defaultModel: z.string().min(1).optional(),
       testCommand: z
@@ -390,7 +396,7 @@ export const api = defineApi({
         .min(1)
         .max(2000)
         .optional()
-        .describe('Shell command that verifies the project, e.g. "pnpm test"'),
+        .describe('Shell command that verifies the project, e.g. "pnpm test". Humans only'),
       commitAuthor: CommitAuthor.optional(),
       permissionProfile: PermissionProfile.optional().describe(
         "Agents' tool permissions; omitted follows the global default",
@@ -425,11 +431,11 @@ export const api = defineApi({
       projectId: ProjectId,
       name: z.string().min(1).max(200).optional(),
       description: z.string().max(10_000).nullable().optional(),
-      repoPath: z.string().min(1).nullable().optional(),
-      folderPath: z.string().min(1).nullable().optional(),
+      repoPath: z.string().min(1).nullable().optional().describe('Humans only'),
+      folderPath: z.string().min(1).nullable().optional().describe('Humans only'),
       defaultBranch: z.string().min(1).nullable().optional(),
       defaultModel: z.string().min(1).nullable().optional(),
-      testCommand: z.string().min(1).max(2000).nullable().optional(),
+      testCommand: z.string().min(1).max(2000).nullable().optional().describe('Humans only'),
       commitAuthor: CommitAuthor.nullable().optional(),
       permissionProfile: PermissionProfile.nullable()
         .optional()
@@ -490,7 +496,7 @@ export const api = defineApi({
       systemPrompt: z.string().max(100_000).nullable().optional(),
       pinned: z.boolean().optional(),
       projectId: ProjectId.nullable().optional(),
-      workspaceId: WorkspaceId.nullable().optional(),
+      workspaceId: WorkspaceId.nullable().optional().describe('Humans only'),
     }),
     result: Session,
     description: 'Update session properties.',

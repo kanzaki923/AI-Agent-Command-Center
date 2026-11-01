@@ -7,7 +7,7 @@
  * turns the final answer into a document (T3), attention.open stores the item (T4),
  * and inbox.deliver is spied on to record what the parent is told (the real inbox delivers).
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentActor, Attention, Run, Session, Task } from '@acc/protocol';
@@ -346,6 +346,48 @@ describe('session.spawn: four ways to start a child', () => {
         }),
       ),
     ).toBe('invalid_params');
+  });
+
+  it('agents stay in the project folder: not through a link out of it, nor moved there later', async () => {
+    const h = await setup();
+    const { d } = h;
+    const folder = tempDir('acc-proj-');
+    const outside = tempDir('acc-outside-');
+    const link = join(folder, 'link');
+    symlinkSync(outside, link, 'junction');
+    const project = await d.call(HUMAN, 'project.create', { name: '資料', folderPath: folder });
+    const sup = await supervisor(d, {
+      permissions: ['session.spawn', 'session.get', 'session.update'],
+    });
+    const spawn = (path: string) =>
+      d.call(sup.actor, 'session.spawn', {
+        title: 'x',
+        goal: 'x',
+        projectId: project.id,
+        workspace: { kind: 'folder', path },
+        start: false,
+      });
+    // Inside as written, outside once the junction is followed.
+    expect(await codeOf(spawn(link))).toBe('forbidden');
+    expect(await codeOf(spawn(join(link, 'sub')))).toBe('forbidden');
+    const child = await spawn(folder);
+    // A workspace a human made elsewhere: an agent cannot move its child into it.
+    const theirs = await d.call(HUMAN, 'session.spawn', {
+      title: 'y',
+      goal: 'y',
+      workspace: { kind: 'folder', path: outside },
+      start: false,
+    });
+    const move = (workspaceId: string | null) =>
+      d.call(sup.actor, 'session.update', { sessionId: child.session.id, workspaceId });
+    expect(await codeOf(move(theirs.session.workspaceId))).toBe('forbidden');
+    expect(await codeOf(move(null))).toBe('forbidden');
+    // The agent may still update the child otherwise.
+    expect(
+      await codeOf(
+        d.call(sup.actor, 'session.update', { sessionId: child.session.id, title: 'z' }),
+      ),
+    ).toBe('ok');
   });
 
   it('agent + worktree: code changes go to review; a project needs no git otherwise', async () => {

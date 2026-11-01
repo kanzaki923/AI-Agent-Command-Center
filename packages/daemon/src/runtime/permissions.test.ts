@@ -276,6 +276,10 @@ describe('gray zone by profile', () => {
     [['WebFetch', { url: 'https://example.com' }], 'network_read', 'ask', 'allow', 'allow'],
     ['mkdir -p build && cp src/a.ts build/', 'command_other', 'ask', 'allow', 'allow'],
     ['for f in src/*.ts; do wc -l $f; done', 'command_other', 'ask', 'allow', 'allow'],
+    // cmd.exe runs a `git.bat` the agent wrote in the cwd before git on PATH.
+    ['cmd /c git status', 'command_other', 'ask', 'allow', 'allow'],
+    ['MSYS_NO_PATHCONV=1 cmd /c git status', 'command_other', 'ask', 'allow', 'allow'],
+    [['PowerShell', { command: 'cmd /c git status' }], 'command_other', 'ask', 'allow', 'allow'],
     ['cat /etc/os-release', 'outside_read', 'ask', 'ask', 'deny'],
     [['Read', { file_path: '/opt/lib/include/x.h' }], 'outside_read', 'ask', 'ask', 'deny'],
     [['mcp__github__create_issue', {}], 'unknown_tool', 'ask', 'ask', 'deny'],

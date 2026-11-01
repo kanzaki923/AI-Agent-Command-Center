@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { abortError } from '../../async';
-import { allowlistedEnv } from '../../env';
+import { allowlistedEnv, findOnPath } from '../../env';
 import { describeToolActivity } from '../../tools';
 import type { StepHandler } from './types';
 
@@ -43,14 +43,22 @@ export const runStep: StepHandler<'run'> = async function* (ctx, step) {
   return 'next';
 };
 
-/** Run a command without a shell. `node` means this daemon's Node binary. */
+/**
+ * Run a command without a shell. `node` means this daemon's Node binary; another bare name
+ * is found on PATH by absolute path (`findOnPath`: the cwd is the agent's workspace).
+ */
 export function execCommand(
   command: string,
   args: string[],
   opts: { cwd: string; env: Record<string, string>; timeoutMs: number; signal: AbortSignal },
 ): Promise<{ code: number | null; output: string }> {
   if (opts.signal.aborted) return Promise.reject(abortError(opts.signal));
-  const exe = command === 'node' ? process.execPath : command;
+  const bare = !/[\\/]/.test(command);
+  const exe =
+    command === 'node' ? process.execPath : bare ? findOnPath(command, opts.env) : command;
+  if (!exe) {
+    return Promise.resolve({ code: null, output: `コマンドが見つかりません: ${command}` });
+  }
   return new Promise((resolve, reject) => {
     let output = '';
     let settled = false;

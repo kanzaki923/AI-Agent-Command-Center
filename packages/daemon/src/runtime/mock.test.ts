@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -6,6 +6,8 @@ import type { AgentEvent, AgentRunInput, ApprovalDecision } from '../contracts';
 import { type ToolDecisionRecord, ToolGate } from './gate';
 import { MockPlanError, parseMockPlan } from './mock/plan';
 import { MockAgentRuntime, acceptanceCriteria, slugify, taskTitle } from './mock/runtime';
+import { execCommand } from './mock/steps/run';
+import { allowlistedEnv } from './env';
 
 let dir: string;
 beforeEach(() => {
@@ -323,5 +325,30 @@ describe('MockAgentRuntime plans', () => {
       slow.run(input(plan({ steps: [{ type: 'say', text: 'こんにちは' }], delayScale: 0 })).base),
     );
     expect(Date.now() - started).toBeLessThan(150);
+  });
+});
+
+describe('mock run step: commands', () => {
+  it('runs a bare name found on PATH, never one dropped in the workspace (its cwd)', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'acc-mock-cwd-'));
+    try {
+      const run = (command: string) =>
+        execCommand(command, ['--version'], {
+          cwd,
+          env: allowlistedEnv(process.env),
+          timeoutMs: 20_000,
+          signal: new AbortController().signal,
+        });
+      expect(await run('git')).toMatchObject({ code: 0, output: expect.stringContaining('git') });
+      // A planted program by that name in the cwd is not on PATH: not found, not run.
+      writeFileSync(join(cwd, 'acc-planted.exe'), '');
+      writeFileSync(join(cwd, 'acc-planted'), '');
+      expect(await run('acc-planted')).toEqual({
+        code: null,
+        output: 'コマンドが見つかりません: acc-planted',
+      });
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 });

@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { devNull } from 'node:os';
 import path from 'node:path';
-import { BASE_ENV_ALLOWLIST, allowlistedEnv } from '../runtime/env';
+import { BASE_ENV_ALLOWLIST, allowlistedEnv, findOnPath } from '../runtime/env';
 
 /**
  * Thin async wrapper around the git CLI. Always spawned with an argument array (never a
@@ -74,35 +74,9 @@ const BASE_ENV: Record<string, string> = {
 };
 
 /**
- * The git executable by absolute path, from the absolute PATH entries only. A bare `git`
- * on Windows is searched in the child's cwd before PATH, and the cwd is a worktree agents
- * write to: a `git.exe` dropped there would run as the daemon, outside every tool check.
- * A relative PATH entry is the cwd again, so it does not count either.
+ * git by absolute path (`findOnPath`: the cwd is a worktree agents write to). Found once;
+ * not found is looked up again on the next call (git may be installed later).
  */
-export function findGit(
-  env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform,
-  isFile: (p: string) => boolean = defaultIsFile,
-): string | null {
-  const paths = platform === 'win32' ? path.win32 : path.posix;
-  const exe = platform === 'win32' ? 'git.exe' : 'git';
-  for (const dir of (env.PATH ?? env.Path ?? '').split(paths.delimiter)) {
-    if (!dir || !paths.isAbsolute(dir)) continue;
-    const candidate = paths.join(dir, exe);
-    if (isFile(candidate)) return candidate;
-  }
-  return null;
-}
-
-function defaultIsFile(p: string): boolean {
-  try {
-    return statSync(p).isFile();
-  } catch {
-    return false;
-  }
-}
-
-/** Found once. Not found is looked up again on the next call (git may be installed later). */
 let gitPath: string | null = null;
 
 function gitNotFound(args: readonly string[], cwd: string): GitError {
@@ -132,7 +106,7 @@ export function git(
   } catch (err) {
     return Promise.reject(err instanceof Error ? err : new Error(String(err)));
   }
-  gitPath ??= findGit();
+  gitPath ??= findOnPath('git');
   if (!gitPath) return Promise.reject(gitNotFound(args, cwd));
   const bin = gitPath;
   return new Promise((resolvePromise, reject) => {

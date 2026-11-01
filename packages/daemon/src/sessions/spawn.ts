@@ -23,7 +23,7 @@ import { runKindFor } from '../inbox/supervision';
 import { delegateSession } from '../orchestrator/grant';
 import { freeUsd } from '../policy/budget';
 import { CHILD_DEFAULT_PERMISSIONS, CHILD_GRANT_REASON } from '../policy/grants';
-import { isInside } from '../runtime/policy';
+import { isInside, realpathDeep } from '../runtime/policy';
 import { truncate } from '../runtime/tools';
 import { resolveChatModel } from './chat';
 import { sessionBudgetId } from './methods/shared';
@@ -557,7 +557,9 @@ export function assertAgentFolder(
   path: string,
 ): void {
   const project = projectId ? ctx.repos.projects.get(projectId) : undefined;
-  if (!project?.folderPath || !isInside(path, project.folderPath)) {
+  const root = project?.folderPath;
+  // Also after resolving links: a junction inside the project folder may lead anywhere.
+  if (!root || !isInside(path, root) || !isInside(realpathDeep(path), realpathDeep(root))) {
     throw forbidden('エージェントが作業場所にできるフォルダは、プロジェクトのフォルダの中だけです');
   }
 }

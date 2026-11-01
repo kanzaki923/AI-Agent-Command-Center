@@ -599,12 +599,47 @@ describe('5. schedules made by an AI', () => {
       sessionId: t.supervisor.id,
       projectId: project.id,
     });
-    expect(await codeOf(aiCreate(env, t.actor, t.supervisor.id, run(join(folder, 'sub'))))).toBe(
-      'ok',
-    );
+    const inside = await aiCreate(env, t.actor, t.supervisor.id, run(join(folder, 'sub')));
     expect(await codeOf(aiCreate(env, t.actor, t.supervisor.id, run(tmpdir())))).toBe('forbidden');
     // Humans choose any folder.
     expect(await codeOf(daily9(env, t.other.id, run(tmpdir())))).toBe('ok');
+    // Checked again at each firing: the owner left the project since.
+    await env.d.call(HUMAN, 'session.update', { sessionId: t.supervisor.id, projectId: null });
+    await wake(env, '2026-11-09T00:00:00Z');
+    expect(get(env, inside.id).lastRun).toMatchObject({
+      outcome: 'failed_to_start',
+      error: expect.stringContaining('プロジェクトのフォルダの中だけ'),
+    });
+    expect(get(env, own.id).lastRun).toMatchObject({ outcome: 'started' });
+  });
+
+  it('a model only from the roster, when made and at each firing', async () => {
+    const env = await setup();
+    const t = await aiTree(env);
+    await env.d.call(HUMAN, 'settings.update', {
+      modelRules: [{ model: 'm-cheap', when: '軽い作業' }],
+    });
+    const model = (m: string) => ({ run: { model: m } });
+    expect(await codeOf(aiCreate(env, t.actor, t.supervisor.id, model('m-pricey')))).toBe(
+      'invalid_params',
+    );
+    const ok = await aiCreate(env, t.actor, t.supervisor.id, model('m-cheap'));
+    expect(
+      await codeOf(
+        env.d.call(t.actor, 'schedule.update', { scheduleId: ok.id, ...model('m-pricey') }),
+      ),
+    ).toBe('invalid_params');
+    // Humans choose any model.
+    expect(await codeOf(daily9(env, t.other.id, model('m-pricey')))).toBe('ok');
+    // The roster changed after it was made: the firing does not start.
+    await env.d.call(HUMAN, 'settings.update', {
+      modelRules: [{ model: 'm-other', when: '何でも' }],
+    });
+    await wake(env, '2026-11-09T00:00:00Z');
+    expect(get(env, ok.id).lastRun).toMatchObject({
+      outcome: 'failed_to_start',
+      error: expect.stringContaining('名簿にありません'),
+    });
   });
 
   it("each firing carves its budget from the creator's budget; too little → failed_to_start + attention", async () => {

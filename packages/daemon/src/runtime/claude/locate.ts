@@ -1,7 +1,8 @@
 import { existsSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
+import { dirname, join, posix, win32 } from 'node:path';
+import { findOnPath } from '../env';
 import { fileURLToPath } from 'node:url';
 
 /**
@@ -44,6 +45,13 @@ export function locateClaudeCode(opts: LocateClaudeCodeOptions = {}): ClaudeCode
 
   const explicit = env[CLAUDE_CODE_PATH_ENV];
   if (explicit) {
+    // A relative path would be found from the cwd of the run, which is the workspace.
+    if (!(platform === 'win32' ? win32 : posix).isAbsolute(explicit)) {
+      return {
+        ok: false,
+        reason: `${CLAUDE_CODE_PATH_ENV} は絶対パスで指定してください: ${explicit}`,
+      };
+    }
     if (isFile(explicit)) return { ok: true, path: explicit, source: 'env' };
     return {
       ok: false,
@@ -60,12 +68,9 @@ export function locateClaudeCode(opts: LocateClaudeCodeOptions = {}): ClaudeCode
   const sdk = (opts.resolveSdkBinary ?? (() => resolveSdkBinary(platform, opts.arch)))();
   if (sdk && isFile(sdk)) return { ok: true, path: sdk, source: 'sdk' };
 
-  const pathVar = env.PATH ?? env.Path ?? '';
-  for (const dir of pathVar.split(platform === 'win32' ? ';' : delimiter)) {
-    if (!dir) continue;
-    const candidate = join(dir, exe);
-    if (isFile(candidate)) return { ok: true, path: candidate, source: 'path' };
-  }
+  // Absolute PATH entries only: the SDK spawns the CLI with the workspace as its cwd.
+  const onPath = findOnPath(exe, env, platform, isFile);
+  if (onPath) return { ok: true, path: onPath, source: 'path' };
 
   const home = opts.home ?? homedir();
   const local = join(home, '.local', 'bin', exe);

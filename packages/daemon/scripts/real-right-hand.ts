@@ -9,7 +9,8 @@ import { startDaemon } from '../src/daemon';
 import { silentLogger } from '../src/core/log';
 
 const MODEL = process.argv[2] ?? 'claude-haiku-5-5';
-const OUT = process.argv[3] ?? join(process.cwd(), 'real-right-hand.txt');
+// Outside the repo by default: it holds a real conversation.
+const OUT = process.argv[3] ?? join(tmpdir(), 'acc-real-right-hand.txt');
 const HUMAN: Actor = { kind: 'human', client: 'real-check' };
 // Which provider the model names decides which key is needed: `anthropic/…` takes
 // ACC_ANTHROPIC_API_KEY (the Messages API), `openai/…` ACC_OPENAI_API_KEY (the Responses
@@ -114,6 +115,7 @@ try {
   );
 } finally {
   writeFileSync(OUT, lines.join('\n'));
+  console.log(`書き出し: ${OUT}`);
   await daemon.close();
   rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   rmSync(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

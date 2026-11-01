@@ -1,7 +1,7 @@
 import type { Session } from '@acc/protocol';
 import { defineMethod } from '../../api/registry';
 import type { DaemonContext } from '../../core/context';
-import { invalidParams } from '../../core/errors';
+import { forbidden, invalidParams } from '../../core/errors';
 import { assertRosterModel } from '../../llm/roster';
 import { sessionScope } from './shared';
 
@@ -16,6 +16,11 @@ export function sessionUpdate(ctx: DaemonContext) {
     },
     handler: (p, call) =>
       db.transaction(() => {
+        // Where a session works is chosen when it is made (with the checks for agents there);
+        // moved later, an agent could put a child in any workspace a human made.
+        if (call.actor.kind === 'agent' && p.workspaceId !== undefined) {
+          throw forbidden('会話の作業場所を付け替えられるのは人だけです');
+        }
         if (p.model) {
           const s = repos.sessions.require(p.sessionId);
           assertRosterModel(ctx, call.actor, p.model, {

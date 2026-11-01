@@ -1028,6 +1028,9 @@ class Analyzer {
       const i = lower.findIndex((a) => a === '/c' || a === '/k');
       if (i >= 0) {
         this.script(args.slice(i + 1).join(' '), 'posix', depth + 1);
+        // cmd.exe looks a program up in the current directory before PATH, so `git status`
+        // may run a `git.bat` the agent wrote there: nothing it runs is read-only.
+        this.cat('command_other');
         return;
       }
       this.cat('command_other');

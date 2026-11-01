@@ -601,6 +601,7 @@ describe('ClaudeAgentSdkRuntime', () => {
       CLAUDE_CODE_SUBAGENT_MODEL: 'team-sonnet',
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
       CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
+      NoDefaultCurrentDirectoryInExePath: '1',
       CLAUDE_AGENT_SDK_CLIENT_APP: 'acc/test',
     });
     expect(q.prompts[0]).toMatchObject({

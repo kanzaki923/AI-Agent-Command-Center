@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { locateClaudeCode } from './locate';
 
@@ -44,6 +44,28 @@ describe('locateClaudeCode', () => {
       resolveSdkBinary: none,
     });
     expect(missing).toMatchObject({ ok: false, reason: expect.stringContaining('nope.exe') });
+
+    // Relative: it would be found from the cwd of the run (the workspace), never used.
+    const relative = locateClaudeCode({
+      env: { ACC_CLAUDE_CODE_PATH: 'claude.exe' },
+      platform: 'win32',
+      bundleDir: join(root, 'bundle'),
+      resolveSdkBinary: none,
+      isFile: () => true,
+    });
+    expect(relative).toMatchObject({ ok: false, reason: expect.stringContaining('絶対パス') });
+  });
+
+  it('skips relative PATH entries (`.` is the workspace the CLI runs in)', () => {
+    const r = locateClaudeCode({
+      env: { PATH: '.;bin' },
+      platform: 'win32',
+      bundleDir: null,
+      home: tmp(),
+      resolveSdkBinary: none,
+      isFile: (p) => !p.includes(':') && p.endsWith('claude.exe'),
+    });
+    expect(r).toMatchObject({ ok: false });
   });
 
   it('then a binary shipped next to the bundle, then the SDK package, then PATH, then ~/.local/bin', () => {
@@ -51,27 +73,29 @@ describe('locateClaudeCode', () => {
     const bundleDir = join(root, 'resources', 'daemon');
     const pathDir = join(root, 'bin');
     const home = join(root, 'home');
-    const sdkBin = join(root, 'sdk', 'claude');
+    // The real platform: PATH entries are this machine's paths.
+    const exe = process.platform === 'win32' ? 'claude.exe' : 'claude';
+    const sdkBin = join(root, 'sdk', exe);
     const base = {
-      env: { PATH: [join(root, 'empty'), pathDir].join(process.platform === 'win32' ? ';' : ':') },
-      platform: 'linux' as const,
+      env: { PATH: [join(root, 'empty'), pathDir].join(delimiter) },
+      platform: process.platform,
       bundleDir,
       home,
       resolveSdkBinary: () => sdkBin,
     };
     expect(locateClaudeCode(base)).toMatchObject({ ok: false });
 
-    touch(join(home, '.local', 'bin', 'claude'));
+    touch(join(home, '.local', 'bin', exe));
     expect(locateClaudeCode(base)).toMatchObject({ ok: true, source: 'home' });
-    touch(join(pathDir, 'claude'));
+    touch(join(pathDir, exe));
     expect(locateClaudeCode(base)).toEqual({
       ok: true,
-      path: join(pathDir, 'claude'),
+      path: join(pathDir, exe),
       source: 'path',
     });
     touch(sdkBin);
     expect(locateClaudeCode(base)).toEqual({ ok: true, path: sdkBin, source: 'sdk' });
-    touch(join(bundleDir, 'claude', 'claude'));
+    touch(join(bundleDir, 'claude', exe));
     expect(locateClaudeCode(base)).toMatchObject({ ok: true, source: 'bundled' });
   });
 

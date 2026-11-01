@@ -11,8 +11,7 @@ import {
 import { type CallScope, defineMethod } from '../api/registry';
 import type { DaemonContext } from '../core/context';
 import { ApiError, conflict, forbidden, invalidParams, limitExceeded } from '../core/errors';
-import { assertAgentFolder } from '../sessions/spawn';
-import { type Scheduler, truncate } from './scheduler';
+import { type Scheduler, assertAgentRun, truncate } from './scheduler';
 import { nextFires, nextRunAfter, normalizeTrigger } from './time';
 
 /** Schedules an AI may keep running at once when its grant names no `maxSchedules`. */
@@ -73,19 +72,14 @@ function assertAgentMayChange(actor: Actor, s: Schedule): void {
   }
 }
 
-/**
- * A firing spawns as the scheduler (a system actor) in the owner's project, so a folder an
- * agent names is checked here, against that project, as the spawn would for the agent.
- */
 function assertWorkspace(
   ctx: DaemonContext,
   run: ScheduleRunSpec,
   actor: Actor,
   owner: Session,
 ): void {
-  if (actor.kind === 'agent' && run.mode === 'agent' && run.workspace.kind === 'folder') {
-    assertAgentFolder(ctx, owner.projectId, run.workspace.path);
-  }
+  // Also checked at each firing (the scheduler); here so the agent hears it now.
+  if (actor.kind === 'agent') assertAgentRun(ctx, run, owner, actor);
   if (run.mode === 'agent' && run.workspace.kind === 'worktree') {
     const project = ctx.repos.projects.require(run.workspace.projectId);
     if (!project.repoPath)

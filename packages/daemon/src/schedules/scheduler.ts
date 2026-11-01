@@ -1,11 +1,13 @@
 import {
   type Actor,
+  type AgentActor,
   type Artifact,
   type ErrorCode,
   type Params,
   type Schedule,
   type ScheduleLastRun,
   type ScheduleOutcome,
+  type ScheduleRunSpec,
   type Session,
   type SystemActor,
   RECOVERABLE_RUN_STATUSES,
@@ -13,7 +15,9 @@ import {
 import type { SchedulerService, SpawnOptions, SpawnerService } from '../contracts';
 import type { DaemonContext } from '../core/context';
 import { isApiError } from '../core/errors';
+import { assertRosterModel } from '../llm/roster';
 import { freeUsd } from '../policy/budget';
+import { assertAgentFolder } from '../sessions/spawn';
 import { firingLabel, planDue } from './time';
 
 /** Who starts the children of firings (`startedBy: schedule` in the home view). */
@@ -67,6 +71,28 @@ const ACTIVE_TASK_STATUSES = ['pending', 'ready', 'running'] as const;
  * (no polling); firings and catch-up run one at a time so the overlap check and the spawn
  * cannot interleave.
  */
+/**
+ * What an agent may ask a schedule to run. A firing spawns as the scheduler (a system actor),
+ * so the checks the spawn makes for agents are made here instead: a folder only inside the
+ * owner's project folder, a model only from the roster.
+ */
+export function assertAgentRun(
+  ctx: DaemonContext,
+  run: ScheduleRunSpec,
+  owner: Session,
+  agent: AgentActor,
+): void {
+  if (run.mode === 'agent' && run.workspace.kind === 'folder') {
+    assertAgentFolder(ctx, owner.projectId, run.workspace.path);
+  }
+  if (run.model) {
+    const runtime = ctx.settings.get().defaultRuntime ?? 'mock';
+    assertRosterModel(ctx, agent, run.model, {
+      agentRuntime: run.mode === 'agent' && runtime !== 'mock',
+    });
+  }
+}
+
 export class Scheduler implements SchedulerService {
   private readonly timers: TimerHost;
   private timer: unknown = null;
@@ -253,6 +279,17 @@ export class Scheduler implements SchedulerService {
     const owner = this.ctx.repos.sessions.get(s.sessionId);
     if (!owner) return fail('持ち主の会話がありません', 'not_found');
     if (owner.archivedAt) return fail('持ち主の会話はアーカイブされています', 'conflict');
+    if (s.createdBy.kind === 'agent') {
+      // Checked when made, and again now: the owner's project may have changed since.
+      try {
+        assertAgentRun(this.ctx, s.run, owner, s.createdBy);
+      } catch (err) {
+        return fail(
+          err instanceof Error ? err.message : String(err),
+          isApiError(err) ? err.code : 'internal',
+        );
+      }
+    }
 
     const previous = this.childrenOf(s, 5);
     if (previous[0] && this.isUnfinished(previous[0].id)) {

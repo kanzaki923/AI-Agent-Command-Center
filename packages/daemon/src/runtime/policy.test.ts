@@ -7,8 +7,10 @@ import {
   allowlistedEnv,
   buildChildEnv,
   envKeys,
+  findOnPath,
   normalizeAnthropicBaseUrl,
   resolveModelRouting,
+  system32,
 } from './env';
 import { decideToolPermission, isInside, realpathDeep } from './policy';
 import { approvalDetailFor, approvalTitleFor, describeToolActivity } from './tools';
@@ -289,6 +291,31 @@ describe('child env', () => {
     expect(env).not.toHaveProperty('ANTHROPIC_API_KEY');
     // Logging uses names only.
     expect(envKeys(env).join(',')).not.toContain('sk-litellm');
+  });
+
+  it('tells cmd.exe not to run programs from the workspace (the cwd) before PATH', () => {
+    const routing = resolveModelRouting(Settings.parse({}), null);
+    expect(buildChildEnv(parent, routing).NoDefaultCurrentDirectoryInExePath).toBe('1');
+  });
+
+  it('finds programs by absolute path, never in the cwd (a workspace agents write to)', () => {
+    const exe = 'C:\\Git\\cmd\\git.exe';
+    const spaced = 'C:\\Program Files\\Git\\cmd\\git.exe';
+    const files = new Set([exe, spaced, '/usr/bin/git', 'git.exe', 'git']);
+    const isFile = (p: string) => files.has(p);
+    const find = (env: NodeJS.ProcessEnv, platform: NodeJS.Platform) =>
+      findOnPath('git', env, platform, isFile);
+    // Relative entries (`.`, empty, `\Git\cmd` without a drive) are the cwd again: skipped.
+    expect(find({ PATH: '.;;\\Git\\cmd;C:\\Git\\cmd' }, 'win32')).toBe(exe);
+    expect(find({ Path: '"C:\\Program Files\\Git\\cmd"' }, 'win32')).toBe(spaced);
+    expect(find({ PATH: '.:/usr/bin' }, 'linux')).toBe('/usr/bin/git');
+    expect(find({ PATH: '.' }, 'win32')).toBeNull();
+    expect(find({}, 'linux')).toBeNull();
+    // The machine running the tests has git on PATH.
+    expect(findOnPath('git')).toMatch(/git(\.exe)?$/);
+    expect(system32('taskkill.exe', { SystemRoot: 'D:\\Win' })).toBe(
+      'D:\\Win\\System32\\taskkill.exe',
+    );
   });
 
   it('normalizes base urls', () => {
