@@ -3,6 +3,9 @@
  * permissions (allowed and denied), the roots it starts, the limit of three per message, its
  * daily limit, and the offline `mock/right-hand` through the real tool loop.
  */
+import { mkdtempSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Message, Run } from '@acc/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ApiError } from '../core/errors';
@@ -19,8 +22,10 @@ import { STATUS_HEADING, buildAssistantPrompt, statusBlock } from './prompt';
 import { titleFromRequest } from './service';
 
 const daemons: TestDaemonNoServer[] = [];
+const folders: string[] = [];
 afterEach(async () => {
   for (const d of daemons.splice(0)) await d.cleanup();
+  for (const f of folders.splice(0)) rmSync(f, { recursive: true, force: true, maxRetries: 5 });
 });
 
 async function daemon() {
@@ -173,6 +178,39 @@ describe('assistant.startWork', () => {
     const next = agentActor(sessionId, 'run_00000000000000000000000000001');
     await expect(
       d.call(next, 'assistant.startWork', { text: '次の言葉', delegate: false }),
+    ).resolves.toBeTruthy();
+  });
+
+  it('the assistant works alone only in a folder inside a project folder; delegated, the children are checked', async () => {
+    const d = await daemon();
+    const folder = mkdtempSync(join(tmpdir(), 'acc-assistant-folder-'));
+    folders.push(folder);
+    const project = await d.call(HUMAN, 'project.create', { name: '資料', folderPath: folder });
+    const { sessionId } = await d.call(HUMAN, 'system.assistant', {});
+    const me = agentActor(sessionId, 'run_00000000000000000000000000');
+    const alone = (path: string, projectId?: string) =>
+      d.call(me, 'assistant.startWork', {
+        text: '整えて',
+        delegate: false,
+        workspace: { kind: 'folder', path },
+        ...(projectId ? { projectId } : {}),
+      });
+    // The session is created by the system actor; the folder is still the assistant's pick.
+    await expect(alone(homedir())).rejects.toMatchObject({ code: 'forbidden' });
+    await expect(alone(folder)).rejects.toMatchObject({ code: 'forbidden' });
+    await expect(alone(tmpdir(), project.id)).rejects.toMatchObject({ code: 'forbidden' });
+    // The refusals did not use up the three per message.
+    const { session } = await alone(folder, project.id);
+    expect(session.kind).toBe('agent');
+    // A human picks any folder.
+    const other = mkdtempSync(join(tmpdir(), 'acc-assistant-other-'));
+    folders.push(other);
+    await expect(
+      d.call(HUMAN, 'assistant.startWork', {
+        text: '整えて',
+        delegate: false,
+        workspace: { kind: 'folder', path: other },
+      }),
     ).resolves.toBeTruthy();
   });
 

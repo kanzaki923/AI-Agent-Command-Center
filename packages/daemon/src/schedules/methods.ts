@@ -3,6 +3,7 @@ import {
   type AgentActor,
   type Params,
   type Schedule,
+  type Session,
   type ScheduleRunSpec,
   DEFAULT_SCHEDULE_RUN,
   matchAnyPattern,
@@ -10,6 +11,7 @@ import {
 import { type CallScope, defineMethod } from '../api/registry';
 import type { DaemonContext } from '../core/context';
 import { ApiError, conflict, forbidden, invalidParams, limitExceeded } from '../core/errors';
+import { assertAgentFolder } from '../sessions/spawn';
 import { type Scheduler, truncate } from './scheduler';
 import { nextFires, nextRunAfter, normalizeTrigger } from './time';
 
@@ -71,7 +73,19 @@ function assertAgentMayChange(actor: Actor, s: Schedule): void {
   }
 }
 
-function assertWorkspace(ctx: DaemonContext, run: ScheduleRunSpec): void {
+/**
+ * A firing spawns as the scheduler (a system actor) in the owner's project, so a folder an
+ * agent names is checked here, against that project, as the spawn would for the agent.
+ */
+function assertWorkspace(
+  ctx: DaemonContext,
+  run: ScheduleRunSpec,
+  actor: Actor,
+  owner: Session,
+): void {
+  if (actor.kind === 'agent' && run.mode === 'agent' && run.workspace.kind === 'folder') {
+    assertAgentFolder(ctx, owner.projectId, run.workspace.path);
+  }
   if (run.mode === 'agent' && run.workspace.kind === 'worktree') {
     const project = ctx.repos.projects.require(run.workspace.projectId);
     if (!project.repoPath)
@@ -131,7 +145,7 @@ export function scheduleMethods(ctx: DaemonContext, scheduler: Scheduler) {
         if (call.actor.kind === 'agent') assertScheduleLimit(ctx, call.actor);
         const trigger = normalizeTrigger(p.trigger, defaultTz());
         const run = mergeRun(DEFAULT_SCHEDULE_RUN, p.run);
-        assertWorkspace(ctx, run);
+        assertWorkspace(ctx, run, call.actor, owner);
         const nowMs = ctx.clock.now();
         if (p.expiresAt && Date.parse(p.expiresAt) <= nowMs) {
           throw invalidParams('終わりの日時が過去です');
@@ -226,7 +240,9 @@ export function scheduleMethods(ctx: DaemonContext, scheduler: Scheduler) {
             ? { expiresAt: p.expiresAt === null ? null : new Date(p.expiresAt).toISOString() }
             : {}),
         };
-        if (p.run) assertWorkspace(ctx, next.run);
+        if (p.run) {
+          assertWorkspace(ctx, next.run, call.actor, ctx.repos.sessions.require(cur.sessionId));
+        }
         const fields = [
           'title',
           'prompt',

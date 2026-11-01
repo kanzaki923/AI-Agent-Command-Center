@@ -73,6 +73,48 @@ const BASE_ENV: Record<string, string> = {
   GIT_MERGE_AUTOEDIT: 'no',
 };
 
+/**
+ * The git executable by absolute path, from the absolute PATH entries only. A bare `git`
+ * on Windows is searched in the child's cwd before PATH, and the cwd is a worktree agents
+ * write to: a `git.exe` dropped there would run as the daemon, outside every tool check.
+ * A relative PATH entry is the cwd again, so it does not count either.
+ */
+export function findGit(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  isFile: (p: string) => boolean = defaultIsFile,
+): string | null {
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  const exe = platform === 'win32' ? 'git.exe' : 'git';
+  for (const dir of (env.PATH ?? env.Path ?? '').split(paths.delimiter)) {
+    if (!dir || !paths.isAbsolute(dir)) continue;
+    const candidate = paths.join(dir, exe);
+    if (isFile(candidate)) return candidate;
+  }
+  return null;
+}
+
+function defaultIsFile(p: string): boolean {
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** Found once. Not found is looked up again on the next call (git may be installed later). */
+let gitPath: string | null = null;
+
+function gitNotFound(args: readonly string[], cwd: string): GitError {
+  return new GitError(
+    'git が見つかりません。Git をインストールし、PATH から実行できるようにしてください。',
+    args,
+    cwd,
+    null,
+    '',
+  );
+}
+
 function describe(args: readonly string[]): string {
   const shown = args.slice(0, 4).join(' ');
   return args.length > 4 ? `git ${shown} …` : `git ${shown}`;
@@ -90,8 +132,11 @@ export function git(
   } catch (err) {
     return Promise.reject(err instanceof Error ? err : new Error(String(err)));
   }
+  gitPath ??= findGit();
+  if (!gitPath) return Promise.reject(gitNotFound(args, cwd));
+  const bin = gitPath;
   return new Promise((resolvePromise, reject) => {
-    const child = spawn('git', [...BASE_ARGS, ...args], {
+    const child = spawn(bin, [...BASE_ARGS, ...args], {
       cwd,
       env: {
         ...allowlistedEnv(process.env, GIT_ENV_ALLOWLIST),
@@ -109,15 +154,8 @@ export function git(
     child.stderr.on('data', (c: Buffer) => err.push(c));
     child.on('error', (e: NodeJS.ErrnoException) => {
       if (e.code === 'ENOENT') {
-        reject(
-          new GitError(
-            'git が見つかりません。Git をインストールし、PATH から実行できるようにしてください。',
-            args,
-            cwd,
-            null,
-            '',
-          ),
-        );
+        gitPath = null;
+        reject(gitNotFound(args, cwd));
       } else if (e.name === 'AbortError') {
         reject(new GitError(`${describe(args)} は中断されました`, args, cwd, null, ''));
       } else {

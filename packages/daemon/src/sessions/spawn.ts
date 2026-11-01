@@ -545,6 +545,23 @@ export class Spawner implements SpawnerService {
  * folder of the user's (agents: only inside their project's folder); `worktree` → a new git
  * worktree of a code project. Chats have no workspace.
  */
+/**
+ * An agent must not hand write access to any folder it names (e.g. the user's home): only
+ * the project's own folder, which a human chose. Checked wherever an agent's request names
+ * a folder, also when a system actor carries it out for the agent (the assistant, a
+ * schedule an agent made), since the check here only sees the actor that spawns.
+ */
+export function assertAgentFolder(
+  ctx: DaemonContext,
+  projectId: string | null | undefined,
+  path: string,
+): void {
+  const project = projectId ? ctx.repos.projects.get(projectId) : undefined;
+  if (!project?.folderPath || !isInside(path, project.folderPath)) {
+    throw forbidden('エージェントが作業場所にできるフォルダは、プロジェクトのフォルダの中だけです');
+  }
+}
+
 export async function prepareWorkspace(
   ctx: DaemonContext,
   input: {
@@ -566,16 +583,7 @@ export async function prepareWorkspace(
   }
   if (spec.kind === 'none') return { kind: 'scratch' };
   if (spec.kind === 'folder') {
-    if (input.actor.kind === 'agent') {
-      // An agent must not hand a child write access to any folder it names (e.g. the
-      // user's home): only the project's own folder, which a human chose.
-      const project = input.projectId ? ctx.repos.projects.get(input.projectId) : undefined;
-      if (!project?.folderPath || !isInside(spec.path, project.folderPath)) {
-        throw forbidden(
-          'エージェントが作業場所にできるフォルダは、プロジェクトのフォルダの中だけです',
-        );
-      }
-    }
+    if (input.actor.kind === 'agent') assertAgentFolder(ctx, input.projectId, spec.path);
     const workspace = ctx
       .service('workspaceManager')
       .ensureDirectory({ path: spec.path, projectId: input.projectId, actor: input.actor });

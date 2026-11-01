@@ -19,7 +19,7 @@ import {
 } from '../testing';
 import { createManualClock } from '../core/clock';
 import { mergeStats, parseNameStatusZ, parseNumstatZ } from './diff';
-import { GitError, git, gitOut } from './git';
+import { GitError, findGit, git, gitOut } from './git';
 import { type TempRepo, createTempRepo, isolateGitConfig } from './git-fixture';
 import { SCRATCH_RETENTION_DAYS, checkFolder, slugify } from './service';
 
@@ -57,6 +57,20 @@ async function setup(files: Record<string, string> = {}): Promise<{
 }
 
 describe('git helpers', () => {
+  it('finds git by absolute path, never in the cwd (a worktree agents write to)', () => {
+    const exe = 'C:\\Git\\cmd\\git.exe';
+    const files = new Set([exe, '/usr/bin/git', 'git.exe']);
+    const isFile = (p: string) => files.has(p);
+    // A relative entry (`.`, empty) is the cwd again; it is skipped.
+    expect(findGit({ PATH: '.;;C:\\Git\\cmd' }, 'win32', isFile)).toBe(exe);
+    expect(findGit({ Path: 'C:\\Git\\cmd' }, 'win32', isFile)).toBe(exe);
+    expect(findGit({ PATH: '.:/usr/bin' }, 'linux', isFile)).toBe('/usr/bin/git');
+    expect(findGit({ PATH: '.' }, 'win32', isFile)).toBeNull();
+    expect(findGit({}, 'linux', isFile)).toBeNull();
+    // The machine running the tests has git on PATH.
+    expect(findGit()).toMatch(/git(\.exe)?$/);
+  });
+
   it('reports failures with the command and git stderr', async () => {
     repo = await createTempRepo();
     const err = await git(repo.path, ['rev-parse', '--verify', 'no-such-ref']).catch(

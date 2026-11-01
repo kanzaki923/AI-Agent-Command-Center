@@ -4,6 +4,7 @@ import { assertRosterModel, rosterPromptBlock } from '../llm/roster';
 import { budgetExceeded, forbidden, limitExceeded } from '../core/errors';
 import { dayOf, fromMicro } from '../cost/ledger';
 import { delegateSession } from '../orchestrator/grant';
+import { assertAgentFolder } from '../sessions/spawn';
 import {
   ASSISTANT_MAX_SCHEDULES,
   ASSISTANT_PERMISSIONS,
@@ -185,6 +186,17 @@ export class AssistantService {
       const runtime = ctx.settings.get().defaultRuntime ?? 'mock';
       assertRosterModel(ctx, actor, p.model, { agentRuntime: agent && runtime !== 'mock' });
     }
+    const chosen = p.workspace && p.workspace.kind !== 'none' ? p.workspace : undefined;
+    // Only a conversation leads others: delegated, it stays a conversation in the chosen
+    // project and its children get the workspace (code → worktrees) instead.
+    const workspace = p.delegate ? undefined : chosen;
+    const projectId =
+      p.delegate && chosen?.kind === 'worktree' ? chosen.projectId : (p.projectId ?? undefined);
+    // The session is created by the system actor, so the spawn check for agents does not see
+    // that the folder came from the assistant. Delegated, the children's spawns check it.
+    if (viaAssistant && workspace?.kind === 'folder') {
+      assertAgentFolder(ctx, projectId, workspace.path);
+    }
     if (actor.kind === 'agent') {
       const n = this.started.get(actor.runId) ?? 0;
       if (n >= MAX_TREES_PER_MESSAGE) {
@@ -196,12 +208,6 @@ export class AssistantService {
       this.started.set(actor.runId, n + 1);
     }
     const creator: Actor = viaAssistant ? ASSISTANT_SYSTEM : actor;
-    const chosen = p.workspace && p.workspace.kind !== 'none' ? p.workspace : undefined;
-    // Only a conversation leads others: delegated, it stays a conversation in the chosen
-    // project and its children get the workspace (code → worktrees) instead.
-    const workspace = p.delegate ? undefined : chosen;
-    const projectId =
-      p.delegate && chosen?.kind === 'worktree' ? chosen.projectId : (p.projectId ?? undefined);
     const title = p.title?.trim() || titleFromRequest(p.text);
     const created = await ctx.call(creator, 'session.create', {
       kind: workspace ? 'agent' : 'chat',

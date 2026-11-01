@@ -579,6 +579,34 @@ describe('5. schedules made by an AI', () => {
     expect(human.run.supervise).toBe(true);
   });
 
+  it("a folder only inside the owner's project folder (a firing spawns as the scheduler)", async () => {
+    const env = await setup();
+    const t = await aiTree(env);
+    const folder = mkdtempSync(join(tmpdir(), 'acc-sched-folder-'));
+    homes.push(folder);
+    const run = (path: string) => ({
+      run: { mode: 'agent' as const, workspace: { kind: 'folder' as const, path } },
+    });
+    // No project yet: no folder at all, and a human-made one cannot be pointed elsewhere.
+    expect(await codeOf(aiCreate(env, t.actor, t.supervisor.id, run(folder)))).toBe('forbidden');
+    const own = await aiCreate(env, t.actor, t.supervisor.id);
+    expect(
+      await codeOf(env.d.call(t.actor, 'schedule.update', { scheduleId: own.id, ...run(folder) })),
+    ).toBe('forbidden');
+    // Inside the project folder a human chose: fine.
+    const project = await env.d.call(HUMAN, 'project.create', { name: '資料', folderPath: folder });
+    await env.d.call(HUMAN, 'session.update', {
+      sessionId: t.supervisor.id,
+      projectId: project.id,
+    });
+    expect(await codeOf(aiCreate(env, t.actor, t.supervisor.id, run(join(folder, 'sub'))))).toBe(
+      'ok',
+    );
+    expect(await codeOf(aiCreate(env, t.actor, t.supervisor.id, run(tmpdir())))).toBe('forbidden');
+    // Humans choose any folder.
+    expect(await codeOf(daily9(env, t.other.id, run(tmpdir())))).toBe('ok');
+  });
+
   it("each firing carves its budget from the creator's budget; too little → failed_to_start + attention", async () => {
     const env = await setup();
     const t = await aiTree(env);
