@@ -2,7 +2,10 @@ import type { Attention, AttentionChoice } from '@acc/protocol';
 import { ChevronRight, CornerDownLeft } from 'lucide-react';
 import { useState } from 'react';
 import { type AttentionAnswer, respondAttention } from '../../daemon/attention';
+import { usePendingApprovals } from '../../daemon/queries';
 import { useRuntime } from '../../daemon/runtime';
+import { claimKeyDecision } from '../../lib/approvalKeys';
+import { describeApproval } from '../../model/approval';
 import { cn } from '../../lib/cn';
 import { ATTENTION_META } from '../../lib/states';
 import { useUi } from '../../store/ui';
@@ -21,11 +24,15 @@ const KIND_COLOR: Record<Attention['kind'], string> = {
 
 const TONE_VARIANT = { primary: 'primary', neutral: 'secondary', danger: 'danger' } as const;
 
-/** Key shown on (and answering) a choice: Y / N for an approval, 1–4 otherwise. */
-export function choiceKey(attention: Attention, index: number): string {
+/**
+ * Key shown on (and answering) a choice: Y / N for an approval, 1–4 otherwise. A high-risk
+ * approval has no key for 許可 here: as on the approval card, a single Y must not let it
+ * through, so it takes a click (or Ctrl+Y on the card in its conversation).
+ */
+export function choiceKey(attention: Attention, index: number, risky = false): string | null {
   if (attention.kind === 'approval') {
     const id = attention.choices[index]?.id;
-    if (id === 'approve') return 'Y';
+    if (id === 'approve') return risky ? null : 'Y';
     if (id === 'reject') return 'N';
   }
   return String(index + 1);
@@ -33,16 +40,33 @@ export function choiceKey(attention: Attention, index: number): string {
 
 /**
  * What a key does on a selected attention row: a choice, open the reply field (Enter), or
- * nothing. Shared by the row itself and by screens that move a selection over rows.
+ * nothing. Shared by the row itself and by screens that move a selection over rows. A key
+ * held down (auto-repeat) or pressed again right after an answer does nothing
+ * (`claimKeyDecision`): answering moves the selection to the next item, which nobody has
+ * read yet.
  */
 export function attentionKeyAction(
   attention: Attention,
-  key: string,
+  e: { key: string; repeat?: boolean; timeStamp?: number },
+  risky = false,
 ): { kind: 'choice'; choice: AttentionChoice } | { kind: 'reply' } | null {
-  if (key === 'Enter') return attention.allowText ? { kind: 'reply' } : null;
-  const k = key.toUpperCase();
-  const i = attention.choices.findIndex((_, j) => choiceKey(attention, j) === k);
-  return i === -1 ? null : { kind: 'choice', choice: attention.choices[i]! };
+  if (e.key === 'Enter') return attention.allowText ? { kind: 'reply' } : null;
+  const k = e.key.toUpperCase();
+  const i = attention.choices.findIndex((_, j) => choiceKey(attention, j, risky) === k);
+  if (i === -1) return null;
+  if (!claimKeyDecision({ repeat: !!e.repeat, timeStamp: e.timeStamp ?? performance.now() })) return null;
+  return { kind: 'choice', choice: attention.choices[i]! };
+}
+
+/** Approval ids of the pending approvals rated high risk (the card asks Ctrl+Y for those). */
+export function useRiskyApprovalIds(): ReadonlySet<string> {
+  const approvals = usePendingApprovals().data;
+  return new Set((approvals ?? []).filter((a) => describeApproval(a).risk === 'high').map((a) => a.id));
+}
+
+/** Whether this attention item is a high-risk approval. */
+export function isRisky(attention: Attention, risky: ReadonlySet<string>): boolean {
+  return attention.kind === 'approval' && !!attention.refs.approvalId && risky.has(attention.refs.approvalId);
 }
 
 /**
@@ -74,6 +98,7 @@ export function AttentionRow({
   className?: string;
 }) {
   const rt = useRuntime();
+  const risky = isRisky(attention, useRiskyApprovalIds());
   const [replying, setReplying] = useState(false);
   const [text, setText] = useState('');
   const [expanded, setExpanded] = useState(false);
@@ -104,7 +129,7 @@ export function AttentionRow({
       tabIndex={-1}
       onKeyDown={(e) => {
         if (e.target !== e.currentTarget || e.ctrlKey || e.metaKey || e.altKey) return;
-        const act = attentionKeyAction(attention, e.key);
+        const act = attentionKeyAction(attention, e, risky);
         if (!act) return;
         e.preventDefault();
         if (act.kind === 'reply') setReplying(true);
@@ -149,8 +174,8 @@ export function AttentionRow({
             <Button
               key={c.id}
               size="sm"
-              variant={TONE_VARIANT[c.tone]}
-              shortcutKeys={selected ? choiceKey(attention, i) : undefined}
+              variant={risky && c.id === 'approve' ? 'danger' : TONE_VARIANT[c.tone]}
+              shortcutKeys={selected ? (choiceKey(attention, i, risky) ?? undefined) : undefined}
               onClick={() => answer({ choiceId: c.id })}
             >
               {c.label}

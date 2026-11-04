@@ -3,6 +3,7 @@ import { type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { qk } from '../../daemon/keys';
 import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
+import { resetKeyDecisions } from '../../lib/approvalKeys';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
 import { attention, card, homeSnapshot, homeTree, iso } from '../../test/fixtures';
@@ -151,12 +152,27 @@ describe('<AttentionRow>', () => {
 
   it('maps keys: 1–4 for choices, Y / N for an approval, Enter for a reply', () => {
     const approval = attention({ id: 's' }, { kind: 'approval', allowText: false, choices: [{ id: 'approve', label: '許可', tone: 'primary' }, { id: 'reject', label: '拒否', tone: 'danger' }] });
+    resetKeyDecisions();
     expect(choiceKey(approval, 0)).toBe('Y');
     expect(choiceKey(approval, 1)).toBe('N');
-    expect(attentionKeyAction(approval, 'n')).toMatchObject({ kind: 'choice', choice: { id: 'reject' } });
-    expect(attentionKeyAction(approval, 'Enter')).toBeNull();
-    expect(attentionKeyAction(question, '2')).toMatchObject({ kind: 'choice', choice: { id: 'c2' } });
-    expect(attentionKeyAction(question, 'Enter')).toEqual({ kind: 'reply' });
+    expect(attentionKeyAction(approval, { key: 'n', timeStamp: 1_000 })).toMatchObject({ kind: 'choice', choice: { id: 'reject' } });
+    expect(attentionKeyAction(approval, { key: 'Enter' })).toBeNull();
+    expect(attentionKeyAction(question, { key: '2', timeStamp: 2_000 })).toMatchObject({ kind: 'choice', choice: { id: 'c2' } });
+    expect(attentionKeyAction(question, { key: 'Enter' })).toEqual({ kind: 'reply' });
+  });
+
+  it('never lets a held or doubled key answer the next item, and keeps Y off a high-risk approval', () => {
+    const approval = attention({ id: 's' }, { kind: 'approval', allowText: false, choices: [{ id: 'approve', label: '許可', tone: 'primary' }, { id: 'reject', label: '拒否', tone: 'danger' }] });
+    resetKeyDecisions();
+    expect(attentionKeyAction(approval, { key: 'y', timeStamp: 1_000 })).toMatchObject({ choice: { id: 'approve' } });
+    // Answering moved the selection on: a second press right away, or auto-repeat, does nothing.
+    expect(attentionKeyAction(approval, { key: 'y', timeStamp: 1_100 })).toBeNull();
+    expect(attentionKeyAction(approval, { key: 'y', repeat: true, timeStamp: 5_000 })).toBeNull();
+    expect(attentionKeyAction(approval, { key: 'y', timeStamp: 5_000 })).toMatchObject({ choice: { id: 'approve' } });
+    // High risk: no key for 許可 (a click, or Ctrl+Y on the card); N still rejects.
+    expect(choiceKey(approval, 0, true)).toBeNull();
+    expect(attentionKeyAction(approval, { key: 'y', timeStamp: 9_000 }, true)).toBeNull();
+    expect(attentionKeyAction(approval, { key: 'n', timeStamp: 9_000 }, true)).toMatchObject({ choice: { id: 'reject' } });
   });
 
   it('answers with a choice and leaves the home screen at once (optimistic)', async () => {

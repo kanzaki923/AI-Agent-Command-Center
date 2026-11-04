@@ -9,7 +9,7 @@ import { overlayOpen } from '../../lib/overlay';
 import { isTypingTarget } from '../../lib/shortcuts';
 import { sessionTitle } from '../../lib/states';
 import { useUi } from '../../store/ui';
-import { attentionKeyAction } from '../ui/AttentionRow';
+import { attentionKeyAction, isRisky, useRiskyApprovalIds } from '../ui/AttentionRow';
 import { AttentionColumn } from './AttentionColumn';
 import { HomeComposer } from './HomeComposer';
 import { LAYOUT_SPRING, Lane } from './Lane';
@@ -84,6 +84,7 @@ function Board({ trees, attention }: { trees: HomeTree[]; attention: Attention[]
     void respondAttention(rt, a, answer);
   };
 
+  const risky = useRiskyApprovalIds();
   useWindowKeydown((e) => {
     if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
     if (isTypingTarget(e.target) || overlayOpen() || useUi.getState().paletteOpen) return;
@@ -98,7 +99,7 @@ function Board({ trees, attention }: { trees: HomeTree[]; attention: Attention[]
     const a = shown.find((x) => x.id === selectedId);
     if (a) {
       // The row was not focused (it answers its keys itself when it is): hand the key over.
-      const act = attentionKeyAction(a, key);
+      const act = attentionKeyAction(a, e, isRisky(a, risky));
       if (!act) {
         // Nothing to answer by text: Enter opens the conversation it comes from.
         if (key === 'Enter' && !(e.target instanceof HTMLButtonElement)) {

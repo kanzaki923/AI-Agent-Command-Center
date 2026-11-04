@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { qk } from '../../daemon/keys';
 import { type AppRuntime, RuntimeProvider, createRuntime } from '../../daemon/runtime';
+import { resetKeyDecisions } from '../../lib/approvalKeys';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
 import { attention, card, homeSnapshot, homeTree, message, session } from '../../test/fixtures';
@@ -253,7 +254,12 @@ describe('<HomeView>', () => {
       }),
     );
     expect(useUi.getState().selectedId).toBe(s.q.id);
-    // 2 picks the second choice of the question now selected.
+    // Pressed again at once, nothing more is answered (the next item has not been read yet).
+    press('y');
+    press('2');
+    expect(fake.calls.filter((c) => c.method === 'attention.respond')).toHaveLength(1);
+    // A moment later, 2 picks the second choice of the question now selected.
+    resetKeyDecisions();
     press('2');
     await vi.waitFor(() =>
       expect(
