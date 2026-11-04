@@ -1,4 +1,5 @@
 mod daemon;
+mod tray;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -70,6 +71,10 @@ fn node_flags() -> Vec<std::ffi::OsString> {
 
 fn ensure_blocking(app: &AppHandle) -> Result<daemon::Connection, String> {
     let _g = ENSURE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // Quitting stops the daemon on purpose: the UI's reconnect must not start a new one.
+    if tray::quitting() {
+        return Err("終了しています".into());
+    }
     daemon::ensure(&daemon::acc_home(), || launch_spec(app), STARTUP_TIMEOUT)
 }
 
@@ -120,13 +125,8 @@ fn get_glass() -> bool {
 pub fn run() {
     tauri::Builder::default()
         // must be the first plugin: a second launch focuses the existing window and exits
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.unminimize();
-                let _ = w.show();
-                let _ = w.set_focus();
-            }
-        }))
+        // (also brings the window back from the tray)
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| tray::show_main(app)))
         .plugin(
             tauri_plugin_window_state::Builder::new()
                 // window starts hidden (no white flash); we decide when to show it
@@ -136,8 +136,15 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         // OS notifications (src/lib/notify.ts calls plugin:notification|notify etc.)
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![get_connection, get_glass])
+        .invoke_handler(tauri::generate_handler![
+            get_connection,
+            get_glass,
+            tray::set_quitting,
+            tray::exit_app
+        ])
+        .on_window_event(tray::on_window_event)
         .setup(|app| {
+            tray::install(app.handle())?;
             if let Some(w) = app.get_webview_window("main") {
                 let ok = apply_glass(&w);
                 eprintln!("[acc] glass material applied: {ok}");

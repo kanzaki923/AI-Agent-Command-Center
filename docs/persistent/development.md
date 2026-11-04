@@ -39,7 +39,7 @@ pnpm format              # Prettier
 
 **データの場所**：すべて `ACC_HOME`（既定 `~/.acc`）。`acc.sqlite`、`config.json`、`daemon.json`（起動中だけ）、`worktrees/`、`demo/`、`logs/daemon-launch.log`（アプリが起動したデーモンの出力。5MB を超えたら `.1` に回す）。アプリ自身の状態（ウィンドウ位置・大きさ）は Tauri の app data（Windows は `%APPDATA%\com.acc.desktop`）、WebView のデータは `%LOCALAPPDATA%\com.acc.desktop`。
 
-**デーモンの止め方**：アプリを閉じてもデーモンは動き続ける（定期実行・長時間のエージェントを止めないため）。止めるときはアプリを閉じてから `pnpm acc daemon stop`（実行中の Run があると断られる。`--force` でそれらを中断して停止）。アプリを開いたまま止めると、アプリが新しいデーモンをすぐ起動し直す。中身は `system.shutdown`（人間だけ。LLM ツールには出さない）。
+**デーモンの止め方**：アプリを閉じてもデーモンは動き続ける（定期実行・長時間のエージェントを止めないため）。アプリはウィンドウを隠してタスクトレイに残り、トレイの `終了` でデーモンごと止まる（ui-design.md §4.6）。CLI からは、アプリを終了してから `pnpm acc daemon stop`（実行中の Run があると断られる。`--force` でそれらを中断して停止）。アプリを開いたまま止めると、アプリが新しいデーモンをすぐ起動し直す。中身は `system.shutdown`（人間だけ。LLM ツールには出さない）。
 
 ### 1.1 デスクトップアプリの開発
 
@@ -48,7 +48,7 @@ pnpm format              # Prettier
 1. 同じ `ACC_HOME` でデーモンが動いていなければ `pnpm dev:daemon`（tsx watch）を起動し、`/health` が返るまで待つ。動いていればそれに接続する（ソースの変更は反映されないので、反映したいときは `pnpm acc daemon stop` してから実行し直す）。
 2. `tauri dev`（Vite + Rust のシェル）。シェルは `daemon.json` から 1. のデーモンを見つけるので、自分では起動しない。
 
-ウィンドウを閉じるか Ctrl+C で、このスクリプトが起動したもの（Vite・アプリ・watch のデーモン）をすべて止める（デーモンは `acc daemon stop --force` で行儀よく止める）。初回は Rust の依存ビルドに数分かかる。
+トレイの `終了` か Ctrl+C で（ウィンドウを閉じるだけではトレイに残る）、このスクリプトが起動したもの（Vite・アプリ・watch のデーモン）をすべて止める（デーモンは `acc daemon stop --force` で行儀よく止める）。初回は Rust の依存ビルドに数分かかる。
 
 ### 1.2 配布ビルド（パッケージング）
 

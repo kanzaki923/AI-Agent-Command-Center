@@ -10,6 +10,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { installAttention } from './app/attention';
+import { installQuit } from './app/quit';
 import { getConnection } from './daemon/connection';
 import { RuntimeProvider, createRuntime, createStatusStore } from './daemon/runtime';
 import { glassAvailable } from './lib/platform';
@@ -39,6 +40,7 @@ const client = createClient({
 });
 const runtime = createRuntime(client, undefined, status);
 installAttention(runtime);
+installQuit(runtime);
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
