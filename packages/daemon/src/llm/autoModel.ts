@@ -34,6 +34,11 @@ const NOT_FOR_CHAT =
  * flagship (not picked unasked, like Opus).
  */
 const FAST = /haiku|mini|flash|luna/;
+
+/** Whether a model is of the fast, light tier (Haiku, mini, Flash, Luna). */
+export function isFastModel(model: string): boolean {
+  return FAST.test(normalizeModelName(model));
+}
 const MIDDLE = /terra/;
 const STANDARD = /sonnet|-sol(?:-|$)|^gpt-\d+(?:-\d+)*(?:-chat)?(?:-codex)?$|gemini-\d.*pro/;
 

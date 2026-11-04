@@ -400,7 +400,7 @@ spec §3.7・§2.2（home）・§6。型は `protocol/src/ext/home.ts`、実装�
 - **更新のルールは 1 つ**：あらすじより後の発言（text のある user / assistant。通知・hint・ツールは除く）が `SUMMARY_FOLD_AT`（24 件）か 12,000 字を超えたら、新しい `SUMMARY_KEEP`（12 件）を残して古いほうを「前のあらすじ ＋ その発言」から書き直す（1,500 字まで。決まったこと・残っていること・名前や数字のような探す手がかりを残す）。読むのは差分だけなので、会話が長くなっても 1 回の費用はほぼ一定。24 件以下の会話にはあらすじを作らない。
 - **いつ**：5 分ごとの見回りで、30 分動いていない会話を新しい順に（1 回 10 本まで）。`@` で呼んだときに遅れていれば、その場でも畳む（`ensure`）。会話ごとに 1 本ずつ。失敗したら 1 時間あけて次。
 - **検索**（`session.search`）：あらすじにすべての語が入っている会話を、メッセージの当たりより先に返す（`source: summary`、`messageId: null`。開くと会話へ）。
-- **裏の整理**（`settings.background`）：記憶の整理とあらすじは、モデル（null なら名簿で入力単価が一番安いもの、なければオフラインのモック）と 1 日の上限（既定 $0.5、空で上限なし）を共有する。費用は ledger の `component: memory` / `summary`（あらすじはその会話の費用）。上限か全体の 1 日の上限に当たったら翌日まで止まる。オン／オフは `settings.members.memory` と `settings.summaries.enabled` で別々。
+- **裏の整理**（`settings.background`）：記憶の整理とあらすじは、モデル（null なら名簿でいちばん安いもの：ChatGPT にサインインしていれば `openai/…` は契約枠で 1 回あたり 0 なので最優先、その中では軽い層（Luna など、`isFastModel`）を先に。次に入力単価の安い順、単価不明は最後。名簿がなければオフラインのモック。`cheapestModel`）と 1 日の上限（既定 $0.5、空で上限なし）を共有する。費用は ledger の `component: memory` / `summary`（あらすじはその会話の費用）。上限か全体の 1 日の上限に当たったら翌日まで止まる。オン／オフは `settings.members.memory` と `settings.summaries.enabled` で別々。
 - `session.summary`（その会話のあらすじ、なければ null）と `session.summary_updated`。モック：`mock/summary`（前のあらすじと各発言の頭 40 字）。
 - テスト：`summaries/summaries.test.ts`。
 

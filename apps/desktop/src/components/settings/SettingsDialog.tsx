@@ -364,7 +364,7 @@ export function SettingsDialog() {
                     side="bottom"
                     align="end"
                     autoLabel="いちばん安いもの"
-                    autoHint="名簿でいちばん安いモデルを使います"
+                    autoHint="名簿のうち、契約枠のモデル（軽いもの優先）、なければ単価のいちばん安いモデルを使います"
                     local
                     onChange={(m) => update({ background: { model: m } })}
                   />
