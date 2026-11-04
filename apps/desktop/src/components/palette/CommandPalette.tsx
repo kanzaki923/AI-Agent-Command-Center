@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 import { type ReactNode, useRef, useState } from 'react';
 import { askAi, goToAttention, newChat } from '../../app/commands';
+import { useAssistantId } from '../../daemon/assistant';
 import { startDemo } from '../../app/demo';
 import {
   archiveSession,
@@ -241,6 +242,8 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
     staleTime: 15_000,
   });
   const messageHits = searchTerm.length >= 2 && !page ? (hits.data ?? NONE) : NONE;
+  // The assistant cannot be archived (the daemon refuses): it is not offered.
+  const assistantId = useAssistantId();
 
   const close = () => ui.closePalette();
   const runItem = (item: PaletteItem) => {
@@ -340,8 +343,10 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
     view.push(
       { id: 'session.model', label: 'モデルを変更', hint: sessionTitle(s), icon: I(Cpu), keywords: ['model moderu change'], shortcut: 'modelPicker', nested: true, run: () => ui.pushPalettePage('model') },
       { id: 'session.pin', label: s.pinned ? 'ピン留めを外す' : 'ピン留め', hint: sessionTitle(s), icon: I(Pin), keywords: ['pin pindome'], run: () => void setPinned(rt, s, !s.pinned) },
-      { id: 'session.archive', label: 'アーカイブ', hint: sessionTitle(s), icon: I(Archive), keywords: ['archive aakaibu hide'], shortcut: 'archive', run: () => void archiveSession(rt, s) },
     );
+    if (s.id !== assistantId) {
+      view.push({ id: 'session.archive', label: 'アーカイブ', hint: sessionTitle(s), icon: I(Archive), keywords: ['archive aakaibu hide'], run: () => void archiveSession(rt, s) });
+    }
   }
 
   // Conversations; a child is named with its parent (the tree says where it is).

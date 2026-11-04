@@ -10,6 +10,7 @@ import {
   type WorkspaceSpec,
   isTerminalRunStatus,
 } from '@acc/protocol';
+import { useConfirm } from '../store/confirm';
 import { toast, toastError } from '../store/toast';
 import { useUi } from '../store/ui';
 import { qk } from './keys';
@@ -363,11 +364,71 @@ export async function setPinned(rt: AppRuntime, session: Session, pinned: boolea
   }
 }
 
-/** Archive with a 5s undo toast (§8.5). */
+/** States in which a session still works (or can be woken) — what archiving would stop. */
+const ARCHIVE_STOPS: ReadonlySet<Session['state']> = new Set(['working', 'supervising', 'queued', 'needs_you']);
+
+/** The session and everything under it, from the cached list. */
+function subtreeOf(sessions: readonly Session[], rootId: string): Session[] {
+  const out: Session[] = [];
+  const walk = (id: string) => {
+    for (const s of sessions) {
+      if (s.id === id || s.parentSessionId !== id) continue;
+      out.push(s);
+      walk(s.id);
+    }
+  };
+  const self = sessions.find((s) => s.id === rootId);
+  if (self) out.push(self);
+  walk(rootId);
+  return out;
+}
+
+/** What archiving this tree would stop: work that moves, and repeats that are on. */
+async function whatArchiveStops(rt: AppRuntime, session: Session): Promise<{ moving: boolean; repeats: number }> {
+  const tree = subtreeOf(rt.queryClient.getQueryData<Session[]>(qk.sessions) ?? [session], session.id);
+  const moving = tree.some((s) => !!s.activeRunId || ARCHIVE_STOPS.has(s.state));
+  let repeats = 0;
+  try {
+    const ids = new Set(tree.map((s) => s.id));
+    const { items } = await rt.client.call('schedule.list', { rootSessionId: session.rootSessionId, enabled: true });
+    repeats = items.filter((x) => ids.has(x.sessionId)).length;
+  } catch {
+    // Unknown: say nothing about repeats rather than block archiving.
+  }
+  return { moving, repeats };
+}
+
+/**
+ * Archive with a 5s undo toast (§8.5). Archiving hides the whole tree, so the daemon stops
+ * what still works in it and turns its repeats off; when there is any of that, a confirmation
+ * says so first (the button says 止めてアーカイブ). The open conversation, or one inside the
+ * tree, gives way to the parent of what was archived (home for a top-level one), so the screen
+ * never stays on something that just disappeared.
+ */
 export async function archiveSession(rt: AppRuntime, session: Session): Promise<void> {
+  const { moving, repeats } = await whatArchiveStops(rt, session);
+  if (!moving && repeats === 0) return doArchive(rt, session);
+  const what = [moving ? '動いている作業は止まります。' : '', repeats > 0 ? `繰り返し ${repeats} 件はオフになります。` : ''].join('');
+  useConfirm.getState().ask({
+    title: `「${session.title || '会話'}」をアーカイブしますか？`,
+    body: `${what}元に戻しても、止めたものは止まったままです。`,
+    confirmLabel: '止めてアーカイブ',
+    onConfirm: () => void doArchive(rt, session),
+  });
+}
+
+async function doArchive(rt: AppRuntime, session: Session): Promise<void> {
+  const sessions = rt.queryClient.getQueryData<Session[]>(qk.sessions) ?? [];
+  const inTree = new Set(subtreeOf(sessions, session.id).map((s) => s.id));
+  const ui = useUi.getState();
+  if (ui.mode === 'session' && ui.focusSessionId && inTree.has(ui.focusSessionId)) {
+    if (session.parentSessionId) ui.openSession(session.parentSessionId);
+    else ui.goHome();
+  }
   removeFrom(rt.queryClient, qk.sessions, session.id);
   try {
     await rt.client.call('session.archive', { sessionId: session.id, archived: true });
+    void rt.queryClient.invalidateQueries({ queryKey: qk.home });
     toast({
       title: `「${session.title || '会話'}」をアーカイブしました`,
       tone: 'info',
@@ -378,11 +439,10 @@ export async function archiveSession(rt: AppRuntime, session: Session): Promise<
         run: () => {
           void rt.client
             .call('session.archive', { sessionId: session.id, archived: false })
-            .then((s) =>
-              upsertIn(rt.queryClient, qk.sessions, s, (a, b) =>
-                b.lastActivityAt.localeCompare(a.lastActivityAt),
-              ),
-            )
+            .then((s) => {
+              upsertIn(rt.queryClient, qk.sessions, s, (a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
+              void rt.queryClient.invalidateQueries({ queryKey: qk.home });
+            })
             .catch((err: unknown) => toastError(err));
         },
       },

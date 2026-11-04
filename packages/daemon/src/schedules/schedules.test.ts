@@ -721,6 +721,20 @@ describe('6. schedule.runNow', () => {
     expect(get(env, s.id).lastRun).toMatchObject({ outcome: 'failed_to_start' });
   });
 
+  it('archiving a tree turns off its repeats, and bringing it back leaves them off', async () => {
+    const env = await setup();
+    const root = await owner(env, 'root');
+    const child = await env.d.call(HUMAN, 'session.create', { parentSessionId: root.id });
+    const mine = await daily9(env, root.id);
+    const kids = await daily9(env, child.id);
+    await env.d.call(HUMAN, 'session.archive', { sessionId: root.id, archived: true });
+    for (const id of [mine.id, kids.id]) {
+      expect(env.d.ctx.repos.schedules.require(id)).toMatchObject({ enabled: false, nextRunAt: null });
+    }
+    await env.d.call(HUMAN, 'session.archive', { sessionId: root.id, archived: false });
+    expect(env.d.ctx.repos.schedules.require(mine.id).enabled).toBe(false);
+  });
+
   it('an archived owner does not fire', async () => {
     const env = await setup();
     const o = await owner(env);

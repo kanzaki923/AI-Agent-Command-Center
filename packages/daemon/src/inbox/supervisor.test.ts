@@ -261,6 +261,23 @@ describe('T1 supervisor: event-driven runs', () => {
     expect(assistantTexts(s.d, s.lead.id).at(-1)).toContain('すべての作業が終わりました');
   });
 
+  it('5a. archiving a working tree stops it first: nothing goes on out of sight', async () => {
+    const s = await scene();
+    const { children } = await delegateGoal(s);
+    const childRuns = children.map((c) => runsOf(s.d, c.id)[0]!.id);
+    await s.d.call(HUMAN, 'session.archive', { sessionId: s.lead.id, archived: true });
+    for (const id of childRuns) {
+      expect(s.d.ctx.repos.runs.require(id).status).toBe('cancelled');
+    }
+    expect(s.d.ctx.repos.sessions.require(s.lead.id).supervision).toBe('paused');
+    await sleep(DEBOUNCE_MS * 3);
+    expect(wakeRuns(s.d, s.lead.id)).toHaveLength(0);
+    // Back from the archive it shows as stopped; nothing restarts on its own.
+    await s.d.call(HUMAN, 'session.archive', { sessionId: s.lead.id, archived: false });
+    expect(s.d.ctx.repos.sessions.require(s.lead.id).supervision).toBe('paused');
+    expect(s.agents.held()).toHaveLength(0);
+  });
+
   it('5b. a human stopping one child wakes the parent; the parent stopping its own child does not', async () => {
     const s = await scene();
     const { children } = await delegateGoal(s);

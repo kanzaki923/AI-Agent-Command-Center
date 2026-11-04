@@ -258,10 +258,12 @@ export function FocusHeader({
                 // After the menu has closed and returned focus, or the popover would close at once.
                 <MenuItem onSelect={() => setTimeout(() => setCostOpen(true), 60)}>費用の内訳</MenuItem>
               )}
-              <MenuSeparator />
-              <MenuItem shortcut="archive" onSelect={() => void archiveSession(rt, session)}>
-                アーカイブ
-              </MenuItem>
+              {session.id !== assistantId && (
+                <>
+                  <MenuSeparator />
+                  <MenuItem onSelect={() => void archiveSession(rt, session)}>アーカイブ</MenuItem>
+                </>
+              )}
             </MenuContent>
           </Menu>
         </span>

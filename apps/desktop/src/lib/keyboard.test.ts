@@ -63,7 +63,7 @@ describe('shortcut matching (Windows)', () => {
     expect(matchShortcut(k('y'), 'approve')).toBe(true);
     expect(matchShortcut(k('y', { ctrlKey: true }), 'approve')).toBe(false);
     expect(matchShortcut(k('y', { ctrlKey: true }), 'approveDanger')).toBe(true);
-    expect(matchShortcut(k(' '), 'peek')).toBe(true);
+    expect(matchShortcut(k('r'), 'retry')).toBe(true);
   });
   it('treats ? and [ ] as shift-implied punctuation', () => {
     expect(matchShortcut(k('?', { shiftKey: true }), 'help')).toBe(true);

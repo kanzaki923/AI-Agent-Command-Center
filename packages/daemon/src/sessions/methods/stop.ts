@@ -21,7 +21,7 @@ const UNFINISHED_TASK_STATUSES = ['pending', 'ready', 'running', 'blocked'] as c
  * could be woken). Finished children keep their state (done / review / failed) instead of
  * showing "stopped" for work that already ended.
  */
-function hasWorkToStop(ctx: DaemonContext, sessionId: string): boolean {
+export function hasWorkToStop(ctx: DaemonContext, sessionId: string): boolean {
   const { repos } = ctx;
   if (
     repos.runs.count({ where: { session_id: sessionId, status: [...ACTIVE_RUN_STATUSES] } }) > 0

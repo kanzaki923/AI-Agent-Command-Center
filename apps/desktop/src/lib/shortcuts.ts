@@ -30,9 +30,7 @@ export const SHORTCUTS = {
   first: { keys: 'Home', label: '先頭へ', scope: 'list' },
   last: { keys: 'End', label: '末尾へ', scope: 'list' },
   open: { keys: 'Enter', label: '開く', scope: 'list' },
-  peek: { keys: 'Space', label: '詳細を見る', scope: 'list' },
   retry: { keys: 'R', label: '再試行', scope: 'list' },
-  archive: { keys: 'E', label: 'アーカイブ', scope: 'list' },
   help: { keys: '?', label: 'ショートカット一覧', scope: 'list' },
 
   approve: { keys: 'Y', label: '承認', scope: 'approval' },

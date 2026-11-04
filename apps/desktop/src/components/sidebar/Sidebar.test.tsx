@@ -1,7 +1,8 @@
 import type { Project, Session } from '@acc/protocol';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
+import { useConfirm } from '../../store/confirm';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
 import { T0, attention, card, homeSnapshot, homeTree, iso, session } from '../../test/fixtures';
@@ -209,6 +210,28 @@ describe('<Sidebar> conversation tree', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name: /アーカイブ/ }));
     await waitFor(() => expect(fake.calls.some((c) => c.method === 'session.archive')).toBe(true));
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Excel の重複' })).toBeNull());
+  });
+
+  it('asks before archiving a tree that still works, says what stops, and leaves the open child for home', async () => {
+    const { root, kids, all } = tree();
+    useUi.setState({ mode: 'session', focusSessionId: kids[0]!.id });
+    const fake = mount({ sessions: all });
+    await screen.findByRole('button', { name: 'ローンチ準備' });
+    fireEvent.contextMenu(item('ローンチ準備'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /アーカイブ/ }));
+    const req = await waitFor(() => {
+      const r = useConfirm.getState().request;
+      expect(r).not.toBeNull();
+      return r!;
+    });
+    expect(req.title).toBe('「ローンチ準備」をアーカイブしますか？');
+    expect(req.body).toContain('動いている作業は止まります');
+    expect(req.confirmLabel).toBe('止めてアーカイブ');
+    expect(fake.calls.some((c) => c.method === 'session.archive')).toBe(false);
+    act(() => req.onConfirm());
+    await waitFor(() => expect(fake.calls.find((c) => c.method === 'session.archive')?.params).toEqual({ sessionId: root.id, archived: true }));
+    expect(useUi.getState().mode).toBe('home');
+    useConfirm.setState({ request: null });
   });
 
   it('moves with the arrow keys: down / up between rows, right unfolds, left goes back to the parent', async () => {

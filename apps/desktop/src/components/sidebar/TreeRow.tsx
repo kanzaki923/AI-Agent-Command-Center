@@ -176,7 +176,7 @@ export function TreeRow({
               {s.pinned ? 'ピン留めを外す' : 'ピン留め'}
             </MenuItem>
           )}
-          <MenuItem icon={<Archive size={14} strokeWidth={1.75} />} shortcut="archive" onSelect={() => void archiveSession(rt, s)}>
+          <MenuItem icon={<Archive size={14} strokeWidth={1.75} />} onSelect={() => void archiveSession(rt, s)}>
             アーカイブ
           </MenuItem>
         </MenuContent>

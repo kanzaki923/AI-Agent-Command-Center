@@ -30,6 +30,7 @@ import type {
   RunKind,
   RunPermission,
   RunTrigger,
+  Schedule,
   ScheduleOutcome,
   SendDelivery,
   Session,
@@ -541,6 +542,8 @@ export interface LedgerService {
 export interface SchedulerService {
   /** Re-arm the single timer for the nearest nextRunAt. */
   rearm(): void;
+  /** Announce a change made to a schedule outside schedule.update (e.g. archiving its owner). */
+  emitUpdated(schedule: Schedule, changes: string[], actor?: Actor): void;
   fire(
     scheduleId: string,
     scheduledFor: string,
