@@ -2,8 +2,8 @@ import { type Run, type Session, isTerminalRunStatus } from '@acc/protocol';
 import { ArrowUp, CornerDownLeft, FileText, Pencil, Square, X, Zap } from 'lucide-react';
 import { motion } from 'motion/react';
 import { type KeyboardEvent, useRef, useState } from 'react';
-import { newChat, stop } from '../../app/commands';
-import { resendEdited, sendMessage } from '../../daemon/actions';
+import { newChat, stopGenerating } from '../../app/commands';
+import { resendEdited, sendMessage, stopIfMoving } from '../../daemon/actions';
 import { useMessages } from '../../daemon/queries';
 import { lastUnanswered, messageText } from '../../model/chat';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
@@ -131,7 +131,7 @@ export function Composer({
     }
     if (text === '/stop') {
       setDraft(session.id, '');
-      if (activeRun) void stop(rt, activeRun);
+      stopIfMoving(rt, session.id);
       return;
     }
     if (text === '/model') {
@@ -156,7 +156,7 @@ export function Composer({
     const last = lastUnanswered(messages ?? []);
     if (!last || last.local?.status === 'sending') return false;
     const running = !!activeRun && !isTerminalRunStatus(activeRun.status);
-    // An agent at work is stopped with its own control (with a confirmation), not by ↑.
+    // An agent at work is stopped with 止める in the header, not by ↑.
     if (running && session.kind !== 'chat') return false;
     setEditing({ sessionId: session.id, messageId: last.id, text: messageText(last) });
     return true;
@@ -205,7 +205,7 @@ export function Composer({
       e.stopPropagation();
       // Ladder step 2: an edit in progress is cancelled first (the draft goes with it).
       if (editing) setEditing(null);
-      else if (canStopInline && activeRun) void stop(rt, activeRun);
+      else if (canStopInline && activeRun) void stopGenerating(rt, activeRun);
       else e.currentTarget.blur();
     }
   };
@@ -317,7 +317,7 @@ export function Composer({
                 aria-label="生成を停止"
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (activeRun) void stop(rt, activeRun);
+                  if (activeRun) void stopGenerating(rt, activeRun);
                 }}
                 className="flex size-7 items-center justify-center rounded-sm bg-selected text-fg hover:bg-hover"
               >

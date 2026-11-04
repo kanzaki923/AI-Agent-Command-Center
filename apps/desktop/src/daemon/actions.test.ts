@@ -8,10 +8,13 @@ import {
   sendMessage,
   setSessionModel,
   startConversation,
+  stopHere,
+  stopIfMoving,
   stopTree,
 } from './actions';
 import { qk } from './keys';
 import { createRuntime } from './runtime';
+import { useToasts } from '../store/toast';
 
 describe('retryRun ("再試行" / "再開")', () => {
   const ok = { sessionId: id('ses'), runId: id('run'), workspaceId: id('wsp'), budgetId: null };
@@ -144,5 +147,36 @@ describe('session tree actions', () => {
     expect(await delegateSession(rt, sid, { budgetUsd: 5 })).toBe(true);
     expect(fake.calls[0]).toEqual({ method: 'session.delegate', params: { sessionId: sid, budgetUsd: 5 } });
     expect(await stopTree(rt, sid)).toBe(false);
+  });
+});
+
+describe('止める (one behaviour from every entrance)', () => {
+  const stopped = () => ({ stoppedSessionIds: [], cancelledRunIds: [] });
+
+  it('stops the whole tree without asking, and the toast resumes it', async () => {
+    useToasts.setState({ toasts: [] });
+    const fake = createFakeClient({ 'session.stop': stopped, 'session.resume': () => ({ resumedSessionIds: [], runIds: [] }) });
+    const rt = createRuntime(fake.client);
+    const s = session({ kind: 'agent', title: '調査' });
+    expect(await stopHere(rt, s)).toBe(true);
+    expect(fake.calls[0]).toEqual({ method: 'session.stop', params: { sessionId: s.id, tree: true } });
+    const t = useToasts.getState().toasts.at(-1)!;
+    expect(t.title).toBe('「調査」を止めました');
+    expect(t.action?.label).toBe('再開');
+    t.action!.run();
+    expect(fake.calls[1]).toEqual({ method: 'session.resume', params: { sessionId: s.id, tree: true } });
+  });
+
+  it('from a key or /stop: stops a parent whose child still works, and does nothing when nothing moves', async () => {
+    const fake = createFakeClient({ 'session.stop': stopped });
+    const rt = createRuntime(fake.client);
+    const parent = session({ kind: 'agent', state: 'idle', activeRunId: null });
+    const child = session({ kind: 'agent', state: 'working', parentSessionId: parent.id, rootSessionId: parent.id });
+    const quiet = session({ kind: 'chat', state: 'idle', activeRunId: null });
+    rt.queryClient.setQueryData(qk.sessions, [parent, child, quiet]);
+    expect(stopIfMoving(rt, quiet.id)).toBe(false);
+    expect(stopIfMoving(rt, parent.id)).toBe(true);
+    await Promise.resolve();
+    expect(fake.calls).toEqual([{ method: 'session.stop', params: { sessionId: parent.id, tree: true } }]);
   });
 });

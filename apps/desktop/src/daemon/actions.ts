@@ -17,6 +17,7 @@ import { qk } from './keys';
 import { messagesQuery } from './queries';
 import type { AppRuntime } from './runtime';
 import { type ChatMessage, patchIn, removeFrom, upsertIn } from './sync';
+import { treeControl } from './tree';
 
 /**
  * User operations. All optimistic where it is safe (§1.2: visual response within 16ms),
@@ -291,6 +292,36 @@ export async function stopTree(rt: AppRuntime, sessionId: string, tree = true): 
     toastError(err, '止められませんでした');
     return false;
   }
+}
+
+/**
+ * 止める, wherever it is pressed (header, palette, Ctrl+Shift+Backspace, /stop): this
+ * conversation and everything still working under it, without a question — it is resumable,
+ * and the toast's 再開 takes it back at once.
+ */
+export async function stopHere(rt: AppRuntime, session: Pick<Session, 'id' | 'title'>): Promise<boolean> {
+  const ok = await stopTree(rt, session.id);
+  if (ok) {
+    toast({
+      title: `「${session.title || '会話'}」を止めました`,
+      tone: 'info',
+      sticky: false,
+      action: { label: '再開', run: () => void resumeTree(rt, session.id) },
+    });
+  }
+  return ok;
+}
+
+/**
+ * 止める from a key or /stop, for a session in the cache: does what the header's button would,
+ * and nothing when the header shows no 止める. False when there was nothing to stop.
+ */
+export function stopIfMoving(rt: AppRuntime, sessionId: string): boolean {
+  const sessions = rt.queryClient.getQueryData<Session[]>(qk.sessions) ?? [];
+  const self = sessions.find((s) => s.id === sessionId);
+  if (!self || treeControl(self, subtreeOf(sessions, sessionId).slice(1)) !== 'stop') return false;
+  void stopHere(rt, self);
+  return true;
 }
 
 /** Resume a stopped session (and its stopped descendants). */

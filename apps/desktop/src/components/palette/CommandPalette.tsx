@@ -40,13 +40,13 @@ import {
   resumeTree,
   setPinned,
   setSessionModel,
-  stopTree,
+  stopHere,
   undelegateSession,
 } from '../../daemon/actions';
 import { useHomeSelect } from '../../daemon/home';
 import { useMethods, useModels, useSessions } from '../../daemon/queries';
 import { useRuntime } from '../../daemon/runtime';
-import { treeRelations, useSessionTree } from '../../daemon/tree';
+import { treeControl, treeRelations, useSessionTree } from '../../daemon/tree';
 import { cn } from '../../lib/cn';
 import { highlightTerms } from '../../lib/highlight';
 import { relativeCost } from '../../lib/models';
@@ -255,7 +255,8 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
   };
 
   const focused = mode === 'session' ? (sessions.find((s) => s.id === focusSessionId) ?? null) : null;
-  const self = treeRelations(tree, focused?.id).self;
+  const rel = treeRelations(tree, focused?.id);
+  const self = rel.self;
   const prefix = query.startsWith('>') ? '>' : query.startsWith('#') ? '#' : query.startsWith('?') ? '?' : '';
   const search = prefix ? query.slice(1).trimStart() : query;
 
@@ -273,11 +274,12 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
   }
   if (focused && self) {
     const s = focused;
-    const moving = self.state === 'working' || self.state === 'supervising' || self.state === 'queued' || self.state === 'needs_you';
-    if (self.state === 'stopped') {
+    // The same offer as the header's button, for the same tree.
+    const control = treeControl(s, (tree?.nodes ?? []).filter((n) => n.id !== s.id && rel.subtree.has(n.id)));
+    if (control === 'resume') {
       suggest.push({ id: 'session.resume', label: '再開', hint: sessionTitle(s), icon: I(Play), keywords: ['resume saikai'], run: () => void resumeTree(rt, s.id) });
-    } else if (moving) {
-      suggest.push({ id: 'session.stop', label: '止める', hint: sessionTitle(s), icon: I(Square), keywords: ['stop tomeru teishi'], shortcut: 'stopRun', run: () => void stopTree(rt, s.id) });
+    } else if (control === 'stop') {
+      suggest.push({ id: 'session.stop', label: '止める', hint: sessionTitle(s), icon: I(Square), keywords: ['stop tomeru teishi'], shortcut: 'stopRun', run: () => void stopHere(rt, s) });
     }
     suggest.push(
       self.role === 'supervisor'

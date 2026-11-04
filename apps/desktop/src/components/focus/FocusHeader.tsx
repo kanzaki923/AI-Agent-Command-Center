@@ -1,13 +1,13 @@
 import type { Run, Session, SessionCard, SessionState } from '@acc/protocol';
 import { ArrowUp, MoreHorizontal, Pin, Play, Square } from 'lucide-react';
 import { useState } from 'react';
-import { archiveSession, renameSession, resumeTree, setPinned, setSessionModel, stopTree } from '../../daemon/actions';
+import { archiveSession, renameSession, resumeTree, setPinned, setSessionModel, stopHere } from '../../daemon/actions';
 import { useAssistantId } from '../../daemon/assistant';
 import { useHomeSelect } from '../../daemon/home';
 import { useSlowNow } from '../../hooks/useNow';
 import { useMessages, useSessions, useSettings } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
-import { type SessionTree, treeRelations } from '../../daemon/tree';
+import { type SessionTree, treeControl, treeRelations } from '../../daemon/tree';
 import { cn } from '../../lib/cn';
 import { STATE_META, formatUsd, isLongWork, isSettled, sessionTitle } from '../../lib/states';
 import { useUi } from '../../store/ui';
@@ -21,23 +21,6 @@ import { SessionChip } from '../ui/SessionChip';
 import { StateIcon } from '../ui/StateIcon';
 import { Tooltip } from '../ui/Tooltip';
 import { ModelPicker } from './ModelPicker';
-
-const MOVING: ReadonlySet<SessionState> = new Set(['working', 'supervising', 'queued']);
-
-/**
- * What the stop / resume control offers for a session and everything under it: stop while
- * anything moves, resume when nothing moves and something was stopped, nothing otherwise.
- */
-export function treeControl(
-  session: Pick<Session, 'state' | 'activeRunId' | 'supervision'>,
-  subtree: readonly Pick<SessionCard, 'state'>[],
-): 'stop' | 'resume' | null {
-  if (session.activeRunId || MOVING.has(session.state) || subtree.some((n) => MOVING.has(n.state))) return 'stop';
-  if (session.state === 'stopped' || session.supervision === 'paused' || subtree.some((n) => n.state === 'stopped')) {
-    return 'resume';
-  }
-  return null;
-}
 
 function TitleEditor({ session }: { session: Session }) {
   const rt = useRuntime();
@@ -235,7 +218,7 @@ export function FocusHeader({
           {root && <DelegateButton sessionId={session.id} />}
           {root && <RepeatButton sessionId={session.id} />}
           {control === 'stop' && (
-            <IconButton label="止める" disabled={!connected} onClick={() => void stopTree(rt, session.id)}>
+            <IconButton label="止める" disabled={!connected} onClick={() => void stopHere(rt, session)}>
               <Square size={13} strokeWidth={1.75} />
             </IconButton>
           )}

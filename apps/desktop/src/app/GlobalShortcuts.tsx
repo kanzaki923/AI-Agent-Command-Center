@@ -1,4 +1,5 @@
-import type { Run, Session } from '@acc/protocol';
+import type { Run } from '@acc/protocol';
+import { stopIfMoving } from '../daemon/actions';
 import { qk } from '../daemon/keys';
 import { useRuntime } from '../daemon/runtime';
 import { useWindowKeydown } from '../hooks/useWindowKeydown';
@@ -7,7 +8,7 @@ import { overlayOpen } from '../lib/overlay';
 import { isTypingTarget, matchShortcut } from '../lib/shortcuts';
 import { undoLatest } from '../store/toast';
 import { useUi } from '../store/ui';
-import { focusComposerSoon, goToAttention, goUp, newChat, retry, stop } from './commands';
+import { focusComposerSoon, goToAttention, goUp, newChat, retry } from './commands';
 
 const REGIONS = ['sidebar', 'main', 'panel', 'composer'] as const;
 
@@ -89,13 +90,10 @@ export function GlobalShortcuts() {
       e.preventDefault();
       ui.openPalette('#');
     } else if (matchShortcut(e, 'stopRun')) {
-      if (ui.mode !== 'session') return;
+      if (ui.mode !== 'session' || !ui.focusSessionId) return;
       e.preventDefault();
-      const sessions = rt.queryClient.getQueryData<Session[]>(qk.sessions) ?? [];
-      const runs = rt.queryClient.getQueryData<Run[]>(qk.runs) ?? [];
-      const s = sessions.find((x) => x.id === ui.focusSessionId);
-      const run = s?.activeRunId ? runs.find((r) => r.id === s.activeRunId) : undefined;
-      if (run) void stop(rt, run);
+      // The header's 止める: this conversation and what works under it.
+      stopIfMoving(rt, ui.focusSessionId);
     } else if (matchShortcut(e, 'back')) {
       // In a text field Alt+←/→ (macOS Option+←/→) moves by word.
       if (typing) return;

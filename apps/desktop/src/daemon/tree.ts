@@ -1,4 +1,4 @@
-import type { SessionCard } from '@acc/protocol';
+import type { Session, SessionCard, SessionState } from '@acc/protocol';
 import { useQuery } from '@tanstack/react-query';
 import { qk } from './keys';
 import type { SessionTree } from './live';
@@ -18,6 +18,24 @@ export function useSessionTree(sessionId: string | null | undefined) {
     queryFn: () => rt.client.call('session.tree', { sessionId: sessionId! }),
     enabled: !!sessionId,
   });
+}
+
+const MOVING: ReadonlySet<SessionState> = new Set(['working', 'supervising', 'queued']);
+
+/**
+ * What 止める / 再開 offers for a session and everything under it — the same answer in the
+ * header, the palette, Ctrl+Shift+Backspace and /stop: stop while anything moves, resume when
+ * nothing moves and something was stopped, nothing otherwise.
+ */
+export function treeControl(
+  session: Pick<Session, 'state' | 'activeRunId' | 'supervision'>,
+  subtree: readonly Pick<SessionCard, 'state'>[],
+): 'stop' | 'resume' | null {
+  if (session.activeRunId || MOVING.has(session.state) || subtree.some((n) => MOVING.has(n.state))) return 'stop';
+  if (session.state === 'stopped' || session.supervision === 'paused' || subtree.some((n) => n.state === 'stopped')) {
+    return 'resume';
+  }
+  return null;
 }
 
 /** Relations inside a tree, derived from its cards. */

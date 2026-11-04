@@ -6,7 +6,7 @@ import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
 import { attention, card, homeSnapshot, homeTree, iso, message, session, T0 } from '../../test/fixtures';
 import { TooltipProvider } from '../ui/Tooltip';
-import { treeControl } from './FocusHeader';
+import { treeControl } from '../../daemon/tree';
 import { FocusView } from './FocusView';
 
 // jsdom has no layout: give the virtualized chat a viewport so it renders its rows.

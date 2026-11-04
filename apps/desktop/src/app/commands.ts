@@ -4,8 +4,6 @@ import { askAssistant } from '../daemon/assistant';
 import { homeSnapshot } from '../daemon/home';
 import { qk } from '../daemon/keys';
 import type { AppRuntime } from '../daemon/runtime';
-import { sessionTitle } from '../lib/states';
-import { useConfirm } from '../store/confirm';
 import { promptConnectionThen } from './connect';
 import { toast } from '../store/toast';
 import { type Mode, useUi } from '../store/ui';
@@ -87,21 +85,12 @@ export async function reject(rt: AppRuntime, approval: Approval, note?: string):
 }
 
 /**
- * Stop a run. Chat runs stop immediately; an agent's run asks first, since stopping loses
- * what it was in the middle of.
+ * 生成を停止 (Esc / ■ in a chat's composer): only the answer being written stops; the chat
+ * stays as it is and the next message carries on. 止める (the whole conversation, resumable)
+ * is `stopHere`.
  */
-export async function stop(rt: AppRuntime, run: Run): Promise<void> {
-  if (run.kind === 'chat') {
-    await cancelRun(rt, run);
-    return;
-  }
-  const session = rt.queryClient.getQueryData<Session[]>(qk.sessions)?.find((s) => s.id === run.sessionId);
-  useConfirm.getState().ask({
-    title: `「${session ? sessionTitle(session) : '作業'}」を止めますか？`,
-    body: 'あとで再開できます。',
-    confirmLabel: '止める',
-    onConfirm: () => void cancelRun(rt, run),
-  });
+export async function stopGenerating(rt: AppRuntime, run: Run): Promise<void> {
+  if (run.kind === 'chat') await cancelRun(rt, run);
 }
 
 export async function retry(rt: AppRuntime, run: Run): Promise<void> {
