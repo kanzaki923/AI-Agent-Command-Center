@@ -107,3 +107,23 @@ export function useAssistantSeat(settingsSeat: string | null | undefined): Chara
   const member = useMember(settingsSeat ?? null);
   return member && !member.archivedAt ? member : undefined;
 }
+
+/** When a memory is from: 今日 / 昨日 / N日前 within a month, the month (and year) before. */
+export function memoryWhen(at: string, now = new Date()): string {
+  const d = new Date(at);
+  const day = (x: Date) => Date.UTC(x.getFullYear(), x.getMonth(), x.getDate());
+  const days = Math.round((day(now) - day(d)) / 86_400_000);
+  if (days <= 0) return '今日';
+  if (days === 1) return '昨日';
+  if (days < 30) return `${days}日前`;
+  return d.getFullYear() === now.getFullYear() ? `${d.getMonth() + 1}月` : `${d.getFullYear()}年${d.getMonth() + 1}月`;
+}
+
+export const addMemory = (rt: AppRuntime, p: ParamsInput<'character.memory.add'>) =>
+  attempt(rt, () => rt.client.call('character.memory.add', p), '覚えさせられませんでした');
+
+export const updateMemory = (rt: AppRuntime, memoryId: string, text: string) =>
+  attempt(rt, () => rt.client.call('character.memory.update', { memoryId, text }), '直せませんでした');
+
+export const deleteMemory = (rt: AppRuntime, memoryId: string) =>
+  attempt(rt, () => rt.client.call('character.memory.delete', { memoryId }), '忘れさせられませんでした');

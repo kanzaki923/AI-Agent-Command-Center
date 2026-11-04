@@ -15,6 +15,7 @@ import { formatUsd, sessionTitle } from '../../lib/states';
 import { toast } from '../../store/toast';
 import { useUi } from '../../store/ui';
 import { ModelPicker } from '../focus/ModelPicker';
+import { MemoryChanges, Memories } from './Memories';
 import { IconButton } from '../ui/Button';
 import { MEMBER_TONES, MemberFace, toneColor } from '../ui/Face';
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger, Popover, PopoverContent, PopoverTrigger } from '../ui/Menu';
@@ -173,7 +174,7 @@ function SessionRow({ session }: { session: Session }) {
 /**
  * A member's page (snapshot 20261104_members-spec.md §6): its face, name, model and profile,
  * a button to talk with it, and on the side what it cost this month and the conversations it
- * was in. Stage 1 keeps no memories yet, so there is no section for them.
+ * was in, and what it remembers (stage 2) with its latest changes.
  */
 export function MemberPage() {
   const rt = useRuntime();
@@ -260,18 +261,33 @@ export function MemberPage() {
             </Menu>
           </div>
           <ProfileEditor key={member.id} member={member} />
+          <Memories member={member} memories={page?.memories ?? []} off={settings?.members?.memory === false} />
         </div>
         <aside className="flex min-w-0 flex-col gap-1 border-l border-line-subtle pl-6" aria-label={`${member.name}の記録`}>
           <div className="flex items-baseline justify-between">
             <span className="text-micro text-fg-3">今月</span>
             <span className="text-[20px] leading-7 font-semibold text-fg tabular" data-member-cost>
-              {formatUsd(page?.monthUsd ?? 0) ?? '$0'}
+              {formatUsd((page?.monthUsd ?? 0) + (page?.memoryUsd ?? 0)) ?? '$0'}
             </span>
           </div>
+          {(page?.memoryUsd ?? 0) > 0 && (
+            <div className="flex flex-col text-meta text-fg-3 tabular" data-member-cost-split>
+              <span className="flex justify-between">
+                <span>話した</span>
+                <span>{formatUsd(page?.monthUsd ?? 0) ?? '$0'}</span>
+              </span>
+              <span className="flex justify-between">
+                <span>整理</span>
+                <span>{formatUsd(page?.memoryUsd ?? 0) ?? '$0'}</span>
+              </span>
+            </div>
+          )}
           <div className="mt-4 mb-1 text-micro text-fg-3">出た会話</div>
           {(page?.sessions ?? []).map((s) => (
             <SessionRow key={s.id} session={s} />
           ))}
+          {(page?.changes.length ?? 0) > 0 && <div className="mt-4 mb-1 text-micro text-fg-3">最近の変化</div>}
+          <MemoryChanges changes={page?.changes ?? []} />
         </aside>
       </div>
     </div>

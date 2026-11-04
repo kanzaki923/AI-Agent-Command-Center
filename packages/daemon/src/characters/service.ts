@@ -9,6 +9,8 @@ import type { DaemonContext } from '../core/context';
 import { invalidParams, notFound } from '../core/errors';
 import { EntityRepo } from '../core/repo';
 import { dayOf } from '../cost/ledger';
+import { memoryBlock } from './frame';
+import { MemoryStore } from './memory';
 
 /** Conversations listed on a member's page. */
 export const CHARACTER_SESSIONS_SHOWN = 30;
@@ -44,8 +46,11 @@ function nameFrom(title: string, persona: string): string {
 /** The roster (`characters` table) and the questions other modules ask about it. */
 export class CharacterService {
   readonly repo: EntityRepo<Character, z.input<typeof CharacterSchema>>;
+  /** What members remember (stage 2). */
+  readonly memory: MemoryStore;
 
   constructor(private readonly ctx: DaemonContext) {
+    this.memory = new MemoryStore(ctx);
     this.repo = new EntityRepo<Character, z.input<typeof CharacterSchema>>(ctx.db, {
       table: 'characters',
       kind: 'character',
@@ -115,6 +120,35 @@ export class CharacterService {
   fromPersona(session: Session): { name: string; profile: string } {
     const persona = session.persona?.trim() ?? '';
     return { name: nameFrom(session.title, persona), profile: persona };
+  }
+
+  /**
+   * The memory lines a conversation with this member reads (nothing when memory is off).
+   * `present`: the other members of a meeting (ties with them are read).
+   */
+  memoryLines(characterId: string, scene: CharacterScene, present?: ReadonlySet<string>): string[] {
+    const settings = this.ctx.settings.get();
+    if (!settings.members.memory) return [];
+    const memories = this.memory.list(characterId);
+    if (memories.length === 0) return [];
+    const names = new Map(this.list(true).map((c) => [c.id, c.name]));
+    return memoryBlock(memories, scene, {
+      names,
+      ...(present ? { present } : {}),
+      now: this.ctx.clock.iso(),
+      timeZone: settings.limits.timezone,
+    });
+  }
+
+  /** The other members speaking under the same leader as this speaker. */
+  presentWith(session: Pick<Session, 'id' | 'parentSessionId'>): Set<string> {
+    if (!session.parentSessionId) return new Set();
+    return new Set(
+      this.ctx.repos.sessions
+        .find({ where: { parent_session_id: session.parentSessionId, archived_at: null } })
+        .filter((s) => s.id !== session.id && s.characterId && (s.speaks || !!s.persona))
+        .map((s) => s.characterId!),
+    );
   }
 
   /** Conversations with this member, most recently active first. */

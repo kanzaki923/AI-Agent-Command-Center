@@ -144,6 +144,7 @@ describe('settings', () => {
         contextMessages: 40,
       },
       assistant: { model: null, dailyUsd: 2, characterId: null },
+      members: { memory: true, memoryModel: null, memoryDailyUsd: 0.5 },
       llmCallReserveUsd: 0.25,
       defaultPermissionProfile: 'autonomous',
       autoMode: { enabled: true, judge: 'server', classifierModel: null, classifierCostUsd: 0.011 },

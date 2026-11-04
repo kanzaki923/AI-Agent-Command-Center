@@ -234,6 +234,7 @@ export function createLiveViews(qc: QueryClient, opts: LiveViewsOptions = {}) {
         case 'character.created':
         case 'character.updated':
         case 'character.reordered':
+        case 'character.memory_changed':
           debounce('characters', slowMs, () => void qc.invalidateQueries({ queryKey: ['character'] }));
           break;
         case 'schedule.created':

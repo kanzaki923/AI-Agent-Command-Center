@@ -64,6 +64,10 @@ export function summarizeEvent(e: Event): string {
       return e.payload.character.name;
     case 'character.reordered':
       return `${e.payload.characterIds.length} members`;
+    case 'character.memory_changed':
+      return e.payload.rejected
+        ? 'sorting thrown away'
+        : `+${e.payload.added.length} -${e.payload.removed.length} ~${e.payload.changed.length} (${e.payload.by})`;
     case 'session.created':
       return `${e.payload.session.kind} "${e.payload.session.title || '(無題)'}"`;
     case 'session.archived':

@@ -24,6 +24,7 @@ export const ID_PREFIXES = {
   attention: 'atn',
   schedule: 'sch',
   character: 'chr',
+  memory: 'mem',
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;
@@ -59,6 +60,7 @@ export const InboxItemId = idSchema('inboxItem');
 export const AttentionId = idSchema('attention');
 export const ScheduleId = idSchema('schedule');
 export const CharacterId = idSchema('character');
+export const MemoryId = idSchema('memory');
 
 /** ISO-8601 UTC timestamp with milliseconds, e.g. `2026-01-01T00:00:00.000Z`. Sorts lexicographically. */
 export const Timestamp = z.iso.datetime({ offset: false });

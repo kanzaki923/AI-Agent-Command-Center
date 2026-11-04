@@ -12,7 +12,8 @@ import { type MethodDef, params } from '../method';
 // ---------------------------------------------------------------------------
 
 /** What a ledger row is for: an LLM call, an agent runtime, the auto mode classifier, or a correction. */
-export const LedgerComponent = z.enum(['llm', 'agent', 'classifier', 'adjust']);
+/** `memory`: a member's memories being sorted out (characters/digest.ts). */
+export const LedgerComponent = z.enum(['llm', 'agent', 'classifier', 'adjust', 'memory']);
 export type LedgerComponent = z.infer<typeof LedgerComponent>;
 
 export const CostRange = z.union([

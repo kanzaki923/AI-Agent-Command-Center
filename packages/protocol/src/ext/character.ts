@@ -4,7 +4,7 @@
  * permissions: what a conversation may do is still its grant and budget.
  */
 import { z } from 'zod';
-import { CharacterId, SessionId, Timestamp } from '../common';
+import { CharacterId, MemoryId, SessionId, Timestamp } from '../common';
 import { Session } from '../domain';
 import { type MethodDef, Ok, params } from '../method';
 
@@ -37,6 +37,45 @@ export const Character = z.object({
 });
 export type Character = z.infer<typeof Character>;
 
+/**
+ * What a member remembers (snapshot 20261104_members-spec.md §2, §5): about itself (`self`,
+ * including the ways of working it was taught: `work`), about another member (`relation`,
+ * `aboutId`) and about the person (`you`, only what it heard itself).
+ */
+export const MemoryKind = z.enum(['self', 'relation', 'you']);
+export type MemoryKind = z.infer<typeof MemoryKind>;
+
+/** Bounds the daemon enforces on what a member keeps. */
+export const MEMORY_LIMITS = { self: 20, relationPerMember: 5, you: 15, textChars: 80 } as const;
+
+export const CharacterMemory = z.object({
+  id: MemoryId,
+  characterId: CharacterId,
+  kind: MemoryKind,
+  /** The other member of a `relation`. */
+  aboutId: CharacterId.nullable().default(null),
+  text: z.string().min(1).max(MEMORY_LIMITS.textChars),
+  /** A way of working (`self`): read in work too, where the rest of the self is not. */
+  work: z.boolean().default(false),
+  /** When it happened or was learned. */
+  at: Timestamp,
+  /** `person`: written or corrected by the person; sorting never changes or drops it. */
+  source: z.enum(['auto', 'person']),
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
+});
+export type CharacterMemory = z.infer<typeof CharacterMemory>;
+
+/** One change of a member's memories (the page's 最近の変化). */
+export const MemoryChange = z.object({
+  at: Timestamp,
+  change: z.enum(['added', 'removed', 'changed']),
+  kind: MemoryKind,
+  text: z.string(),
+  by: z.enum(['digest', 'person']),
+});
+export type MemoryChange = z.infer<typeof MemoryChange>;
+
 /** One member with what it has been in and what it cost (`character.get`). */
 export const CharacterDetail = z.object({
   character: Character,
@@ -44,10 +83,16 @@ export const CharacterDetail = z.object({
   sessions: z.array(Session),
   /** Spend of those conversations this month (the daemon's time zone). */
   monthUsd: z.number(),
+  /** What it remembers (kind order, then oldest first). Absent from older daemons. */
+  memories: z.array(CharacterMemory).default([]),
+  /** Latest changes of its memories, newest first (up to 12). */
+  changes: z.array(MemoryChange).default([]),
+  /** What sorting its memories cost this month (part of the total spend, not of monthUsd). */
+  memoryUsd: z.number().default(0),
 });
 export type CharacterDetail = z.infer<typeof CharacterDetail>;
 
-export const characterDomain = { Character, CharacterDetail } as const;
+export const characterDomain = { Character, CharacterDetail, CharacterMemory, MemoryChange } as const;
 
 const Face = z
   .string()
@@ -125,6 +170,46 @@ export const characterMethods = {
     tool: false,
     mutates: true,
   },
+  'character.memory.add': {
+    params: params({
+      characterId: CharacterId,
+      kind: MemoryKind,
+      text: z.string().trim().min(1).max(MEMORY_LIMITS.textChars),
+      aboutId: CharacterId.optional().describe('kind relation: the other member'),
+      work: z.boolean().optional().describe('kind self: a way of working'),
+    }),
+    result: CharacterMemory,
+    description: 'Have a member remember something (the person wrote it, so sorting keeps it).',
+    tool: false,
+    mutates: true,
+  },
+  'character.memory.update': {
+    params: params({
+      memoryId: MemoryId,
+      text: z.string().trim().min(1).max(MEMORY_LIMITS.textChars),
+    }),
+    result: CharacterMemory,
+    description: "Correct one memory (it becomes the person's, so sorting keeps it).",
+    tool: false,
+    mutates: true,
+  },
+  'character.memory.delete': {
+    params: params({ memoryId: MemoryId }),
+    result: Ok,
+    description: 'Forget one memory (sorting will not bring it back).',
+    tool: false,
+    mutates: true,
+  },
+  'character.digest': {
+    params: params({ characterId: CharacterId }),
+    result: z.object({
+      outcome: z.enum(['done', 'nothing_new', 'off', 'limit', 'rejected', 'failed']),
+    }),
+    description:
+      'Sort out what a member said and heard since the last time into its memories now (normally done when it has been quiet for a while).',
+    tool: false,
+    mutates: true,
+  },
 } as const satisfies Record<string, MethodDef>;
 
 // ---------------------------------------------------------------------------
@@ -135,4 +220,13 @@ export const characterEvents = {
   'character.created': z.object({ character: Character }),
   'character.updated': z.object({ character: Character, changes: z.array(z.string()) }),
   'character.reordered': z.object({ characterIds: z.array(CharacterId) }),
+  'character.memory_changed': z.object({
+    characterId: CharacterId,
+    added: z.array(z.string()),
+    removed: z.array(z.string()),
+    changed: z.array(z.string()),
+    by: z.enum(['digest', 'person']),
+    /** A sorting the daemon threw away (it would have dropped half of the memories at once). */
+    rejected: z.boolean().default(false),
+  }),
 } as const;

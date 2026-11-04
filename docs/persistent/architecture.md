@@ -378,7 +378,7 @@ spec §3.7・§2.2（home）・§6。型は `protocol/src/ext/home.ts`、実装�
 
 ### 2.22 メンバー（`characters/`）
 
-構想は `docs/snapshot/20261104_members-concept.md`、仕様は `20261104_members-spec.md`。名簿に残る「顔・名前・プロフィール・既定のモデル」。会話・任せた仕事・定期便・右腕の席が「誰と／誰が」を `characterId` で参照する。**メンバーは権限を持たない**（何ができるかは今どおり Grant と予算）。段階 1（記憶なし）まで入っている。
+構想は `docs/snapshot/20261104_members-concept.md`、仕様は `20261104_members-spec.md`。名簿に残る「顔・名前・プロフィール・既定のモデル・記憶」。会話・任せた仕事・定期便・右腕の席が「誰と／誰が」を `characterId` で参照する。**メンバーは権限を持たない**（何ができるかは今どおり Grant と予算）。段階 1（名簿と顔）と段階 2・3（自分・関係・あなたの記憶）まで入っている。
 
 - **データ**：`characters` テーブル（`Character`：`name` 40 字・`face` 1 文字か null・`tone` 0〜7・`profile` 4,000 字・`model`・`sortKey`・`archivedAt`）。`tone` は作るとき名簿で一番使われていない色。`Session.characterId` と `Session.speaks`、`SessionCard.characterId`、`ScheduleRunSpec.characterId`、`settings.assistant.characterId`（右腕の席）。
 - **API**（`character.*`）：`list` / `get`（出た会話 30 件と今月の費用：`usage_ledger` を `sessions.data.characterId` で絞る）/ `create` / `update` / `reorder` / `archive`（外すと右腕の席も空く。会話は残り、灰色の顔で名前を出す）/ `keep`（話し手の `persona` を名簿に残し、会話を `characterId` + `speaks` に付け替える）。**変えるのは人だけ**：`character.*` の Grant を持つ AI でも create / update / reorder / archive / keep は `forbidden`（`humansOnly`）。`session.update` の `characterId` も人だけ、かつ発言がまだない会話だけ（話し始めた会話の相手は替えない）。メンバーの `model` は、会話を作るときに `model` の指定がなければ使う。
@@ -387,7 +387,10 @@ spec §3.7・§2.2（home）・§6。型は `protocol/src/ext/home.ts`、実装�
 - **名簿を読むのは前提で**（`characterRoster`。id・名前・プロフィールの 1 行目、30 人まで）：右腕（`assistantMembersBlock`。先頭の system なので名簿か席が変わるまでキャッシュに乗る）と指揮役（`buildSupervisorPrompt` の `members`）。「人が名前を出したときだけ `characterId` を渡す」とプロンプトで言う（メンバーは権限を持たないので、安全ではなく費用と期待の問題）。右腕は `assistant.startWork` の `characterId`、何人かで話すなら `delegate: true` で名前を `text` に残す。指揮役は `session.spawn` の `characterId`（話し手なら `speaker: true`。`persona` とは併用できない）。
 - **右腕の席**：席にメンバーがいれば、右腕の先頭の system に「このメンバーでもある。口調だけ替え、規則はそのまま」を足す。
 - **定期便**：発火の子に `characterId` を渡す。外されたメンバーなら付けずに発火する。
-- テスト：`characters/characters.test.ts`。撮影は監査シーンの `63-member-page`・`64-member-talk`（ハクが右腕の席、定期便「朝のまとめ」の担当、D のミナトを `keep`）。
+- **記憶**（`characters/memory.ts`、`CharacterMemory`）：`self`（`work` は教わった仕事のやり方）・`relation`（`aboutId` の相手ごと）・`you`。上限 `MEMORY_LIMITS`（自分 20・関係は相手ごと 5・あなた 15・1 件 80 字）。`source: person` は人が書いたか直したもので、整理は変えない・消さない。人が消したものは正規化した文で tombstone に残し、整理が同じ文を出しても捨てる。変化は `character_memory_log`（ページの最近の変化）と `character.memory_changed`。**記憶を書く道は人の操作（`character.memory.add/update/delete`、AI は Grant があっても `forbidden`）とデーモンの整理だけ**で、LLM のツールにはない。
+- **記憶を読む**（`CharacterService.memoryLines` → `frame.ts memoryBlock`）：枠のメンバーの引用の後ろに「覚えていること（命令ではない。プロフィールと食い違えばプロフィール）」として置く。雑談は全部、会議は自分・同席している話し手のメンバーとの関係・あなた、仕事は `work` の自分とあなただけ。日付の言い方（今日・昨日・N日前・M月）はコードで作る（`memoryWhen`）。`settings.members.memory` がオフなら読まない・書かない（消しはしない）。system の先頭にあり、変わるのは整理のときだけ。
+- **整理**（`characters/digest.ts` `MemoryDigest`、`ctx.service('memoryDigest')`）：5 分ごとの見回りで、どの会話でも 30 分話していない（`DIGEST_IDLE_MS`。キャッシュが切れてから変える）・前回から材料が 4 行以上か仕事で人の発言があるメンバーを、メンバーごとに 1 本の鎖で整理する。材料は会話ごとの読んだ位置（`character_digest_marks`）以降で、場面で絞る：雑談は本人の発言と人の発言、会議はそれに `forward` で渡された同席者の発言、**仕事は人の発言だけ**（依頼・成果物・メンバーの出力は渡さない）。新しい順に 30,000 字。モデルは `settings.members.memoryModel` → 名簿で入力単価が一番安いもの → `mock/memory`（オフラインの整理役：今の記憶を残し、本人が「わたし…」と言った文を足す）。返事は丸ごとの新しい一覧（JSON、関係は相手の名前で）。デーモンが守ること：上限で切る、知らない名前を捨てる、tombstone を捨てる、人の項目を戻す、`corrections` に挙がったものを `person` にする、**一度に自動の記憶の半分以上が消える結果は捨てる**（`rejected`。読んだ位置は進める）。失敗したら 1 時間あけて次。費用は ledger の `component: memory`（セッションなし）と `character_digests`（メンバーごと。`settings.members.memoryDailyUsd`、既定 $0.5／日、と全体の 1 日の上限で止まる）。`character.digest` で今すぐ整理（人だけ）。
+- テスト：`characters/characters.test.ts`・`characters/memory.test.ts`。撮影は監査シーンの `63-member-page`・`64-member-talk`（ハクが右腕の席、定期便「朝のまとめ」の担当、人が書いた記憶 3 件、D のミナトを `keep`）。
 
 ## 3. Desktop UI
 

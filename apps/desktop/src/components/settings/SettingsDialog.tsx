@@ -65,6 +65,11 @@ export const PROFILE_OPTIONS: SegmentOption<PermissionProfile>[] = [
  * Agent runs still at work on another profile than the default (a project with a profile of
  * its own does not follow the default): a run keeps the profile it started with to the end.
  */
+const MEMORY_OPTIONS: { value: 'on' | 'off'; label: string }[] = [
+  { value: 'on', label: '覚える' },
+  { value: 'off', label: '覚えない' },
+];
+
 export function runsOnOtherProfile(
   runs: readonly Run[],
   projects: readonly Pick<Project, 'id' | 'permissionProfile'>[],
@@ -318,6 +323,31 @@ export function SettingsDialog() {
                   placeholder="—"
                   onCommit={(v) => update({ assistant: { dailyUsd: v } })}
                 />
+              </FieldRow>
+            )}
+            {settings?.members && (
+              <FieldRow
+                label="メンバーの記憶"
+                hint="会話の区切りに安いモデルで整理します。上限は整理の費用、1 日あたり"
+                htmlFor="member-memory-limit"
+              >
+                <Segmented<'on' | 'off'>
+                  label="メンバーの記憶"
+                  value={settings.members.memory ? 'on' : 'off'}
+                  options={MEMORY_OPTIONS}
+                  onChange={(v) => update({ members: { memory: v === 'on' } })}
+                />
+                {settings.members.memory && (
+                  <UsdField
+                    id="member-memory-limit"
+                    label="記憶の整理の上限"
+                    value={settings.members.memoryDailyUsd}
+                    allowEmpty
+                    allowZero
+                    placeholder="—"
+                    onCommit={(v) => update({ members: { memoryDailyUsd: v } })}
+                  />
+                )}
               </FieldRow>
             )}
             <FieldRow label="テーマ">

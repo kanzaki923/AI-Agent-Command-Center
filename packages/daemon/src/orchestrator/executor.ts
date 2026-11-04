@@ -141,7 +141,9 @@ export function buildSupervisorPrompt(input: {
 /** The member a supervisor leads the work as, framed like work (no voice in the outputs). */
 function supervisorSelf(ctx: DaemonContext, session: Session): string[] | null {
   const member = memberOf(ctx, session);
-  return member ? characterFrame(member, 'work', quote) : null;
+  return member
+    ? characterFrame(member, 'work', quote, ctx.service('characters').memoryLines(member.id, 'work'))
+    : null;
 }
 
 /**

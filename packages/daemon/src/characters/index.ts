@@ -1,8 +1,10 @@
-import type { Character } from '@acc/protocol';
+import type { Actor, Character } from '@acc/protocol';
 import { defineMethod } from '../api/registry';
 import { forbidden, invalidParams, notFound } from '../core/errors';
 import { assertRosterModel } from '../llm/roster';
 import { defineModule } from '../module';
+import { MemoryDigest } from './digest';
+import { MEMORY_MIGRATION } from './memory';
 import { CharacterService } from './service';
 
 export {
@@ -18,6 +20,8 @@ declare module '../core/context' {
   interface Services {
     /** The roster of members (`character.*`). */
     characters: CharacterService;
+    /** Sorting out what members said and heard into their memories. */
+    memoryDigest: MemoryDigest;
   }
 }
 
@@ -43,16 +47,36 @@ CREATE TABLE characters (
 CREATE INDEX characters_sort ON characters(sort_key);
 `,
     },
+    { id: 'characters/0002_memories', sql: MEMORY_MIGRATION },
   ],
   register(ctx) {
     const service = new CharacterService(ctx);
     ctx.provide('characters', service);
+    const digest = new MemoryDigest(ctx, service, service.memory);
+    ctx.provide('memoryDigest', digest);
     const { db, bus } = ctx;
 
     // The roster is the person's: an AI may read it, never change it (whatever its grant).
     const humansOnly = (actor: { kind: string }) => {
       if (actor.kind === 'agent') throw forbidden('メンバーを作ったり変えたりできるのは人だけです');
     };
+    const emitMemory = (
+      actor: Actor,
+      characterId: string,
+      d: { added?: string[]; removed?: string[]; changed?: string[] },
+    ) =>
+      bus.emit({
+        type: 'character.memory_changed',
+        actor,
+        payload: {
+          characterId,
+          added: d.added ?? [],
+          removed: d.removed ?? [],
+          changed: d.changed ?? [],
+          by: 'person',
+          rejected: false,
+        },
+      });
     const assertModel = (actor: Parameters<typeof assertRosterModel>[1], model: string | null | undefined) => {
       if (model) assertRosterModel(ctx, actor, model);
     };
@@ -70,6 +94,9 @@ CREATE INDEX characters_sort ON characters(sort_key);
             character,
             sessions: service.sessionsOf(character.id),
             monthUsd: service.monthUsd(character.id),
+            memories: service.memory.list(character.id),
+            changes: service.memory.changes(character.id),
+            memoryUsd: digest.monthUsd(character.id),
           };
         },
       }),
@@ -198,6 +225,51 @@ CREATE INDEX characters_sort ON characters(sort_key);
             return character;
           }),
       }),
+
+      defineMethod('character.memory.add', {
+        handler: (p, call) =>
+          db.transaction(() => {
+            humansOnly(call.actor);
+            const member = service.repo.get(p.characterId);
+            if (!member) throw notFound('character', p.characterId);
+            if (p.kind === 'relation') {
+              if (!p.aboutId || p.aboutId === member.id) throw invalidParams('関係の記憶には相手のメンバーが要ります');
+              if (!service.get(p.aboutId)) throw notFound('character', p.aboutId);
+            }
+            const memory = service.memory.add(p);
+            emitMemory(call.actor, member.id, { added: [memory.text] });
+            return memory;
+          }),
+      }),
+
+      defineMethod('character.memory.update', {
+        handler: (p, call) =>
+          db.transaction(() => {
+            humansOnly(call.actor);
+            const memory = service.memory.update(p.memoryId, p.text);
+            emitMemory(call.actor, memory.characterId, { changed: [memory.text] });
+            return memory;
+          }),
+      }),
+
+      defineMethod('character.memory.delete', {
+        handler: (p, call) =>
+          db.transaction(() => {
+            humansOnly(call.actor);
+            const memory = service.memory.delete(p.memoryId);
+            emitMemory(call.actor, memory.characterId, { removed: [memory.text] });
+            return { ok: true as const };
+          }),
+      }),
+
+      defineMethod('character.digest', {
+        handler: async (p, call) => {
+          humansOnly(call.actor);
+          if (!service.get(p.characterId)) throw notFound('character', p.characterId);
+          return { outcome: await digest.digest(p.characterId, { force: true }) };
+        },
+      }),
     );
+    return { start: () => digest.start(), stop: () => digest.stop() };
   },
 });

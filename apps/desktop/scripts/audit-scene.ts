@@ -499,6 +499,11 @@ ${JSON.stringify(await detail(), null, 1)}` : '';
   await call('settings.update', { assistant: { characterId: haku.id } });
   const talk = await call('session.create', { kind: 'chat', title: '週末なにする', characterId: haku.id });
   await ended((await call('session.send', { sessionId: talk.id, content: '週末、雨みたい。なにしよう' })).runId);
+  // What Haku remembers: written by the person, then a sorting on the offline model.
+  await call('character.memory.add', { characterId: haku.id, kind: 'self', text: 'リスに梅おにぎりを奪われたことがある' });
+  await call('character.memory.add', { characterId: haku.id, kind: 'self', text: '表の金額は右寄せにする', work: true });
+  await call('character.memory.add', { characterId: haku.id, kind: 'you', text: '朝が弱い。費用にはうるさい' });
+  await call('character.digest', { characterId: haku.id });
 
   // ---------------------------------------------------------------- a schedule that already ran
   const morning = await call('session.create', { kind: 'chat', title: '朝のまとめ', model: 'mock/assistant' });

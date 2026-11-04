@@ -99,6 +99,13 @@ export type SettingsPatch = {
         characterId?: string | null | undefined;
       }
     | undefined;
+  members?:
+    | {
+        memory?: boolean | undefined;
+        memoryModel?: string | null | undefined;
+        memoryDailyUsd?: number | null | undefined;
+      }
+    | undefined;
   providers?:
     | {
         anthropic?:
@@ -269,6 +276,18 @@ export class SettingsStore {
         next.assistant.characterId = a.characterId ?? null;
       });
     }
+    if (patch.members) {
+      const m = patch.members;
+      set('members.memory', next.members.memory, m.memory, () => {
+        next.members.memory = m.memory ?? true;
+      });
+      set('members.memoryModel', next.members.memoryModel, m.memoryModel, () => {
+        next.members.memoryModel = m.memoryModel ?? null;
+      });
+      set('members.memoryDailyUsd', next.members.memoryDailyUsd, m.memoryDailyUsd, () => {
+        next.members.memoryDailyUsd = m.memoryDailyUsd ?? null;
+      });
+    }
     if (patch.autoMode) {
       const a = patch.autoMode;
       set('autoMode.enabled', next.autoMode.enabled, a.enabled, () => {
@@ -349,6 +368,7 @@ export function toSettingsView(s: Settings): SettingsView {
     autoResume: s.autoResume,
     supervisor: { ...s.supervisor },
     assistant: { ...s.assistant },
+    members: { ...s.members },
     providers: {
       anthropic: {
         baseUrl: s.providers.anthropic.baseUrl,

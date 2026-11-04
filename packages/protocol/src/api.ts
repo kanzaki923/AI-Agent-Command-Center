@@ -347,6 +347,11 @@ export const api = defineApi({
         dailyUsd: z.number().min(0).nullable().optional().describe('null removes the limit'),
         characterId: CharacterId.nullable().optional().describe('The member in the seat; null: none'),
       }).optional(),
+      members: params({
+        memory: z.boolean().optional(),
+        memoryModel: z.string().min(1).nullable().optional().describe('null: the cheapest of the roster'),
+        memoryDailyUsd: z.number().min(0).nullable().optional().describe('null removes the limit'),
+      }).optional(),
       providers: params({
         anthropic: params({
           apiKey: z.string().min(1).nullable().optional().describe('null clears the key'),

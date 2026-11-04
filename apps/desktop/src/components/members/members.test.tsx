@@ -1,4 +1,4 @@
-import type { Character, CharacterDetail, Session } from '@acc/protocol';
+import type { Character, CharacterDetail, CharacterMemory, Session } from '@acc/protocol';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
@@ -35,7 +35,11 @@ function mount(ui: React.ReactNode, { members = [HAKU, LUNA], sessions = [] as S
 } = {}) {
   const fake = createFakeClient({
     'character.list': () => ({ items: members }),
-    'character.get': (p) => page ?? { character: members.find((m) => m.id === p.characterId)!, sessions: [], monthUsd: 0 },
+    'character.get': (p) =>
+      page ?? { character: members.find((m) => m.id === p.characterId)!, sessions: [], monthUsd: 0, memories: [], changes: [], memoryUsd: 0 },
+    'character.memory.update': (p) => ({ id: p.memoryId, text: p.text }),
+    'character.memory.delete': () => ({ ok: true }),
+    'character.memory.add': (p) => ({ id: 'mem_x', ...p }),
     'character.update': (p) => ({ ...members.find((m) => m.id === p.characterId)!, ...p }),
     'session.list': () => ({ items: sessions, nextCursor: null }),
     'project.list': () => ({ items: [] }),
@@ -86,7 +90,7 @@ describe('the page of a member', () => {
   it('shows the profile, the conversations it was in and the month spend; the profile saves on leaving', async () => {
     useUi.setState({ mode: 'member', memberId: HAKU.id });
     const talk = session({ title: '週末なにする', characterId: HAKU.id });
-    const fake = mount(<MemberPage />, { page: { character: HAKU, sessions: [talk], monthUsd: 1.24 } });
+    const fake = mount(<MemberPage />, { page: { character: HAKU, sessions: [talk], monthUsd: 1.24, memories: [], changes: [], memoryUsd: 0 } });
     const profile = await screen.findByRole('textbox', { name: 'プロフィール' });
     expect(profile).toHaveValue('のんびり屋の白い犬。');
     expect(await screen.findByRole('button', { name: /週末なにする/ })).toBeInTheDocument();
@@ -110,6 +114,84 @@ describe('the page of a member', () => {
     useUi.getState().goHome();
     useUi.getState().goBack();
     expect(useUi.getState()).toMatchObject({ mode: 'member', memberId: HAKU.id });
+  });
+});
+
+describe('what a member remembers', () => {
+  const mem = (over: Partial<CharacterMemory>): CharacterMemory => ({
+    id: 'mem_00000000000000000000000001',
+    characterId: HAKU.id,
+    kind: 'self',
+    aboutId: null,
+    text: 'リスに梅おにぎりを奪われた',
+    work: false,
+    at: new Date().toISOString(),
+    source: 'auto',
+    createdAt: iso(T0),
+    updatedAt: iso(T0),
+    ...over,
+  });
+
+  it("lists itself, its ties with faces and the person; the person's lines are marked; it can be corrected and made to forget", async () => {
+    useUi.setState({ mode: 'member', memberId: HAKU.id });
+    const memories = [
+      mem({}),
+      mem({ id: 'mem_00000000000000000000000002', kind: 'relation', aboutId: LUNA.id, text: 'ズボラな案にはツッコむ' }),
+      mem({ id: 'mem_00000000000000000000000003', kind: 'you', text: '朝が弱い', source: 'person' }),
+    ];
+    const fake = mount(<MemberPage />, {
+      page: {
+        character: HAKU,
+        sessions: [],
+        monthUsd: 1,
+        memories,
+        changes: [{ at: iso(T0), change: 'added', kind: 'self', text: 'リスに梅おにぎりを奪われた', by: 'digest' }],
+        memoryUsd: 0.05,
+      },
+    });
+    const section = await screen.findByRole('region', { name: '覚えたこと' });
+    const row = await within(section).findByText('リスに梅おにぎりを奪われた');
+    expect(within(row.closest('li')!).getByText('今日')).toBeInTheDocument();
+    const tie = within(section).getByText('ズボラな案にはツッコむ').closest('li')!;
+    expect(tie.querySelector('[data-face]')).toHaveTextContent('🌙');
+    const you = within(section).getByText('朝が弱い').closest('li')!;
+    expect(you.dataset.source).toBe('person');
+    expect(within(you).getByLabelText('あなたが書いた')).toBeInTheDocument();
+    // The month's spend counts sorting too, split out.
+    expect(document.querySelector('[data-member-cost]')).toHaveTextContent('$1.05');
+    expect(screen.getByRole('list', { name: '最近の変化' })).toHaveTextContent('リスに梅おにぎりを奪われた');
+
+    const li = row.closest('li')!;
+    fireEvent.click(within(li).getByRole('button', { name: '直す' }));
+    const input = within(li).getByRole('textbox', { name: '記憶を直す' });
+    fireEvent.change(input, { target: { value: 'リスに鮭おにぎりを奪われた' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() =>
+      expect(fake.calls).toContainEqual({
+        method: 'character.memory.update',
+        params: { memoryId: memories[0]!.id, text: 'リスに鮭おにぎりを奪われた' },
+      }),
+    );
+    fireEvent.click(within(you).getByRole('button', { name: '忘れさせる' }));
+    await waitFor(() =>
+      expect(fake.calls).toContainEqual({ method: 'character.memory.delete', params: { memoryId: memories[2]!.id } }),
+    );
+  });
+
+  it('has it remember something about the person', async () => {
+    useUi.setState({ mode: 'member', memberId: HAKU.id });
+    const fake = mount(<MemberPage />);
+    const buttons = await screen.findAllByRole('button', { name: '覚えさせる' });
+    fireEvent.click(buttons.at(-1)!);
+    const input = screen.getByRole('textbox', { name: '覚えさせること' });
+    fireEvent.change(input, { target: { value: '費用にうるさい' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() =>
+      expect(fake.calls).toContainEqual({
+        method: 'character.memory.add',
+        params: { characterId: HAKU.id, kind: 'you', text: '費用にうるさい' },
+      }),
+    );
   });
 });
 

@@ -136,6 +136,7 @@ export function assistantMembersBlock(ctx: DaemonContext): string | null {
       "You are also this member of the person's team (the person put them in your seat)",
       quote(characterText(seat), 'メンバー'),
       '- Talk as them: their voice and their way of putting things, instead of the plain style above. Keep it as short, and keep every rule above.',
+      ...ctx.service('characters').memoryLines(seat.id, 'talk'),
     );
   }
   return lines.join('\n');

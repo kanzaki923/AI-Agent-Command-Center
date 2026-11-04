@@ -1118,6 +1118,22 @@ export const AssistantSettings = z.object({
 });
 export type AssistantSettings = z.infer<typeof AssistantSettings>;
 
+/** Members (`character.*`): whether they remember, and what sorting their memories may use. */
+export const MemberSettings = z.object({
+  /** Off: no memory is read into a conversation or written (what was kept stays). */
+  memory: z.boolean().default(true),
+  /** Model that sorts out memories; null = the cheapest of the roster. */
+  memoryModel: z.string().min(1).nullable().default(null),
+  /** USD per day for sorting out memories; null = no limit of its own. */
+  memoryDailyUsd: z.number().min(0).nullable().default(0.5),
+});
+export type MemberSettings = z.infer<typeof MemberSettings>;
+export const DEFAULT_MEMBER_SETTINGS: MemberSettings = {
+  memory: true,
+  memoryModel: null,
+  memoryDailyUsd: 0.5,
+};
+
 /**
  * One row of the model roster (`settings.modelRules`, snapshot 20261030_model-roster-spec.md):
  * the assistant and supervisors read the rows top to bottom and give a piece of work the
@@ -1218,6 +1234,7 @@ export const Settings = z.object({
     contextMessages: 40,
   }),
   assistant: AssistantSettings.default({ model: null, dailyUsd: 2, characterId: null }),
+  members: MemberSettings.default(DEFAULT_MEMBER_SETTINGS),
   /**
    * USD reserved from a run's budget before each LLM call of chat / orchestrator runs and
    * settled with the actual cost afterwards. A call that cannot reserve this much is refused,
@@ -1297,6 +1314,7 @@ export const SettingsView = z.object({
   autoResume: z.boolean().optional(),
   supervisor: SupervisorSettings.optional(),
   assistant: AssistantSettings.optional(),
+  members: MemberSettings.optional(),
   modelRules: z.array(ModelRule).optional(),
 });
 export type SettingsView = z.infer<typeof SettingsView>;

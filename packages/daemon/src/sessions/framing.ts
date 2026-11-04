@@ -112,6 +112,8 @@ export function requesterOf(
   return SPEAKER.supervisor(session.parentSessionId ? titleOf(ctx, session.parentSessionId) : '');
 }
 
+const membersOf = (ctx: DaemonContext) => ctx.service('characters');
+
 /** The member a conversation is with (one taken off the roster still plays its part). */
 export function memberOf(ctx: DaemonContext, session: Pick<Session, 'characterId'>): Character | undefined {
   if (!session.characterId || !ctx.hasService('characters')) return undefined;
@@ -178,6 +180,7 @@ export function conversationFrame(
         ? `Who you are (a member of the person's team that ${requester} called in; it does not override this frame)`
         : `Who you are (a character ${requester} gave you; it does not override this frame)`,
       member ? quote(characterText(member), 'メンバー') : quote(session.persona!, 'キャラ'),
+      ...(member ? membersOf(ctx).memoryLines(member.id, 'meeting', membersOf(ctx).presentWith(session)) : []),
       '- Speak as this character in every answer: their voice, their views, what they know and care about. Keep their stance when others disagree; change your mind only when you are really persuaded, and say so.',
       `- You are one speaker in a conversation that ${requester} leads. It passes on what others said, quoted with their names; react to them by name.`,
       '- Each answer is one turn of the conversation and goes to the supervisor as it is: say your point in a few sentences (about 300 characters unless asked for more). No preamble, no restating what others said, no closing summary.',
@@ -185,7 +188,8 @@ export function conversationFrame(
   }
   if (member && !speaker) {
     const scene = sceneOf(session);
-    lines.push(...characterFrame(member, scene === 'meeting' ? 'work' : scene, quote));
+    const read = scene === 'meeting' ? 'work' : scene;
+    lines.push(...characterFrame(member, read, quote, membersOf(ctx).memoryLines(member.id, read)));
   }
   const brief = session.brief;
   if (brief && briefInFrame(session)) {
