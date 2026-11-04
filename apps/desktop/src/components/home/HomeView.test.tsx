@@ -432,7 +432,7 @@ describe('<HomeView>', () => {
     expect(methods).not.toContain('session.delegate');
   });
 
-  it('the chosen workspace (コード of a repository project) rides along as a hint for the assistant', async () => {
+  it('the chosen workspace (コード of a repository project) goes as workPlace for the daemon and a hint for the assistant', async () => {
     const project = { id: 'prj_1', name: 'app', repoPath: '/repo', folderPath: null } as Project;
     const assistant = session({ kind: 'chat', title: '右腕' });
     const fake = mount({
@@ -446,7 +446,7 @@ describe('<HomeView>', () => {
     await vi.waitFor(() => expect(fake.calls.map((c) => c.method)).toContain('project.list'));
     // No folder project: フォルダ cannot be chosen.
     fireEvent.click(await screen.findByRole('radio', { name: 'フォルダ' }));
-    expect(screen.getByRole('radio', { name: '作業場所なし' })).toHaveAttribute(
+    expect(screen.getByRole('radio', { name: '自動（右腕が決める）' })).toHaveAttribute(
       'aria-checked',
       'true',
     );
@@ -461,6 +461,7 @@ describe('<HomeView>', () => {
       sessionId: assistant.id,
       content: 'テストを足して',
       hint: 'コード（プロジェクト「app」 projectId: prj_1）',
+      workPlace: { kind: 'worktree', projectId: 'prj_1' },
     });
   });
 

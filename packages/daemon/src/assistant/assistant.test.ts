@@ -640,3 +640,66 @@ describe('a model the person chose for a request', () => {
     expect(started.map((s) => s.model)).toEqual(['openai/gpt-6-astra']);
   });
 });
+
+describe('a place the person chose for a request', () => {
+  /** The assistant answers every request by starting one conversation with these params. */
+  async function withAssistant(input: Record<string, unknown>) {
+    const d = await daemon();
+    d.ctx.service('llm').mock.define(
+      'mock/placer',
+      scripted([
+        {
+          text: '',
+          toolCalls: [
+            {
+              id: 'c1',
+              name: 'assistant__startWork',
+              input: { text: '整えて', title: '整理', ...input },
+            },
+          ],
+        },
+        { text: '「整理」を始めます。終わったら知らせます。' },
+      ]),
+    );
+    await d.call(HUMAN, 'settings.update', { assistant: { model: 'mock/placer' } });
+    const { sessionId } = await d.call(HUMAN, 'system.assistant', {});
+    const folder = mkdtempSync(join(tmpdir(), 'acc-assistant-place-'));
+    folders.push(folder);
+    const project = await d.call(HUMAN, 'project.create', { name: '資料', folderPath: folder });
+    const send = async (workPlace?: { kind: 'folder' | 'worktree'; projectId: string }) => {
+      const before = new Set(d.ctx.repos.sessions.find({}).map((s) => s.id));
+      const r = await d.call(HUMAN, 'session.send', {
+        sessionId,
+        content: '整えて',
+        ...(workPlace ? { workPlace } : {}),
+      });
+      expect((await d.ctx.service('runs').waitForEnd(r.runId!)).status).toBe('completed');
+      return d.ctx.repos.sessions.find({}).find((s) => s.title === '整理' && !before.has(s.id));
+    };
+    return { d, folder, project, send };
+  }
+
+  it('makes the conversation work in that folder even when the assistant started a plain chat', async () => {
+    const { d, folder, project, send } = await withAssistant({ delegate: false });
+    const started = (await send({ kind: 'folder', projectId: project.id }))!;
+    expect(started).toMatchObject({ kind: 'agent', projectId: project.id });
+    expect(d.ctx.repos.workspaces.require(started.workspaceId!)).toMatchObject({
+      kind: 'directory',
+      path: folder,
+    });
+  });
+
+  it('delegated, the leading conversation is in that project; without a choice the assistant decides', async () => {
+    const { project, send } = await withAssistant({ delegate: true });
+    expect(await send({ kind: 'folder', projectId: project.id })).toMatchObject({
+      kind: 'chat',
+      projectId: project.id,
+    });
+    expect(await send()).toMatchObject({ kind: 'chat', projectId: null });
+  });
+
+  it('starts nothing in a place the project does not have (code needs a repository)', async () => {
+    const { project, send } = await withAssistant({ delegate: false });
+    expect(await send({ kind: 'worktree', projectId: project.id })).toBeUndefined();
+  });
+});

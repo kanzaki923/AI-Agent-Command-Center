@@ -1,7 +1,15 @@
-import { type Actor, type Message, type Params, type Session, api } from '@acc/protocol';
+import {
+  type Actor,
+  type Message,
+  type Params,
+  type Session,
+  type WorkPlace,
+  type WorkspaceSpec,
+  api,
+} from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
 import { assertRosterModel, rosterPromptBlock } from '../llm/roster';
-import { budgetExceeded, forbidden, limitExceeded } from '../core/errors';
+import { budgetExceeded, conflict, forbidden, limitExceeded } from '../core/errors';
 import { dayOf, fromMicro } from '../cost/ledger';
 import { delegateSession } from '../orchestrator/grant';
 import { assertAgentFolder } from '../sessions/spawn';
@@ -133,14 +141,25 @@ export class AssistantService {
   }
 
   /**
-   * The model the person chose for the request a run of the assistant answers (`session.send`
-   * workModel on the message that started the run), or null.
+   * What the person chose for the request a run of the assistant answers (`session.send`
+   * workModel / workPlace on the message that started the run).
    */
-  private chosenModel(runId: string): string | null {
+  private chosen(runId: string): { model: string | null; place: WorkPlace | null } {
     const run = this.ctx.repos.runs.get(runId);
     const msg = run?.triggerMessageId ? this.ctx.repos.messages.get(run.triggerMessageId) : null;
-    if (!msg || msg.author.kind !== 'human' || msg.meta?.kind !== 'hint') return null;
-    return msg.meta.model ?? null;
+    if (!msg || msg.author.kind !== 'human' || msg.meta?.kind !== 'hint') return { model: null, place: null };
+    return { model: msg.meta.model ?? null, place: msg.meta.place ?? null };
+  }
+
+  /** The workspace a place the person chose stands for (its project's folder, or its code). */
+  private workspaceOf(place: WorkPlace): WorkspaceSpec {
+    const project = this.ctx.repos.projects.require(place.projectId);
+    if (place.kind === 'worktree') {
+      if (!project.repoPath) throw conflict(`「${project.name}」はコードのプロジェクトではありません`);
+      return { kind: 'worktree', projectId: project.id };
+    }
+    if (!project.folderPath) throw conflict(`「${project.name}」にはフォルダがありません`);
+    return { kind: 'folder', path: project.folderPath };
   }
 
   /** `settings.assistant.dailyUsd`: the own calls of the assistant stop for the day at the limit. */
@@ -176,25 +195,31 @@ export class AssistantService {
     if (actor.kind === 'agent' && !viaAssistant) {
       throw forbidden('新しい会話を始められるのは人と右腕だけです');
     }
-    // A model the person chose for this request wins over the assistant's pick (and over the
-    // roster: it is theirs to choose).
-    const personal = viaAssistant ? this.chosenModel(actor.runId) : null;
-    const model = personal ?? p.model;
-    if (p.model && !personal) {
+    // What the person chose for this request wins over the assistant's pick: the model (and
+    // over the roster: it is theirs to choose), and the place — the toggle in the home field
+    // is a choice, not a wish.
+    const personal = viaAssistant ? this.chosen(actor.runId) : { model: null, place: null };
+    const model = personal.model ?? p.model;
+    const place = personal.place ? this.workspaceOf(personal.place) : null;
+    const asked = place ?? (p.workspace && p.workspace.kind !== 'none' ? p.workspace : undefined);
+    if (p.model && !personal.model) {
       // The root is an agent when it works alone in a workspace (see below).
-      const agent = !p.delegate && !!p.workspace && p.workspace.kind !== 'none';
+      const agent = !p.delegate && !!asked;
       const runtime = ctx.settings.get().defaultRuntime ?? 'mock';
       assertRosterModel(ctx, actor, p.model, { agentRuntime: agent && runtime !== 'mock' });
     }
-    const chosen = p.workspace && p.workspace.kind !== 'none' ? p.workspace : undefined;
     // Only a conversation leads others: delegated, it stays a conversation in the chosen
     // project and its children get the workspace (code → worktrees) instead.
-    const workspace = p.delegate ? undefined : chosen;
-    const projectId =
-      p.delegate && chosen?.kind === 'worktree' ? chosen.projectId : (p.projectId ?? undefined);
+    const workspace = p.delegate ? undefined : asked;
+    const projectId = personal.place
+      ? personal.place.projectId
+      : p.delegate && asked?.kind === 'worktree'
+        ? asked.projectId
+        : (p.projectId ?? undefined);
     // The session is created by the system actor, so the spawn check for agents does not see
-    // that the folder came from the assistant. Delegated, the children's spawns check it.
-    if (viaAssistant && workspace?.kind === 'folder') {
+    // that the folder came from the assistant. Delegated, the children's spawns check it. A
+    // folder the person chose is theirs to give.
+    if (viaAssistant && !place && workspace?.kind === 'folder') {
       assertAgentFolder(ctx, projectId, workspace.path);
     }
     if (actor.kind === 'agent') {

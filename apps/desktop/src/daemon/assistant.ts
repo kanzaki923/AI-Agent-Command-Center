@@ -1,4 +1,4 @@
-import type { Project } from '@acc/protocol';
+import type { Project, WorkPlace } from '@acc/protocol';
 import { useQuery } from '@tanstack/react-query';
 import type { WorkspaceKind } from '../lib/states';
 import { useUi } from '../store/ui';
@@ -42,14 +42,25 @@ export function workspaceHint(kind: WorkspaceKind, project: Project | null): str
 }
 
 /**
+ * The place the human chose (folder or code of a project), for the daemon to hold the
+ * assistant to; none for 自動 (the assistant decides).
+ */
+export function workPlaceOf(kind: WorkspaceKind, project: Project | null): WorkPlace | undefined {
+  if (kind === 'worktree' && project?.repoPath) return { kind: 'worktree', projectId: project.id };
+  if (kind === 'folder' && project?.folderPath) return { kind: 'folder', projectId: project.id };
+  return undefined;
+}
+
+/**
  * Say something to the assistant (Enter in the home field). The words go as they are; the
- * chosen workspace rides along as a hint. Returns the assistant's session id, or null when
- * nothing was sent (the words stay in the field).
+ * chosen place rides along as a hint (for the assistant) and as `workPlace` (the daemon starts
+ * the work there whatever the assistant names). Returns the assistant's session id, or null
+ * when nothing was sent (the words stay in the field).
  */
 export async function askAssistant(
   rt: AppRuntime,
   text: string,
-  opts: { hint?: string | undefined; model?: string | null } = {},
+  opts: { hint?: string | undefined; model?: string | null; place?: WorkPlace | undefined } = {},
 ): Promise<string | null> {
   let id: string;
   try {
@@ -61,6 +72,7 @@ export async function askAssistant(
   const ok = await sendMessage(rt, id, text, {
     ...(opts.hint ? { hint: opts.hint } : {}),
     ...(opts.model ? { workModel: opts.model } : {}),
+    ...(opts.place ? { workPlace: opts.place } : {}),
   });
   return ok ? id : null;
 }

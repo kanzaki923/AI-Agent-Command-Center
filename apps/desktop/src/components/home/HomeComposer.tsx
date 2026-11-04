@@ -1,9 +1,9 @@
 import type { Project } from '@acc/protocol';
-import { ChevronDown, Loader2, MessageSquare, Play } from 'lucide-react';
+import { ChevronDown, Loader2, Play, Sparkles } from 'lucide-react';
 import { useState } from 'react';
 import { promptConnectionThen } from '../../app/connect';
 import { startDemo } from '../../app/demo';
-import { askAssistant, workspaceHint } from '../../daemon/assistant';
+import { askAssistant, workPlaceOf, workspaceHint } from '../../daemon/assistant';
 import { useMethods, useProjects, useSettings } from '../../daemon/queries';
 import { useRuntime } from '../../daemon/runtime';
 import { cn } from '../../lib/cn';
@@ -38,8 +38,8 @@ function candidates(projects: readonly Project[], kind: WorkspaceKind): Project[
  * 何を頼みますか (right-hand spec §2.1): the one way to ask for something, and the one person
  * it goes to — the assistant. Enter sends the words to it and stays home; its reply appears
  * above the field (AssistantLine) and new lanes are born as it starts work. Ctrl+Enter sends
- * and opens its conversation. The workspace toggle (none / folder / code) rides along as a
- * hint. In the middle (`center`: the empty home and Ctrl+N) it is larger, examples cycle under
+ * and opens its conversation. The workspace toggle (自動 / folder / code): a folder or code
+ * is held to by the daemon (`workPlace`), and also told to the assistant as a hint. In the middle (`center`: the empty home and Ctrl+N) it is larger, examples cycle under
  * it and 試してみる starts the demo (the empty home). What is typed is kept in the UI store, so
  * it survives leaving home and the empty home turning into the board. The first real request
  * without a saved LLM endpoint brings up the connection prompt first; the request goes once it
@@ -82,7 +82,11 @@ export function HomeComposer({ center = false }: { center?: boolean }) {
     if (!t) return;
     const go = async () => {
       setText('');
-      const id = await askAssistant(rt, t, { hint: workspaceHint(kind, project), model });
+      const id = await askAssistant(rt, t, {
+        hint: workspaceHint(kind, project),
+        model,
+        place: workPlaceOf(kind, project),
+      });
       if (!id) {
         // Nothing was sent: give the words back.
         setText(t);
@@ -219,14 +223,16 @@ function Examples() {
 }
 
 const KINDS: { kind: WorkspaceKind; label: string }[] = [
-  { kind: 'none', label: '作業場所なし' },
+  // 自動: the assistant decides where (or whether) the work happens; a folder or code is held to.
+  { kind: 'none', label: '自動（右腕が決める）' },
   { kind: 'folder', label: WORKSPACE_META.folder.label },
   { kind: 'worktree', label: WORKSPACE_META.worktree.label },
 ];
 
 /**
- * Where the work should happen: nothing (a plain conversation), a folder, or a project's
- * code. A folder or code shows the project it comes from (a menu when there are several).
+ * Where the work should happen: 自動 (the assistant decides), a folder, or a project's code —
+ * a folder or code is not a wish: the daemon starts the work there. A folder or code shows
+ * the project it comes from (a menu when there are several).
  * Code without any repository yet opens 「プロジェクトを追加」.
  */
 function WorkspaceToggle({
@@ -277,7 +283,7 @@ function WorkspaceToggle({
         )}
       >
         {KINDS.map(({ kind: k, label }) => {
-          const Icon = k === 'none' ? MessageSquare : WORKSPACE_META[k].icon;
+          const Icon = k === 'none' ? Sparkles : WORKSPACE_META[k].icon;
           const none = k !== 'none' && candidates(projects, k).length === 0;
           const unavailable = none && k === 'folder';
           const on = kind === k;

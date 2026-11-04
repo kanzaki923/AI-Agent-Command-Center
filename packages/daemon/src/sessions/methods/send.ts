@@ -45,8 +45,8 @@ export function sessionSend(ctx: DaemonContext) {
         if (own.some((c) => c.type === 'tool_result' || c.type === 'tool_call')) {
           throw invalidParams('User messages may only contain text parts');
         }
-        if (p.forward?.length && (p.hint || p.workModel)) {
-          throw invalidParams('forward は hint・workModel と一緒には使えません');
+        if (p.forward?.length && (p.hint || p.workModel || p.workPlace)) {
+          throw invalidParams('forward は hint・workModel・workPlace と一緒には使えません');
         }
         const forwarded = p.forward?.length ? forwardedParts(ctx, p.forward) : null;
         const content: ContentPart[] = forwarded ? [...forwarded.parts, ...own] : own;
@@ -61,12 +61,13 @@ export function sessionSend(ctx: DaemonContext) {
           author: call.actor,
           delivery: handsOverNow ? 'delivered' : 'queued',
           ...(forwarded ? { meta: { kind: 'forward', items: forwarded.items } } : {}),
-          ...(p.hint || p.workModel
+          ...(p.hint || p.workModel || p.workPlace
             ? {
                 meta: {
                   kind: 'hint',
                   text: p.hint ?? '',
                   ...(p.workModel ? { model: p.workModel } : {}),
+                  ...(p.workPlace ? { place: p.workPlace } : {}),
                 },
               }
             : {}),

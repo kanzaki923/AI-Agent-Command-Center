@@ -58,6 +58,7 @@ import {
   TaskStatus,
   Workspace,
   WorkspaceKind,
+  WorkPlace,
   WorkspaceSpec,
   ArtifactRole,
 } from './domain';
@@ -550,6 +551,9 @@ export const api = defineApi({
         .describe(
           'To the assistant: the model the human chose for the work this message starts; the conversations it starts get it',
         ),
+      workPlace: WorkPlace.optional().describe(
+        'To the assistant: the project folder or code the human chose for the work this message starts; the conversations it starts work there',
+      ),
       forward: z
         .array(SessionId)
         .max(FORWARD_MAX)

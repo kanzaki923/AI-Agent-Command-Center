@@ -3,6 +3,7 @@ import {
   type ApprovalRemember,
   type ParamsInput,
   type PermissionRule,
+  type WorkPlace,
   type Run,
   type SendDelivery,
   type Session,
@@ -52,7 +53,9 @@ export async function respondApproval(
     return true;
   } catch (err) {
     upsertIn(qc, qk.approvals, approval, (a, b) => a.createdAt.localeCompare(b.createdAt));
-    qc.setQueryData<Approval[]>(qk.resolvedApprovals, (cur) => cur?.filter((x) => x.id !== approval.id));
+    qc.setQueryData<Approval[]>(qk.resolvedApprovals, (cur) =>
+      cur?.filter((x) => x.id !== approval.id),
+    );
     toastError(err, decision === 'approve' ? '承認できませんでした' : '拒否できませんでした');
     return false;
   }
@@ -107,6 +110,8 @@ export async function sendMessage(
     hint?: string;
     /** To the assistant: the model the person chose for the work this message starts. */
     workModel?: string;
+    /** To the assistant: the folder or code the person chose for the work this message starts. */
+    workPlace?: WorkPlace;
     /** How the daemon handed it over (started / queued after the run / injected at a boundary). */
     onDelivery?: (delivery: SendDelivery) => void;
   } = {},
@@ -137,6 +142,7 @@ export async function sendMessage(
       ...(opts.interrupt ? { interrupt: true } : {}),
       ...(opts.hint ? { hint: opts.hint } : {}),
       ...(opts.workModel ? { workModel: opts.workModel } : {}),
+      ...(opts.workPlace ? { workPlace: opts.workPlace } : {}),
     });
     const delivery = res.delivery === 'queued' ? 'queued' : 'delivered';
     qc.setQueryData<ChatMessage[]>(key, (cur) => {
@@ -144,7 +150,9 @@ export async function sendMessage(
       // message.created may already have replaced the optimistic copy.
       if (cur.some((m) => m.id === res.messageId)) return cur.filter((m) => m.id !== msg.id);
       return cur.map((m) =>
-        m.id === msg.id ? { ...m, id: res.messageId, runId: res.runId, delivery, local: undefined } : m,
+        m.id === msg.id
+          ? { ...m, id: res.messageId, runId: res.runId, delivery, local: undefined }
+          : m,
       );
     });
     opts.onDelivery?.(res.delivery);
@@ -182,7 +190,10 @@ export async function resendEdited(
     (original.runId ? runs.find((r) => r.id === original.runId) : undefined);
   if (run && !isTerminalRunStatus(run.status)) {
     try {
-      await rt.client.call('run.cancel', { runId: run.id, reason: 'メッセージを編集して送り直しました' });
+      await rt.client.call('run.cancel', {
+        runId: run.id,
+        reason: 'メッセージを編集して送り直しました',
+      });
     } catch (err) {
       toastError(err, '送り直せませんでした');
       return false;
@@ -210,7 +221,9 @@ export async function createSession(
       ...(input.model ? { model: input.model } : {}),
       ...(input.workspace ? { workspace: input.workspace } : {}),
     });
-    upsertIn(rt.queryClient, qk.sessions, s, (a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
+    upsertIn(rt.queryClient, qk.sessions, s, (a, b) =>
+      b.lastActivityAt.localeCompare(a.lastActivityAt),
+    );
     rt.queryClient.setQueryData<ChatMessage[]>(qk.messages(s.id), (cur) => cur ?? []);
     return s;
   } catch (err) {
@@ -237,7 +250,8 @@ export async function startConversation(
     model?: string | null;
   },
 ): Promise<Session | null> {
-  const workspace = input.workspace && input.workspace.kind !== 'none' ? input.workspace : undefined;
+  const workspace =
+    input.workspace && input.workspace.kind !== 'none' ? input.workspace : undefined;
   try {
     const { session } = await rt.client.call('assistant.startWork', {
       text: input.text,
@@ -246,7 +260,9 @@ export async function startConversation(
       ...(workspace ? { workspace } : {}),
       ...(input.model ? { model: input.model } : {}),
     });
-    upsertIn(rt.queryClient, qk.sessions, session, (a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
+    upsertIn(rt.queryClient, qk.sessions, session, (a, b) =>
+      b.lastActivityAt.localeCompare(a.lastActivityAt),
+    );
     void rt.queryClient.invalidateQueries({ queryKey: qk.home });
     return session;
   } catch (err) {
@@ -299,7 +315,10 @@ export async function stopTree(rt: AppRuntime, sessionId: string, tree = true): 
  * conversation and everything still working under it, without a question — it is resumable,
  * and the toast's 再開 takes it back at once.
  */
-export async function stopHere(rt: AppRuntime, session: Pick<Session, 'id' | 'title'>): Promise<boolean> {
+export async function stopHere(
+  rt: AppRuntime,
+  session: Pick<Session, 'id' | 'title'>,
+): Promise<boolean> {
   const ok = await stopTree(rt, session.id);
   if (ok) {
     toast({
@@ -360,7 +379,11 @@ export async function retryRun(rt: AppRuntime, run: Run): Promise<void> {
   }
 }
 
-export async function renameSession(rt: AppRuntime, session: Session, title: string): Promise<void> {
+export async function renameSession(
+  rt: AppRuntime,
+  session: Session,
+  title: string,
+): Promise<void> {
   const prev = session.title;
   patchIn<Session>(rt.queryClient, qk.sessions, session.id, (s) => ({ ...s, title }));
   try {
@@ -372,7 +395,11 @@ export async function renameSession(rt: AppRuntime, session: Session, title: str
 }
 
 /** Optimistic model switch; rolled back when the daemon refuses (it would run the old one). */
-export async function setSessionModel(rt: AppRuntime, session: Session, model: string): Promise<void> {
+export async function setSessionModel(
+  rt: AppRuntime,
+  session: Session,
+  model: string,
+): Promise<void> {
   const prev = session.model;
   patchIn<Session>(rt.queryClient, qk.sessions, session.id, (s) => ({ ...s, model }));
   try {
@@ -396,7 +423,12 @@ export async function setPinned(rt: AppRuntime, session: Session, pinned: boolea
 }
 
 /** States in which a session still works (or can be woken) — what archiving would stop. */
-const ARCHIVE_STOPS: ReadonlySet<Session['state']> = new Set(['working', 'supervising', 'queued', 'needs_you']);
+const ARCHIVE_STOPS: ReadonlySet<Session['state']> = new Set([
+  'working',
+  'supervising',
+  'queued',
+  'needs_you',
+]);
 
 /** The session and everything under it, from the cached list. */
 function subtreeOf(sessions: readonly Session[], rootId: string): Session[] {
@@ -415,13 +447,22 @@ function subtreeOf(sessions: readonly Session[], rootId: string): Session[] {
 }
 
 /** What archiving this tree would stop: work that moves, and repeats that are on. */
-async function whatArchiveStops(rt: AppRuntime, session: Session): Promise<{ moving: boolean; repeats: number }> {
-  const tree = subtreeOf(rt.queryClient.getQueryData<Session[]>(qk.sessions) ?? [session], session.id);
+async function whatArchiveStops(
+  rt: AppRuntime,
+  session: Session,
+): Promise<{ moving: boolean; repeats: number }> {
+  const tree = subtreeOf(
+    rt.queryClient.getQueryData<Session[]>(qk.sessions) ?? [session],
+    session.id,
+  );
   const moving = tree.some((s) => !!s.activeRunId || ARCHIVE_STOPS.has(s.state));
   let repeats = 0;
   try {
     const ids = new Set(tree.map((s) => s.id));
-    const { items } = await rt.client.call('schedule.list', { rootSessionId: session.rootSessionId, enabled: true });
+    const { items } = await rt.client.call('schedule.list', {
+      rootSessionId: session.rootSessionId,
+      enabled: true,
+    });
     repeats = items.filter((x) => ids.has(x.sessionId)).length;
   } catch {
     // Unknown: say nothing about repeats rather than block archiving.
@@ -439,7 +480,10 @@ async function whatArchiveStops(rt: AppRuntime, session: Session): Promise<{ mov
 export async function archiveSession(rt: AppRuntime, session: Session): Promise<void> {
   const { moving, repeats } = await whatArchiveStops(rt, session);
   if (!moving && repeats === 0) return doArchive(rt, session);
-  const what = [moving ? '動いている作業は止まります。' : '', repeats > 0 ? `繰り返し ${repeats} 件はオフになります。` : ''].join('');
+  const what = [
+    moving ? '動いている作業は止まります。' : '',
+    repeats > 0 ? `繰り返し ${repeats} 件はオフになります。` : '',
+  ].join('');
   useConfirm.getState().ask({
     title: `「${session.title || '会話'}」をアーカイブしますか？`,
     body: `${what}元に戻しても、止めたものは止まったままです。`,
@@ -471,7 +515,9 @@ async function doArchive(rt: AppRuntime, session: Session): Promise<void> {
           void rt.client
             .call('session.archive', { sessionId: session.id, archived: false })
             .then((s) => {
-              upsertIn(rt.queryClient, qk.sessions, s, (a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
+              upsertIn(rt.queryClient, qk.sessions, s, (a, b) =>
+                b.lastActivityAt.localeCompare(a.lastActivityAt),
+              );
               void rt.queryClient.invalidateQueries({ queryKey: qk.home });
             })
             .catch((err: unknown) => toastError(err));

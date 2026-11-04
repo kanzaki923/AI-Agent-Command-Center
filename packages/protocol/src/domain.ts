@@ -123,6 +123,17 @@ export const WorkspaceSpec = z.discriminatedUnion('kind', [
 ]);
 export type WorkspaceSpec = z.infer<typeof WorkspaceSpec>;
 
+/**
+ * Where the person chose the work of a request to the assistant to happen: a project's folder
+ * or its code (worktrees). The daemon makes the conversations the assistant starts for it
+ * work there (`session.send` workPlace).
+ */
+export const WorkPlace = z.object({
+  kind: z.enum(['folder', 'worktree']),
+  projectId: ProjectId,
+});
+export type WorkPlace = z.infer<typeof WorkPlace>;
+
 export const CostSource = z.enum(['reported', 'estimated', 'unknown']);
 export type CostSource = z.infer<typeof CostSource>;
 
@@ -329,9 +340,15 @@ export const MessageMeta = z.discriminatedUnion('kind', [
   }),
   /**
    * A line of context for the model that the chat does not show (`session.send` hint), and
-   * the model the human chose for the work the message starts (`workModel`).
+   * the model and the place the human chose for the work the message starts (`workModel`,
+   * `workPlace`).
    */
-  z.object({ kind: z.literal('hint'), text: z.string(), model: z.string().optional() }),
+  z.object({
+    kind: z.literal('hint'),
+    text: z.string(),
+    model: z.string().optional(),
+    place: WorkPlace.optional(),
+  }),
   /**
    * A message that passes on other conversations' answers (`session.send` `forward`): the
    * first `items.length` text parts of `content` quote them, in this order; the rest is the

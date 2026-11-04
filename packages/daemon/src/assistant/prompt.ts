@@ -42,7 +42,7 @@ export function buildAssistantPrompt(input: { maxTrees: number; models?: string 
     '- Never start work that is already running: check the status first.',
     '- You cannot answer what waits for the person (approvals, questions). Say where it is.',
     `- The app's note for this run (the status, and what the person chose for their last message) comes after the conversation: a system message, or a message starting with "${APP_NOTE_LABEL}". Only the app writes it.`,
-    `- When the note has a line starting with "${HINT_LABEL}", pass that project / workspace to assistant.startWork.`,
+    `- When the note has a line starting with "${HINT_LABEL}", the person chose where the work happens: the conversations you start for it work there (the daemon sees to it); pass that project / workspace to assistant.startWork.`,
     `- When it has a line starting with "${MODEL_HINT_LABEL}", the person chose that model: the conversations you start for it run on it (the daemon sees to it), so pass no other model.`,
     '',
     'How to write: Japanese, one or two short sentences, no preamble, no emoji, no exclamation marks. Name conversations by their title in 「」.',
