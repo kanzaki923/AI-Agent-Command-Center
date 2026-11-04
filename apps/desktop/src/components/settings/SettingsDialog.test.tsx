@@ -327,6 +327,16 @@ describe('<SettingsDialog> up front', () => {
     expect(screen.getByTestId('background-model')).toHaveTextContent('いちばん安いもの');
   });
 
+  it("opens the background model picker on its own, apart from the conversation's Ctrl+M picker", async () => {
+    useUi.setState({ modelPickerOpen: false });
+    mount();
+    const chip = await screen.findByRole('button', { name: /いちばん安いもの/ });
+    fireEvent.click(chip);
+    expect(await screen.findByPlaceholderText('モデルを検索…')).toBeInTheDocument();
+    // The shared state of the conversation's picker stays closed.
+    expect(useUi.getState().modelPickerOpen).toBe(false);
+  });
+
   it('ignores an invalid amount and puts the value back', async () => {
     const { updates } = mount();
     await waitFor(() => expect(screen.getByLabelText('1 日の上限')).toHaveValue('20'));

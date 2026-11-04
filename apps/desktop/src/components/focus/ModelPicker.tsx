@@ -1,6 +1,7 @@
 import type { ModelInfo } from '@acc/protocol';
 import { Command } from 'cmdk';
 import { Check, ChevronDown, Cpu } from 'lucide-react';
+import { useState } from 'react';
 import { useModels } from '../../daemon/queries';
 import { priceText, relativeCost, shortModel } from '../../lib/models';
 import { useUi } from '../../store/ui';
@@ -28,6 +29,7 @@ export function ModelPicker({
   align = 'start',
   onChange,
   disabled,
+  local = false,
 }: {
   value: string | null;
   fallback: string | null;
@@ -43,9 +45,17 @@ export function ModelPicker({
   align?: 'start' | 'end';
   onChange: (model: string | null) => void;
   disabled?: boolean;
+  /**
+   * Opens on its own (settings, a member's page). Without it the picker shares Ctrl+M's open
+   * state with the conversation's, so two mounted at once would open and close together.
+   */
+  local?: boolean;
 }) {
-  const open = useUi((s) => s.modelPickerOpen);
-  const setOpen = useUi((s) => s.setModelPickerOpen);
+  const sharedOpen = useUi((s) => s.modelPickerOpen);
+  const setSharedOpen = useUi((s) => s.setModelPickerOpen);
+  const [localOpen, setLocalOpen] = useState(false);
+  const open = local ? localOpen : sharedOpen;
+  const setOpen = local ? setLocalOpen : setSharedOpen;
   const recent = useUi((s) => s.recentCommands);
   const rememberCommand = useUi((s) => s.rememberCommand);
   const models = useModels();

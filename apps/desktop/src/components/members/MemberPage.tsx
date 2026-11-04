@@ -222,6 +222,7 @@ export function MemberPage() {
                   side="bottom"
                   autoLabel="会話の既定"
                   autoHint="会話を始めるときの既定のモデルを使います"
+                  local
                   onChange={(m) => void updateMember(rt, { characterId: member.id, model: m })}
                 />
                 {seated && (

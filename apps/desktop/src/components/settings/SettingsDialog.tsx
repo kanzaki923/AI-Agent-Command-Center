@@ -365,6 +365,7 @@ export function SettingsDialog() {
                     align="end"
                     autoLabel="いちばん安いもの"
                     autoHint="名簿でいちばん安いモデルを使います"
+                    local
                     onChange={(m) => update({ background: { model: m } })}
                   />
                 </span>
