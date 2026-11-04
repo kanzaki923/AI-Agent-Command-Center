@@ -15,6 +15,7 @@ import { projectsModule } from './projects';
 import { runsModule } from './runs';
 import { runtimeModule } from './runtime';
 import { schedulesModule } from './schedules';
+import { summariesModule } from './summaries';
 import { sessionsModule } from './sessions';
 import { systemModule } from './system';
 import { tasksModule } from './tasks';
@@ -48,4 +49,5 @@ export const modules: DaemonModule[] = [
   schedulesModule,
   homeModule,
   assistantModule,
+  summariesModule,
 ];

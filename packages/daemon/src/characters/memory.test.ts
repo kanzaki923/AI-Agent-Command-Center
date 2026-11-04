@@ -38,7 +38,7 @@ function sorter(d: TestDaemonNoServer, reply: object): ChatRequest[] {
 }
 
 async function setup(d: TestDaemonNoServer) {
-  await d.call(HUMAN, 'settings.update', { members: { memoryModel: 'mock/sorter' } });
+  await d.call(HUMAN, 'settings.update', { background: { model: 'mock/sorter' } });
   const haku = await d.call(HUMAN, 'character.create', { name: 'ハク', profile: '白い犬。梅おにぎりが好き。' });
   const luna = await d.call(HUMAN, 'character.create', { name: 'ルナ', profile: 'ズボラな猫。' });
   return { haku, luna };
@@ -266,7 +266,7 @@ describe('sorting memories out', () => {
     const { haku } = await setup(d);
     spy(d, 'mock/talk');
     sorter(d, { self: [{ text: 'x' }] });
-    await d.call(HUMAN, 'settings.update', { members: { memoryDailyUsd: 0.001 } });
+    await d.call(HUMAN, 'settings.update', { background: { dailyUsd: 0.001 } });
     await talk(d, haku.id, ['1', '2']);
     expect((await d.call(HUMAN, 'character.digest', { characterId: haku.id })).outcome).toBe('done');
     await talk(d, haku.id, ['3', '4']);

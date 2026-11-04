@@ -1124,21 +1124,32 @@ export const AssistantSettings = z.object({
 });
 export type AssistantSettings = z.infer<typeof AssistantSettings>;
 
-/** Members (`character.*`): whether they remember, and what sorting their memories may use. */
+/** Members (`character.*`): whether they remember. */
 export const MemberSettings = z.object({
   /** Off: no memory is read into a conversation or written (what was kept stays). */
   memory: z.boolean().default(true),
-  /** Model that sorts out memories; null = the cheapest of the roster. */
-  memoryModel: z.string().min(1).nullable().default(null),
-  /** USD per day for sorting out memories; null = no limit of its own. */
-  memoryDailyUsd: z.number().min(0).nullable().default(0.5),
 });
 export type MemberSettings = z.infer<typeof MemberSettings>;
-export const DEFAULT_MEMBER_SETTINGS: MemberSettings = {
-  memory: true,
-  memoryModel: null,
-  memoryDailyUsd: 0.5,
-};
+export const DEFAULT_MEMBER_SETTINGS: MemberSettings = { memory: true };
+
+/** Conversation summaries (`session.summary`): kept for every long conversation, or not. */
+export const SummarySettings = z.object({
+  /** Off: no summary is written (what was kept stays and is still read). */
+  enabled: z.boolean().default(true),
+});
+export type SummarySettings = z.infer<typeof SummarySettings>;
+
+/**
+ * What the daemon's own work behind the scenes (sorting memories, writing summaries) may
+ * use: one model and one daily limit for both.
+ */
+export const BackgroundSettings = z.object({
+  /** null = the cheapest model of the roster. */
+  model: z.string().min(1).nullable().default(null),
+  /** USD per day; null = no limit of its own (the daily limit of everything still holds). */
+  dailyUsd: z.number().min(0).nullable().default(0.5),
+});
+export type BackgroundSettings = z.infer<typeof BackgroundSettings>;
 
 /**
  * One row of the model roster (`settings.modelRules`, snapshot 20261030_model-roster-spec.md):
@@ -1241,6 +1252,8 @@ export const Settings = z.object({
   }),
   assistant: AssistantSettings.default({ model: null, dailyUsd: 2, characterId: null }),
   members: MemberSettings.default(DEFAULT_MEMBER_SETTINGS),
+  summaries: SummarySettings.default({ enabled: true }),
+  background: BackgroundSettings.default({ model: null, dailyUsd: 0.5 }),
   /**
    * USD reserved from a run's budget before each LLM call of chat / orchestrator runs and
    * settled with the actual cost afterwards. A call that cannot reserve this much is refused,
@@ -1321,6 +1334,8 @@ export const SettingsView = z.object({
   supervisor: SupervisorSettings.optional(),
   assistant: AssistantSettings.optional(),
   members: MemberSettings.optional(),
+  summaries: SummarySettings.optional(),
+  background: BackgroundSettings.optional(),
   modelRules: z.array(ModelRule).optional(),
 });
 export type SettingsView = z.infer<typeof SettingsView>;

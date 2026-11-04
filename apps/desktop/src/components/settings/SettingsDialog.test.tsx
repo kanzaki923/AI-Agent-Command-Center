@@ -34,6 +34,10 @@ const VIEW: SettingsView = {
   limits: { dailyUsd: 20, timezone: 'Asia/Tokyo' },
   autoResume: true,
   assistant: { model: null, dailyUsd: 2, characterId: null },
+  members: { memory: true },
+  summaries: { enabled: true },
+  background: { model: null, dailyUsd: 0.5 },
+  modelRules: [{ model: 'gpt-6-luna', when: '' }],
   providers: {
     anthropic: { baseUrl: null, hasApiKey: false, apiKeyMasked: null },
     openai: { baseUrl: null, hasApiKey: false, apiKeyMasked: null, chatgpt: null },
@@ -306,6 +310,21 @@ describe('<SettingsDialog> up front', () => {
     fireEvent.blur(input);
     await waitFor(() => expect(updates).toContainEqual({ assistant: { dailyUsd: 5 } }));
     await waitFor(() => expect(screen.getByLabelText('右腕の上限')).toHaveValue('5'));
+  });
+
+  it('turns memories and summaries on and off, and sets the model and the limit of the work behind the scenes', async () => {
+    const { updates } = mount();
+    const summaries = await screen.findByRole('radiogroup', { name: '会話のあらすじ' });
+    fireEvent.click(within(summaries).getByRole('radio', { name: 'つくらない' }));
+    await waitFor(() => expect(updates).toContainEqual({ summaries: { enabled: false } }));
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'メンバーの記憶' })).getByRole('radio', { name: '覚えない' }));
+    await waitFor(() => expect(updates).toContainEqual({ members: { memory: false } }));
+    const limit = screen.getByLabelText('裏の整理の上限');
+    expect(limit).toHaveValue('0.50');
+    fireEvent.change(limit, { target: { value: '1' } });
+    fireEvent.blur(limit);
+    await waitFor(() => expect(updates).toContainEqual({ background: { dailyUsd: 1 } }));
+    expect(screen.getByTestId('background-model')).toHaveTextContent('いちばん安いもの');
   });
 
   it('ignores an invalid amount and puts the value back', async () => {

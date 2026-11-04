@@ -134,6 +134,7 @@ export function searchMessages(
     hits.push({
       sessionId: r.session_id,
       sessionTitle: r.title ?? '',
+      source: 'message',
       messageId: r.message_id,
       snippet: makeSnippet(text, terms),
       createdAt: r.created_at,

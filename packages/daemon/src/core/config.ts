@@ -99,12 +99,10 @@ export type SettingsPatch = {
         characterId?: string | null | undefined;
       }
     | undefined;
-  members?:
-    | {
-        memory?: boolean | undefined;
-        memoryModel?: string | null | undefined;
-        memoryDailyUsd?: number | null | undefined;
-      }
+  members?: { memory?: boolean | undefined } | undefined;
+  summaries?: { enabled?: boolean | undefined } | undefined;
+  background?:
+    | { model?: string | null | undefined; dailyUsd?: number | null | undefined }
     | undefined;
   providers?:
     | {
@@ -281,11 +279,20 @@ export class SettingsStore {
       set('members.memory', next.members.memory, m.memory, () => {
         next.members.memory = m.memory ?? true;
       });
-      set('members.memoryModel', next.members.memoryModel, m.memoryModel, () => {
-        next.members.memoryModel = m.memoryModel ?? null;
+    }
+    if (patch.summaries) {
+      const m = patch.summaries;
+      set('summaries.enabled', next.summaries.enabled, m.enabled, () => {
+        next.summaries.enabled = m.enabled ?? true;
       });
-      set('members.memoryDailyUsd', next.members.memoryDailyUsd, m.memoryDailyUsd, () => {
-        next.members.memoryDailyUsd = m.memoryDailyUsd ?? null;
+    }
+    if (patch.background) {
+      const b = patch.background;
+      set('background.model', next.background.model, b.model, () => {
+        next.background.model = b.model ?? null;
+      });
+      set('background.dailyUsd', next.background.dailyUsd, b.dailyUsd, () => {
+        next.background.dailyUsd = b.dailyUsd ?? null;
       });
     }
     if (patch.autoMode) {
@@ -369,6 +376,8 @@ export function toSettingsView(s: Settings): SettingsView {
     supervisor: { ...s.supervisor },
     assistant: { ...s.assistant },
     members: { ...s.members },
+    summaries: { ...s.summaries },
+    background: { ...s.background },
     providers: {
       anthropic: {
         baseUrl: s.providers.anthropic.baseUrl,

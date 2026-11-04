@@ -8,9 +8,8 @@ import {
 } from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
 import { dayOf, fromMicro, toMicro } from '../cost/ledger';
-import { MOCK_PREFIX } from '../llm/mock';
+import { backgroundLimitReached, backgroundModel } from '../llm/background';
 import { textOfParts } from '../llm/messages';
-import { rosterModels } from '../llm/roster';
 import { characterText } from './frame';
 import { MEMORY_SYSTEM, type MemoryStore, type ProposedMemory, clipMemory, normalizeMemory } from './memory';
 import { type CharacterService, sceneOf } from './service';
@@ -378,24 +377,9 @@ export class MemoryDigest {
     return lines;
   }
 
-  /** The model of a sorting: the setting, else the cheapest model of the roster, else offline. */
+  /** The model of a sorting (`settings.background`). */
   model(): string {
-    const { ctx } = this;
-    const s = ctx.settings.get();
-    if (s.members.memoryModel) return s.members.memoryModel;
-    const roster = rosterModels(s).filter((m) => !m.startsWith(MOCK_PREFIX));
-    if (roster.length === 0) return MOCK_MEMORY_MODEL;
-    const pricing = ctx.hasService('pricing') ? ctx.service('pricing').lookup : null;
-    const price = (m: string) => pricing?.(m)?.inputPerMTok ?? Number.POSITIVE_INFINITY;
-    return [...roster].sort((a, b) => price(a) - price(b))[0]!;
-  }
-
-  /** What sorting cost today (USD), all members. */
-  spentToday(): number {
-    const { ctx } = this;
-    const day = dayOf(ctx.clock.iso(), ctx.settings.get().limits.timezone);
-    const row = ctx.db.get<{ n: number | null }>('SELECT SUM(cost_micro) AS n FROM character_digests WHERE day = ?', [day]);
-    return fromMicro(row?.n ?? 0);
+    return backgroundModel(this.ctx, MOCK_MEMORY_MODEL);
   }
 
   /** What sorting this member's memories cost since the first of this month. */
@@ -419,9 +403,7 @@ export class MemoryDigest {
     if (material.lines.length === 0 || (!force && material.lines.length < DIGEST_MIN_LINES && material.personAtWork === 0)) {
       return 'nothing_new';
     }
-    const limit = settings.members.memoryDailyUsd;
-    if (limit !== null && this.spentToday() >= limit) return 'limit';
-    if (ctx.hasService('ledger') && ctx.service('ledger').dailyLeft() === 0) return 'limit';
+    if (backgroundLimitReached(ctx)) return 'limit';
 
     const others = new Map(this.members.list(true).filter((c) => c.id !== characterId).map((c) => [c.id, c.name]));
     const ids = new Map([...others].map(([id, name]) => [name, id]));

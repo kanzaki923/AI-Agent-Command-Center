@@ -345,6 +345,7 @@ function sampleEvent(type: EventType): Event {
     'character.created': { character: member },
     'character.updated': { character: member, changes: ['name'] },
     'character.reordered': { characterIds: [member.id] },
+    'session.summary_updated': { sessionId: s.id, messages: 18 },
     'character.memory_changed': { characterId: member.id, added: ['x'], removed: [], changed: [], by: 'person', rejected: false },
     'session.state_changed': {
       sessionId: s.id,

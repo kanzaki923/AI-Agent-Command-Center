@@ -34,6 +34,7 @@ import {
 } from './domain';
 import { attentionEvents } from './ext/attention';
 import { characterEvents } from './ext/character';
+import { summaryEvents } from './ext/summary';
 import { costEvents } from './ext/cost';
 import { homeEvents } from './ext/home';
 import { outputsEvents } from './ext/outputs';
@@ -174,6 +175,7 @@ export const eventPayloads = {
   ...scheduleEvents,
   ...homeEvents,
   ...characterEvents,
+  ...summaryEvents,
 } as const;
 
 export type EventPayloads = typeof eventPayloads;

@@ -5,13 +5,14 @@ import { dayOf, toMicro } from '../cost/ledger';
 import { textOfParts } from '../llm/messages';
 import { quote, speakerOf } from '../sessions/framing';
 import { characterText } from './frame';
+import { SUMMARY_FOLD_AT } from '../summaries/service';
 import { type CharacterService, sceneOf } from './service';
 
 /** About how long a remark is (the model is told; nothing cuts it). */
 const ASIDE_CHARS = 200;
 
 /** Who said a message, as the member reads the conversation. */
-function whoSaid(ctx: DaemonContext, host: Session, m: Message, members: CharacterService): string {
+export function whoSaid(ctx: DaemonContext, host: Session, m: Message, members: CharacterService): string {
   if (m.meta?.kind === 'aside') {
     if (!m.meta.reply) return 'あなた';
     return members.get(m.meta.characterId)?.name ?? 'メンバー';
@@ -47,6 +48,42 @@ export function asideContext(ctx: DaemonContext, host: Session, members: Charact
   return lines.reverse().join('\n');
 }
 
+/** The newest lines within a count and a size (oldest first). */
+function newestWithin(lines: readonly string[], count: number, chars: number): string {
+  const out: string[] = [];
+  let left = chars;
+  for (const line of [...lines].reverse().slice(0, count)) {
+    if (line.length > left) {
+      if (out.length === 0) out.push(`${line.slice(0, left - 1)}…`);
+      break;
+    }
+    left -= line.length + 1;
+    out.push(line);
+  }
+  return out.reverse().join('\n');
+}
+
+/**
+ * What a remark reads of the conversation: its running summary (brought up to date first
+ * when it is behind) and the messages after it; without summaries, the latest messages.
+ */
+async function readConversation(
+  ctx: DaemonContext,
+  host: Session,
+  members: CharacterService,
+): Promise<{ summary: string | null; context: string }> {
+  if (!ctx.hasService('summaries')) return { summary: null, context: asideContext(ctx, host, members) };
+  try {
+    const { summary, tail } = await ctx.service('summaries').ensure(host.id);
+    const lines = tail.map((l) => `${l.who}: ${l.text}`);
+    // Still behind (summaries off, or the fold failed): the latest messages only.
+    const count = summary || lines.length <= SUMMARY_FOLD_AT ? SUMMARY_FOLD_AT : ASIDE_CONTEXT.messages;
+    return { summary: summary?.text ?? null, context: newestWithin(lines, count, ASIDE_CONTEXT.chars) };
+  } catch {
+    return { summary: null, context: asideContext(ctx, host, members) };
+  }
+}
+
 /** The frame of a remark: the member, what it remembers for the scene, one short turn. */
 export function asideFrame(member: Character, memory: readonly string[], hostTitle: string): string {
   return [
@@ -58,7 +95,7 @@ export function asideFrame(member: Character, memory: readonly string[], hostTit
     '',
     'How to answer',
     `- Answer the person once, as ${member.name}: your voice, your view. A few sentences (about ${ASIDE_CHARS} characters) unless they ask for more.`,
-    '- You see the latest messages of the conversation, quoted. You have no tools: say plainly what you could not check.',
+    '- You see the conversation, quoted: a summary of its earlier part when it is long, then its latest messages. You have no tools: say plainly what you could not check.',
     "- Do not answer for the others in the conversation, and do not repeat what was said.",
     "- Write in the person's language (Japanese unless they write otherwise).",
   ].join('\n');
@@ -88,8 +125,13 @@ export async function askAside(
 
   const scene = sceneOf(host) === 'meeting' ? 'talk' : sceneOf(host);
   const system = asideFrame(member, members.memoryLines(member.id, scene), host.title);
-  const context = asideContext(ctx, host, members);
-  const user = [context ? quote(context, '会話') : '（まだ何も話していない会話です）', '', p.text].join('\n');
+  const { summary, context } = await readConversation(ctx, host, members);
+  const user = [
+    ...(summary ? [quote(summary, 'あらすじ'), ''] : []),
+    context ? quote(context, '会話') : '（まだ何も話していない会話です）',
+    '',
+    p.text,
+  ].join('\n');
   const res = await ctx.service('llm').complete(
     {
       model,

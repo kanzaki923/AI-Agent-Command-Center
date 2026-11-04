@@ -31,6 +31,7 @@ import {
 import { Button } from '../ui/Button';
 import { Dialog, inputClass } from '../ui/Dialog';
 import { FieldRow, type SegmentOption, Segmented, Stepper, UsdField } from './controls';
+import { ModelPicker } from '../focus/ModelPicker';
 import { ModelRosterPanel, rosterSummary } from './ModelRoster';
 import { ProviderPanel } from './ProviderPanel';
 import { UsageStatsPanel } from './UsageStats';
@@ -68,6 +69,10 @@ export const PROFILE_OPTIONS: SegmentOption<PermissionProfile>[] = [
 const MEMORY_OPTIONS: { value: 'on' | 'off'; label: string }[] = [
   { value: 'on', label: '覚える' },
   { value: 'off', label: '覚えない' },
+];
+const SUMMARY_OPTIONS: { value: 'on' | 'off'; label: string }[] = [
+  { value: 'on', label: 'つくる' },
+  { value: 'off', label: 'つくらない' },
 ];
 
 export function runsOnOtherProfile(
@@ -182,6 +187,10 @@ export function SettingsDialog() {
   const glassStrength = useUi((s) => s.glassStrength);
   const setGlassStrength = useUi((s) => s.setGlassStrength);
   const settings = useSettings().data;
+  // Background work runs on a roster model (or the cheapest one when none is chosen).
+  const backgroundRoster = [
+    ...new Set([...(settings?.modelRules ?? []).map((r) => r.model), ...(settings?.defaultModel ? [settings.defaultModel] : [])]),
+  ];
   const models = useModels();
   const [editing, setEditing] = useState(false);
   const [editingModels, setEditingModels] = useState(false);
@@ -326,28 +335,48 @@ export function SettingsDialog() {
               </FieldRow>
             )}
             {settings?.members && (
-              <FieldRow
-                label="メンバーの記憶"
-                hint="会話の区切りに安いモデルで整理します。上限は整理の費用、1 日あたり"
-                htmlFor="member-memory-limit"
-              >
+              <FieldRow label="メンバーの記憶" hint="会話の区切りに、メンバーが覚えることを裏で整理します">
                 <Segmented<'on' | 'off'>
                   label="メンバーの記憶"
                   value={settings.members.memory ? 'on' : 'off'}
                   options={MEMORY_OPTIONS}
                   onChange={(v) => update({ members: { memory: v === 'on' } })}
                 />
-                {settings.members.memory && (
-                  <UsdField
-                    id="member-memory-limit"
-                    label="記憶の整理の上限"
-                    value={settings.members.memoryDailyUsd}
-                    allowEmpty
-                    allowZero
-                    placeholder="—"
-                    onCommit={(v) => update({ members: { memoryDailyUsd: v } })}
+              </FieldRow>
+            )}
+            {settings?.summaries && (
+              <FieldRow label="会話のあらすじ" hint="長い会話のあらすじを裏でつくります。@ で呼んだメンバーと検索が使います">
+                <Segmented<'on' | 'off'>
+                  label="会話のあらすじ"
+                  value={settings.summaries.enabled ? 'on' : 'off'}
+                  options={SUMMARY_OPTIONS}
+                  onChange={(v) => update({ summaries: { enabled: v === 'on' } })}
+                />
+              </FieldRow>
+            )}
+            {settings?.background && (
+              <FieldRow label="裏の整理" hint="記憶とあらすじに使うモデルと、1 日の上限" htmlFor="background-limit">
+                <span data-testid="background-model" className="inline-flex">
+                  <ModelPicker
+                    value={settings.background.model}
+                    fallback={null}
+                    roster={backgroundRoster}
+                    side="bottom"
+                    align="end"
+                    autoLabel="いちばん安いもの"
+                    autoHint="名簿でいちばん安いモデルを使います"
+                    onChange={(m) => update({ background: { model: m } })}
                   />
-                )}
+                </span>
+                <UsdField
+                  id="background-limit"
+                  label="裏の整理の上限"
+                  value={settings.background.dailyUsd}
+                  allowEmpty
+                  allowZero
+                  placeholder="—"
+                  onCommit={(v) => update({ background: { dailyUsd: v } })}
+                />
               </FieldRow>
             )}
             <FieldRow label="テーマ">

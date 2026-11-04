@@ -67,6 +67,7 @@ import { Event, EventFilter } from './events';
 import { attentionMethods } from './ext/attention';
 import { assistantMethods } from './ext/assistant';
 import { characterMethods } from './ext/character';
+import { summaryMethods } from './ext/summary';
 import { providerMethods } from './ext/providers';
 import { costMethods } from './ext/cost';
 import { StreamingMessage, homeMethods } from './ext/home';
@@ -128,7 +129,9 @@ function defineApi<T extends Record<string, MethodDef>>(defs: T): Specs<T> {
 export const SessionSearchHit = z.object({
   sessionId: SessionId,
   sessionTitle: z.string(),
-  messageId: MessageId,
+  /** `summary`: the conversation's summary matched (no message to jump to). */
+  source: z.enum(['message', 'summary']).default('message'),
+  messageId: MessageId.nullable(),
   snippet: z.string(),
   createdAt: Timestamp,
 });
@@ -347,10 +350,11 @@ export const api = defineApi({
         dailyUsd: z.number().min(0).nullable().optional().describe('null removes the limit'),
         characterId: CharacterId.nullable().optional().describe('The member in the seat; null: none'),
       }).optional(),
-      members: params({
-        memory: z.boolean().optional(),
-        memoryModel: z.string().min(1).nullable().optional().describe('null: the cheapest of the roster'),
-        memoryDailyUsd: z.number().min(0).nullable().optional().describe('null removes the limit'),
+      members: params({ memory: z.boolean().optional() }).optional(),
+      summaries: params({ enabled: z.boolean().optional() }).optional(),
+      background: params({
+        model: z.string().min(1).nullable().optional().describe('null: the cheapest of the roster'),
+        dailyUsd: z.number().min(0).nullable().optional().describe('null removes the limit'),
       }).optional(),
       providers: params({
         anthropic: params({
@@ -1118,6 +1122,7 @@ export const api = defineApi({
   ...homeMethods,
   ...assistantMethods,
   ...characterMethods,
+  ...summaryMethods,
   ...providerMethods,
 });
 

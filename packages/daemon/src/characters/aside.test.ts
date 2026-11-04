@@ -114,7 +114,7 @@ describe('a remark from a member (@name)', () => {
   it("the remark and the ask are material for the member's memories", async () => {
     const d = await daemon();
     spy(d, 'mock/host');
-    await d.call(HUMAN, 'settings.update', { members: { memoryModel: 'mock/sorter' } });
+    await d.call(HUMAN, 'settings.update', { background: { model: 'mock/sorter' } });
     const sorter = spy(d, 'mock/sorter', { text: '{"self":[{"text":"cancel 派"}]}' });
     const luna = await d.call(HUMAN, 'character.create', { name: 'ルナ', model: 'mock/luna' });
     spy(d, 'mock/luna', { text: 'わたしは cancel 派だよ〜' });

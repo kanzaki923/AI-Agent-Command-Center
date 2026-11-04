@@ -64,6 +64,8 @@ export function summarizeEvent(e: Event): string {
       return e.payload.character.name;
     case 'character.reordered':
       return `${e.payload.characterIds.length} members`;
+    case 'session.summary_updated':
+      return `${e.payload.messages} messages summarized`;
     case 'character.memory_changed':
       return e.payload.rejected
         ? 'sorting thrown away'

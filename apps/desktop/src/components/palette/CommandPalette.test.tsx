@@ -71,6 +71,31 @@ describe('<CommandPalette>', () => {
     expect(useUi.getState().paletteOpen).toBe(false);
   });
 
+  it('a hit in a summary opens the conversation (there is no message to jump to)', async () => {
+    const s = session({ kind: 'chat', title: '価格の相談' });
+    mount({
+      'session.list': () => ({ items: [s], nextCursor: null }),
+      'session.search': () => ({
+        items: [
+          {
+            sessionId: s.id,
+            sessionTitle: '価格の相談',
+            source: 'summary',
+            messageId: null,
+            snippet: '月額 980 円に決めた。',
+            createdAt: '2026-10-29T05:00:00.000Z',
+          },
+        ],
+      }),
+    });
+    act(() => useUi.getState().openPalette('#'));
+    fireEvent.change(await screen.findByRole('combobox'), { target: { value: '#980' } });
+    const row = await screen.findByTestId('message-hit', {}, { timeout: 2000 });
+    expect(within(row).getByLabelText('あらすじ')).toBeInTheDocument();
+    fireEvent.click(row);
+    expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: s.id, jumpTo: null });
+  });
+
   it('finds a conversation by its title after the # prefix', async () => {
     const s = session({ kind: 'chat', title: '旅行の相談' });
     mount({ 'session.list': () => ({ items: [s], nextCursor: null }), 'session.search': () => ({ items: [] }) });

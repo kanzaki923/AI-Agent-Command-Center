@@ -18,6 +18,7 @@ import {
   LoaderCircle,
   MessageSquarePlus,
   MessageSquareText,
+  ScrollText,
   Moon,
   PanelLeft,
   PanelRight,
@@ -148,15 +149,19 @@ function MessageHits({
     >
       {hits.map((h) => (
         <Command.Item
-          key={h.messageId}
+          key={h.messageId ?? `summary:${h.sessionId}`}
           forceMount
-          value={`message:${h.messageId}`}
+          value={h.messageId ? `message:${h.messageId}` : `summary:${h.sessionId}`}
           onSelect={() => onOpen(h)}
           data-testid="message-hit"
           className="group flex min-h-11 flex-col justify-center gap-0.5 rounded-sm px-3 py-1 text-ui data-[selected=true]:bg-selected"
         >
           <span className="flex w-full min-w-0 items-center gap-3">
-            <MessageSquareText size={15} strokeWidth={1.75} className="shrink-0 text-fg-3" />
+            {h.source === 'summary' ? (
+              <ScrollText size={15} strokeWidth={1.75} className="shrink-0 text-fg-3" aria-label="あらすじ" />
+            ) : (
+              <MessageSquareText size={15} strokeWidth={1.75} className="shrink-0 text-fg-3" />
+            )}
             <span className="min-w-0 truncate text-fg-2">
               <Highlighted text={h.snippet} terms={terms} />
             </span>
@@ -406,7 +411,7 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
     body = (
       <>
         <Group heading="会話" items={sessionItems} onRun={runItem} />
-        <MessageHits hits={messageHits} terms={searchTerm} onOpen={(h) => { close(); ui.openMessage(h.sessionId, h.messageId); }} />
+        <MessageHits hits={messageHits} terms={searchTerm} onOpen={(h) => { close(); if (h.messageId) ui.openMessage(h.sessionId, h.messageId); else ui.openSession(h.sessionId); }} />
       </>
     );
   } else if (!search) {
@@ -425,7 +430,7 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
         <Group heading="コマンド" items={[...suggest, ...navigate, ...create, ...view]} onRun={runItem} />
         {prefix !== '>' && <Group heading="会話" items={sessionItems} onRun={runItem} />}
         {prefix !== '>' && (
-          <MessageHits hits={messageHits} terms={searchTerm} onOpen={(h) => { close(); ui.openMessage(h.sessionId, h.messageId); }} />
+          <MessageHits hits={messageHits} terms={searchTerm} onOpen={(h) => { close(); if (h.messageId) ui.openMessage(h.sessionId, h.messageId); else ui.openSession(h.sessionId); }} />
         )}
       </>
     );

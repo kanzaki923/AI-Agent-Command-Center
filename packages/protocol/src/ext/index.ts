@@ -11,4 +11,5 @@ export * from './outputs';
 export * from './providers';
 export * from './schedule';
 export * from './spawn';
+export * from './summary';
 export * from './supervisor';

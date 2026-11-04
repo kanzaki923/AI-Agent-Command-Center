@@ -388,6 +388,7 @@ export function applyEvent(qc: QueryClient, streams: Streams, event: Event): voi
     case 'character.updated':
     case 'character.reordered':
     case 'character.memory_changed':
+    case 'session.summary_updated':
       return;
     default: {
       // A new event type must be handled (or deliberately ignored) above.
