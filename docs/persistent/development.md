@@ -53,10 +53,15 @@ pnpm format              # Prettier
 ### 1.2 配布ビルド（パッケージング）
 
 ```sh
-pnpm build:desktop                                  # release + NSIS インストーラ
-pnpm --filter @acc/desktop tauri build --debug      # 確認用（target/debug/acc-desktop.exe もそのまま起動できる）
-pnpm --filter @acc/desktop tauri build --no-bundle  # exe だけ（インストーラを作らない）
+pnpm build:desktop                                  # release + NSIS インストーラ（公開してよいのはこれだけ）
+pnpm build:desktop -- --no-bundle                   # exe だけ（インストーラを作らない）
+pnpm --filter @acc/desktop tauri build --debug      # 手元の確認用（target/debug/acc-desktop.exe もそのまま起動できる）。ローカルのパスが入るので配らない
 ```
+
+`pnpm build:desktop`（`apps/desktop/scripts/build-release.js`）は `tauri build` の前後に次を行う。rustc は依存クレートのソースの絶対パス（`~/.cargo/registry/...`）を exe に埋め込むので、そのままだとビルドした人のホームディレクトリ（OS のユーザー名）が配布物に入るため。
+
+- ビルド前：ホーム・`CARGO_HOME`・`RUSTUP_HOME`・チェックアウトを `--remap-path-prefix` で `/home`・`/cargo`・`/rustup`・`/acc` に置き換える。`CARGO_ENCODED_RUSTFLAGS` で渡す（空白を含むパスでも壊れない）。手元の `RUSTFLAGS` は引き継ぐ。
+- ビルド後：exe・`resources/daemon/`・`bundle/` の中身を、ホームとチェックアウトのパス（`\`・`/`・JSON エスケープ、UTF-8 と UTF-16LE）で探し、見つかれば失敗する。
 
 `tauri build` の `beforeBuildCommand` が Vite のビルドと `node scripts/prepare-sidecar.js --release` を実行し、次を揃える（どちらも `.gitignore` 済み。コミットしない）：
 

@@ -11,7 +11,7 @@
     "start:daemon": "pnpm --filter @acc/daemon start",
     "dev:desktop": "node scripts/dev-desktop.js",
     "dev:web": "pnpm --filter @acc/desktop dev",
-    "build:desktop": "pnpm --filter @acc/desktop tauri build",
+    "build:desktop": "node apps/desktop/scripts/build-release.js",
     "acc": "node packages/cli/bin/acc.js",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
