@@ -11,10 +11,11 @@ import {
 import { useSettings } from '../../daemon/queries';
 import { useRuntime } from '../../daemon/runtime';
 import { cn } from '../../lib/cn';
-import { formatUsd, sessionTitle } from '../../lib/states';
+import { sessionTitle } from '../../lib/states';
 import { toast } from '../../store/toast';
 import { useUi } from '../../store/ui';
 import { ModelPicker } from '../focus/ModelPicker';
+import { formatSpend } from '../settings/UsageStats';
 import { MemoryChanges, Memories } from './Memories';
 import { IconButton } from '../ui/Button';
 import { MEMBER_TONES, MemberFace, toneColor } from '../ui/Face';
@@ -23,16 +24,31 @@ import { RoleIcon } from '../ui/SemanticIcons';
 import { StateIcon } from '../ui/StateIcon';
 import { Tooltip } from '../ui/Tooltip';
 
-/** The face and its colour: one character (or the first letter of the name) and 8 colours. */
+/**
+ * The face and its colour: one character (or the first letter of the name) and 8 colours.
+ * The typed face is a draft over the member's own (reset each time the popover opens) and is
+ * saved once: on Enter (which closes the popover) or when the popover closes.
+ */
 function FaceEditor({ member }: { member: Character }) {
   const rt = useRuntime();
-  const [face, setFace] = useState(member.face ?? '');
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<string | null>(null);
+  const value = draft ?? member.face ?? '';
   const commitFace = () => {
-    const next = face.trim() || null;
+    if (draft === null) return;
+    setDraft(null);
+    const next = draft.trim() || null;
     if (next !== member.face) void updateMember(rt, { characterId: member.id, face: next });
   };
   return (
-    <Popover onOpenChange={(open) => !open && commitFace()}>
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        if (next) setDraft(null);
+        else commitFace();
+        setOpen(next);
+      }}
+    >
       <Tooltip content="顔と色">
         <PopoverTrigger asChild>
           <button type="button" aria-label="顔と色" data-face-editor className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]">
@@ -57,13 +73,17 @@ function FaceEditor({ member }: { member: Character }) {
             ))}
           </div>
           <input
-            value={face}
+            value={value}
             maxLength={4}
             aria-label="顔の文字"
             placeholder={[...member.name][0] ?? ''}
-            onChange={(e) => setFace(e.target.value)}
-            onBlur={commitFace}
-            onKeyDown={(e) => e.key === 'Enter' && commitFace()}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter' || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+              e.preventDefault();
+              commitFace();
+              setOpen(false);
+            }}
             className="h-8 w-16 rounded-sm border border-line bg-canvas px-2 text-center text-ui text-fg placeholder:text-fg-4 focus:border-[var(--focus-ring)]"
           />
         </div>
@@ -195,6 +215,8 @@ export function MemberPage() {
     ]),
   ];
   const archived = !!member.archivedAt;
+  // An older daemon may leave out what came later (memories, changes, memoryUsd).
+  const monthUsd = (page?.monthUsd ?? 0) + (page?.memoryUsd ?? 0);
   const takeOff = async () => {
     const out = await archiveMember(rt, member.id);
     if (!out) return;
@@ -211,7 +233,7 @@ export function MemberPage() {
       <div className="mx-auto grid max-w-[880px] grid-cols-[minmax(0,1fr)_220px] gap-8 px-8 py-8">
         <div className="flex min-w-0 flex-col gap-4">
           <div className="flex items-center gap-3">
-            <FaceEditor member={member} />
+            <FaceEditor key={member.id} member={member} />
             <div className="flex min-w-0 flex-1 flex-col">
               <NameEditor member={member} />
               <div className="flex h-6 items-center gap-2 px-1 text-meta text-fg-3">
@@ -250,7 +272,7 @@ export function MemberPage() {
                     {seated ? '右腕の席から外す' : '右腕の席に座らせる'}
                   </MenuItem>
                 )}
-                <MenuSeparator />
+                {!archived && <MenuSeparator />}
                 {archived ? (
                   <MenuItem onSelect={() => void archiveMember(rt, member.id, false)}>名簿に戻す</MenuItem>
                 ) : (
@@ -267,19 +289,19 @@ export function MemberPage() {
         <aside className="flex min-w-0 flex-col gap-1 border-l border-line-subtle pl-6" aria-label={`${member.name}の記録`}>
           <div className="flex items-baseline justify-between">
             <span className="text-micro text-fg-3">今月</span>
-            <span className="text-[20px] leading-7 font-semibold text-fg tabular" data-member-cost>
-              {formatUsd((page?.monthUsd ?? 0) + (page?.memoryUsd ?? 0)) ?? '$0'}
+            <span className={cn('text-[20px] leading-7 font-semibold tabular', monthUsd > 0 ? 'text-fg' : 'text-fg-3')} data-member-cost>
+              {formatSpend(monthUsd)}
             </span>
           </div>
           {(page?.memoryUsd ?? 0) > 0 && (
             <div className="flex flex-col text-meta text-fg-3 tabular" data-member-cost-split>
               <span className="flex justify-between">
                 <span>話した</span>
-                <span>{formatUsd(page?.monthUsd ?? 0) ?? '$0'}</span>
+                <span>{formatSpend(page?.monthUsd ?? 0)}</span>
               </span>
               <span className="flex justify-between">
                 <span>整理</span>
-                <span>{formatUsd(page?.memoryUsd ?? 0) ?? '$0'}</span>
+                <span>{formatSpend(page?.memoryUsd ?? 0)}</span>
               </span>
             </div>
           )}
@@ -287,7 +309,7 @@ export function MemberPage() {
           {(page?.sessions ?? []).map((s) => (
             <SessionRow key={s.id} session={s} />
           ))}
-          {(page?.changes.length ?? 0) > 0 && <div className="mt-4 mb-1 text-micro text-fg-3">最近の変化</div>}
+          {(page?.changes?.length ?? 0) > 0 && <div className="mt-4 mb-1 text-micro text-fg-3">最近の変化</div>}
           <MemoryChanges changes={page?.changes ?? []} />
         </aside>
       </div>

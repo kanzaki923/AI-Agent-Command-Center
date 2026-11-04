@@ -1,6 +1,7 @@
 import type { Character, Session } from '@acc/protocol';
 import { Plus } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { useStore } from 'zustand';
 import { createMember, useMembers } from '../../daemon/members';
 import { useSessions } from '../../daemon/queries';
 import { useRuntime } from '../../daemon/runtime';
@@ -108,17 +109,20 @@ function RosterFace({ member, busy }: { member: Character; busy: Session | undef
 /**
  * The team at the foot of the sidebar (snapshot 20261104_members-spec.md §6): faces only, a
  * ring on those at work. Nothing at all while there is no member besides the + — those who
- * do not use members see one quiet circle.
+ * do not use members see one quiet circle. Gone entirely when the daemon has no members.
  */
 export function Roster() {
+  const rt = useRuntime();
+  const unsupported = useStore(rt.unimplemented, (s) => s.methods.includes('character.list'));
   const members = useMembers();
   const sessions = useSessions().data;
   const openMember = useUi((s) => s.openMember);
   const busy = useMemo(() => memberActivity(sessions ?? []), [sessions]);
   const shown = members.slice(0, ROSTER_SHOWN);
   const more = members.length - shown.length;
+  if (unsupported) return null;
   return (
-    <div role="group" aria-label="メンバー" data-roster className="flex flex-wrap items-center gap-1.5 px-2 py-2">
+    <div role="group" aria-label="メンバー" data-roster className="flex flex-wrap items-center gap-1.5 border-t border-line-subtle px-2 py-2">
       {shown.map((m) => (
         <RosterFace key={m.id} member={m} busy={busy.get(m.id)} />
       ))}

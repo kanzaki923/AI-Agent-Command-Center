@@ -3,10 +3,10 @@ import type { DaemonContext } from '../core/context';
 import { conflict } from '../core/errors';
 import { dayOf, toMicro } from '../cost/ledger';
 import { textOfParts } from '../llm/messages';
-import { quote, speakerOf } from '../sessions/framing';
+import { framedTitle, quote, speakerOf } from '../sessions/framing';
 import { characterText } from './frame';
 import { SUMMARY_FOLD_AT } from '../summaries/service';
-import { type CharacterService, sceneOf } from './service';
+import { type CharacterService, sceneIn } from './service';
 
 /** About how long a remark is (the model is told; nothing cuts it). */
 const ASIDE_CHARS = 200;
@@ -123,8 +123,9 @@ export async function askAside(
   if (!model) throw conflict('使うモデルがありません。設定でモデルを選んでください');
   if (ctx.hasService('ledger')) ctx.service('ledger').assertDailyLeft(host.id);
 
-  const scene = sceneOf(host) === 'meeting' ? 'talk' : sceneOf(host);
-  const system = asideFrame(member, members.memoryLines(member.id, scene), host.title);
+  const hostScene = sceneIn(ctx, host);
+  const scene = hostScene === 'meeting' ? 'talk' : hostScene;
+  const system = asideFrame(member, members.memoryLines(member.id, scene), framedTitle(host.title));
   const { summary, context } = await readConversation(ctx, host, members);
   const user = [
     ...(summary ? [quote(summary, 'あらすじ'), ''] : []),
@@ -145,7 +146,7 @@ export async function askAside(
   const answer = res.text.trim();
   if (!answer) throw conflict(`${member.name}から返事がありませんでした`);
 
-  return ctx.db.transaction(() => {
+  const result = ctx.db.transaction(() => {
     if (ctx.hasService('ledger')) {
       ctx.service('ledger').record({
         sessionId: host.id,
@@ -183,6 +184,9 @@ export async function askAside(
     });
     return { ask, reply };
   });
+  // The member just talked: its memories are sorted once it has been quiet for a while.
+  if (ctx.hasService('memoryDigest')) ctx.service('memoryDigest').touch(member.id);
+  return result;
 }
 
 export const ASIDE_MIGRATION = `

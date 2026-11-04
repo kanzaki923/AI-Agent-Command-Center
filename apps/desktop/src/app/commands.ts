@@ -18,7 +18,8 @@ export function switchMode(_rt: AppRuntime, mode: Mode): void {
   if (mode === 'home') ui.goHome();
   else if (mode === 'timeline') ui.openTimeline();
   else if (ui.focusSessionId) ui.openSession(ui.focusSessionId);
-  else ui.openDraft();
+  // Back to the draft that was there, with whoever it was with.
+  else ui.openDraft(ui.draftMemberId);
 }
 
 /**

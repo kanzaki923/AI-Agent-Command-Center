@@ -6,7 +6,16 @@ import { type AppRuntime, RuntimeProvider, createRuntime } from '../../daemon/ru
 import { resetKeyDecisions } from '../../lib/approvalKeys';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
-import { attention, card, homeSnapshot, homeTree, message, session } from '../../test/fixtures';
+import {
+  approval,
+  attention,
+  card,
+  homeSnapshot,
+  homeTree,
+  message,
+  run,
+  session,
+} from '../../test/fixtures';
 import { TooltipProvider } from '../ui/Tooltip';
 import { HomeView } from './HomeView';
 
@@ -67,6 +76,7 @@ function scene() {
       ],
       allowText: false,
       priority: 5,
+      refs: { approvalId: 'apr_ok' },
     },
   );
   faq.attentionIds = [ok.id, q.id];
@@ -95,6 +105,14 @@ function scene() {
   });
   return { snap, root, faq, research, mail, press, q, ok, morning, chat };
 }
+
+/** A pending command approval as approval.list returns it (normal risk). */
+const pendingApproval = (id: string, command: string) =>
+  approval(run(session()), {
+    id,
+    detail: command,
+    payload: { toolName: 'Bash', input: { command } },
+  });
 
 const chipsIn = (region: HTMLElement) =>
   within(region)
@@ -229,19 +247,22 @@ describe('<HomeView>', () => {
     const s = scene();
     const fake = mount({
       'home.get': () => s.snap,
+      'approval.list': () => ({ items: [pendingApproval('apr_ok', 'pnpm add zod')], nextCursor: null }),
       'attention.respond': () => ({ attention: { ...s.ok, status: 'resolved' } }),
     });
     const rows = await screen.findByRole('region', { name: '出番' });
     // Key labels sit only on the row the keys act on: none before a selection, Y / N on it after.
     expect(rows.querySelectorAll('kbd')).toHaveLength(0);
     press('j');
-    expect(
-      [
-        ...within(rows)
-          .getByRole('group', { name: /pnpm add zod/ })
-          .querySelectorAll('kbd'),
-      ].map((k) => k.textContent),
-    ).toEqual(['Y', 'N']);
+    await vi.waitFor(() =>
+      expect(
+        [
+          ...within(rows)
+            .getByRole('group', { name: /pnpm add zod/ })
+            .querySelectorAll('kbd'),
+        ].map((k) => k.textContent),
+      ).toEqual(['Y', 'N']),
+    );
     expect(
       within(rows)
         .getByRole('group', { name: /価格を載せる/ })
@@ -267,6 +288,55 @@ describe('<HomeView>', () => {
         fake.calls.filter((c) => c.method === 'attention.respond').map((c) => c.params.choiceId),
       ).toEqual(['approve', 'later']),
     );
+  });
+
+  it('Y does not approve when the risk of the approval is not known; N still rejects', async () => {
+    const s = scene();
+    // The pending approvals are loaded but do not hold this one (e.g. more than a page).
+    const fake = mount({
+      'home.get': () => s.snap,
+      'approval.list': () => ({ items: [pendingApproval('apr_other', 'pnpm test')], nextCursor: null }),
+      'attention.respond': () => ({ attention: { ...s.ok, status: 'resolved' } }),
+    });
+    const rows = await screen.findByRole('region', { name: '出番' });
+    resetKeyDecisions();
+    press('j');
+    await vi.waitFor(() => expect(fake.calls.some((c) => c.method === 'approval.list')).toBe(true));
+    // No key on 許可: it takes a click.
+    expect(
+      [
+        ...within(rows)
+          .getByRole('group', { name: /pnpm add zod/ })
+          .querySelectorAll('kbd'),
+      ].map((k) => k.textContent),
+    ).toEqual(['N']);
+    press('y');
+    expect(fake.calls.filter((c) => c.method === 'attention.respond')).toHaveLength(0);
+    press('n');
+    await vi.waitFor(() =>
+      expect(fake.calls.find((c) => c.method === 'attention.respond')?.params).toEqual({
+        attentionId: s.ok.id,
+        choiceId: 'reject',
+      }),
+    );
+  });
+
+  it('Y does not approve while the pending approvals cannot be read', async () => {
+    const s = scene();
+    // No approval.list handler: the request fails.
+    const fake = mount({
+      'home.get': () => s.snap,
+      'attention.respond': () => ({ attention: { ...s.ok, status: 'resolved' } }),
+    });
+    await screen.findByRole('region', { name: '出番' });
+    resetKeyDecisions();
+    press('j');
+    press('y');
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    press('y');
+    expect(fake.calls.filter((c) => c.method === 'attention.respond')).toHaveLength(0);
   });
 
   it('Enter on a selected question opens its reply field', async () => {

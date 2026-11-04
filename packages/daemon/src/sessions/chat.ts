@@ -156,7 +156,7 @@ export async function chooseChatModel(
 export function chatHistory(ctx: DaemonContext, run: Run, session: Session): Message[] {
   const skip = retryChain(ctx, run);
   const total = ctx.repos.messages.count({ where: { session_id: session.id } });
-  return ctx.repos.messages
+  const window = ctx.repos.messages
     .find({
       where: { session_id: session.id },
       orderBy: 'id',
@@ -165,5 +165,43 @@ export function chatHistory(ctx: DaemonContext, run: Run, session: Session): Mes
       limit: windowLength(total, CHAT_HISTORY_LIMIT),
     })
     .reverse()
-    .filter((m) => !m.runId || !skip.has(m.runId));
+    // A message still queued was not handed to this run (it waits for a run of its own, e.g.
+    // a request with its own work place to the assistant): not part of what it answers.
+    .filter((m) => (!m.runId || !skip.has(m.runId)) && m.delivery !== 'queued');
+  return inHandOverOrder(ctx, session.id, window);
+}
+
+/** The time-ordered part of an id (ids of every kind share one monotonic generator). */
+const idTime = (id: string) => id.slice(id.indexOf('_') + 1);
+
+/**
+ * Messages in the order the conversation saw them. A message that waited for a later run
+ * (sent while another run was answering) is stored before that run's last words but was
+ * handed over after them: it goes where the run that took it (inbox `consumedByRunId`)
+ * began. Messages taken at a step of a running run keep their place. Fixed once a message is
+ * taken, so the history stays a prefix across runs.
+ */
+function inHandOverOrder(ctx: DaemonContext, sessionId: string, messages: Message[]): Message[] {
+  if (messages.length === 0 || !ctx.hasService('supervisorInbox')) return messages;
+  const takenBy = new Map<string, string>();
+  for (const item of ctx.repos.inboxItems.find({
+    where: { session_id: sessionId, status: 'consumed' },
+    sql: { clause: 'created_at >= ?', params: [messages[0]!.createdAt] },
+  })) {
+    if (item.refs.messageId && item.consumedByRunId) {
+      takenBy.set(item.refs.messageId, item.consumedByRunId);
+    }
+  }
+  if (takenBy.size === 0) return messages;
+  const at = (m: Message) => {
+    const own = idTime(m.id);
+    const run = m.runId ? undefined : takenBy.get(m.id);
+    return run && idTime(run) > own ? idTime(run) : own;
+  };
+  return messages
+    .map((m) => ({ m, at: at(m), own: idTime(m.id) }))
+    .sort((a, b) =>
+      a.at !== b.at ? (a.at < b.at ? -1 : 1) : a.own < b.own ? -1 : a.own > b.own ? 1 : 0,
+    )
+    .map((x) => x.m);
 }

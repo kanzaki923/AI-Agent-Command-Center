@@ -1,7 +1,16 @@
-import { SUMMARY_MAX_CHARS, type Message, type Session, type SessionSearchHit, type SessionSummary, type SystemActor } from '@acc/protocol';
+import {
+  SUMMARY_MAX_CHARS,
+  type Message,
+  type Session,
+  type SessionSearchHit,
+  type SessionSummary,
+  type SystemActor,
+  type Usage,
+  isTerminalRunStatus,
+} from '@acc/protocol';
 import { whoSaid } from '../characters/aside';
 import type { DaemonContext } from '../core/context';
-import { backgroundLimitReached, backgroundModel } from '../llm/background';
+import { BackgroundBackoff, backgroundLimitReached, backgroundModel, noteBackgroundCall } from '../llm/background';
 import { textOfParts } from '../llm/messages';
 import { quote } from '../sessions/framing';
 import { makeSnippet, readableText } from '../sessions/search';
@@ -10,16 +19,12 @@ export const SUMMARY_SYSTEM: SystemActor = { kind: 'system', component: 'summary
 
 /** The newest messages always stay as they are (not folded into the summary). */
 export const SUMMARY_KEEP = 12;
-/** Messages after the summary that make it due to fold the older ones in. */
+/** Messages after the summary that make it due to fold the older ones in (and one call's most). */
 export const SUMMARY_FOLD_AT = 24;
-/** Characters after the summary that make it due too. */
+/** Characters after the summary that make it due too (and one call's most). */
 export const SUMMARY_FOLD_CHARS = 12_000;
-/** A conversation is summarized behind the scenes once it has been quiet this long. */
-export const SUMMARY_IDLE_MS = 30 * 60_000;
-/** How often the daemon looks for conversations to summarize. */
-export const SUMMARY_SWEEP_MS = 5 * 60_000;
-/** Conversations summarized per look (the rest wait for the next). */
-export const SUMMARY_PER_SWEEP = 10;
+/** Chunks a remark folds at most before it reads the conversation (the person is waiting). */
+export const SUMMARY_ENSURE_CHUNKS = 3;
 /** After a failed summary, the conversation waits this long. */
 export const SUMMARY_RETRY_MS = 60 * 60_000;
 /** One message of material at most. */
@@ -88,37 +93,48 @@ const toSummary = (r: Row): SessionSummary => ({
 });
 
 /**
- * Running summaries of conversations (`ctx.service('summaries')`). Once a conversation has
- * more than `SUMMARY_FOLD_AT` messages after its summary, everything but the newest
- * `SUMMARY_KEEP` is folded in: one call that reads the previous summary and those messages
- * only, so the cost stays the same however long the conversation grows. It happens behind
- * the scenes once the conversation has been quiet (`sweep`), and on the spot when a summary
- * is needed and behind (`ensure`). One fold at a time per conversation. The conversation's
- * own model never reads it; the cost is the conversation's (ledger `summary`) and counts
- * toward `settings.background`.
+ * Running summaries of conversations (`ctx.service('summaries')`). When a turn of a
+ * conversation ends (`onTurnEnd`) and more than `SUMMARY_FOLD_AT` messages (or
+ * `SUMMARY_FOLD_CHARS`) are after its summary, the oldest of them — never the newest
+ * `SUMMARY_KEEP`, at most `SUMMARY_FOLD_AT` messages and `SUMMARY_FOLD_CHARS` per call — are
+ * folded into it: one call that reads the previous summary and that chunk only, so a call
+ * costs about the same however long the conversation grows. Nothing runs on a timer, so a
+ * conversation nobody touches is never summarized behind the person's back (older ones catch
+ * up as they are used). A remark (`ensure`) folds what it needs on the spot. One fold at a
+ * time per conversation; the background limits and a shared backoff apply. The
+ * conversation's own model never reads it.
  */
 export class SessionSummaries {
   private readonly chains = new Map<string, Promise<SessionSummary | null>>();
   private readonly failedAt = new Map<string, number>();
-  private timer: ReturnType<typeof setInterval> | null = null;
+  private readonly backoff: BackgroundBackoff;
+  private closed = false;
+  private offRuns: (() => void) | null = null;
 
-  constructor(private readonly ctx: DaemonContext) {}
+  constructor(private readonly ctx: DaemonContext) {
+    this.backoff = new BackgroundBackoff(() => ctx.clock.now());
+  }
 
   start(): void {
-    if (this.ctx.hasService('llm')) {
-      this.ctx.service('llm').mock.define(
+    const { ctx } = this;
+    if (ctx.hasService('llm')) {
+      ctx.service('llm').mock.define(
         MOCK_SUMMARY_MODEL,
         (req) => ({ text: mockSummary(req.messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n')) }),
         { label: 'モック（あらすじ）', chunkDelayMs: 0 },
       );
     }
-    this.timer = setInterval(() => void this.sweep(), SUMMARY_SWEEP_MS);
-    (this.timer as { unref?: () => void }).unref?.();
+    this.offRuns = ctx.bus.subscribe({ types: ['run.status_changed'] }, (e) => {
+      if (e.type !== 'run.status_changed' || !isTerminalRunStatus(e.payload.to)) return;
+      const run = ctx.repos.runs.get(e.payload.runId);
+      if (run) void this.onTurnEnd(run.sessionId);
+    });
   }
 
   stop(): void {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+    this.closed = true;
+    this.offRuns?.();
+    this.offRuns = null;
   }
 
   get(sessionId: string): SessionSummary | null {
@@ -126,93 +142,120 @@ export class SessionSummaries {
     return r ? toSummary(r) : null;
   }
 
-  /** The messages after the summary, as it would read them (text only, oldest first). */
+  /** Messages after the summary: the oldest `limit` of them, or the newest with `newest`. */
+  private after(session: Session, opts: { limit: number; newest?: boolean }): Message[] {
+    const mark = this.get(session.id)?.upToMessageId;
+    const list = this.ctx.repos.messages.find({
+      where: { session_id: session.id },
+      ...(mark ? { sql: { clause: 'id > ?', params: [mark] } } : {}),
+      orderBy: 'id',
+      direction: opts.newest ? 'desc' : 'asc',
+      limit: opts.limit,
+    });
+    return opts.newest ? list.reverse() : list;
+  }
+
+  /** How many messages are after the summary (a cheap count). */
+  private countAfter(sessionId: string): number {
+    const mark = this.get(sessionId)?.upToMessageId;
+    return this.ctx.repos.messages.count({
+      where: { session_id: sessionId },
+      ...(mark ? { sql: { clause: 'id > ?', params: [mark] } } : {}),
+    });
+  }
+
+  private lineOf(session: Session, m: Message): SummaryLine | null {
+    if ((m.role !== 'user' && m.role !== 'assistant') || m.meta?.kind === 'wake' || m.meta?.kind === 'hint') return null;
+    const text = oneLine(readableText(textOfParts(m.content)));
+    return text ? { id: m.id, who: whoSaid(this.ctx, session, m, this.ctx.service('characters')), text } : null;
+  }
+
+  /** The newest messages after the summary as lines (at most `SUMMARY_FOLD_AT`). */
   tail(session: Session): SummaryLine[] {
-    const { ctx } = this;
-    const after = this.get(session.id)?.upToMessageId;
-    const members = ctx.service('characters');
-    return ctx.repos.messages
-      .find({ where: { session_id: session.id }, orderBy: 'id', direction: 'asc' })
-      .filter((m) => !after || m.id > after)
-      .filter((m: Message) => (m.role === 'user' || m.role === 'assistant') && m.meta?.kind !== 'wake' && m.meta?.kind !== 'hint')
-      .map((m) => ({ id: m.id, who: whoSaid(ctx, session, m, members), text: oneLine(readableText(textOfParts(m.content))) }))
-      .filter((l) => l.text);
+    return this.after(session, { limit: SUMMARY_FOLD_AT, newest: true })
+      .map((m) => this.lineOf(session, m))
+      .filter((l): l is SummaryLine => !!l);
   }
 
-  /** Whether the messages after the summary are too many to pass on as they are. */
-  behind(tail: readonly SummaryLine[]): boolean {
-    return tail.length > SUMMARY_FOLD_AT || tail.reduce((n, l) => n + l.text.length, 0) > SUMMARY_FOLD_CHARS;
+  /** Whether the messages after the summary are too many (or too long) to pass on as they are. */
+  behind(session: Session): boolean {
+    if (this.countAfter(session.id) > SUMMARY_FOLD_AT) return true;
+    const chars = this.after(session, { limit: SUMMARY_FOLD_AT })
+      .map((m) => this.lineOf(session, m))
+      .reduce((n, l) => n + (l?.text.length ?? 0), 0);
+    return chars > SUMMARY_FOLD_CHARS;
   }
 
-  /** Behind, quiet for long enough, not failed lately, and summaries are on. */
-  due(sessionId: string): boolean {
+  private mayRun(sessionId: string): boolean {
     const { ctx } = this;
-    if (!ctx.settings.get().summaries.enabled) return false;
-    const s = ctx.repos.sessions.get(sessionId);
-    if (!s || s.archivedAt || s.activeRunId) return false;
-    const now = ctx.clock.now();
-    if (now - Date.parse(s.lastActivityAt) < SUMMARY_IDLE_MS) return false;
+    if (this.closed || !ctx.settings.get().summaries.enabled || !this.backoff.open()) return false;
     const failed = this.failedAt.get(sessionId);
-    if (failed && now - failed < SUMMARY_RETRY_MS) return false;
-    return this.behind(this.tail(s));
+    return !(failed && ctx.clock.now() - failed < SUMMARY_RETRY_MS);
   }
 
-  /** Summarize the quiet conversations that are behind, the most recent first. */
-  async sweep(): Promise<void> {
-    const { ctx } = this;
-    if (!ctx.settings.get().summaries.enabled) return;
-    const quiet = new Date(ctx.clock.now() - SUMMARY_IDLE_MS).toISOString();
-    const ids = ctx.db
-      .all<{ id: string }>(
-        `SELECT id FROM sessions WHERE archived_at IS NULL AND last_activity_at <= ?
-           AND (SELECT COUNT(*) FROM messages m WHERE m.session_id = sessions.id) > ?
-         ORDER BY last_activity_at DESC LIMIT 200`,
-        [quiet, SUMMARY_FOLD_AT],
-      )
-      .map((r) => r.id);
-    let done = 0;
-    for (const id of ids) {
-      if (done >= SUMMARY_PER_SWEEP || backgroundLimitReached(ctx)) return;
-      if (!this.due(id)) continue;
-      await this.fold(id).catch(() => null);
-      done += 1;
-    }
+  /** A turn of a conversation ended: fold one chunk if it is behind. */
+  async onTurnEnd(sessionId: string): Promise<void> {
+    const s = this.ctx.repos.sessions.get(sessionId);
+    if (!s || s.archivedAt || !this.mayRun(sessionId) || !this.behind(s)) return;
+    await this.fold(sessionId).catch(() => null);
   }
 
   /**
-   * The summary and the messages after it, brought up to date first when they are too many
-   * (a remark needs them now). Without a summary and while summaries are off, only the tail.
+   * The summary and the newest messages after it, brought up to date first when they are
+   * behind (a remark needs them now; a few chunks at most, so the person does not wait long).
    */
   async ensure(sessionId: string): Promise<{ summary: SessionSummary | null; tail: SummaryLine[] }> {
     const s = this.ctx.repos.sessions.require(sessionId);
-    if (this.ctx.settings.get().summaries.enabled && this.behind(this.tail(s))) {
+    for (let i = 0; i < SUMMARY_ENSURE_CHUNKS && this.mayRun(sessionId) && this.behind(s); i++) {
+      const before = this.get(sessionId)?.upToMessageId;
       await this.fold(sessionId).catch(() => null);
+      if (this.get(sessionId)?.upToMessageId === before) break;
     }
     return { summary: this.get(sessionId), tail: this.tail(s) };
   }
 
-  /** Fold everything but the newest messages into the summary (one at a time per conversation). */
+  /** Fold one chunk into the summary (one at a time per conversation). */
   fold(sessionId: string): Promise<SessionSummary | null> {
     const prev = this.chains.get(sessionId) ?? Promise.resolve(null);
     const next = prev.catch(() => null).then(() => this.run(sessionId));
     this.chains.set(sessionId, next);
-    void next.finally(() => {
-      if (this.chains.get(sessionId) === next) this.chains.delete(sessionId);
-    }).catch(() => undefined);
+    void next
+      .finally(() => {
+        if (this.chains.get(sessionId) === next) this.chains.delete(sessionId);
+      })
+      .catch(() => undefined);
     return next;
   }
 
   private async run(sessionId: string): Promise<SessionSummary | null> {
     const { ctx } = this;
     const session = ctx.repos.sessions.require(sessionId);
-    const tail = this.tail(session);
-    if (!this.behind(tail)) return this.get(sessionId);
-    if (backgroundLimitReached(ctx)) return this.get(sessionId);
-    const folding = tail.slice(0, -SUMMARY_KEEP);
-    if (folding.length === 0) return this.get(sessionId);
+    if (!this.mayRun(sessionId) || !this.behind(session) || backgroundLimitReached(ctx)) return this.get(sessionId);
+    // The oldest messages after the summary, leaving the newest SUMMARY_KEEP as they are,
+    // within one call's bounds.
+    const foldable = Math.max(0, this.countAfter(sessionId) - SUMMARY_KEEP);
+    const chunk = this.after(session, { limit: Math.min(foldable, SUMMARY_FOLD_AT) });
+    if (chunk.length === 0) return this.get(sessionId);
+    const lines: SummaryLine[] = [];
+    let used = 0;
+    let folded = 0;
+    let upTo = chunk[0]!.id;
+    for (const m of chunk) {
+      const line = this.lineOf(session, m);
+      if (line && used + line.text.length > SUMMARY_FOLD_CHARS && lines.length > 0) break;
+      if (line) {
+        lines.push(line);
+        used += line.text.length;
+      }
+      upTo = m.id;
+      folded += 1;
+    }
     const previous = this.get(sessionId);
-    const prompt = summaryPrompt(previous?.text ?? null, folding);
     const model = backgroundModel(ctx, MOCK_SUMMARY_MODEL);
+    // Nothing worth reading in this chunk (notices, tool turns): move the mark past it.
+    if (lines.length === 0) return this.store(sessionId, previous?.text ?? '', upTo, previous, folded, model, null);
+    const prompt = summaryPrompt(previous?.text ?? null, lines);
+    noteBackgroundCall(ctx, 'summary');
     try {
       const res = await ctx.service('llm').complete(
         {
@@ -228,45 +271,59 @@ export class SessionSummaries {
       );
       const text = clip(res.text);
       if (!text) throw new Error('empty summary');
-      return ctx.db.transaction(() => {
-        if (ctx.hasService('ledger')) {
-          ctx.service('ledger').record({
-            sessionId,
-            runId: null,
-            model,
-            component: 'summary',
-            costUsd: res.usage.costUsd,
-            inputTokens: res.usage.inputTokens,
-            outputTokens: res.usage.outputTokens,
-            cacheReadTokens: res.usage.cacheReadTokens ?? 0,
-            cacheWriteTokens: res.usage.cacheWriteTokens ?? 0,
-            source: res.usage.costSource,
-          });
-        }
-        const upTo = folding.at(-1)!.id;
-        const messages = (previous?.messages ?? 0) + folding.length;
-        const now = ctx.clock.iso();
-        ctx.db.run(
-          `INSERT INTO session_summaries (session_id, text, up_to_message_id, messages, model, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?)
-           ON CONFLICT (session_id) DO UPDATE SET text = excluded.text, up_to_message_id = excluded.up_to_message_id,
-             messages = excluded.messages, model = excluded.model, updated_at = excluded.updated_at`,
-          [sessionId, text, upTo, messages, model, now],
-        );
-        ctx.bus.emit({
-          type: 'session.summary_updated',
-          actor: SUMMARY_SYSTEM,
-          payload: { sessionId, messages },
-          refs: { sessionId },
-        });
-        this.failedAt.delete(sessionId);
-        return this.get(sessionId);
-      });
+      if (this.closed) return null;
+      this.backoff.ok();
+      this.failedAt.delete(sessionId);
+      return this.store(sessionId, text, upTo, previous, folded, model, res.usage);
     } catch (err) {
       this.failedAt.set(sessionId, ctx.clock.now());
+      this.backoff.failed();
       ctx.log.warn('session summary failed', { sessionId, error: (err as Error).message });
       throw err;
     }
+  }
+
+  private store(
+    sessionId: string,
+    text: string,
+    upTo: string,
+    previous: SessionSummary | null,
+    folded: number,
+    model: string,
+    usage: Usage | null,
+  ): SessionSummary | null {
+    const { ctx } = this;
+    return ctx.db.transaction(() => {
+      if (usage && ctx.hasService('ledger')) {
+        ctx.service('ledger').record({
+          sessionId,
+          runId: null,
+          model,
+          component: 'summary',
+          costUsd: usage.costUsd,
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          cacheReadTokens: usage.cacheReadTokens ?? 0,
+          cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+          source: usage.costSource,
+        });
+      }
+      const messages = (previous?.messages ?? 0) + folded;
+      ctx.db.run(
+        `INSERT INTO session_summaries (session_id, text, up_to_message_id, messages, model, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (session_id) DO UPDATE SET text = excluded.text, up_to_message_id = excluded.up_to_message_id,
+           messages = excluded.messages, model = excluded.model, updated_at = excluded.updated_at`,
+        [sessionId, text, upTo, messages, model, ctx.clock.iso()],
+      );
+      ctx.bus.emit({
+        type: 'session.summary_updated',
+        actor: SUMMARY_SYSTEM,
+        payload: { sessionId, messages },
+        refs: { sessionId },
+      });
+      return this.get(sessionId);
+    });
   }
 
   /** Summaries that contain every term (one hit per conversation, newest first). */

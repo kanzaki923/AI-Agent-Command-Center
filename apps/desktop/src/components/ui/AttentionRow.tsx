@@ -58,15 +58,31 @@ export function attentionKeyAction(
   return { kind: 'choice', choice: attention.choices[i]! };
 }
 
-/** Approval ids of the pending approvals rated high risk (the card asks Ctrl+Y for those). */
-export function useRiskyApprovalIds(): ReadonlySet<string> {
+/**
+ * Whether each pending approval is rated high risk (the card asks Ctrl+Y for those), by
+ * approval id. An approval missing here is not known (the list is still loading, failed, or
+ * did not hold it).
+ */
+export function useApprovalRisks(): ReadonlyMap<string, boolean> {
   const approvals = usePendingApprovals().data;
-  return new Set((approvals ?? []).filter((a) => describeApproval(a).risk === 'high').map((a) => a.id));
+  return new Map((approvals ?? []).map((a) => [a.id, describeApproval(a).risk === 'high']));
 }
 
-/** Whether this attention item is a high-risk approval. */
-export function isRisky(attention: Attention, risky: ReadonlySet<string>): boolean {
-  return attention.kind === 'approval' && !!attention.refs.approvalId && risky.has(attention.refs.approvalId);
+/**
+ * Whether this attention item must not be approved by a single key. Fails closed: an
+ * approval whose risk is not known counts as risky, so one Y never lets an unrated tool use
+ * through.
+ */
+export function isRisky(attention: Attention, risks: ReadonlyMap<string, boolean>): boolean {
+  if (attention.kind !== 'approval') return false;
+  const id = attention.refs.approvalId;
+  return !id || risks.get(id) !== false;
+}
+
+/** Known to be high risk (shown as a danger button; an unknown risk only loses its key). */
+function isKnownHighRisk(attention: Attention, risks: ReadonlyMap<string, boolean>): boolean {
+  const id = attention.refs.approvalId;
+  return attention.kind === 'approval' && !!id && risks.get(id) === true;
 }
 
 /**
@@ -98,7 +114,9 @@ export function AttentionRow({
   className?: string;
 }) {
   const rt = useRuntime();
-  const risky = isRisky(attention, useRiskyApprovalIds());
+  const risks = useApprovalRisks();
+  const risky = isRisky(attention, risks);
+  const danger = isKnownHighRisk(attention, risks);
   const [replying, setReplying] = useState(false);
   const [text, setText] = useState('');
   const [expanded, setExpanded] = useState(false);
@@ -174,7 +192,7 @@ export function AttentionRow({
             <Button
               key={c.id}
               size="sm"
-              variant={risky && c.id === 'approve' ? 'danger' : TONE_VARIANT[c.tone]}
+              variant={danger && c.id === 'approve' ? 'danger' : TONE_VARIANT[c.tone]}
               shortcutKeys={selected ? (choiceKey(attention, i, risky) ?? undefined) : undefined}
               onClick={() => answer({ choiceId: c.id })}
             >

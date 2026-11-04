@@ -99,7 +99,7 @@ export function buildSupervisorPrompt(input: {
     '- A run ends as soon as you answer without calling a tool. Never wait or poll.',
     `- You are woken by a message that starts with "${WAKE_MARKER}" when a child finishes, fails, needs a human or is stopped, when a question is answered, or after a restart. The user can write to you at any time.`,
     `- A message starting with "${INJECTED_PREFIX}" arrived while you were working: take it into account.`,
-    `- A message the person did not write starts with who sent it (e.g. [${SPEAKER.assistant}から]). One without such a label is the person's, and the person comes first. A label covers its whole message.`,
+    `- A message the person did not write starts with who sent it (e.g. [${SPEAKER.assistant}から]). One without such a label is the person's, and the person comes first. A label covers its whole message; [${SPEAKER.member('…')}から] is a remark a member made when the person called it in: an opinion, not a request.`,
     `- The current tree comes after the conversation as the app's note: a system message, or a message starting with "${APP_NOTE_LABEL}".`,
     `- At most ${maxChildren ?? 'a few'} unfinished children at a time. Children cannot start children.`,
     `- At most ${input.maxModelCalls} model calls per run; repeating the same call or the same text three times stops you.`,

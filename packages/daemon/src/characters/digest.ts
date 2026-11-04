@@ -5,19 +5,21 @@ import {
   type MemoryKind,
   type Message,
   type Session,
+  isTerminalRunStatus,
 } from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
 import { dayOf, fromMicro, toMicro } from '../cost/ledger';
-import { backgroundLimitReached, backgroundModel } from '../llm/background';
+import { BackgroundBackoff, backgroundLimitReached, backgroundModel, noteBackgroundCall } from '../llm/background';
+import { framedTitle } from '../sessions/framing';
 import { textOfParts } from '../llm/messages';
 import { characterText } from './frame';
 import { MEMORY_SYSTEM, type MemoryStore, type ProposedMemory, clipMemory, normalizeMemory } from './memory';
-import { type CharacterService, sceneOf } from './service';
+import { type CharacterService, sceneIn } from './service';
 
 /** A member is sorted out once it has been quiet this long everywhere (past a prompt cache). */
 export const DIGEST_IDLE_MS = 30 * 60_000;
-/** How often the daemon looks for quiet members. */
-export const DIGEST_SWEEP_MS = 5 * 60_000;
+/** At start, each member is looked at once after this long. */
+export const DIGEST_START_DELAY_MS = 60_000;
 /** After a failed sorting, the member waits this long before the next try. */
 export const DIGEST_RETRY_MS = 60 * 60_000;
 /** Lines of new material it takes (or one word of the person at work). */
@@ -205,42 +207,71 @@ export function mockDigest(user: string): string {
  * Sorting out what members said and heard into their memories (spec §5): once a member has
  * been quiet everywhere for `DIGEST_IDLE_MS`, everything new since its last sorting goes to a
  * cheap model in one call; the whole new lists come back and replace the automatic memories
- * after the daemon's guards. One member is sorted at a time (a chain per member), however many
- * conversations it is in. Costs are booked on the ledger (`memory`) and per member.
+ * after the daemon's guards. Nothing polls: every turn of a conversation with a member (and
+ * every remark it makes) sets that member's timer to `DIGEST_IDLE_MS` again, and the timer
+ * looks once when it runs out; at start each member is looked at once. One member is sorted
+ * at a time (a chain per member). Costs are booked on the ledger (`memory`) and per member;
+ * the background limits and a shared backoff apply.
  */
 export class MemoryDigest {
   private readonly chains = new Map<string, Promise<DigestOutcome>>();
   private readonly failedAt = new Map<string, number>();
-  private timer: ReturnType<typeof setInterval> | null = null;
+  private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly backoff: BackgroundBackoff;
+  private closed = false;
+  private offRuns: (() => void) | null = null;
 
   constructor(
     private readonly ctx: DaemonContext,
     private readonly members: CharacterService,
     private readonly store: MemoryStore,
-  ) {}
+  ) {
+    this.backoff = new BackgroundBackoff(() => ctx.clock.now());
+  }
 
   start(): void {
-    if (this.ctx.hasService('llm')) {
-      this.ctx.service('llm').mock.define(MOCK_MEMORY_MODEL, (req) => ({
+    const { ctx } = this;
+    if (ctx.hasService('llm')) {
+      ctx.service('llm').mock.define(MOCK_MEMORY_MODEL, (req) => ({
         text: mockDigest(req.messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n')),
       }), { label: 'モック（記憶の整理）', chunkDelayMs: 0 });
     }
-    this.timer = setInterval(() => void this.sweep(), DIGEST_SWEEP_MS);
-    (this.timer as { unref?: () => void }).unref?.();
+    this.offRuns = ctx.bus.subscribe({ types: ['run.status_changed'] }, (e) => {
+      if (e.type !== 'run.status_changed' || !isTerminalRunStatus(e.payload.to)) return;
+      const run = ctx.repos.runs.get(e.payload.runId);
+      const characterId = run ? ctx.repos.sessions.get(run.sessionId)?.characterId : null;
+      if (characterId) this.touch(characterId);
+    });
+    // What was left when the daemon stopped: each member is looked at once, a little later.
+    for (const c of this.members.list()) this.touch(c.id, DIGEST_START_DELAY_MS);
   }
 
   stop(): void {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+    this.closed = true;
+    this.offRuns?.();
+    this.offRuns = null;
+    for (const t of this.timers.values()) clearTimeout(t);
+    this.timers.clear();
   }
 
-  /** Sort out every member that is due (quiet long enough, with enough new material). */
-  async sweep(): Promise<void> {
-    if (!this.ctx.settings.get().members.memory) return;
-    for (const c of this.members.list()) {
-      if (!this.due(c.id)) continue;
-      await this.digest(c.id).catch(() => undefined);
-    }
+  /** The member just talked: look again once it has been quiet for `delay`. */
+  touch(characterId: string, delay = DIGEST_IDLE_MS): void {
+    if (this.closed) return;
+    const prev = this.timers.get(characterId);
+    if (prev) clearTimeout(prev);
+    const t = setTimeout(() => {
+      this.timers.delete(characterId);
+      void this.check(characterId);
+    }, delay);
+    (t as { unref?: () => void }).unref?.();
+    this.timers.set(characterId, t);
+  }
+
+  /** Sort the member out when it is due (quiet long enough, with enough new material). */
+  async check(characterId: string): Promise<void> {
+    if (this.closed || !this.ctx.settings.get().members.memory || !this.backoff.open()) return;
+    if (!this.due(characterId)) return;
+    await this.digest(characterId).catch(() => undefined);
   }
 
   /** Quiet everywhere for long enough, not failed lately, and something new to read. */
@@ -284,23 +315,29 @@ export class MemoryDigest {
     const sessions = this.members
       .sessionsOf(characterId, 500)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    const blocks: { at: string; lines: string[] }[] = [];
+    const blocks: Block[] = [];
     for (const s of sessions) {
+      // A conversation still answering is read next time (its newest turn is not saved yet).
+      if (s.activeRunId) continue;
       const after = marks.get(s.id);
-      const messages = ctx.repos.messages
-        .find({ where: { session_id: s.id }, orderBy: 'id', direction: 'asc' })
-        .filter((m) => !after || m.id > after);
+      const messages = ctx.repos.messages.find({
+        where: { session_id: s.id },
+        ...(after ? { sql: { clause: 'id > ?', params: [after] } } : {}),
+        orderBy: 'id',
+        direction: 'asc',
+      });
       if (messages.length === 0) continue;
-      out.marks.set(s.id, messages.at(-1)!.id);
+      const mark: [string, string] = [s.id, messages.at(-1)!.id];
       const lines = this.linesOf(s, messages, out);
-      if (lines.length > 0) blocks.push({ at: messages[0]!.createdAt, lines: [`--- 「${s.title || '無題'}」（${sceneLabel(s)}）`, ...lines] });
+      if (lines.length === 0) out.marks.set(...mark);
+      else blocks.push({ at: messages[0]!.createdAt, header: `--- 「${framedTitle(s.title)}」（${sceneLabel(this.ctx, s)}）`, lines, mark });
     }
     // Remarks it made in other conversations (@name): the ask and its answer, by that
     // conversation's scene.
     const own = new Set(sessions.map((s) => s.id));
     const asides = ctx.repos.messages.find({
       sql: {
-        clause: "json_extract(data, '$.meta.kind') = 'aside' AND json_extract(data, '$.meta.characterId') = ?",
+        clause: "json_extract(data, '$.meta.characterId') = ? AND json_extract(data, '$.meta.kind') = 'aside'",
         params: [characterId],
       },
       orderBy: 'id',
@@ -316,8 +353,8 @@ export class MemoryDigest {
     for (const [hostId, list] of byHost) {
       const host = ctx.repos.sessions.get(hostId);
       if (!host) continue;
-      out.marks.set(hostId, list.at(-1)!.id);
-      const work = sceneOf(host) === 'work';
+      const mark: [string, string] = [hostId, list.at(-1)!.id];
+      const work = sceneIn(ctx, host) === 'work';
       const lines: string[] = [];
       for (const m of list) {
         const text = oneLine(textOfParts(m.content));
@@ -329,16 +366,31 @@ export class MemoryDigest {
           lines.push(`[self] ${text}`);
         }
       }
-      if (lines.length > 0) blocks.push({ at: list[0]!.createdAt, lines: [`--- 「${host.title || '無題'}」に呼ばれて（${sceneLabel(host)}）`, ...lines] });
+      if (lines.length === 0) out.marks.set(...mark);
+      else blocks.push({ at: list[0]!.createdAt, header: `--- 「${framedTitle(host.title)}」に呼ばれて（${sceneLabel(ctx, host)}）`, lines, mark });
     }
-    // Newest kept when there is too much.
+    // Newest kept when there is too much; what does not fit stays unread for the next time.
     let budget = DIGEST_MATERIAL_CHARS;
     const kept: string[][] = [];
     for (const b of blocks.sort((a, b) => a.at.localeCompare(b.at)).reverse()) {
-      const size = b.lines.reduce((n, l) => n + l.length + 1, 0);
-      if (size > budget && kept.length > 0) break;
+      const size = b.lines.reduce((n, l) => n + l.length + 1, b.header.length + 1);
+      if (size > budget) {
+        if (kept.length > 0) break;
+        // The newest block alone is too long: its newest lines.
+        const lines: string[] = [];
+        let left = budget - b.header.length - 1;
+        for (const l of [...b.lines].reverse()) {
+          if (l.length + 1 > left) break;
+          left -= l.length + 1;
+          lines.unshift(l);
+        }
+        kept.unshift([b.header, ...lines]);
+        out.marks.set(...b.mark);
+        break;
+      }
       budget -= size;
-      kept.unshift(b.lines);
+      kept.unshift([b.header, ...b.lines]);
+      out.marks.set(...b.mark);
     }
     out.lines = kept.flat();
     // Headers alone are not material.
@@ -347,7 +399,7 @@ export class MemoryDigest {
   }
 
   private linesOf(s: Session, messages: Message[], out: Material): string[] {
-    const scene = sceneOf(s);
+    const scene = sceneIn(this.ctx, s);
     const lines: string[] = [];
     for (const m of messages) {
       const text = oneLine(textOfParts(m.content));
@@ -368,7 +420,9 @@ export class MemoryDigest {
         const parts = m.content.filter((p) => p.type === 'text');
         m.meta.items.forEach((item, i) => {
           const from = this.ctx.repos.sessions.get(item.sessionId);
-          const who = from?.characterId ? (this.members.get(from.characterId)?.name ?? from.title) : (from?.title ?? item.title);
+          const who = framedTitle(
+            from?.characterId ? (this.members.get(from.characterId)?.name ?? from.title) : (from?.title ?? item.title),
+          );
           const said = parts[i]?.type === 'text' ? oneLine(quoteBody(parts[i].text)) : '';
           if (said) lines.push(`[${who}] ${said}`);
         });
@@ -404,6 +458,7 @@ export class MemoryDigest {
       return 'nothing_new';
     }
     if (backgroundLimitReached(ctx)) return 'limit';
+    if (!this.backoff.open()) return 'failed';
 
     const others = new Map(this.members.list(true).filter((c) => c.id !== characterId).map((c) => [c.id, c.name]));
     const ids = new Map([...others].map(([id, name]) => [name, id]));
@@ -416,6 +471,7 @@ export class MemoryDigest {
     const model = this.model();
     let text: string;
     let costUsd = 0;
+    noteBackgroundCall(ctx, 'memory');
     try {
       const res = await ctx.service('llm').complete(
         {
@@ -447,23 +503,29 @@ export class MemoryDigest {
       }
     } catch (err) {
       this.failedAt.set(characterId, ctx.clock.now());
+      this.backoff.failed();
       this.book(characterId, model, 0, 'failed');
       ctx.log.warn('memory digest failed', { characterId, error: (err as Error).message });
       return 'failed';
     }
+    if (this.closed) return 'failed';
     const reply = parseDigestReply(text);
     if (!reply) {
       this.failedAt.set(characterId, ctx.clock.now());
+      this.backoff.failed();
       this.book(characterId, model, costUsd, 'failed');
       return 'failed';
     }
-    const { proposed, corrections } = proposedFrom(reply, ids, buriedSet);
+    // Corrections the model reports do not make a memory the person's: only the person's own
+    // edits do (a model could otherwise pin anything for good).
+    const { proposed } = proposedFrom(reply, ids, buriedSet);
+    this.backoff.ok();
     return ctx.db.transaction(() => {
       // Read again: the person may have changed something while the model was answering.
       const now = this.store.list(characterId);
       const rejected = dropsTooMuch(now, proposed);
       if (!rejected) {
-        const diff = this.store.replaceAuto(characterId, proposed, corrections);
+        const diff = this.store.replaceAuto(characterId, proposed, new Set());
         if (diff.added.length + diff.removed.length + diff.changed.length > 0) {
           ctx.bus.emit({
             type: 'character.memory_changed',
@@ -506,7 +568,15 @@ export class MemoryDigest {
   }
 }
 
-function sceneLabel(s: Session): string {
-  const scene = sceneOf(s);
+interface Block {
+  at: string;
+  header: string;
+  lines: string[];
+  /** The conversation and the last message this block reads. */
+  mark: [string, string];
+}
+
+function sceneLabel(ctx: DaemonContext, s: Session): string {
+  const scene = sceneIn(ctx, s);
   return scene === 'talk' ? '雑談' : scene === 'meeting' ? '会議' : '仕事';
 }

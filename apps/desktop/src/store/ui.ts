@@ -350,7 +350,8 @@ export const createUiStore = () =>
           }),
         openDraft: (memberId) =>
           set((s) => ({
-            ...(memberId !== undefined ? { draftMemberId: memberId } : {}),
+            // A plain new conversation (Ctrl+N) is with nobody until one is chosen.
+            draftMemberId: memberId ?? null,
             viewedAt: touchViewed(s, s.focusSessionId),
             mode: 'session',
             reviewIntegrationId: null,

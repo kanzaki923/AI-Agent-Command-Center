@@ -7,7 +7,7 @@ import { resetKeyDecisions } from '../../lib/approvalKeys';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
 import { attention, card, homeSnapshot, homeTree, iso } from '../../test/fixtures';
-import { AttentionRow, attentionKeyAction, choiceKey } from './AttentionRow';
+import { AttentionRow, attentionKeyAction, choiceKey, isRisky } from './AttentionRow';
 import { CostMeter } from './CostMeter';
 import { Elapsed } from './Elapsed';
 import { OutputIcon, RoleIcon } from './SemanticIcons';
@@ -173,6 +173,23 @@ describe('<AttentionRow>', () => {
     expect(choiceKey(approval, 0, true)).toBeNull();
     expect(attentionKeyAction(approval, { key: 'y', timeStamp: 9_000 }, true)).toBeNull();
     expect(attentionKeyAction(approval, { key: 'n', timeStamp: 9_000 }, true)).toMatchObject({ choice: { id: 'reject' } });
+  });
+
+  it('counts an approval whose risk is not known as risky (fails closed)', () => {
+    const approval = (approvalId?: string) =>
+      attention({ id: 's' }, { kind: 'approval', refs: approvalId ? { approvalId } : {} });
+    const risks = new Map([
+      ['apr_low', false],
+      ['apr_high', true],
+    ]);
+    expect(isRisky(approval('apr_low'), risks)).toBe(false);
+    expect(isRisky(approval('apr_high'), risks)).toBe(true);
+    // Not in the list (not loaded yet, failed, beyond the page) or no approval id: risky.
+    expect(isRisky(approval('apr_unknown'), risks)).toBe(true);
+    expect(isRisky(approval('apr_low'), new Map())).toBe(true);
+    expect(isRisky(approval(), risks)).toBe(true);
+    // Other kinds have no risk.
+    expect(isRisky(question, new Map())).toBe(false);
   });
 
   it('answers with a choice and leaves the home screen at once (optimistic)', async () => {

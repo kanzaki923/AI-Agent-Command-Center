@@ -39,6 +39,19 @@ export const HOME_REFETCH_TYPES: ReadonlySet<string> = new Set([
   'budget.updated',
 ]);
 
+/**
+ * Events that may change a member's page (its conversations, their state and what they cost,
+ * remarks asked of it). Events do not say whether a member is concerned, so any of them
+ * refetches an open page, debounced on the slow interval.
+ */
+export const MEMBER_PAGE_TYPES: ReadonlySet<string> = new Set([
+  'session.created',
+  'session.updated',
+  'session.cost_updated',
+  'session.state_changed',
+  'message.created',
+]);
+
 /** session.updated changes the home screen shows (others are covered by their own events). */
 const VISIBLE_SESSION_CHANGES = new Set([
   'title',
@@ -224,6 +237,10 @@ export function createLiveViews(qc: QueryClient, opts: LiveViewsOptions = {}) {
         const out = applyTreeEvent(tree, e);
         if (out.tree !== tree) qc.setQueryData(key, out.tree);
         if (out.refetch) refetchTree(key);
+      }
+
+      if (MEMBER_PAGE_TYPES.has(e.type) && qc.getQueriesData({ queryKey: ['character', 'get'] }).length > 0) {
+        debounce('memberPage', slowMs, () => void qc.invalidateQueries({ queryKey: ['character', 'get'] }));
       }
 
       switch (e.type) {

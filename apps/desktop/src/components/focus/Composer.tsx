@@ -1,4 +1,4 @@
-import { type Run, type Session, isTerminalRunStatus } from '@acc/protocol';
+import { ASIDE_TEXT_MAX, type Run, type Session, isTerminalRunStatus } from '@acc/protocol';
 import { ArrowUp, CornerDownLeft, FileText, Pencil, Square, X, Zap } from 'lucide-react';
 import { motion } from 'motion/react';
 import { type KeyboardEvent, useRef, useState } from 'react';
@@ -9,6 +9,7 @@ import { useMessages } from '../../daemon/queries';
 import { lastUnanswered, messageText } from '../../model/chat';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { cn } from '../../lib/cn';
+import { toast } from '../../store/toast';
 import { useUi } from '../../store/ui';
 import { MemberFace } from '../ui/Face';
 import { Kbd } from '../ui/Kbd';
@@ -157,10 +158,22 @@ export function Composer({
     }
     const called = editing ? null : mentionOf(text, members).member;
     if (called) {
-      setDraft(session.id, '');
+      if (body.length > ASIDE_TEXT_MAX) {
+        toast({
+          title: `${called.name}に頼めるのは ${ASIDE_TEXT_MAX.toLocaleString('ja-JP')} 文字までです`,
+          tone: 'info',
+          sticky: false,
+        });
+        return;
+      }
+      const sessionId = session.id;
+      setDraft(sessionId, '');
       setAttachments([]);
       onSent();
-      void askMember(rt, session.id, called.id, body);
+      void askMember(rt, sessionId, called.id, body).then((ok) => {
+        // A failed ask does not lose the words: back into the composer unless something new is there.
+        if (!ok && !useUi.getState().drafts[sessionId]) setDraft(sessionId, body);
+      });
       return;
     }
     // Optimistic: clear in the same frame the message appears (§6).
@@ -194,7 +207,9 @@ export function Composer({
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (candidates.length > 0 && !e.nativeEvent.isComposing && !composing.current) {
+    // While an IME is composing, Enter / Tab / arrows belong to it: no pick, no send.
+    const imeComposing = e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 || composing.current;
+    if (candidates.length > 0 && !imeComposing) {
       const at = Math.min(mentionIndex, candidates.length - 1);
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();

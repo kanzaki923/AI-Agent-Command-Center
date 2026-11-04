@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { createManualClock } from '../core/clock';
+import { BACKGROUND_DAILY_CALLS, noteBackgroundCall } from '../llm/background';
 import type { ChatRequest } from '../llm/types';
 import { HUMAN, type TestDaemonNoServer, createTestDaemon } from '../testing';
-import { SUMMARY_IDLE_MS, mockSummary } from './service';
+import { mockSummary } from './service';
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => {
@@ -10,12 +10,11 @@ afterEach(async () => {
 });
 
 async function daemon() {
-  const clock = createManualClock(Date.UTC(2026, 10, 5, 1));
-  const d = await createTestDaemon({ clock });
+  const d = await createTestDaemon();
   cleanups.push(() => d.cleanup());
   d.ctx.service('llm').mock.chunkDelayMs = 0;
   await d.call(HUMAN, 'settings.update', { background: { model: 'mock/sum' } });
-  return { d, clock };
+  return d;
 }
 
 const userOf = (req: ChatRequest) => (req.messages[1] as { content: string }).content;
@@ -32,17 +31,17 @@ function summarizer(d: TestDaemonNoServer, text: (n: number) => string = (n) => 
 /** A conversation with `n` messages, alternating the person and the AI. */
 async function conversation(d: TestDaemonNoServer, n: number, title = '価格の相談') {
   const s = await d.call(HUMAN, 'session.create', { title, model: 'mock/host' });
-  await say(d, s.id, n);
+  say(d, s.id, n);
   return s;
 }
 
-async function say(d: TestDaemonNoServer, sessionId: string, n: number, from = 0) {
+function say(d: TestDaemonNoServer, sessionId: string, n: number, from = 0, size = 0) {
   const sessions = d.ctx.service('sessions');
   for (let i = from; i < from + n; i++) {
     sessions.appendMessage({
       sessionId,
       role: i % 2 === 0 ? 'user' : 'assistant',
-      content: [{ type: 'text', text: `発言${i + 1}` }],
+      content: [{ type: 'text', text: `発言${i + 1}${'。'.repeat(size)}` }],
       author: i % 2 === 0 ? HUMAN : { kind: 'system', component: 'test' },
     });
   }
@@ -50,24 +49,20 @@ async function say(d: TestDaemonNoServer, sessionId: string, n: number, from = 0
 
 describe('running summaries of long conversations', () => {
   it('leaves a short conversation alone', async () => {
-    const { d, clock } = await daemon();
+    const d = await daemon();
     const calls = summarizer(d);
     const s = await conversation(d, 24);
-    clock.advance(SUMMARY_IDLE_MS + 1);
-    await d.ctx.service('summaries').sweep();
+    await d.ctx.service('summaries').onTurnEnd(s.id);
     expect(calls).toHaveLength(0);
     expect((await d.call(HUMAN, 'session.summary', { sessionId: s.id })).summary).toBeNull();
   });
 
-  it('folds all but the newest 12 messages once the conversation is quiet, and keeps folding only what is new', async () => {
-    const { d, clock } = await daemon();
+  it('when a turn ends, folds the oldest messages (never the newest 12), and later only what is new', async () => {
+    const d = await daemon();
     const calls = summarizer(d);
     const s = await conversation(d, 30);
     const summaries = d.ctx.service('summaries');
-    expect(summaries.due(s.id)).toBe(false); // just talked
-    clock.advance(SUMMARY_IDLE_MS + 1);
-    expect(summaries.due(s.id)).toBe(true);
-    await summaries.sweep();
+    await summaries.onTurnEnd(s.id);
     const first = (await d.call(HUMAN, 'session.summary', { sessionId: s.id })).summary!;
     expect(first).toMatchObject({ text: 'あらすじ 1', messages: 18 });
     const read = userOf(calls[0]!);
@@ -79,35 +74,61 @@ describe('running summaries of long conversations', () => {
     expect(row?.n).toBe(1);
 
     // 12 more: 24 after the summary, still fine as they are.
-    await say(d, s.id, 12, 30);
-    clock.advance(SUMMARY_IDLE_MS + 1);
-    expect(summaries.due(s.id)).toBe(false);
+    say(d, s.id, 12, 30);
+    await summaries.onTurnEnd(s.id);
+    expect(calls).toHaveLength(1);
     // One more: the older ones are folded into the previous summary.
-    await say(d, s.id, 1, 42);
-    clock.advance(SUMMARY_IDLE_MS + 1);
-    await summaries.sweep();
+    say(d, s.id, 1, 42);
+    await summaries.onTurnEnd(s.id);
     expect(calls).toHaveLength(2);
     expect(userOf(calls[1]!)).toContain('<<<前のあらすじここから>>>\nあらすじ 1\n<<<前のあらすじここまで>>>');
     expect(userOf(calls[1]!)).not.toContain('発言18');
     expect((await d.call(HUMAN, 'session.summary', { sessionId: s.id })).summary).toMatchObject({ text: 'あらすじ 2', messages: 31 });
   });
 
-  it('writes nothing while summaries are off or the background limit is reached', async () => {
-    const { d, clock } = await daemon();
+  it('reads at most one chunk per call, however much is behind (an old long conversation catches up turn by turn)', async () => {
+    const d = await daemon();
+    const calls = summarizer(d);
+    const s = await conversation(d, 200);
+    await d.ctx.service('summaries').onTurnEnd(s.id);
+    expect(calls).toHaveLength(1);
+    const read = userOf(calls[0]!);
+    expect(read).toContain('発言24');
+    expect(read).not.toContain('発言25');
+    expect((await d.call(HUMAN, 'session.summary', { sessionId: s.id })).summary).toMatchObject({ messages: 24 });
+  });
+
+  it('cuts a chunk at the size bound too', async () => {
+    const d = await daemon();
+    const calls = summarizer(d);
+    const s = await conversation(d, 0);
+    say(d, s.id, 40, 0, 1_000);
+    await d.ctx.service('summaries').onTurnEnd(s.id);
+    const lines = userOf(calls[0]!).split('\n').filter((l) => /^(あなた|AI): /.test(l));
+    expect(lines.length).toBeLessThanOrEqual(12);
+    expect(lines.join('').length).toBeLessThanOrEqual(13_000);
+  });
+
+  it('writes nothing while summaries are off, or once background work hits its daily limits', async () => {
+    const d = await daemon();
     const calls = summarizer(d);
     const s = await conversation(d, 30);
-    clock.advance(SUMMARY_IDLE_MS + 1);
     await d.call(HUMAN, 'settings.update', { summaries: { enabled: false } });
-    await d.ctx.service('summaries').sweep();
+    await d.ctx.service('summaries').onTurnEnd(s.id);
     expect(calls).toHaveLength(0);
     await d.call(HUMAN, 'settings.update', { summaries: { enabled: true }, background: { dailyUsd: 0 } });
-    await d.ctx.service('summaries').sweep();
+    await d.ctx.service('summaries').onTurnEnd(s.id);
+    expect(calls).toHaveLength(0);
+    // On a plan a call costs $0: the number of calls stops it too.
+    await d.call(HUMAN, 'settings.update', { background: { dailyUsd: null } });
+    for (let i = 0; i < BACKGROUND_DAILY_CALLS; i++) noteBackgroundCall(d.ctx, 'summary');
+    await d.ctx.service('summaries').onTurnEnd(s.id);
     expect(calls).toHaveLength(0);
     expect((await d.call(HUMAN, 'session.summary', { sessionId: s.id })).summary).toBeNull();
   });
 
   it('a member called in reads the summary and the messages after it (brought up to date on the spot)', async () => {
-    const { d } = await daemon();
+    const d = await daemon();
     summarizer(d, () => '価格は月額 980 円で決まった。');
     const seen: ChatRequest[] = [];
     d.ctx.service('llm').mock.define('mock/luna', (req) => {
@@ -120,16 +141,15 @@ describe('running summaries of long conversations', () => {
     const user = userOf(seen[0]!);
     expect(user).toContain('<<<あらすじここから>>>\n価格は月額 980 円で決まった。\n<<<あらすじここまで>>>');
     expect(user).toContain('AI: 発言40');
-    expect(user).toContain('あなた: 発言29');
-    expect(user).not.toContain('発言28\n');
+    expect(user).toContain('あなた: 発言25');
+    expect(user).not.toContain('発言24\n');
   });
 
   it('search finds a conversation by its summary first, then by its messages', async () => {
-    const { d, clock } = await daemon();
+    const d = await daemon();
     summarizer(d, () => 'FAQ に載せる価格の相談。月額 980 円に決めた。');
     const s = await conversation(d, 30);
-    clock.advance(SUMMARY_IDLE_MS + 1);
-    await d.ctx.service('summaries').sweep();
+    await d.ctx.service('summaries').onTurnEnd(s.id);
     const { items } = await d.call(HUMAN, 'session.search', { query: '980 円' });
     expect(items[0]).toMatchObject({ sessionId: s.id, source: 'summary', messageId: null });
     expect(items[0]!.snippet).toContain('980 円');

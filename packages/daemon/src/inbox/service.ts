@@ -122,10 +122,11 @@ export class Inbox implements InboxService {
         ctx.service('runs').cancel(active.id, input.actor, 'superseded');
       } else if (active) {
         this.setDelivery(item.refs.messageId!, 'queued', input.actor);
-        // Chats and supervisors take it at their next step; agents after this run.
-        return active.kind === 'agent'
-          ? { item, delivery: 'queued', runId: null }
-          : { item, delivery: 'injected', runId: active.id };
+        // Chats and supervisors take it at their next step; agents after this run. A message
+        // the running run does not take (see `takenBy`) waits for a run of its own.
+        return active.kind !== 'agent' && this.takenBy(active).some((i) => i.id === item.id)
+          ? { item, delivery: 'injected', runId: active.id }
+          : { item, delivery: 'queued', runId: null };
       }
       const run = this.startForMessage(session, item, input.actor, input.model ?? null);
       item = this.consume([item], run.id)[0]!;
@@ -138,10 +139,46 @@ export class Inbox implements InboxService {
     const run = ctx.repos.runs.get(runId);
     if (!run || isTerminalRunStatus(run.status)) return [];
     return ctx.db.transaction(() => {
-      const items = this.pending(run.sessionId).filter(isMessageItem);
+      const items = this.takenBy(run);
       if (items.length === 0) return [];
       return this.consume(items, run.id);
     });
+  }
+
+  /**
+   * A person's message that carries a choice for the work it asks for (`session.send`
+   * workPlace / workModel; `assistant.startWork` reads it from the trigger of the run that
+   * calls it). Each such request is answered by a run of its own: it is never injected into a
+   * running run nor taken together with other messages, and a run it triggers takes no other
+   * message. Otherwise request 2 would be worked on with the place / model chosen for 1.
+   */
+  private carriesChoice(messageId: string | null | undefined): boolean {
+    const m = messageId ? this.ctx.repos.messages.get(messageId) : null;
+    return (
+      !!m &&
+      m.author.kind === 'human' &&
+      m.meta?.kind === 'hint' &&
+      (!!m.meta.model || !!m.meta.place)
+    );
+  }
+
+  /** Waiting messages, in order, that go together into one run: up to the first with a choice. */
+  private together(messages: InboxItem[]): InboxItem[] {
+    const at = messages.findIndex((i) => this.carriesChoice(i.refs.messageId));
+    return at === -1 ? messages : messages.slice(0, at);
+  }
+
+  /** The waiting messages a run (chat / supervisor) takes at a step boundary. */
+  private takenBy(run: Run): InboxItem[] {
+    if (this.carriesChoice(run.triggerMessageId)) return [];
+    return this.together(this.pending(run.sessionId).filter(isMessageItem));
+  }
+
+  /** The waiting messages a new run takes: the first (an agent, or one with a choice) or a group. */
+  private firstBatch(session: Session, messages: InboxItem[]): InboxItem[] {
+    const first = messages[0]!;
+    if (session.kind === 'agent' || this.carriesChoice(first.refs.messageId)) return [first];
+    return this.together(messages);
   }
 
   // ------------------------------------------------------------------ reactions
@@ -191,6 +228,10 @@ export class Inbox implements InboxService {
       const signature = `${state}:${lastRun?.id ?? ''}`;
       if (this.reported.get(child.id) === signature) return;
       this.reported.set(child.id, signature);
+      // A person talking to a speaker directly: that turn is theirs, not the discussion's.
+      // Waking the lead would only run another round (cost); marked reported above, so it is
+      // not delivered later either.
+      if (isSpeaker(child) && lastRun && this.answersPerson(lastRun)) return;
       this.deliver(parent.id, {
         kind: 'child_update',
         refs: { childSessionId: child.id, ...(lastRun ? { runId: lastRun.id } : {}) },
@@ -199,6 +240,15 @@ export class Inbox implements InboxService {
     } catch (err) {
       ctx.log.error('inbox: failed to report a child to its parent', { childId, err });
     }
+  }
+
+  /**
+   * The run answers what a person wrote to the session (not the brief they gave a child they
+   * spawned: that is the child's part in its parent's work).
+   */
+  private answersPerson(run: Run): boolean {
+    const msg = run.triggerMessageId ? this.ctx.repos.messages.get(run.triggerMessageId) : null;
+    return !!msg && msg.author.kind === 'human' && msg.meta?.kind !== 'brief';
   }
 
   /** session.stop marks stopped children so their own state changes are not reported again. */
@@ -312,8 +362,9 @@ export class Inbox implements InboxService {
         const messages = pending.filter(isMessageItem);
         if (messages.length > 0) {
           // A message waiting without a run (should not happen): it starts the run.
-          const run = this.startForMessage(session, messages[0]!, INBOX_SYSTEM, null);
-          this.consume(messages, run.id);
+          const batch = this.firstBatch(session, messages);
+          const run = this.startForMessage(session, batch[0]!, INBOX_SYSTEM, null);
+          this.consume(batch, run.id);
           return run;
         }
         if (pending.length === 0) return null;
@@ -367,13 +418,18 @@ export class Inbox implements InboxService {
 
   /**
    * How long a wake still waits for the speakers (children with a persona) that are answering
-   * right now: 0 when none is, or once the oldest item waited `SPEAKERS_HOLD_MS`.
+   * right now: 0 when none is, or once the oldest item waited `SPEAKERS_HOLD_MS`. A speaker
+   * answering a person does not count: that turn never wakes the lead (evaluateChild).
    */
   private speakersHold(sessionId: string, pending: InboxItem[]): number {
     const { ctx } = this;
     const talking = ctx.repos.sessions
       .find({ where: { parent_session_id: sessionId, archived_at: null } })
-      .some((c) => isSpeaker(c) && !!this.activeRun(c.id));
+      .some((c) => {
+        if (!isSpeaker(c)) return false;
+        const run = this.activeRun(c.id);
+        return !!run && !this.answersPerson(run);
+      });
     if (!talking || pending.length === 0) return 0;
     const oldest = Math.min(...pending.map((i) => Date.parse(i.createdAt)));
     return Math.max(0, oldest + SPEAKERS_HOLD_MS - ctx.clock.now());
@@ -426,9 +482,11 @@ export class Inbox implements InboxService {
       const pending = this.pending(session.id);
       const messages = pending.filter(isMessageItem);
       if (messages.length > 0) {
-        const run = this.startForMessage(session, messages[0]!, INBOX_SYSTEM, null);
-        // An agent gets one message per run; chats and supervisors read all from history.
-        this.consume(session.kind === 'agent' ? [messages[0]!] : messages, run.id);
+        // An agent gets one message per run; chats and supervisors read the rest from history
+        // (up to a request with a choice of its own: firstBatch).
+        const batch = this.firstBatch(session, messages);
+        const run = this.startForMessage(session, batch[0]!, INBOX_SYSTEM, null);
+        this.consume(batch, run.id);
         return;
       }
       if (pending.length > 0) this.scheduleWake(session.id);

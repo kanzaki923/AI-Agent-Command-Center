@@ -111,9 +111,7 @@ export function Sidebar() {
         <ConversationTree />
       </div>
 
-      <div className="border-t border-line-subtle">
-        <Roster />
-      </div>
+      <Roster />
 
       <div className="flex h-11 items-center gap-2 border-t border-line-subtle px-2 pr-4 text-ui text-fg-2">
         <button

@@ -366,7 +366,8 @@ function Brief({ block }: { block: ConversationBlock & { kind: 'brief' } }) {
   const member = useMember(session?.characterId);
   const speaking = !!session && isSpeaker(session);
   const tones = useSpeakerTones(speaking ? session.id : null);
-  const who = member?.profile ?? session?.persona ?? null;
+  // An empty profile says nothing: the persona shows instead.
+  const who = (member?.profile || session?.persona) ?? null;
   const speaker =
     session && speaking && who !== null
       ? { title: sessionTitle(session), persona: who, tone: tones.get(session.id) }

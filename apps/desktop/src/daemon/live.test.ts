@@ -92,6 +92,23 @@ describe('createLiveViews', () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: qk.home });
   });
 
+  it("refetches an open member's page, debounced, when its conversations may have changed", () => {
+    const qc = new QueryClient();
+    const invalidate = vi.spyOn(qc, 'invalidateQueries').mockResolvedValue();
+    const live = createLiveViews(qc, { slowRefetchMs: 800 });
+    // No page cached: nothing to refetch.
+    live.apply(stateChanged('done', 101));
+    vi.advanceTimersByTime(800);
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['character', 'get'] });
+    qc.setQueryData(qk.character('chr_1'), { sessions: [] });
+    live.apply(stateChanged('working', 102));
+    live.apply(event('session.created', { session: session() }, { seq: 103 }));
+    vi.advanceTimersByTime(799);
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['character', 'get'] });
+    vi.advanceTimersByTime(1);
+    expect(invalidate.mock.calls.filter(([f]) => JSON.stringify(f) === JSON.stringify({ queryKey: ['character', 'get'] }))).toHaveLength(1);
+  });
+
   it('replays events that arrived while home.get was in flight', () => {
     const qc = new QueryClient();
     const live = createLiveViews(qc);

@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { switchMode } from '../app/commands';
+import type { AppRuntime } from '../daemon/runtime';
 import { createUiStore, isUnread, migrateUi, normalizeMode, useUi } from './ui';
 
 describe('editing a sent message (編集して送り直す)', () => {
@@ -56,6 +58,21 @@ describe('screens and navigation', () => {
     expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: 's1' });
     useUi.getState().goForward();
     expect(useUi.getState().mode).toBe('home');
+  });
+
+  it('a new conversation (Ctrl+N) is with nobody, even after one was opened with a member', () => {
+    useUi.getState().openDraft('chr_1');
+    expect(useUi.getState().draftMemberId).toBe('chr_1');
+    useUi.getState().openDraft();
+    expect(useUi.getState().draftMemberId).toBeNull();
+  });
+
+  it('switching back to the draft keeps whoever it was with', () => {
+    useUi.setState({ focusSessionId: null });
+    useUi.getState().openDraft('chr_1');
+    useUi.getState().goHome();
+    switchMode({} as AppRuntime, 'session');
+    expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: null, draftMemberId: 'chr_1' });
   });
 
   it('opens a draft (no session yet) and comes back to it', () => {

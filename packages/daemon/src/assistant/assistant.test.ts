@@ -703,4 +703,93 @@ describe('a place the person chose for a request', () => {
     const { project, send } = await withAssistant({ delegate: false });
     expect(await send({ kind: 'worktree', projectId: project.id })).toBeUndefined();
   });
+
+  describe('a second request sent while the assistant still works on the first', () => {
+    /**
+     * The assistant starts one conversation per request, named by it; its first run waits
+     * until released, so the second request arrives mid-run.
+     */
+    async function busyAssistant() {
+      const d = await daemon();
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      let calls = 0;
+      d.ctx.service('llm').mock.define('mock/busy', async (_req, info) => {
+        if (info.turn > 0) return { text: '始めます。' };
+        calls += 1;
+        if (calls === 1) await gate;
+        const title = info.lastUserText.includes('二つ目') ? '二つ目' : '一つ目';
+        return {
+          text: '',
+          toolCalls: [
+            {
+              id: `c${calls}`,
+              name: 'assistant__startWork',
+              input: { text: `${title}を整えて`, title, delegate: false },
+            },
+          ],
+        };
+      });
+      await d.call(HUMAN, 'settings.update', { assistant: { model: 'mock/busy' } });
+      const { sessionId } = await d.call(HUMAN, 'system.assistant', {});
+      const project = async (name: string) => {
+        const folder = mkdtempSync(join(tmpdir(), 'acc-assistant-busy-'));
+        folders.push(folder);
+        return d.call(HUMAN, 'project.create', { name, folderPath: folder });
+      };
+      const started = (title: string) =>
+        d.ctx.repos.sessions.find({}).find((s) => s.title === title);
+      const settled = async () => {
+        for (let i = 0; i < 1000; i++) {
+          const busy = d.ctx.repos.runs
+            .find({ where: { session_id: sessionId } })
+            .some((r) => !['completed', 'failed', 'cancelled'].includes(r.status));
+          if (!busy && started('二つ目')) return;
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        throw new Error('timed out waiting for the assistant');
+      };
+      return { d, sessionId, project, started, release, settled };
+    }
+
+    it('works on it in the place chosen for it, not in the place of the first', async () => {
+      const { d, sessionId, project, started, release, settled } = await busyAssistant();
+      const first = await project('一つ目の資料');
+      const second = await project('二つ目の資料');
+      const r1 = await d.call(HUMAN, 'session.send', {
+        sessionId,
+        content: '一つ目を整えて',
+        workPlace: { kind: 'folder', projectId: first.id },
+      });
+      const r2 = await d.call(HUMAN, 'session.send', {
+        sessionId,
+        content: '二つ目を整えて',
+        workPlace: { kind: 'folder', projectId: second.id },
+      });
+      // Not taken into the running run: it waits for a run of its own.
+      expect(r2).toMatchObject({ delivery: 'queued', runId: null });
+      release();
+      await settled();
+      expect(started('一つ目')).toMatchObject({ kind: 'agent', projectId: first.id });
+      expect(started('二つ目')).toMatchObject({ kind: 'agent', projectId: second.id });
+      const runs = d.ctx.repos.runs.find({ where: { session_id: sessionId }, direction: 'asc' });
+      expect(runs.map((r) => r.triggerMessageId)).toEqual([r1.messageId, r2.messageId]);
+    });
+
+    it('left to the assistant (自動), it does not take the place chosen for the first', async () => {
+      const { d, sessionId, project, started, release, settled } = await busyAssistant();
+      const first = await project('一つ目の資料');
+      await d.call(HUMAN, 'session.send', {
+        sessionId,
+        content: '一つ目を整えて',
+        workPlace: { kind: 'folder', projectId: first.id },
+      });
+      const r2 = await d.call(HUMAN, 'session.send', { sessionId, content: '二つ目を整えて' });
+      expect(r2.delivery).toBe('queued');
+      release();
+      await settled();
+      expect(started('一つ目')).toMatchObject({ kind: 'agent', projectId: first.id });
+      expect(started('二つ目')).toMatchObject({ kind: 'chat', projectId: null });
+    });
+  });
 });

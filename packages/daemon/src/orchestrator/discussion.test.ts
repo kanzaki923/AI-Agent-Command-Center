@@ -12,7 +12,7 @@ import { setSupervisorLimits } from '../inbox/testkit';
 import { WAKE_MARKER } from '../inbox/wake';
 import { textOfParts } from '../llm/messages';
 import { conversationFrame } from '../sessions/framing';
-import { HUMAN, type TestDaemonNoServer, createTestDaemon } from '../testing';
+import { HUMAN, SYSTEM, type TestDaemonNoServer, createTestDaemon } from '../testing';
 import { MOCK_ORCHESTRATOR_MODEL } from './mockModel';
 import { MOCK_SPEAKER_MODEL } from './mockSpeaker';
 import { MOCK_DISCUSSION_ROUNDS } from './mockSupervisor';
@@ -229,8 +229,9 @@ describe('one at a time', () => {
     expect(items.map((i) => i.title)).toEqual(['一番手']);
     expect(messagesOf(d, second.id).filter((m) => m.role === 'assistant')).toEqual([]);
 
-    // Its turn: started by the message that passes the first one's words on.
-    await d.call(HUMAN, 'session.send', {
+    // Its turn: started by the message that passes the first one's words on (sent here by
+    // the system in place of the lead: a person's own message would not wake the lead).
+    await d.call(SYSTEM, 'session.send', {
       sessionId: second.id,
       content: 'どう？',
       forward: [first.id],
@@ -239,6 +240,45 @@ describe('one at a time', () => {
     const said = next.meta?.kind === 'wake' ? next.meta.items : [];
     expect(said.map((i) => i.title)).toEqual(['二番手']);
     expect(said[0]!.reply?.text).toContain('一番手さん');
+  });
+});
+
+describe('a person talking to a speaker directly', () => {
+  it('does not wake the lead for that turn, then or later', async () => {
+    const d = await daemon();
+    const host = await lead(d);
+    const { session: speaker } = await d.call(HUMAN, 'session.spawn', {
+      parentSessionId: host.id,
+      title: 'ミナト',
+      goal: '「朝ごはん」についてひとこと',
+      mode: 'chat',
+      persona: 'ミナト。前のめりな人。',
+      model: MOCK_SPEAKER_MODEL,
+    });
+    // Its part in the discussion (the brief it was given, the lead's rounds) reaches the lead,
+    // which runs the rounds to the end.
+    await until(() => outputsOf(d, host.id)[0]);
+    await until(() => !d.ctx.repos.sessions.require(host.id).activeRunId);
+    const leadRuns = () => d.ctx.repos.runs.count({ where: { session_id: host.id } });
+    const pending = () =>
+      d.ctx.repos.inboxItems.find({ where: { session_id: host.id, status: 'pending' } });
+    const before = { runs: leadRuns(), wakes: wakesOf(d, host.id).length };
+    expect(before.wakes).toBe(MOCK_DISCUSSION_ROUNDS);
+
+    // The person asks the speaker something themselves: the speaker answers them…
+    const sent = await d.call(HUMAN, 'session.send', {
+      sessionId: speaker.id,
+      content: 'ミナトさん、ひとつ直接聞かせて',
+    });
+    expect((await d.ctx.service('runs').waitForEnd(sent.runId!)).status).toBe('completed');
+    await new Promise((r) => setTimeout(r, 400));
+    // …and the lead is not woken for it (no wake, no run, nothing waiting).
+    expect(wakesOf(d, host.id)).toHaveLength(before.wakes);
+    expect(leadRuns()).toBe(before.runs);
+    expect(pending()).toEqual([]);
+    // Looked at again later (another change of the speaker), it is still not delivered.
+    d.ctx.service('supervisorInbox').evaluateChild(speaker.id);
+    expect(pending()).toEqual([]);
   });
 });
 

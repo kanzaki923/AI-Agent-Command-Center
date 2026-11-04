@@ -366,7 +366,8 @@ function CastCard({
           const title = child ? sessionTitle(child) : req.title || '話し手';
           const memberId = child?.characterId ?? req.characterId;
           const member = memberId ? members.find((m) => m.id === memberId) : undefined;
-          const line = (member?.profile ?? req.persona ?? '').split('\n')[0];
+          // An empty profile says nothing: the persona shows instead.
+          const line = (member?.profile || req.persona || '').split('\n')[0];
           return (
             <li key={call.id} className="group/cast relative">
               <button

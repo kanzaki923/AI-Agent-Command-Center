@@ -2,7 +2,8 @@ import { MEMORY_LIMITS, type Character, type CharacterMemory, type MemoryChange,
 import { Briefcase, HeartHandshake, Pencil, PenLine, Plus, Trash2, UserRound, UsersRound } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { addMemory, deleteMemory, memoryWhen, updateMemory, useAllMembers } from '../../daemon/members';
-import { useRuntime } from '../../daemon/runtime';
+import { type AppRuntime, useRuntime } from '../../daemon/runtime';
+import { toast } from '../../store/toast';
 import { cn } from '../../lib/cn';
 import { MemberFace } from '../ui/Face';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu';
@@ -44,6 +45,30 @@ function MemoryInput({
   );
 }
 
+/** Forget one memory; 元に戻す (5 seconds) has the member remember it again, as it was. */
+async function forget(rt: AppRuntime, memory: CharacterMemory) {
+  const out = await deleteMemory(rt, memory.id);
+  if (!out) return;
+  toast({
+    title: '忘れさせました',
+    tone: 'info',
+    sticky: false,
+    durationMs: 5000,
+    action: {
+      label: '元に戻す',
+      undo: true,
+      run: () =>
+        void addMemory(rt, {
+          characterId: memory.characterId,
+          kind: memory.kind,
+          text: memory.text,
+          ...(memory.work ? { work: true } : {}),
+          ...(memory.aboutId ? { aboutId: memory.aboutId } : {}),
+        }),
+    },
+  });
+}
+
 function MemoryRow({ memory, about }: { memory: CharacterMemory; about?: Character | undefined }) {
   const rt = useRuntime();
   const [editing, setEditing] = useState(false);
@@ -72,17 +97,18 @@ function MemoryRow({ memory, about }: { memory: CharacterMemory; about?: Charact
           <PenLine size={12} strokeWidth={1.75} className="shrink-0 text-fg-3" aria-label="あなたが書いた" />
         </Tooltip>
       )}
+      {/* Faded in on hover, and on focus so the keyboard reaches them (not display:none). */}
       {!editing && (
-        <span className="hidden shrink-0 items-center gap-0.5 group-hover/mem:flex group-focus-within/mem:flex">
+        <span className="flex shrink-0 items-center gap-0.5 opacity-0 group-hover/mem:opacity-100 group-focus-within/mem:opacity-100">
           <button type="button" aria-label="直す" onClick={() => setEditing(true)} className="flex size-6 items-center justify-center rounded-sm text-fg-3 hover:bg-selected hover:text-fg">
             <Pencil size={12} strokeWidth={1.75} />
           </button>
-          <button type="button" aria-label="忘れさせる" onClick={() => void deleteMemory(rt, memory.id)} className="flex size-6 items-center justify-center rounded-sm text-fg-3 hover:bg-selected hover:text-st-failed">
+          <button type="button" aria-label="忘れさせる" onClick={() => void forget(rt, memory)} className="flex size-6 items-center justify-center rounded-sm text-fg-3 hover:bg-selected hover:text-st-failed">
             <Trash2 size={12} strokeWidth={1.75} />
           </button>
         </span>
       )}
-      <span className="shrink-0 text-micro text-fg-3 tabular group-hover/mem:hidden">{memoryWhen(memory.at)}</span>
+      <span className="shrink-0 text-micro text-fg-3 tabular group-hover/mem:hidden group-focus-within/mem:hidden">{memoryWhen(memory.at)}</span>
     </li>
   );
 }

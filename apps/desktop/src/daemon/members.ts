@@ -132,6 +132,12 @@ export const deleteMemory = (rt: AppRuntime, memoryId: string) =>
 let askSeq = 0;
 
 /**
+ * How long an @name ask may take: the daemon may first fold the conversation into its running
+ * summary, then make a model call of up to 120s (the client's default is 30s).
+ */
+export const ASK_TIMEOUT_MS = 270_000;
+
+/**
  * Ask a member for one remark in a conversation (@name). The ask shows at once as waiting
  * (ui `asking`); the daemon adds both messages when the answer is there.
  */
@@ -140,7 +146,9 @@ export async function askMember(rt: AppRuntime, sessionId: string, characterId: 
   const { setAsking } = useUi.getState();
   setAsking(sessionId, id, { characterId, text });
   try {
-    await rt.client.call('character.aside', { sessionId, characterId, text });
+    await rt.client.call('character.aside', { sessionId, characterId, text }, { timeoutMs: ASK_TIMEOUT_MS });
+    // The remark is spent on the member's page (cost, conversations).
+    void rt.queryClient.invalidateQueries({ queryKey: ['character', 'get'] });
     return true;
   } catch (err) {
     toastError(err, '一言をもらえませんでした');
@@ -150,10 +158,22 @@ export async function askMember(rt: AppRuntime, sessionId: string, characterId: 
   }
 }
 
-/** The member an @name at the start of a message calls in, and whether one was meant. */
+/**
+ * The member an @name at the start of a message calls in, and whether one was meant. The
+ * longest roster name the text starts with after the @ (any case), followed by a space or the
+ * end, so names with spaces ("山田 太郎") can be called too.
+ */
 export function mentionOf(text: string, members: readonly Character[]): { member: Character | null; mention: boolean } {
-  const m = /^[@＠](\S+)/.exec(text.trim());
-  if (!m) return { member: null, mention: false };
-  const name = m[1]!;
-  return { member: members.find((c) => c.name === name) ?? null, mention: true };
+  const t = text.trim();
+  if (!/^[@＠]\S/.test(t)) return { member: null, mention: false };
+  const rest = t.slice(1);
+  let best: Character | null = null;
+  for (const c of members) {
+    const name = c.name;
+    if (!name || (best && best.name.length >= name.length)) continue;
+    if (rest.slice(0, name.length).toLowerCase() !== name.toLowerCase()) continue;
+    const next = rest.charAt(name.length);
+    if (next === '' || /\s/.test(next)) best = c;
+  }
+  return { member: best, mention: true };
 }

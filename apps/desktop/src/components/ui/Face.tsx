@@ -2,7 +2,7 @@ import type { Character } from '@acc/protocol';
 import { faceOf, useMember } from '../../daemon/members';
 import { cn } from '../../lib/cn';
 
-/** Member colours (`--member-1..8`); the first four are the chart series. */
+/** Member colours (`--member-1..8`); in the dark theme the first four are the chart series. */
 export const MEMBER_TONES = 8;
 
 /** The colour of a tone, or the secondary ink without one. */

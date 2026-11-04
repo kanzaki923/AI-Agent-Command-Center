@@ -203,7 +203,7 @@ describe('sorting memories out', () => {
     expect((await d.call(HUMAN, 'character.digest', { characterId: haku.id })).outcome).toBe('nothing_new');
   });
 
-  it('never brings back what the person made it forget, and a correction becomes the person\'s', async () => {
+  it('never brings back what the person made it forget, and a model cannot pin a memory as the person\'s', async () => {
     const d = await daemon();
     const { haku } = await setup(d);
     spy(d, 'mock/talk');
@@ -220,7 +220,7 @@ describe('sorting memories out', () => {
     const page = await d.call(HUMAN, 'character.get', { characterId: haku.id });
     expect(page.memories.map((x) => [x.text, x.source])).toEqual([
       ['梅おにぎりが好き', 'auto'],
-      ['朝は弱くない', 'person'],
+      ['朝は弱くない', 'auto'],
     ]);
   });
 
@@ -291,7 +291,7 @@ describe('when sorting happens', () => {
     expect(digest.due(haku.id)).toBe(false); // just talked
     clock.advance(DIGEST_IDLE_MS + 1);
     expect(digest.due(haku.id)).toBe(true);
-    await digest.sweep();
+    await digest.check(haku.id);
     expect((await d.call(HUMAN, 'character.get', { characterId: haku.id })).memories.map((m) => m.text)).toEqual([
       '雨の日は昼寝',
     ]);

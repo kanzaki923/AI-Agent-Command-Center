@@ -9,6 +9,7 @@ import type { DaemonContext } from '../core/context';
 import { invalidParams, notFound } from '../core/errors';
 import { EntityRepo } from '../core/repo';
 import { dayOf } from '../cost/ledger';
+import { isSupervisor } from '../inbox/supervision';
 import { memoryBlock } from './frame';
 import { MemoryStore } from './memory';
 
@@ -20,15 +21,26 @@ export type CharacterScene = 'talk' | 'meeting' | 'work';
 
 /**
  * The scene of a conversation with a member (snapshot 20261104_members-spec.md §4): a
- * speaker is in a meeting; a root chat a person started (and the assistant's seat) is a talk;
- * everything else — a child doing work, a firing of a schedule, an agent — is work.
+ * speaker is in a meeting; a root chat the person started themselves (and the assistant's
+ * seat) is a talk; everything else is work — a child doing work, a firing of a schedule, an
+ * agent, work the assistant started (assistant.startWork), a conversation that leads a team
+ * (`supervises`, from its delegation grant).
  */
 export function sceneOf(
-  s: Pick<Session, 'kind' | 'parentSessionId' | 'speaks' | 'persona' | 'scheduleId' | 'brief'>,
+  s: Pick<Session, 'kind' | 'parentSessionId' | 'speaks' | 'persona' | 'scheduleId' | 'brief' | 'createdBy'>,
+  supervises = false,
 ): CharacterScene {
   if (s.parentSessionId && (s.speaks || !!s.persona?.trim())) return 'meeting';
-  if (s.kind === 'chat' && !s.parentSessionId && !s.scheduleId && !s.brief) return 'talk';
+  const byAssistant = s.createdBy.kind === 'system' && s.createdBy.component === 'assistant';
+  if (s.kind === 'chat' && !s.parentSessionId && !s.scheduleId && !s.brief && !byAssistant && !supervises) {
+    return 'talk';
+  }
   return 'work';
+}
+
+/** The scene of a stored session (whether it leads a team comes from its grants). */
+export function sceneIn(ctx: DaemonContext, s: Session): CharacterScene {
+  return sceneOf(s, isSupervisor(ctx, s.id));
 }
 
 /** The face of a member: its own one character, or the first letter of its name. */
@@ -166,18 +178,18 @@ export class CharacterService {
   monthUsd(characterId: string): number {
     const tz = this.ctx.settings.get().limits.timezone;
     const firstDay = `${dayOf(this.ctx.clock.iso(), tz).slice(0, 7)}-01`;
+    // Its own turns (runs of its conversations); remarks other members made there and the
+    // conversation's summaries have no run and are not its spend.
     const row = this.ctx.db.get<{ n: number | null }>(
       `SELECT SUM(l.cost_micro) AS n FROM usage_ledger l
          JOIN sessions s ON s.id = l.session_id
-        WHERE l.day >= ? AND json_extract(s.data, '$.characterId') = ?`,
+        WHERE l.day >= ? AND l.run_id IS NOT NULL AND json_extract(s.data, '$.characterId') = ?`,
       [firstDay, characterId],
     );
+    // Its remarks (@name), wherever it was called in.
     const calls = this.ctx.db.get<{ n: number | null }>(
-      // A remark in the member's own conversation is already counted above.
-      `SELECT SUM(c.cost_micro) AS n FROM character_calls c
-        WHERE c.character_id = ? AND c.day >= ?
-          AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = c.session_id AND json_extract(s.data, '$.characterId') = ?)`,
-      [characterId, firstDay, characterId],
+      'SELECT SUM(cost_micro) AS n FROM character_calls WHERE character_id = ? AND day >= ?',
+      [characterId, firstDay],
     );
     return ((row?.n ?? 0) + (calls?.n ?? 0)) / 1_000_000;
   }

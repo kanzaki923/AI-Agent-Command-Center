@@ -113,6 +113,7 @@ describe('scenes', () => {
     persona: null,
     scheduleId: null,
     brief: null,
+    createdBy: { kind: 'human' as const },
   };
   it('a root chat is a talk, a speaker is in a meeting, anything else is work', () => {
     expect(sceneOf(base)).toBe('talk');
@@ -121,6 +122,9 @@ describe('scenes', () => {
     expect(sceneOf({ ...base, parentSessionId: 'ses_x' })).toBe('work');
     expect(sceneOf({ ...base, kind: 'agent' })).toBe('work');
     expect(sceneOf({ ...base, scheduleId: 'sch_x' })).toBe('work');
+    // Work the assistant started, and a conversation that leads a team, are work too.
+    expect(sceneOf({ ...base, createdBy: { kind: 'system', component: 'assistant' } })).toBe('work');
+    expect(sceneOf(base, true)).toBe('work');
   });
 });
 

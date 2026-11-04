@@ -1,4 +1,5 @@
 import { defineMethod } from '../api/registry';
+import { BACKGROUND_CALLS_MIGRATION } from '../llm/background';
 import { defineModule } from '../module';
 import { SessionSummaries } from './service';
 
@@ -39,6 +40,7 @@ CREATE TABLE session_summaries (
 );
 `,
     },
+    { id: 'summaries/0002_background_calls', sql: BACKGROUND_CALLS_MIGRATION },
   ],
   register(ctx) {
     const summaries = new SessionSummaries(ctx);

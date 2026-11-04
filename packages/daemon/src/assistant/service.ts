@@ -149,7 +149,9 @@ export class AssistantService {
 
   /**
    * What the person chose for the request a run of the assistant answers (`session.send`
-   * workModel / workPlace on the message that started the run).
+   * workModel / workPlace on the message that started the run). The inbox answers each request
+   * with a choice in a run of its own (never injected or batched, and its run takes no other
+   * message), so the trigger is the only request with a choice the run sees.
    */
   private chosen(runId: string): { model: string | null; place: WorkPlace | null } {
     const run = this.ctx.repos.runs.get(runId);

@@ -59,9 +59,74 @@ export function backgroundSpentToday(ctx: DaemonContext): number {
   return fromMicro(row?.n ?? 0);
 }
 
-/** Whether background work must wait for tomorrow (its own limit, or the limit of everything). */
+/**
+ * Calls of background work per day, whatever they cost: on a ChatGPT plan a call is booked
+ * at $0, so the money limit alone would never stop it from eating the plan's quota.
+ */
+export const BACKGROUND_DAILY_CALLS = 200;
+
+/** Count one call of background work (before it is made, so failures count too). */
+export function noteBackgroundCall(ctx: DaemonContext, kind: 'memory' | 'summary'): void {
+  ctx.db.run('INSERT INTO background_calls (day, ts, kind) VALUES (?, ?, ?)', [
+    dayOf(ctx.clock.iso(), ctx.settings.get().limits.timezone),
+    ctx.clock.iso(),
+    kind,
+  ]);
+}
+
+/** Calls of background work made today. */
+export function backgroundCallsToday(ctx: DaemonContext): number {
+  const day = dayOf(ctx.clock.iso(), ctx.settings.get().limits.timezone);
+  return ctx.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM background_calls WHERE day = ?', [day])?.n ?? 0;
+}
+
+/**
+ * Whether background work must wait for tomorrow: its money limit, its call limit, or the
+ * daily limit of everything.
+ */
 export function backgroundLimitReached(ctx: DaemonContext): boolean {
   const limit = ctx.settings.get().background.dailyUsd;
   if (limit !== null && backgroundSpentToday(ctx) >= limit) return true;
+  if (backgroundCallsToday(ctx) >= BACKGROUND_DAILY_CALLS) return true;
   return ctx.hasService('ledger') && ctx.service('ledger').dailyLeft() === 0;
 }
+
+/**
+ * A pause for all background work after failures in a row (the connection is down, the model
+ * is gone): it waits instead of failing call after call.
+ */
+export class BackgroundBackoff {
+  private failures = 0;
+  private until = 0;
+
+  constructor(private readonly now: () => number) {}
+
+  /** Whether background work may run now. */
+  open(): boolean {
+    return this.now() >= this.until;
+  }
+
+  ok(): void {
+    this.failures = 0;
+    this.until = 0;
+  }
+
+  failed(): void {
+    this.failures += 1;
+    // 3 failures in a row: 5 minutes, then doubling up to 2 hours.
+    if (this.failures >= 3) {
+      this.until = this.now() + Math.min(2 * 60 * 60_000, 5 * 60_000 * 2 ** (this.failures - 3));
+    }
+  }
+}
+
+/** The table that counts background calls (created by the summaries module). */
+export const BACKGROUND_CALLS_MIGRATION = `
+CREATE TABLE background_calls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  day TEXT NOT NULL,
+  ts TEXT NOT NULL,
+  kind TEXT NOT NULL
+);
+CREATE INDEX background_calls_day ON background_calls(day);
+`;

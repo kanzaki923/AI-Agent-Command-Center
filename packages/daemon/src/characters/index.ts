@@ -1,4 +1,4 @@
-import type { Actor, Character } from '@acc/protocol';
+import { MEMORY_LIMITS, type Actor, type Character, type MemoryKind } from '@acc/protocol';
 import { defineMethod } from '../api/registry';
 import { forbidden, invalidParams, notFound } from '../core/errors';
 import { assertRosterModel } from '../llm/roster';
@@ -50,6 +50,14 @@ CREATE INDEX characters_sort ON characters(sort_key);
     },
     { id: 'characters/0002_memories', sql: MEMORY_MIGRATION },
     { id: 'characters/0003_calls', sql: ASIDE_MIGRATION },
+    {
+      // Conversations with a member and its remarks are found by these (no table scans).
+      id: 'characters/0004_indexes',
+      sql: `
+CREATE INDEX sessions_character ON sessions(json_extract(data, '$.characterId'));
+CREATE INDEX messages_aside_character ON messages(json_extract(data, '$.meta.characterId'));
+`,
+    },
   ],
   register(ctx) {
     const service = new CharacterService(ctx);
@@ -61,6 +69,14 @@ CREATE INDEX characters_sort ON characters(sort_key);
     // The roster is the person's: an AI may read it, never change it (whatever its grant).
     const humansOnly = (actor: { kind: string }) => {
       if (actor.kind === 'agent') throw forbidden('メンバーを作ったり変えたりできるのは人だけです');
+    };
+    // What the person writes counts toward the same bounds as what sorting keeps.
+    const assertRoom = (characterId: string, kind: MemoryKind, aboutId: string | null) => {
+      const same = service.memory
+        .list(characterId)
+        .filter((m) => m.kind === kind && (kind !== 'relation' || m.aboutId === aboutId)).length;
+      const max = kind === 'self' ? MEMORY_LIMITS.self : kind === 'you' ? MEMORY_LIMITS.you : MEMORY_LIMITS.relationPerMember;
+      if (same >= max) throw invalidParams(`これ以上は覚えられません（${max} 件まで）。どれかを忘れさせてください`);
     };
     const emitMemory = (
       actor: Actor,
@@ -234,6 +250,7 @@ CREATE INDEX characters_sort ON characters(sort_key);
             humansOnly(call.actor);
             const member = service.repo.get(p.characterId);
             if (!member) throw notFound('character', p.characterId);
+            assertRoom(member.id, p.kind, p.aboutId ?? null);
             if (p.kind === 'relation') {
               if (!p.aboutId || p.aboutId === member.id) throw invalidParams('関係の記憶には相手のメンバーが要ります');
               if (!service.get(p.aboutId)) throw notFound('character', p.aboutId);

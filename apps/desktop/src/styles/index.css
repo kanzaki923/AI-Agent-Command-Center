@@ -55,7 +55,8 @@
 
   /*
    * Member faces (メンバー): one colour per member, fixed when it is made (the least used).
-   * The first four are the chart series; the name always sits next to the colour.
+   * The first four are the chart series (in the dark theme; the light one darkens them for
+   * text); the name always sits next to the colour.
    */
   --member-1: var(--series-1);
   --member-2: var(--series-2);
@@ -127,10 +128,19 @@
   --series-3: #1baf7a;
   --series-4: #eda100;
 
-  --member-5: #7a58d6;
-  --member-6: #c4447f;
-  --member-7: #16879a;
-  --member-8: #6d8a1c;
+  /*
+   * Member colours are also text (names), so on the light grounds they take darker hues of
+   * the same families than the chart series: each reaches 4.5:1 on --bg-app, the canvas and
+   * white (tokens.test.ts checks it).
+   */
+  --member-1: #1a5fb4;
+  --member-2: #b8471a;
+  --member-3: #0f7a55;
+  --member-4: #8a5d00;
+  --member-5: #6845c4;
+  --member-6: #ad3670;
+  --member-7: #0f7282;
+  --member-8: #55700f;
 
   --shadow-1: 0 1px 2px rgb(0 0 0 / 0.04);
   --shadow-2: 0 8px 24px rgb(0 0 0 / 0.1), 0 0 0 1px rgb(0 0 0 / 0.06);

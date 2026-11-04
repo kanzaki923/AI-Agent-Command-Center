@@ -2,12 +2,13 @@ import { useMember } from '../../daemon/members';
 import { cn } from '../../lib/cn';
 import { useUi } from '../../store/ui';
 import { Markdown } from '../focus/Markdown';
-import { MemberFace, toneColor } from '../ui/Face';
+import { Face, MemberFace, toneColor } from '../ui/Face';
 
 /**
  * A member's remark in a conversation (@name, snapshot 20261104_members-spec.md §4): its face,
  * its name (press for its page) and its words — the same shape as a speaker's turn, so the
- * member looks the same wherever it talks. `waiting`: asked, not answered yet.
+ * member looks the same wherever it talks. `waiting`: asked, not answered yet. A member not
+ * loaded (or gone) still shows its words, under a neutral face and メンバー.
  */
 export function AsideRemark({
   characterId,
@@ -20,23 +21,27 @@ export function AsideRemark({
 }) {
   const member = useMember(characterId);
   const openMember = useUi((s) => s.openMember);
-  if (!member) return null;
+  const name = member?.name ?? 'メンバー';
   return (
     <div data-aside={characterId} data-waiting={waiting || undefined} className="grid min-w-0 grid-cols-[22px_minmax(0,1fr)] items-start gap-x-2.5">
       <span className="pt-0.5">
-        <MemberFace member={member} size={22} busy={waiting} />
+        {member ? <MemberFace member={member} size={22} busy={waiting} /> : <Face text="?" tone={undefined} size={22} busy={waiting} />}
       </span>
       <div className="flex min-w-0 flex-col gap-0.5">
-        <button
-          type="button"
-          onClick={() => openMember(member.id)}
-          className="self-start truncate text-ui font-medium hover:underline"
-          style={{ color: toneColor(member.tone) }}
-        >
-          {member.name}
-        </button>
+        {member ? (
+          <button
+            type="button"
+            onClick={() => openMember(member.id)}
+            className="self-start truncate text-ui font-medium hover:underline"
+            style={{ color: toneColor(member.tone) }}
+          >
+            {name}
+          </button>
+        ) : (
+          <span className="self-start truncate text-ui font-medium text-fg-2">{name}</span>
+        )}
         {waiting ? (
-          <span aria-label={`${member.name}が考えています`} className="flex h-6 items-center gap-1">
+          <span aria-label={`${name}が考えています`} className="flex h-6 items-center gap-1">
             {[0, 1, 2].map((i) => (
               <span
                 key={i}
