@@ -1,7 +1,10 @@
 import { AccClientError } from '@acc/client';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import type { SettingsView } from '@acc/protocol';
+import { qk } from '../daemon/keys';
 import type { AppRuntime } from '../daemon/runtime';
+import { resumesAfterRestart } from '../daemon/shutdown';
 import { isTauri } from '../lib/platform';
 import { useConfirm } from '../store/confirm';
 import { toastError } from '../store/toast';
@@ -32,12 +35,23 @@ export interface QuitCopy {
   confirmLabel: string;
 }
 
-/** What the confirmation says; null when nothing would stop (then it quits without asking). */
-export function quitCopy(opts: { activeRuns: number; schedules: number }): QuitCopy | null {
+/**
+ * What the confirmation says; null when nothing would stop (then it quits without asking).
+ * What happens to interrupted work next time is said as the settings have it: with 再起動のあと
+ * 再開 on, opening the app again continues it (and spends again), so "あとで再開できます" would
+ * make someone who quit to stop spending expect the opposite.
+ */
+export function quitCopy(opts: { activeRuns: number; schedules: number; autoResume: boolean }): QuitCopy | null {
   const { activeRuns, schedules } = opts;
   if (activeRuns === 0 && schedules === 0) return null;
   const lines: string[] = [];
-  if (activeRuns > 0) lines.push(`動いている ${activeRuns} 件は中断します（あとで再開できます）。`);
+  if (activeRuns > 0) {
+    lines.push(
+      opts.autoResume
+        ? `動いている ${activeRuns} 件は中断します。任せた作業は、次にアプリを開くと自動で続きを始めます。`
+        : `動いている ${activeRuns} 件は中断します。再開するまで止まったままです。`,
+    );
+  }
   if (schedules > 0) lines.push(`定期実行 ${schedules} 件は、次にアプリを開くまで動きません。`);
   return {
     title: '終了しますか？',
@@ -46,10 +60,40 @@ export function quitCopy(opts: { activeRuns: number; schedules: number }): QuitC
   };
 }
 
-export async function confirmQuit(rt: AppRuntime, shell: QuitShell = tauriShell): Promise<void> {
-  // Not connected: there is no daemon this window can reach to stop.
-  if (rt.client.state !== 'open') {
-    await shell.exit();
+/** How long quitting waits for a connection that is (re)connecting before saying it cannot reach the daemon. */
+export const QUIT_CONNECT_WAIT_MS = 5_000;
+
+/** Resolves true once the client is open, false when it is not within `ms`. */
+function connected(rt: AppRuntime, ms: number): Promise<boolean> {
+  if (rt.client.state === 'open') return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      off();
+      resolve(false);
+    }, ms);
+    const off = rt.client.onStateChange((s) => {
+      if (s !== 'open') return;
+      clearTimeout(timer);
+      off();
+      resolve(true);
+    });
+  });
+}
+
+export async function confirmQuit(
+  rt: AppRuntime,
+  shell: QuitShell = tauriShell,
+  waitMs = QUIT_CONNECT_WAIT_MS,
+): Promise<void> {
+  // A moment without a connection (reconnecting): wait for it rather than leave a daemon working
+  // behind a tray icon that is gone.
+  if (!(await connected(rt, waitMs))) {
+    useConfirm.getState().ask({
+      title: 'Core Daemon に接続できません',
+      body: '止められなかった場合、作業と定期実行は裏で動き続けます。つながってから終了すると、まとめて止められます。',
+      confirmLabel: 'このまま終了',
+      onConfirm: () => void shell.exit(),
+    });
     return;
   }
   // Fresh counts (the cached ones may be stale); unknown counts as nothing to say.
@@ -67,7 +111,7 @@ export async function confirmQuit(rt: AppRuntime, shell: QuitShell = tauriShell)
 }
 
 function ask(rt: AppRuntime, shell: QuitShell, activeRuns: number, schedules: number): void {
-  const copy = quitCopy({ activeRuns, schedules });
+  const copy = quitCopy({ activeRuns, schedules, autoResume: resumesAfterRestart(rt.queryClient.getQueryData<SettingsView>(qk.settings)) });
   if (!copy) {
     void stop(rt, shell, false, schedules);
     return;

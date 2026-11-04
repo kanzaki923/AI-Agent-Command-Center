@@ -36,17 +36,23 @@ beforeEach(() => {
 
 describe('quitCopy', () => {
   it('asks nothing when nothing would stop', () => {
-    expect(quitCopy({ activeRuns: 0, schedules: 0 })).toBeNull();
+    expect(quitCopy({ activeRuns: 0, schedules: 0, autoResume: true })).toBeNull();
   });
 
   it('names the work that is interrupted and the schedules that pause', () => {
-    const c = quitCopy({ activeRuns: 3, schedules: 2 })!;
+    const c = quitCopy({ activeRuns: 3, schedules: 2, autoResume: true })!;
     expect(c.title).toBe('終了しますか？');
     expect(c.body).toBe(
-      '動いている 3 件は中断します（あとで再開できます）。定期実行 2 件は、次にアプリを開くまで動きません。',
+      '動いている 3 件は中断します。任せた作業は、次にアプリを開くと自動で続きを始めます。定期実行 2 件は、次にアプリを開くまで動きません。',
     );
     expect(c.confirmLabel).toBe('3 件を中断して終了');
-    expect(quitCopy({ activeRuns: 0, schedules: 1 })!.confirmLabel).toBe('終了する');
+    expect(quitCopy({ activeRuns: 0, schedules: 1, autoResume: true })!.confirmLabel).toBe('終了する');
+  });
+
+  it('does not promise a resume the settings turned off', () => {
+    expect(quitCopy({ activeRuns: 1, schedules: 0, autoResume: false })!.body).toBe(
+      '動いている 1 件は中断します。再開するまで止まったままです。',
+    );
   });
 });
 
@@ -136,12 +142,33 @@ describe('confirmQuit', () => {
     expect(log).toEqual(['quitting:true', 'exit']);
   });
 
-  it('exits without calling the daemon when it is not connected', async () => {
+  it('waits for a connection that comes back, then quits as usual', async () => {
+    const fake = createFakeClient({
+      'system.info': () => info(0),
+      'schedule.list': schedules(0),
+      'system.shutdown': () => ({ ok: true, pid: 1, activeRuns: 0 }),
+    });
+    fake.setState('reconnecting');
+    const { shell, log } = fakeShell();
+    const quitting = confirmQuit(createRuntime(fake.client), shell, 1_000);
+    fake.setState('open');
+    await quitting;
+    await settle();
+    expect(fake.calls.map((c) => c.method)).toContain('system.shutdown');
+    expect(log).toEqual(['quitting:true', 'exit']);
+  });
+
+  it('says the daemon may go on working when it cannot be reached, and quits only when told', async () => {
     const fake = createFakeClient();
     fake.setState('reconnecting');
     const { shell, log } = fakeShell();
-    await confirmQuit(createRuntime(fake.client), shell);
+    await confirmQuit(createRuntime(fake.client), shell, 10);
     expect(fake.calls).toEqual([]);
+    const req = useConfirm.getState().request!;
+    expect(req.title).toBe('Core Daemon に接続できません');
+    expect(req.body).toContain('裏で動き続けます');
+    expect(log).toEqual([]);
+    await confirm(req);
     expect(log).toEqual(['exit']);
   });
 });

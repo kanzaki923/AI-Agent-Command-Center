@@ -5,7 +5,7 @@ import { type ConfirmRequest, useConfirm } from '../store/confirm';
 import { useToasts } from '../store/toast';
 import { createFakeClient } from '../test/fakeClient';
 import { createRuntime } from './runtime';
-import { confirmShutdown, shutdownCopy } from './shutdown';
+import { confirmShutdown, resumesAfterRestart, shutdownCopy } from './shutdown';
 
 const shell = vi.hoisted(() => ({ tauri: false }));
 vi.mock('../lib/platform', () => ({ isTauri: () => shell.tauri, isMac: false }));
@@ -30,19 +30,26 @@ describe('shutdownCopy', () => {
   it('calls it a restart in the desktop app (the shell starts a new daemon at once)', () => {
     const c = shutdownCopy({ restart: true, activeRuns: 0, autoResume: true });
     expect(c.title).toBe('Core Daemon を再起動しますか？');
-    expect(c.body).toContain('このアプリがすぐに新しい Core Daemon を起動します');
+    expect(c.body).toContain('すぐに起動し直します');
     expect(c.confirmLabel).toBe('再起動する');
   });
 
-  it('names the runs that will be interrupted and what happens to orchestrators', () => {
-    const on = shutdownCopy({ restart: false, activeRuns: 3, autoResume: true });
-    expect(on.title).toBe('Core Daemon を停止しますか？');
-    expect(on.body).toContain('実行中の Run 3 件は「中断」になります');
-    expect(on.body).toContain('再起動後に自動で再開します');
-    expect(on.confirmLabel).toBe('3 件を中断して停止');
+  it('names the work that will be interrupted and says what happens next as the settings have it', () => {
+    const on = shutdownCopy({ restart: true, activeRuns: 3, autoResume: true });
+    expect(on.body).toContain('動いている 3 件は中断します');
+    expect(on.body).toContain('任せた作業は、起動し直したあと自動で続きを始めます');
+    expect(on.confirmLabel).toBe('3 件を中断して再起動');
     expect(shutdownCopy({ restart: false, activeRuns: 1, autoResume: false }).body).toContain(
-      '自動では再開しません',
+      '再開するまで止まったままです',
     );
+    // In the person's words: no Run / Task / worktree / Orchestrator.
+    expect(on.body).not.toMatch(/Run|Task|worktree|Orchestrator/);
+  });
+
+  it('reads 再起動のあと再開 the way the settings screen writes it', () => {
+    expect(resumesAfterRestart({ autoResume: false, autoResumeOrchestrators: true } as never)).toBe(false);
+    expect(resumesAfterRestart({ autoResumeOrchestrators: false } as never)).toBe(false);
+    expect(resumesAfterRestart(undefined)).toBe(true);
   });
 });
 
@@ -77,7 +84,7 @@ describe('confirmShutdown (system.shutdown)', () => {
     expect(fake.calls.find((c) => c.method === 'system.shutdown')?.params).toEqual({ force: true });
     const t = useToasts.getState().toasts[0]!;
     expect(t.title).toBe('Core Daemon を再起動しています');
-    expect(t.detail).toContain('Run 2 件は中断しました');
+    expect(t.detail).toContain('動いていた 2 件を中断しました');
   });
 
   it('asks again with the daemon count when a run started after the confirmation', async () => {

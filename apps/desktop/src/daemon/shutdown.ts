@@ -15,6 +15,11 @@ import type { AppRuntime } from './runtime';
  * - With runs active the daemon refuses unless `force`; the confirmation names how many will
  *   be interrupted, and a run that started meanwhile (conflict) asks again with the new count.
  */
+/** Whether work cut off by a stop continues on the next start (settings: 再起動のあと再開). */
+export function resumesAfterRestart(settings: SettingsView | undefined): boolean {
+  return settings?.autoResume ?? settings?.autoResumeOrchestrators ?? true;
+}
+
 export interface ShutdownCopy {
   title: string;
   body: string;
@@ -28,12 +33,13 @@ export function shutdownCopy(opts: {
 }): ShutdownCopy {
   const verb = opts.restart ? '再起動' : '停止';
   const how = opts.restart
-    ? 'Core Daemon を止めると、このアプリがすぐに新しい Core Daemon を起動します。'
+    ? 'Core Daemon を止めて、すぐに起動し直します。'
     : 'UI を閉じても動き続ける Core Daemon を止めます。もう一度使うには Core Daemon を起動し直してください（開発中は pnpm dev:daemon）。';
+  const next = opts.restart ? '起動し直したあと' : '次に起動したとき';
   const runs =
     opts.activeRuns > 0
-      ? `実行中の Run ${opts.activeRuns} 件は「中断」になります。Task は同じ worktree から再開でき、Orchestrator は${opts.autoResume ? '再起動後に自動で再開します' : '自動では再開しません（設定で変更できます）'}。`
-      : '実行中の Run はありません。';
+      ? `動いている ${opts.activeRuns} 件は中断します。${opts.autoResume ? `任せた作業は、${next}自動で続きを始めます。` : '再開するまで止まったままです（設定の「再起動のあと再開」で変えられます）。'}`
+      : '動いている作業はありません。';
   return {
     title: `Core Daemon を${verb}しますか？`,
     body: `${how}${runs}`,
@@ -58,7 +64,7 @@ function ask(rt: AppRuntime, activeRuns: number): void {
   const copy = shutdownCopy({
     restart,
     activeRuns,
-    autoResume: settings?.autoResumeOrchestrators ?? true,
+    autoResume: resumesAfterRestart(settings),
   });
   useConfirm.getState().ask({
     ...copy,
@@ -74,7 +80,7 @@ async function send(rt: AppRuntime, force: boolean, restart: boolean): Promise<v
       title: restart ? 'Core Daemon を再起動しています' : 'Core Daemon を停止しました',
       detail:
         r.activeRuns > 0
-          ? `実行中だった Run ${r.activeRuns} 件は中断しました。あとで再開できます`
+          ? `動いていた ${r.activeRuns} 件を中断しました。${resumesAfterRestart(rt.queryClient.getQueryData<SettingsView>(qk.settings)) ? '任せた作業は、起動したら自動で続きを始めます' : '再開するまで止まったままです'}`
           : undefined,
       tone: 'info',
       sticky: false,

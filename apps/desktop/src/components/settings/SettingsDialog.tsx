@@ -7,7 +7,7 @@ import { setDailyLimit } from '../../daemon/cost';
 import { qk } from '../../daemon/keys';
 import { useInfo, useModels, useSettings } from '../../daemon/queries';
 import { useRuntime } from '../../daemon/runtime';
-import { confirmShutdown } from '../../daemon/shutdown';
+import { confirmShutdown, resumesAfterRestart } from '../../daemon/shutdown';
 import { cn } from '../../lib/cn';
 import { notificationPermission, requestNotificationPermission } from '../../lib/notify';
 import { isTauri } from '../../lib/platform';
@@ -364,7 +364,7 @@ function Details({
   const agents = settings?.maxConcurrentAgents ?? settings?.maxConcurrentRuns ?? 10;
   const chats = settings?.maxConcurrentChats;
   const reserve = settings?.llmCallReserveUsd;
-  const autoResume = settings?.autoResume ?? settings?.autoResumeOrchestrators ?? true;
+  const autoResume = resumesAfterRestart(settings);
   const restart = isTauri();
   const askPermission = async () => {
     await requestNotificationPermission();
