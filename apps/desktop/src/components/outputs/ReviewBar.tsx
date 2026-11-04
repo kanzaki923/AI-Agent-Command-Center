@@ -140,9 +140,12 @@ export function ReviewBar({
   output,
   size = 'panel',
   onDecide,
+  alsoRedone = 0,
   className,
 }: {
   output: Artifact;
+  /** Other outputs of the same run still waiting: やり直す sends them back too (the run is done again). */
+  alsoRedone?: number;
   /** `full`: the expanded code view (taller, Ctrl+Enter shown on the primary action). */
   size?: 'panel' | 'full';
   /** Called when 採用 or やり直す is sent (the panel keeps the decided output in view). */
@@ -239,6 +242,11 @@ export function ReviewBar({
           </button>
         </div>
       )}
+      {redoOpen && alsoRedone > 0 && (
+        <p className={cn('pt-1 text-meta text-fg-3', full ? 'px-6' : 'px-3')} data-also-redone>
+          同じ実行の成果物 {alsoRedone} 件も、一緒にやり直しになります
+        </p>
+      )}
       <div className={cn('flex items-center gap-2', full ? 'h-14 px-6' : 'h-12 px-3')}>
         <div className="min-w-0 flex-1">
           <PhaseStatus phase={phase} code={code} note={output.review.note} />
@@ -260,12 +268,12 @@ export function ReviewBar({
             size={full ? 'lg' : 'md'}
             icon={<Check size={14} strokeWidth={1.75} />}
             shortcutKeys={full ? 'Mod+Enter' : undefined}
-            hint={code ? '採用して反映' : undefined}
+            hint={code ? 'テストが通ればプロジェクトに反映します' : undefined}
             disabled={!connected}
             onClick={adopt}
             data-action="adopt"
           >
-            採用
+            {code ? '採用して反映' : '採用'}
           </Button>
         )}
         {conflict && !redoOpen && (

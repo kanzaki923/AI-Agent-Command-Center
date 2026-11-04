@@ -199,7 +199,7 @@ describe('<OutputsPanel>', () => {
     expect(within(list).getAllByRole('listitem')[0]).toHaveAttribute('data-met', 'true');
   });
 
-  it('adopts code: 採用 calls artifact.review and the bar follows the change being applied', async () => {
+  it('adopts code: 採用して反映 calls artifact.review and the bar follows the change being applied', async () => {
     const code = output('diff', {
       sessionId: CHILD,
       workspaceId: 'wsp_1',
@@ -219,13 +219,14 @@ describe('<OutputsPanel>', () => {
     // One output: no list, the change of two files.
     expect(within(p).queryByRole('list', { name: '成果物の一覧' })).toBeNull();
     expect(await within(p).findByText('src/auth/session.ts')).toBeInTheDocument();
-    fireEvent.click(within(p).getByRole('button', { name: '採用' }));
+    // Code is applied to the project when adopted: the button says so, not only its tooltip.
+    fireEvent.click(within(p).getByRole('button', { name: '採用して反映' }));
     expect(fake.calls.find((c) => c.method === 'artifact.review')?.params).toEqual({
       artifactId: code.id,
       decision: 'accept',
     });
     expect(await within(p).findByText('反映中')).toBeInTheDocument();
-    expect(within(p).queryByRole('button', { name: '採用' })).toBeNull();
+    expect(within(p).queryByRole('button', { name: '採用して反映' })).toBeNull();
 
     // The daemon's integration fails its tests: the bar says so and offers a redo.
     const failed = integration({
@@ -336,6 +337,17 @@ describe('<OutputsPanel>', () => {
       note: '価格を外して',
     });
     expect(await within(p).findByText('やり直し中')).toBeInTheDocument();
+  });
+
+  it('says before sending that a redo takes the same run’s waiting outputs back too', async () => {
+    const runId = 'run_00000000000000000000000009';
+    const a = output('document', { sessionId: ROOT, title: '文書 1', review: pending, runId });
+    const b = output('document', { sessionId: ROOT, title: '文書 2', review: pending, runId });
+    mount([a, b], { handlers: { 'artifact.review': () => ({ artifact: a, integrationId: null }) } });
+    const p = await panel();
+    expect(p.querySelector('[data-also-redone]')).toBeNull();
+    fireEvent.click(await within(p).findByRole('button', { name: 'やり直す' }));
+    expect(p.querySelector('[data-also-redone]')).toHaveTextContent('同じ実行の成果物 1 件も、一緒にやり直しになります');
   });
 
   it('keeps the decided output in view while it moves down the list', async () => {

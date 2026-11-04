@@ -15,7 +15,7 @@ import { OutputIcon } from '../ui/SemanticIcons';
 import { StateIcon } from '../ui/StateIcon';
 import { Tooltip } from '../ui/Tooltip';
 import { DiffStatText } from './DiffViewer';
-import { type Output, type ReviewPhase, dockedPanelQuery, doneWhenMet, panelOutputs, reviewPhase } from './model';
+import { type Output, type ReviewPhase, alsoRedone, dockedPanelQuery, doneWhenMet, panelOutputs, reviewPhase } from './model';
 import { OutputBody } from './OutputViewer';
 import { PhaseMark, ReviewBar } from './ReviewBar';
 
@@ -183,7 +183,12 @@ function Panel({
         <OutputBody key={selected.id} output={selected} />
       </div>
       {/* Deciding pins the choice: the decided output moves down the list, the view stays on it. */}
-      <ReviewBar key={selected.id} output={selected} onDecide={() => onPick(selected.id)} />
+      <ReviewBar
+        key={selected.id}
+        output={selected}
+        alsoRedone={alsoRedone(selected, outputs)}
+        onDecide={() => onPick(selected.id)}
+      />
     </aside>
   );
 }

@@ -213,3 +213,14 @@ export const MAIN_MIN_WIDTH = 480;
 export function dockedPanelQuery(sidebarWidth: number, panelWidth: number): string {
   return `(min-width: ${Math.max(900, sidebarWidth + MAIN_MIN_WIDTH + panelWidth)}px)`;
 }
+
+/**
+ * How many other outputs a redo of this one sends back with it: the daemon redoes the whole
+ * run, so the run's other outputs still waiting for a decision go back too (outputs/review.ts).
+ */
+export function alsoRedone(output: Artifact, outputs: readonly Artifact[]): number {
+  if (!output.runId) return 0;
+  return outputs.filter(
+    (o) => o.id !== output.id && o.runId === output.runId && o.role === 'output' && o.review.state === 'pending',
+  ).length;
+}
