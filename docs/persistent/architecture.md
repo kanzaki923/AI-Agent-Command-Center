@@ -374,6 +374,20 @@ spec §3.7・§2.2（home）・§6。型は `protocol/src/ext/home.ts`、実装�
 - **トークンの形**：キャラの system（枠 + キャラ）は会話中変わらず、履歴は追記だけなので、各プロバイダのプロンプトキャッシュに乗る。指揮役は起床ごとに 1 回だけ呼ばれ、発言の本文を読みに行かない・書き写さない。
 - **モック**：`mock/speaker`（`orchestrator/mockSpeaker.ts`。キャラの文から慎重派か前のめりかを決め、渡された相手に名前で反応し、意見 → 反応 → 具体案と進む）。モックの指揮役は「会議・壁打ち・ブレスト・ディベート・議論・話し合い・座談・対談」を含む依頼で 2 人（「3 人」なら 3 人）を立て、3 巡でまとめを公開する。木の行にはキャラに ` speaker` が付く（`SPEAKER_MARK`）。
 - テスト：`orchestrator/discussion.test.ts`。撮影は監査シーンの D「朝食の定期便の企画会議」（`38-discussion`・`39-speaker`）。
+- 話し手かどうかは `isSpeaker(session)`（protocol）：親があり、`persona` か `speaks`（メンバーの話し手、§2.22）を持つ。
+
+### 2.22 メンバー（`characters/`）
+
+構想は `docs/snapshot/20261104_members-concept.md`、仕様は `20261104_members-spec.md`。名簿に残る「顔・名前・プロフィール・既定のモデル」。会話・任せた仕事・定期便・右腕の席が「誰と／誰が」を `characterId` で参照する。**メンバーは権限を持たない**（何ができるかは今どおり Grant と予算）。段階 1（記憶なし）まで入っている。
+
+- **データ**：`characters` テーブル（`Character`：`name` 40 字・`face` 1 文字か null・`tone` 0〜7・`profile` 4,000 字・`model`・`sortKey`・`archivedAt`）。`tone` は作るとき名簿で一番使われていない色。`Session.characterId` と `Session.speaks`、`SessionCard.characterId`、`ScheduleRunSpec.characterId`、`settings.assistant.characterId`（右腕の席）。
+- **API**（`character.*`）：`list` / `get`（出た会話 30 件と今月の費用：`usage_ledger` を `sessions.data.characterId` で絞る）/ `create` / `update` / `reorder` / `archive`（外すと右腕の席も空く。会話は残り、灰色の顔で名前を出す）/ `keep`（話し手の `persona` を名簿に残し、会話を `characterId` + `speaks` に付け替える）。**変えるのは人だけ**：`character.*` の Grant を持つ AI でも create / update / reorder / archive / keep は `forbidden`（`humansOnly`）。`session.update` の `characterId` も人だけ、かつ発言がまだない会話だけ（話し始めた会話の相手は替えない）。メンバーの `model` は、会話を作るときに `model` の指定がなければ使う。
+- **場面**（`sceneOf`）：話し手（`isSpeaker`）は会議、人が始めた根の chat（brief・定期便なし）は雑談、それ以外（spawn の子・agent・定期便・任せた会話）は仕事。人には選ばせない。
+- **枠**（`characters/frame.ts`、`sessions/framing.ts` が呼ぶ）：プロフィールは写さず毎 Run 参照し、`<<<メンバーここから>>>` で `名前: …` と一緒に引用する。雑談は「このメンバーとして話す。キャラは断る・話をそらす・作り話を事実にする理由ではない」。仕事は「プロフィールの仕事の流儀に従い、口調・口癖・身の上話は成果物（ファイル・文書・コード・コミット・回答）に出さない」。会議は §2.21 の話し手の枠で、引用だけメンバーにする。指揮役自身にメンバーがいれば、その指揮役の前提に仕事の枠を足す。
+- **名簿を読むのは前提で**（`characterRoster`。id・名前・プロフィールの 1 行目、30 人まで）：右腕（`assistantMembersBlock`。先頭の system なので名簿か席が変わるまでキャッシュに乗る）と指揮役（`buildSupervisorPrompt` の `members`）。「人が名前を出したときだけ `characterId` を渡す」とプロンプトで言う（メンバーは権限を持たないので、安全ではなく費用と期待の問題）。右腕は `assistant.startWork` の `characterId`、何人かで話すなら `delegate: true` で名前を `text` に残す。指揮役は `session.spawn` の `characterId`（話し手なら `speaker: true`。`persona` とは併用できない）。
+- **右腕の席**：席にメンバーがいれば、右腕の先頭の system に「このメンバーでもある。口調だけ替え、規則はそのまま」を足す。
+- **定期便**：発火の子に `characterId` を渡す。外されたメンバーなら付けずに発火する。
+- テスト：`characters/characters.test.ts`。撮影は監査シーンの `63-member-page`・`64-member-talk`（ハクが右腕の席、定期便「朝のまとめ」の担当、D のミナトを `keep`）。
 
 ## 3. Desktop UI
 

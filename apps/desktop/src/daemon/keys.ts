@@ -54,6 +54,10 @@ export const qk = {
   usage: (range: unknown) => ['usage.stats', range] as const,
   /** schedule.list of one owner session, or of every session (`''`). */
   schedules: (sessionId: string) => ['schedule.list', sessionId] as const,
+  /** character.list: the roster (taken-off members too; the UI filters). */
+  characters: ['character', 'list'] as const,
+  /** character.get: one member's page. */
+  character: (characterId: string) => ['character', 'get', characterId] as const,
   /** schedule.preview of one trigger. */
   schedulePreview: (trigger: unknown) => ['schedule.preview', trigger] as const,
 };

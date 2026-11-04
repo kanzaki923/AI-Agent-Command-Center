@@ -11,7 +11,10 @@ import { type SessionTree, treeControl, treeRelations } from '../../daemon/tree'
 import { cn } from '../../lib/cn';
 import { STATE_META, formatUsd, isLongWork, isSettled, sessionTitle } from '../../lib/states';
 import { useUi } from '../../store/ui';
+import { setAssistantSeat, useMember } from '../../daemon/members';
 import { DelegateButton } from '../delegate/DelegateButton';
+import { MemberPicker } from '../members/MemberPicker';
+import { MemberFace } from '../ui/Face';
 import { RepeatButton } from '../schedule/RepeatButton';
 import { IconButton } from '../ui/Button';
 import { CostMeter } from '../ui/CostMeter';
@@ -92,6 +95,33 @@ function ParentChip({ id, title, state }: { id: string; title: string; state: Se
         <ArrowUp size={12} strokeWidth={2} aria-hidden />
         {state && <StateIcon state={state} size={11} />}
         <span className="truncate">{title}</span>
+      </button>
+    </Tooltip>
+  );
+}
+
+/** The member in the assistant's seat, chosen here (the conversation is the seat). */
+function AssistantSeat() {
+  const rt = useRuntime();
+  const seat = useSettings().data?.assistant?.characterId ?? null;
+  return <MemberPicker value={seat} onChange={(id) => void setAssistantSeat(rt, id)} label="右腕の席" size={22} />;
+}
+
+/** Who the conversation is with: its face opens the member's page. */
+function SessionMember({ characterId }: { characterId: string | null }) {
+  const member = useMember(characterId);
+  const openMember = useUi((s) => s.openMember);
+  if (!member) return null;
+  return (
+    <Tooltip content={member.name}>
+      <button
+        type="button"
+        data-session-member={member.id}
+        aria-label={`${member.name}のページ`}
+        onClick={() => openMember(member.id)}
+        className="flex shrink-0 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+      >
+        <MemberFace member={member} size={22} />
       </button>
     </Tooltip>
   );
@@ -188,6 +218,7 @@ export function FocusHeader({
     <header className="shrink-0 border-b border-line-subtle" data-focus-header>
       <div className="flex h-11 items-center gap-2 px-4">
         {parent && <ParentChip id={parent.id} title={parent.title} state={parent.state} />}
+        {session.id === assistantId ? <AssistantSeat /> : <SessionMember characterId={session.characterId} />}
         <TitleEditor session={session} />
         <Tooltip content={session.now ? `${meta.label} · ${session.now}` : meta.label}>
           <span className="flex shrink-0 items-center gap-1.5" data-testid="session-state" data-state={session.state}>

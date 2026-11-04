@@ -93,7 +93,12 @@ export type SettingsPatch = {
       }
     | undefined;
   assistant?:
-    { model?: string | null | undefined; dailyUsd?: number | null | undefined } | undefined;
+    | {
+        model?: string | null | undefined;
+        dailyUsd?: number | null | undefined;
+        characterId?: string | null | undefined;
+      }
+    | undefined;
   providers?:
     | {
         anthropic?:
@@ -259,6 +264,9 @@ export class SettingsStore {
       });
       set('assistant.dailyUsd', next.assistant.dailyUsd, a.dailyUsd, () => {
         next.assistant.dailyUsd = a.dailyUsd ?? null;
+      });
+      set('assistant.characterId', next.assistant.characterId, a.characterId, () => {
+        next.assistant.characterId = a.characterId ?? null;
       });
     }
     if (patch.autoMode) {

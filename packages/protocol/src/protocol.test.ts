@@ -143,7 +143,7 @@ describe('settings', () => {
         wakeDebounceMs: 1500,
         contextMessages: 40,
       },
-      assistant: { model: null, dailyUsd: 2 },
+      assistant: { model: null, dailyUsd: 2, characterId: null },
       llmCallReserveUsd: 0.25,
       defaultPermissionProfile: 'autonomous',
       autoMode: { enabled: true, judge: 'server', classifierModel: null, classifierCostUsd: 0.011 },

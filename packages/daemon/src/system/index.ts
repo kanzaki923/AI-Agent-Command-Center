@@ -70,6 +70,9 @@ export const systemModule = defineModule({
 
       defineMethod('settings.update', {
         handler: (params, call) => {
+          // The seat takes a member on the roster (not one taken off it).
+          const seat = params.assistant?.characterId;
+          if (seat) ctx.service('characters').requireActive(seat);
           const changes = ctx.settings.update(params);
           if (changes.length > 0) {
             // Key names only: never put secret values into events.

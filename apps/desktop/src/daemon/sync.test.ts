@@ -272,6 +272,18 @@ function budgetFixture(over: Partial<BudgetAllocation> = {}): BudgetAllocation {
 function sampleEvent(type: EventType): Event {
   const s = session();
   const r = run(s);
+  const member = {
+    id: 'chr_00000000000000000000000001',
+    name: 'ハク',
+    face: null,
+    tone: 0,
+    profile: '',
+    model: null,
+    sortKey: 1,
+    createdAt: iso(T0),
+    updatedAt: iso(T0),
+    archivedAt: null,
+  };
   const payloads: { [K in EventType]: EventPayload<K> } = {
     'project.created': { project: { id: 'prj_1', name: 'p' } as never },
     'project.updated': { project: { id: 'prj_1', name: 'p' } as never, changes: ['name'] },
@@ -330,6 +342,9 @@ function sampleEvent(type: EventType): Event {
     'schedule.updated': { schedule: { id: 'sch_1' } as never, changes: [] },
     'schedule.deleted': { scheduleId: 'sch_1' },
     'schedule.fired': { scheduleId: 'sch_1', sessionId: null, scheduledFor: iso(T0), outcome: 'missed' },
+    'character.created': { character: member },
+    'character.updated': { character: member, changes: ['name'] },
+    'character.reordered': { characterIds: [member.id] },
     'session.state_changed': {
       sessionId: s.id,
       rootSessionId: s.id,

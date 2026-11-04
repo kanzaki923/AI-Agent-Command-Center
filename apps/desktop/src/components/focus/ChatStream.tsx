@@ -1,4 +1,4 @@
-import { type Run, type Session, type SessionCard, isTerminalRunStatus } from '@acc/protocol';
+import { type Run, type Session, type SessionCard, isSpeaker, isTerminalRunStatus } from '@acc/protocol';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { AlertTriangle, ArrowDown, Brain, ChevronRight, Clock, Diamond, Pencil, RotateCcw, Square } from 'lucide-react';
 import { type ReactNode, createContext, memo, use, useEffect, useMemo, useState } from 'react';
@@ -40,6 +40,7 @@ import { type ConversationBlock, buildBaseBlocks, forwardedParts, stripMachineBl
 import { Markdown } from './Markdown';
 import { ToolGroup } from './ToolBlocks';
 import { Speech, useSpeakerTones } from './Speech';
+import { useMember } from '../../daemon/members';
 
 const NONE: never[] = [];
 
@@ -361,9 +362,14 @@ const ConversationContext = createContext<ConversationCtx>({
 
 function Brief({ block }: { block: ConversationBlock & { kind: 'brief' } }) {
   const { session, card } = use(ConversationContext);
-  const tones = useSpeakerTones(session?.persona ? session.id : null);
+  const member = useMember(session?.characterId);
+  const speaking = !!session && isSpeaker(session);
+  const tones = useSpeakerTones(speaking ? session.id : null);
+  const who = member?.profile ?? session?.persona ?? null;
   const speaker =
-    session?.persona ? { title: sessionTitle(session), persona: session.persona, tone: tones.get(session.id) } : null;
+    session && speaking && who !== null
+      ? { title: sessionTitle(session), persona: who, tone: tones.get(session.id) }
+      : null;
   return <BriefCard brief={block.brief} card={card} workspaceId={session?.workspaceId ?? null} speaker={speaker} />;
 }
 

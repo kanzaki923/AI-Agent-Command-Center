@@ -118,6 +118,10 @@ export class SessionService {
         }
       }
       const parent = input.parentSessionId ? repos.sessions.require(input.parentSessionId) : null;
+      // A member on the roster: the conversation starts on its model unless one is named.
+      const member = input.characterId
+        ? ctx.service('characters').requireActive(input.characterId)
+        : null;
       const now = ctx.clock.iso();
       const id = ctx.ids.next('session');
       const session = repos.sessions.insert({
@@ -126,7 +130,11 @@ export class SessionService {
         projectId: project?.id ?? null,
         kind: input.kind,
         title: input.title?.trim() ?? '',
-        model: input.model ?? project?.defaultModel ?? ctx.settings.get().defaultModel,
+        model:
+          input.model ??
+          member?.model ??
+          project?.defaultModel ??
+          ctx.settings.get().defaultModel,
         runtime: input.runtime ?? null,
         systemPrompt: input.systemPrompt ?? null,
         workspaceId: input.workspaceId ?? null,
@@ -134,6 +142,8 @@ export class SessionService {
         parentSessionId: parent?.id ?? null,
         brief: input.brief ?? null,
         persona: input.persona?.trim() || null,
+        characterId: member?.id ?? null,
+        speaks: !!input.speaks,
         scheduleId: input.scheduleId ?? null,
         activeRunId: null,
         pinned: false,
@@ -163,6 +173,10 @@ export interface CreateSessionInput {
   brief?: SessionBrief | null | undefined;
   /** The character a speaker plays (session.spawn `persona`). */
   persona?: string | null | undefined;
+  /** The member this conversation is with (`character.*`). */
+  characterId?: string | null | undefined;
+  /** The member talks as a speaker (session.spawn `speaker`). */
+  speaks?: boolean | undefined;
   /** Schedule whose firing created the session. */
   scheduleId?: string | null | undefined;
 }

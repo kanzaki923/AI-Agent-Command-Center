@@ -35,6 +35,10 @@ export interface SpawnRequest {
   budgetUsd: number | null;
   /** The character of a speaker (session.spawn `persona`), when it is one. */
   persona: string | null;
+  /** The member of the roster it is (session.spawn `characterId`). */
+  characterId: string | null;
+  /** A member that talks (session.spawn `speaker`). */
+  speaker: boolean;
 }
 
 function asRecord(v: unknown): Record<string, unknown> {
@@ -52,6 +56,8 @@ export function spawnRequest(input: unknown): SpawnRequest {
     workspace: kind,
     budgetUsd: typeof o.budgetUsd === 'number' ? o.budgetUsd : null,
     persona: typeof o.persona === 'string' && o.persona.trim() ? o.persona.trim() : null,
+    characterId: typeof o.characterId === 'string' ? o.characterId : null,
+    speaker: o.speaker === true,
   };
 }
 

@@ -16,6 +16,7 @@ import { ReconnectBanner, StartupScreen } from './components/shell/ConnectionSta
 import { Sidebar } from './components/shell/Sidebar';
 import { TitleBar } from './components/shell/TitleBar';
 import { Toaster } from './components/shell/Toaster';
+import { MemberPage } from './components/members/MemberPage';
 import { TimelineView } from './components/timeline/TimelineView';
 import { TooltipProvider } from './components/ui/Tooltip';
 import { useRuntime } from './daemon/runtime';
@@ -42,7 +43,15 @@ function ModeView() {
       transition={{ duration: 0.12, ease: 'linear' }}
       className="min-h-0 flex-1"
     >
-      {mode === 'home' ? <HomeView /> : mode === 'session' ? <FocusView /> : <TimelineView />}
+      {mode === 'home' ? (
+        <HomeView />
+      ) : mode === 'session' ? (
+        <FocusView />
+      ) : mode === 'member' ? (
+        <MemberPage />
+      ) : (
+        <TimelineView />
+      )}
     </motion.div>
   );
 }

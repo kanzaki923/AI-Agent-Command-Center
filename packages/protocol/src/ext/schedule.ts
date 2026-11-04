@@ -3,7 +3,7 @@
  * Schemas are fixed by the Core track; T6 implements them.
  */
 import { z } from 'zod';
-import { Actor, ScheduleId, SessionId, Timestamp } from '../common';
+import { Actor, CharacterId, ScheduleId, SessionId, Timestamp } from '../common';
 import { WorkspaceSpec } from '../domain';
 import { type MethodDef, Ok, params } from '../method';
 
@@ -39,6 +39,8 @@ export const ScheduleRunSpec = z.object({
   supervise: z.boolean(),
   /** Attach the previous firing's main output to the request. */
   includePrevious: z.boolean(),
+  /** The member who does each firing; null = none. */
+  characterId: CharacterId.nullable().default(null),
 });
 export type ScheduleRunSpec = z.infer<typeof ScheduleRunSpec>;
 
@@ -49,6 +51,7 @@ export const DEFAULT_SCHEDULE_RUN: ScheduleRunSpec = {
   budgetUsd: 1,
   supervise: false,
   includePrevious: true,
+  characterId: null,
 };
 
 export const ScheduleCatchUp = z.enum(['latest', 'skip']);
@@ -110,6 +113,7 @@ const RunInput = params({
   budgetUsd: z.number().positive().max(1000).optional(),
   supervise: z.boolean().optional(),
   includePrevious: z.boolean().optional(),
+  characterId: CharacterId.nullable().optional(),
 });
 
 const scheduleFields = {

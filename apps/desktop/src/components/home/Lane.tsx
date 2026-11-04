@@ -6,6 +6,7 @@ import { cn } from '../../lib/cn';
 import { OUTPUT_META, budgetTone, formatNextRun, sessionTitle } from '../../lib/states';
 import { useUnread } from '../../store/ui';
 import { CostMeter } from '../ui/CostMeter';
+import { MemberFaceOf } from '../ui/Face';
 import { OutputIcon, RoleIcon } from '../ui/SemanticIcons';
 import { SessionChip } from '../ui/SessionChip';
 import { StateIcon } from '../ui/StateIcon';
@@ -96,6 +97,7 @@ export function Lane({
           >
             {title}
           </button>
+          <MemberFaceOf characterId={root.characterId} size={16} />
           {unread && <UnreadDot />}
           {showRootState && <StateIcon state={root.state} />}
           {!hasChildren && root.now && root.state === 'working' && (

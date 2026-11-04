@@ -1,4 +1,11 @@
-import type { Artifact, InboxItem, Session, SessionState, WakeItemView } from '@acc/protocol';
+import {
+  type Artifact,
+  type InboxItem,
+  type Session,
+  type SessionState,
+  type WakeItemView,
+  isSpeaker,
+} from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
 import { deriveSessionState, readStateFacts } from '../home/state';
 import { textOfParts } from '../llm/messages';
@@ -60,7 +67,7 @@ export function speakerReply(
   ctx: DaemonContext,
   child: Session,
 ): { text: string; cut: boolean } | null {
-  if (!child.persona) return null;
+  if (!isSpeaker(child)) return null;
   const run = ctx.repos.runs.findOne({ where: { session_id: child.id } });
   const answer = latestAnswer(ctx, child.id);
   if (!run || !answer || answer.runId !== run.id) return null;

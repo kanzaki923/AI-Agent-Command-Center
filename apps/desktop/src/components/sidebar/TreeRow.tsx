@@ -8,6 +8,7 @@ import { cn } from '../../lib/cn';
 import { STATE_META, formatNextRun, isAlarm, isLongWork, sessionTitle } from '../../lib/states';
 import { useUi, useUnread } from '../../store/ui';
 import { Elapsed } from '../ui/Elapsed';
+import { MemberFaceOf } from '../ui/Face';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu';
 import { StateIcon } from '../ui/StateIcon';
 import { Tooltip } from '../ui/Tooltip';
@@ -153,6 +154,7 @@ export function TreeRow({
         {s.pinned && depth === 0 && <Pin size={11} strokeWidth={2} className="mr-1 inline text-fg-3" aria-label="ピン留め" />}
         {title}
       </span>
+      <MemberFaceOf characterId={s.characterId} size={14} className="pointer-events-none relative" />
       {unread && <UnreadDot className="pointer-events-none relative mx-1" />}
       {nextRunAt && <NextRun at={nextRunAt} />}
       {!hasChildren && longWork && (

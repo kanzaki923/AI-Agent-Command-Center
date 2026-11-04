@@ -280,6 +280,7 @@ describe('mock/right-hand through the real tool loop', () => {
     expect((await d.call(HUMAN, 'settings.get', {})).assistant).toEqual({
       model: null,
       dailyUsd: 0,
+      characterId: null,
     });
     const run = await ask(d, sessionId, '今どう？');
     expect(run.status).toBe('failed');

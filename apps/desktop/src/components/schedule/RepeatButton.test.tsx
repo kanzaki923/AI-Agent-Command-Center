@@ -22,6 +22,7 @@ function schedule(s: Session, over: Partial<Schedule> = {}): Schedule {
       mode: 'agent',
       workspace: { kind: 'none' },
       model: null,
+      characterId: null,
       budgetUsd: 1,
       supervise: false,
       includePrevious: true,

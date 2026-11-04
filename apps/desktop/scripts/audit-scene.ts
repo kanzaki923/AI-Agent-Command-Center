@@ -485,6 +485,21 @@ ${JSON.stringify(await detail(), null, 1)}` : '';
     (await chat('お詫びメールの下書き', '納品が 2 日遅れることを取引先に伝えるお詫びメールを書いて', 'mock/assistant')).runId,
   );
 
+  // ---------------------------------------------------------------- members (snapshot 20261104_members-spec)
+  const haku = await call('character.create', {
+    name: 'ハク',
+    profile: 'のんびり屋の白い犬。語尾はゆるいけど、数字には細かい。おにぎりは梅派。',
+    model: 'mock/assistant',
+  });
+  await call('character.create', {
+    name: 'レビュー役',
+    profile: '指摘は箇条書きで 3 つまで。直す理由と、直し方の例をつける。',
+  });
+  // Haku sits in the assistant's seat, and has a talk of its own.
+  await call('settings.update', { assistant: { characterId: haku.id } });
+  const talk = await call('session.create', { kind: 'chat', title: '週末なにする', characterId: haku.id });
+  await ended((await call('session.send', { sessionId: talk.id, content: '週末、雨みたい。なにしよう' })).runId);
+
   // ---------------------------------------------------------------- a schedule that already ran
   const morning = await call('session.create', { kind: 'chat', title: '朝のまとめ', model: 'mock/assistant' });
   const schedule = await call('schedule.create', {
@@ -501,7 +516,7 @@ ${JSON.stringify(await detail(), null, 1)}` : '';
       0,
     ),
     trigger: { kind: 'cron', expr: '0 9 * * *' },
-    run: { mode: 'agent', budgetUsd: 0.5 },
+    run: { mode: 'agent', budgetUsd: 0.5, characterId: haku.id },
   });
   const fired = await call('schedule.runNow', { scheduleId: schedule.id });
 
@@ -545,6 +560,9 @@ ${JSON.stringify(await detail(), null, 1)}` : '';
     async () => (await call('artifact.list', { sessionId: d.id, role: 'output' })).items.length > 0,
     () => explain(d.id),
   );
+  // One speaker of D is kept on the roster (the other two stay characters of that talk).
+  const minato = (await tree(d.id)).find((n) => n.title === 'ミナト');
+  if (minato) await call('character.keep', { sessionId: minato.id });
 
   // Last: a long answer still streaming while the UI is captured.
   const blog = await chat(
@@ -561,6 +579,7 @@ ${JSON.stringify(await detail(), null, 1)}` : '';
     c: c.id,
     d: d.id,
     morning: morning.id,
+    talk: talk.id,
     morningRun: fired.sessionId,
     blog: blog.session.id,
     aWorking: await byTitle(a.id, '競合 3 社の調査'),

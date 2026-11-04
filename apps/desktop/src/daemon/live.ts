@@ -40,7 +40,15 @@ export const HOME_REFETCH_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /** session.updated changes the home screen shows (others are covered by their own events). */
-const VISIBLE_SESSION_CHANGES = new Set(['title', 'pinned', 'projectId', 'archivedAt', 'parentSessionId']);
+const VISIBLE_SESSION_CHANGES = new Set([
+  'title',
+  'pinned',
+  'projectId',
+  'archivedAt',
+  'parentSessionId',
+  'characterId',
+  'speaks',
+]);
 
 function isVisibleSessionUpdate(e: Event): boolean {
   return e.type === 'session.updated' && e.payload.changes.some((c) => VISIBLE_SESSION_CHANGES.has(c));
@@ -222,6 +230,11 @@ export function createLiveViews(qc: QueryClient, opts: LiveViewsOptions = {}) {
         case 'artifact.created':
         case 'artifact.updated':
           debounce('outputs', slowMs, () => void qc.invalidateQueries({ queryKey: ['outputs'] }));
+          break;
+        case 'character.created':
+        case 'character.updated':
+        case 'character.reordered':
+          debounce('characters', slowMs, () => void qc.invalidateQueries({ queryKey: ['character'] }));
           break;
         case 'schedule.created':
         case 'schedule.updated':

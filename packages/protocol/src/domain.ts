@@ -4,6 +4,7 @@ import {
   ApprovalId,
   ArtifactId,
   BudgetId,
+  CharacterId,
   ErrorInfo,
   GrantId,
   IntegrationId,
@@ -241,6 +242,16 @@ const SessionObject = z.object({
    * outputs of its own.
    */
   persona: z.string().nullable().default(null),
+  /**
+   * The member (`character.*`) this conversation is with or that does this work. Its profile
+   * is read from the member at every run (not copied), so an edit counts from the next turn.
+   */
+  characterId: CharacterId.nullable().default(null),
+  /**
+   * A speaker: a child that talks as its member (session.spawn `speaker`). Its answers go to
+   * its parent as they are and it leaves no outputs. A child with a `persona` is one too.
+   */
+  speaks: z.boolean().default(false),
   /** Schedule whose firing created this session. */
   scheduleId: ScheduleId.nullable().default(null),
   supervision: Supervision.default('active'),
@@ -261,6 +272,11 @@ export const Session = SessionObject.transform((s) => ({
   rootSessionId: s.rootSessionId ?? s.id,
 }));
 export type Session = z.infer<typeof Session>;
+
+/** Whether a session is a speaker (talks as a character to its parent, leaves no outputs). */
+export function isSpeaker(s: Pick<Session, 'persona' | 'speaks' | 'parentSessionId'>): boolean {
+  return !!s.parentSessionId && (s.speaks || !!s.persona?.trim());
+}
 
 export const TextPart = z.object({ type: z.literal('text'), text: z.string() });
 export const ReasoningPart = z.object({ type: z.literal('reasoning'), text: z.string() });
@@ -1097,6 +1113,8 @@ export const AssistantSettings = z.object({
   model: z.string().min(1).nullable().default(null),
   /** USD per day for the assistant's own model calls; null = no limit. */
   dailyUsd: z.number().min(0).nullable().default(2),
+  /** The member sitting in the assistant's seat (its face, name and voice); null = none. */
+  characterId: CharacterId.nullable().default(null),
 });
 export type AssistantSettings = z.infer<typeof AssistantSettings>;
 
@@ -1199,7 +1217,7 @@ export const Settings = z.object({
     wakeDebounceMs: 1500,
     contextMessages: 40,
   }),
-  assistant: AssistantSettings.default({ model: null, dailyUsd: 2 }),
+  assistant: AssistantSettings.default({ model: null, dailyUsd: 2, characterId: null }),
   /**
    * USD reserved from a run's budget before each LLM call of chat / orchestrator runs and
    * settled with the actual cost afterwards. A call that cannot reserve this much is refused,

@@ -29,6 +29,8 @@
 //   60-palette              the palette with a search
 //   61-draft                Ctrl+N: the draft of a new conversation
 //   62-assistant            the conversation of the assistant (the fixed sidebar row)
+//   63-member-page          the page of a member (ハク, from the roster at the foot of the sidebar)
+//   64-member-talk          a conversation with a member (ハク)
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { log } from './harness.js';
@@ -245,6 +247,18 @@ export async function shoot({ url, out, theme, build }) {
     await calm();
     await snap('62-assistant');
     await home();
+  });
+  await step('member page', async () => {
+    await home();
+    await page.locator('[data-roster-member]').first().click();
+    await pause(900);
+    await calm();
+    await snap('63-member-page');
+    await home();
+  });
+  await step('member talk', async () => {
+    await open('週末なにする');
+    await snap('64-member-talk');
   });
 
   // Light theme, home once (a context of its own: the init script sets the theme).

@@ -9,6 +9,7 @@ import {
   type Session,
   type SystemActor,
   isTerminalRunStatus,
+  isSpeaker,
 } from '@acc/protocol';
 import type { InboxDeliverInput, InboxDeliverResult, InboxService } from '../contracts';
 import type { DaemonContext } from '../core/context';
@@ -372,7 +373,7 @@ export class Inbox implements InboxService {
     const { ctx } = this;
     const talking = ctx.repos.sessions
       .find({ where: { parent_session_id: sessionId, archived_at: null } })
-      .some((c) => !!c.persona && !!this.activeRun(c.id));
+      .some((c) => isSpeaker(c) && !!this.activeRun(c.id));
     if (!talking || pending.length === 0) return 0;
     const oldest = Math.min(...pending.map((i) => Date.parse(i.createdAt)));
     return Math.max(0, oldest + SPEAKERS_HOLD_MS - ctx.clock.now());

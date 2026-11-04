@@ -6,8 +6,11 @@ export type SettingsTab = 'general' | 'usage';
 /** How 利用統計 shows the use: bars, or a table of the figures. */
 export type UsageView = 'chart' | 'table';
 
-/** The three screens (ui-redesign spec §2): home (the app's face), one conversation, the timeline. */
-export type Mode = 'home' | 'session' | 'timeline';
+/**
+ * The screens (ui-redesign spec §2): home (the app's face), one conversation, the timeline,
+ * and the page of a member (snapshot 20261104_members-spec.md §6).
+ */
+export type Mode = 'home' | 'session' | 'timeline' | 'member';
 export type ThemePref = 'dark' | 'light' | 'system';
 export type MotionPref = 'system' | 'on' | 'off';
 /** Where the desktop shows through: the wings (title bar, sidebar, outputs panel) or everything. */
@@ -18,6 +21,7 @@ export type GlassStrength = 'weak' | 'mid' | 'strong';
 interface View {
   mode: Mode;
   sessionId: string | null;
+  memberId?: string | null;
 }
 
 export interface UiState {
@@ -27,6 +31,10 @@ export interface UiState {
    * mode 'session' is the draft of a new conversation (openDraft).
    */
   focusSessionId: string | null;
+  /** Member whose page mode 'member' shows. */
+  memberId: string | null;
+  /** Member the draft of a new conversation is with (null: nobody). */
+  draftMemberId: string | null;
   /** Keyboard selection on the home screen (an attention id or a session id). */
   selectedId: string | null;
   /** Keyboard selection in Timeline Mode (event seq or run header key). */
@@ -116,11 +124,14 @@ interface UiActions {
    * A new conversation that does not exist yet (Ctrl+N): mode 'session' without a session.
    * The first send creates it (spec §5.3) and then opens it.
    */
-  openDraft: () => void;
+  openDraft: (memberId?: string | null) => void;
+  setDraftMember: (memberId: string | null) => void;
   /** The home screen (Ctrl+1). */
   goHome: () => void;
   /** The timeline (Ctrl+2). */
   openTimeline: () => void;
+  /** The page of a member (recorded in back / forward). */
+  openMember: (characterId: string) => void;
   select: (id: string | null, viaKeyboard?: boolean) => void;
   setTimelineSelected: (key: string | null) => void;
   setProject: (projectId: string | null) => void;
@@ -181,6 +192,8 @@ export type UiStore = UiState & UiActions;
 const initial: UiState = {
   mode: 'home',
   focusSessionId: null,
+  memberId: null,
+  draftMemberId: null,
   selectedId: null,
   timelineSelected: null,
   projectId: null,
@@ -229,12 +242,17 @@ let jumpNonce = 0;
 /** Matches the acc-flash animation (index.css). */
 const FLASH_MS = 1700;
 
-const view = (s: UiState): View => ({ mode: s.mode, sessionId: s.focusSessionId });
+const view = (s: UiState): View => ({
+  mode: s.mode,
+  sessionId: s.focusSessionId,
+  memberId: s.memberId,
+});
 
 /** Screens of the old layout read as the new ones: 司令室 (command) is home, フォーカス (focus) a conversation. */
 export function normalizeMode(mode: unknown): Mode {
   if (mode === 'session' || mode === 'focus') return 'session';
   if (mode === 'timeline') return 'timeline';
+  if (mode === 'member') return 'member';
   return 'home';
 }
 
@@ -319,8 +337,10 @@ export const createUiStore = () =>
               forward: same ? s.forward : [],
             };
           }),
-        openDraft: () =>
+        setDraftMember: (draftMemberId) => set({ draftMemberId }),
+        openDraft: (memberId) =>
           set((s) => ({
+            ...(memberId !== undefined ? { draftMemberId: memberId } : {}),
             viewedAt: touchViewed(s, s.focusSessionId),
             mode: 'session',
             reviewIntegrationId: null,
@@ -336,6 +356,18 @@ export const createUiStore = () =>
           get().setMode('home');
         },
         openTimeline: () => get().setMode('timeline'),
+        openMember: (memberId) =>
+          set((s) =>
+            s.mode === 'member' && s.memberId === memberId
+              ? s
+              : {
+                  mode: 'member',
+                  memberId,
+                  reviewIntegrationId: null,
+                  back: pushBack(s),
+                  forward: [],
+                },
+          ),
         select: (id, viaKeyboard = false) =>
           set(viaKeyboard ? { selectedId: id, keyboardSelectAt: Date.now() } : { selectedId: id }),
         setTimelineSelected: (key) => set({ timelineSelected: key }),
@@ -405,6 +437,7 @@ export const createUiStore = () =>
             mode: prev.mode,
             reviewIntegrationId: null,
             focusSessionId: prev.mode === 'session' ? prev.sessionId : s.focusSessionId,
+            memberId: prev.mode === 'member' ? (prev.memberId ?? null) : s.memberId,
             back: s.back.slice(0, -1),
             forward: [...s.forward, view(s)],
           });
@@ -417,6 +450,7 @@ export const createUiStore = () =>
             mode: next.mode,
             reviewIntegrationId: null,
             focusSessionId: next.mode === 'session' ? next.sessionId : s.focusSessionId,
+            memberId: next.mode === 'member' ? (next.memberId ?? null) : s.memberId,
             forward: s.forward.slice(0, -1),
             back: [...s.back, view(s)],
           });

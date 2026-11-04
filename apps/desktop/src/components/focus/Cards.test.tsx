@@ -177,7 +177,9 @@ describe('speakers (children with a persona)', () => {
     expect(rows[0]).toHaveTextContent('前のめりな企画屋。');
     expect(rows[1]).toHaveTextContent('慎重なレビュアー。');
     expect(screen.queryByRole('region', { name: '計画' })).toBeNull();
-    fireEvent.click(within(rows[0]!).getByRole('button'));
+    // A speaker made on the spot can be kept on the roster.
+    expect(within(rows[0]!).getByRole('button', { name: /名簿に残す/ })).toBeInTheDocument();
+    fireEvent.click(within(rows[0]!).getAllByRole('button')[0]!);
     expect(useUi.getState().focusSessionId).toBe('ses_m');
   });
 

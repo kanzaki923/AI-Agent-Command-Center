@@ -138,6 +138,8 @@ describe('the plan (ui-rework spec §4.1)', () => {
       workspace: 'worktree',
       budgetUsd: 1,
       persona: null,
+      characterId: null,
+      speaker: false,
     });
     expect(spawnedSessionId(plan.spawns[0]!.output)).toBe('ses_kid');
     expect(spawnedSessionId(plan.spawns[1]!.output)).toBeNull();

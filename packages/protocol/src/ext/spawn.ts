@@ -3,7 +3,7 @@
  * Schemas are fixed by the Core track; T2 implements them.
  */
 import { z } from 'zod';
-import { BudgetId, ProjectId, RunId, SessionId } from '../common';
+import { BudgetId, CharacterId, ProjectId, RunId, SessionId } from '../common';
 import { PermissionPattern, ReviewBy, Session, WorkspaceSpec } from '../domain';
 import { type MethodDef, params } from '../method';
 
@@ -58,6 +58,15 @@ export const spawnMethods = {
         .optional()
         .describe(
           'mode chat only. Makes the child a speaker that plays this character for its whole conversation: a name, a personality, a stance or expertise, a way of talking. A speaker answers like one turn of a conversation; each answer comes back to you in full when you are woken, and it leaves no outputs of its own (publish the conclusion yourself). For discussions, brainstorming, debates and reviews from several viewpoints.',
+        ),
+      characterId: CharacterId.optional().describe(
+        'A member of the roster (character.list) who does this child: its profile, face and default model. Only when the person named the member.',
+      ),
+      speaker: z
+        .boolean()
+        .optional()
+        .describe(
+          'mode chat with characterId only: the member talks as a speaker in a discussion (like persona) instead of doing work',
         ),
       doneWhen: z
         .array(z.string().min(1).max(500))

@@ -6,6 +6,7 @@ import {
   type Run,
   type Session,
   api,
+  isSpeaker,
 } from '@acc/protocol';
 import type { RunExecutor } from '../contracts';
 import type { DaemonContext } from '../core/context';
@@ -23,7 +24,8 @@ import {
   toolNameForMethod,
 } from '../llm';
 import { rosterPromptBlock } from '../llm/roster';
-import { CHILD_ABILITIES, SPEAKER, framedUserText } from '../sessions/framing';
+import { characterFrame, characterRoster } from '../characters/frame';
+import { CHILD_ABILITIES, SPEAKER, framedUserText, memberOf, quote } from '../sessions/framing';
 import { chatHistory, chooseChatModel } from '../sessions/chat';
 import { orchestrationGrants } from './grant';
 
@@ -72,6 +74,10 @@ export function buildSupervisorPrompt(input: {
   maxModelCalls: number;
   /** The model roster (llm/roster.ts rosterPromptBlock), when one is set. */
   models?: string | null;
+  /** The roster of members (characters/frame.ts characterRoster), when there is one. */
+  members?: string | null;
+  /** The member this supervisor is (its root was given one), quoted by the caller. */
+  self?: string[] | null;
 }): string {
   const { project, grant } = input;
   const maxChildren = grant?.limits.maxChildren ?? grant?.limits.maxWorkers;
@@ -120,8 +126,22 @@ export function buildSupervisorPrompt(input: {
     );
   }
   if (input.models) lines.push('', input.models);
+  if (input.members) {
+    lines.push(
+      '',
+      input.members,
+      '- When the request names members of the team, give them the matching children with characterId: in a talk, speaker: true instead of a persona (their name is the title); in work, the child does it as that member. Never add a member nobody named.',
+    );
+  }
+  if (input.self?.length) lines.push(...input.self);
   lines.push('', 'Always write to the user in Japanese.');
   return lines.join('\n');
+}
+
+/** The member a supervisor leads the work as, framed like work (no voice in the outputs). */
+function supervisorSelf(ctx: DaemonContext, session: Session): string[] | null {
+  const member = memberOf(ctx, session);
+  return member ? characterFrame(member, 'work', quote) : null;
 }
 
 /**
@@ -188,7 +208,7 @@ export function treeSnapshot(ctx: DaemonContext, session: Session): string {
       .map((a) => `「${a.title}」(${a.id})`);
     const self = id === session.id ? '（この会話）' : '';
     lines.push(
-      `${'  '.repeat(d)}- [${s.id}] 「${s.title || '無題'}」${self} state=${currentState(ctx, s)}${s.persona ? ` ${SPEAKER_MARK}` : ''}${outputs.length > 0 ? ` outputs=${outputs.join(',')}` : ''}`,
+      `${'  '.repeat(d)}- [${s.id}] 「${s.title || '無題'}」${self} state=${currentState(ctx, s)}${isSpeaker(s) ? ` ${SPEAKER_MARK}` : ''}${outputs.length > 0 ? ` outputs=${outputs.join(',')}` : ''}`,
     );
   }
   if (ids.length <= 1) lines.push('  （子はまだいません）');
@@ -308,6 +328,8 @@ export function createOrchestratorExecutor(ctx: DaemonContext): RunExecutor {
         ctx.settings.get(),
         ctx.hasService('pricing') ? ctx.service('pricing').lookup : null,
       ),
+      members: characterRoster(ctx),
+      self: supervisorSelf(ctx, session),
     });
     await runToolLoop({
       ...common,

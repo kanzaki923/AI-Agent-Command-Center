@@ -33,6 +33,7 @@ import {
   Workspace,
 } from './domain';
 import { attentionEvents } from './ext/attention';
+import { characterEvents } from './ext/character';
 import { costEvents } from './ext/cost';
 import { homeEvents } from './ext/home';
 import { outputsEvents } from './ext/outputs';
@@ -172,6 +173,7 @@ export const eventPayloads = {
   ...costEvents,
   ...scheduleEvents,
   ...homeEvents,
+  ...characterEvents,
 } as const;
 
 export type EventPayloads = typeof eventPayloads;

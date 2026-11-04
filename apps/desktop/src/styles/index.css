@@ -53,6 +53,19 @@
   --series-3: #199e70;
   --series-4: #c98500;
 
+  /*
+   * Member faces (メンバー): one colour per member, fixed when it is made (the least used).
+   * The first four are the chart series; the name always sits next to the colour.
+   */
+  --member-1: var(--series-1);
+  --member-2: var(--series-2);
+  --member-3: var(--series-3);
+  --member-4: var(--series-4);
+  --member-5: #9b7cf0;
+  --member-6: #d65a9a;
+  --member-7: #2aa5b5;
+  --member-8: #8ea63a;
+
   --shadow-1: none;
   --shadow-2: 0 8px 24px rgb(0 0 0 / 0.45);
   --shadow-3: 0 24px 64px rgb(0 0 0 / 0.6);
@@ -113,6 +126,11 @@
   --series-2: #eb6834;
   --series-3: #1baf7a;
   --series-4: #eda100;
+
+  --member-5: #7a58d6;
+  --member-6: #c4447f;
+  --member-7: #16879a;
+  --member-8: #6d8a1c;
 
   --shadow-1: 0 1px 2px rgb(0 0 0 / 0.04);
   --shadow-2: 0 8px 24px rgb(0 0 0 / 0.1), 0 0 0 1px rgb(0 0 0 / 0.06);

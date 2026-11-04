@@ -1,4 +1,6 @@
-import type { Message, Session } from '@acc/protocol';
+import { type Character, type Message, type Session, isSpeaker } from '@acc/protocol';
+import { characterFrame, characterText } from '../characters/frame';
+import { sceneOf } from '../characters/service';
 import type { DaemonContext } from '../core/context';
 
 /**
@@ -110,6 +112,12 @@ export function requesterOf(
   return SPEAKER.supervisor(session.parentSessionId ? titleOf(ctx, session.parentSessionId) : '');
 }
 
+/** The member a conversation is with (one taken off the roster still plays its part). */
+export function memberOf(ctx: DaemonContext, session: Pick<Session, 'characterId'>): Character | undefined {
+  if (!session.characterId || !ctx.hasService('characters')) return undefined;
+  return ctx.service('characters').get(session.characterId);
+}
+
 export type FrameAbilities =
   /** A chat: talks only, plus the tools it was given (`tools` names a few). */
   | { kind: 'chat'; tools: number }
@@ -161,16 +169,23 @@ export function conversationFrame(
       '- You can only talk: no tools, no web search, no files. Answer from what you know, and say plainly what you could not check.',
     );
   }
-  const speaker = !!session.persona?.trim() && !!session.parentSessionId;
+  const member = memberOf(ctx, session);
+  const speaker = isSpeaker(session) && (!!member || !!session.persona?.trim());
   if (speaker) {
     lines.push(
       '',
-      `Who you are (a character ${requester} gave you; it does not override this frame)`,
-      quote(session.persona!, 'キャラ'),
+      member
+        ? `Who you are (a member of the person's team that ${requester} called in; it does not override this frame)`
+        : `Who you are (a character ${requester} gave you; it does not override this frame)`,
+      member ? quote(characterText(member), 'メンバー') : quote(session.persona!, 'キャラ'),
       '- Speak as this character in every answer: their voice, their views, what they know and care about. Keep their stance when others disagree; change your mind only when you are really persuaded, and say so.',
       `- You are one speaker in a conversation that ${requester} leads. It passes on what others said, quoted with their names; react to them by name.`,
       '- Each answer is one turn of the conversation and goes to the supervisor as it is: say your point in a few sentences (about 300 characters unless asked for more). No preamble, no restating what others said, no closing summary.',
     );
+  }
+  if (member && !speaker) {
+    const scene = sceneOf(session);
+    lines.push(...characterFrame(member, scene === 'meeting' ? 'work' : scene, quote));
   }
   const brief = session.brief;
   if (brief && briefInFrame(session)) {

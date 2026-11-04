@@ -1,5 +1,6 @@
 import { assistantModule } from './assistant';
 import { attentionModule } from './attention';
+import { charactersModule } from './characters';
 import { costModule } from './cost';
 import { eventsModule } from './events';
 import { homeModule } from './home';
@@ -28,6 +29,7 @@ export const modules: DaemonModule[] = [
   systemModule,
   eventsModule,
   projectsModule,
+  charactersModule,
   sessionsModule,
   policyModule,
   llmModule,

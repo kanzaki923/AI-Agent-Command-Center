@@ -112,6 +112,13 @@ export class Spawner implements SpawnerService {
     if (p.persona !== undefined && p.mode !== 'chat') {
       throw invalidParams('キャラ（persona）を持てるのは普通の会話（mode: chat）だけです');
     }
+    if (p.persona !== undefined && p.characterId !== undefined) {
+      throw invalidParams('キャラ（persona）とメンバー（characterId）はどちらか一方です');
+    }
+    if (p.speaker && (p.mode !== 'chat' || p.characterId === undefined)) {
+      throw invalidParams('話し手（speaker）になれるのは、メンバーのいる普通の会話（mode: chat）だけです');
+    }
+    if (p.characterId !== undefined) ctx.service('characters').requireActive(p.characterId);
     if (opts.supervise && p.mode !== 'chat') {
       throw invalidParams('子を率いる子（supervise）は普通の会話（mode: chat）だけです');
     }
@@ -285,6 +292,8 @@ export class Spawner implements SpawnerService {
         parentSessionId: parent?.id ?? null,
         brief,
         persona: p.persona ?? null,
+        characterId: p.characterId ?? null,
+        speaks: !!p.speaker,
         scheduleId: opts.scheduleId ?? null,
       },
       actor,
@@ -347,7 +356,7 @@ export class Spawner implements SpawnerService {
       type: 'orchestrator.decision',
       actor: SPAWNER_SYSTEM,
       payload: {
-        decision: p.persona
+        decision: p.persona || p.speaker
           ? `「${truncate(p.title, 60)}」に加わってもらいました`
           : `「${truncate(p.title, 60)}」を任せました`,
         rationale: truncate(firstLine(p.goal), 200),

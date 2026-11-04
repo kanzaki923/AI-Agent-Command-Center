@@ -4,6 +4,7 @@
  */
 export * from './assistant';
 export * from './attention';
+export * from './character';
 export * from './cost';
 export * from './home';
 export * from './outputs';

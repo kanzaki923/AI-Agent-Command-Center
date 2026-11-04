@@ -406,6 +406,9 @@ export class Scheduler implements SchedulerService {
     // A conversation on a built-in mock model (the demo) repeats on the mock too: a free tree
     // must not start spending on its own every week.
     const mock = !s.run.model && !!owner.model?.startsWith(MOCK_PREFIX);
+    // The member who does the firings; one taken off the roster since leaves them to no one.
+    const member = s.run.characterId ? this.ctx.service('characters').get(s.run.characterId) : undefined;
+    const characterId = member && !member.archivedAt ? member.id : undefined;
     return {
       parentSessionId: owner.id,
       title,
@@ -415,6 +418,7 @@ export class Scheduler implements SchedulerService {
       ...(projectId ? { projectId } : {}),
       ...(s.run.model ? { model: s.run.model } : {}),
       ...(mock ? (s.run.mode === 'agent' ? { runtime: 'mock' } : { model: OFFLINE_FALLBACK_MODEL }) : {}),
+      ...(characterId ? { characterId } : {}),
       budgetUsd: s.run.budgetUsd,
       reviewBy: 'none',
       start: true,

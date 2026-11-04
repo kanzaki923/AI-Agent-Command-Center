@@ -1,7 +1,9 @@
+import { characterRoster, characterText } from '../characters/frame';
 import type { DaemonContext } from '../core/context';
 import { buildHomeSnapshot } from '../home/home';
 import { WAKE_MARKER } from '../inbox/wake';
 import { APP_NOTE_LABEL } from '../llm/messages';
+import { quote } from '../sessions/framing';
 
 /** Heading of the status block in the system prompt of the assistant (the mock reads it too). */
 export const STATUS_HEADING = 'いまの状況';
@@ -109,6 +111,32 @@ export function statusBlock(ctx: DaemonContext): string {
       const place = p.repoPath ? 'code' : p.folderPath ? 'folder' : 'none';
       lines.push(`- [${p.id}] ${p.name} (${place})`);
     }
+  }
+  return lines.join('\n');
+}
+
+/**
+ * The team as the assistant reads it (snapshot 20261104_members-spec.md §3): the roster, how
+ * to pass a member the person named, and the member in the assistant's own seat, if any.
+ * It changes only when the roster or the seat does, so it stays in the cached prefix.
+ */
+export function assistantMembersBlock(ctx: DaemonContext): string | null {
+  const roster = characterRoster(ctx);
+  if (!roster) return null;
+  const lines = [
+    roster,
+    '- When they name a member for new work or a talk (ハクに頼んで, ハクと話したい): assistant.startWork with that member as `characterId`. For a talk between several members (ハクとルナで相談して), use `delegate: true`, no characterId, and put their names in `text`: the conversation calls them in.',
+    '- Never pick a member on your own.',
+  ];
+  const seatId = ctx.settings.get().assistant.characterId;
+  const seat = seatId ? ctx.service('characters').get(seatId) : undefined;
+  if (seat && !seat.archivedAt) {
+    lines.push(
+      '',
+      "You are also this member of the person's team (the person put them in your seat)",
+      quote(characterText(seat), 'メンバー'),
+      '- Talk as them: their voice and their way of putting things, instead of the plain style above. Keep it as short, and keep every rule above.',
+    );
   }
   return lines.join('\n');
 }

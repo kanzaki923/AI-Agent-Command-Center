@@ -1,7 +1,21 @@
 import type { Approval, SessionBrief, SessionCard, SessionState, WakeItemView } from '@acc/protocol';
-import { ChevronRight, Circle, CircleCheck, Coins, CornerDownLeft, Diamond, Drama, ShieldCheck, ShieldX } from 'lucide-react';
+import {
+  BookmarkPlus,
+  ChevronRight,
+  Circle,
+  CircleCheck,
+  Coins,
+  CornerDownLeft,
+  Diamond,
+  ShieldCheck,
+  ShieldX,
+  UsersRound,
+} from 'lucide-react';
 import { type ReactNode, useState } from 'react';
+import { keepMember, useAllMembers } from '../../daemon/members';
 import { useProjects, useWorkspace } from '../../daemon/queries';
+import { useRuntime } from '../../daemon/runtime';
+import { toast } from '../../store/toast';
 import { cn } from '../../lib/cn';
 import { formatClock } from '../../lib/format';
 import { describeApproval } from '../../model/approval';
@@ -12,7 +26,7 @@ import { StateIcon } from '../ui/StateIcon';
 import { Tooltip } from '../ui/Tooltip';
 import type { ToolCallView } from '../../model/chat';
 import { spawnRequest, spawnedSessionId, stripMachineBlocks } from './conversation';
-import { SpeakerMark, Speech, speakerTones, useSpeakerTones } from './Speech';
+import { SpeakerMark, Speech, type Voice, speakerTones, useMemberVoice, useSpeakerTones } from './Speech';
 
 const NONE: never[] = [];
 
@@ -56,7 +70,7 @@ export function BriefCard({
   card: SessionCard | null;
   workspaceId: string | null;
   /** A speaker's character: who it plays, above what it was asked first. */
-  speaker?: { title: string; persona: string; tone: number | undefined } | null;
+  speaker?: { title: string; persona: string; tone: number | Voice | undefined } | null;
 }) {
   const [open, setOpen] = useState(false);
   const goal = stripMachineBlocks(brief.goal);
@@ -268,14 +282,15 @@ export function PlanCard({
   children: readonly SessionCard[];
 }) {
   const openSession = useUi((s) => s.openSession);
+  const voice = useMemberVoice();
   const rows = spawns.map((call) => {
     const req = spawnRequest(call.input);
     const id = spawnedSessionId(call.output);
     const child = (id && children.find((c) => c.id === id)) || children.find((c) => c.title === req.title) || null;
     return { call, req, child };
   });
-  if (rows.length > 0 && rows.every((r) => r.req.persona)) {
-    return <CastCard rows={rows} rationale={rationale} tones={speakerTones(children)} />;
+  if (rows.length > 0 && rows.every((r) => r.req.persona || r.req.speaker)) {
+    return <CastCard rows={rows} rationale={rationale} tones={speakerTones(children, voice)} />;
   }
   return (
     <section aria-label="計画" data-plan className="flex flex-col rounded-md bg-surface">
@@ -335,21 +350,25 @@ function CastCard({
 }: {
   rows: { call: ToolCallView; req: ReturnType<typeof spawnRequest>; child: SessionCard | null }[];
   rationale: string | null;
-  tones: Map<string, number>;
+  tones: Map<string, Voice>;
 }) {
   const openSession = useUi((s) => s.openSession);
+  const members = useAllMembers();
   return (
     <section aria-label="話し手" data-cast className="flex flex-col rounded-md bg-surface">
       <div className="flex min-h-9 items-center gap-2 px-3 pt-2 pb-1">
-        <Drama size={14} strokeWidth={1.75} className="text-fg-2" aria-hidden />
+        <UsersRound size={14} strokeWidth={1.75} className="text-fg-2" aria-hidden />
         <span className="text-ui font-medium text-fg">{rows.length} 人で話す</span>
       </div>
       {rationale && <div className="selectable px-3 pb-1 text-meta text-fg-2">{rationale}</div>}
       <ul className="flex flex-col py-1">
         {rows.map(({ call, req, child }, i) => {
           const title = child ? sessionTitle(child) : req.title || '話し手';
+          const memberId = child?.characterId ?? req.characterId;
+          const member = memberId ? members.find((m) => m.id === memberId) : undefined;
+          const line = (member?.profile ?? req.persona ?? '').split('\n')[0];
           return (
-            <li key={call.id}>
+            <li key={call.id} className="group/cast relative">
               <button
                 type="button"
                 data-cast-row={child?.id ?? undefined}
@@ -359,12 +378,42 @@ function CastCard({
               >
                 <SpeakerMark title={title} tone={child ? tones.get(child.id) : i} />
                 <span className="min-w-0 truncate text-fg">{title}</span>
-                <span className="min-w-0 truncate text-meta text-fg-3">{req.persona?.split('\n')[0]}</span>
+                <span className="min-w-0 truncate text-meta text-fg-3">{line}</span>
               </button>
+              {child && !member && req.persona && <KeepButton sessionId={child.id} name={title} />}
             </li>
           );
         })}
       </ul>
     </section>
+  );
+}
+
+/** Keep a speaker made on the spot as a member of the roster (it then has a page and a face). */
+function KeepButton({ sessionId, name }: { sessionId: string; name: string }) {
+  const rt = useRuntime();
+  const openMember = useUi((s) => s.openMember);
+  return (
+    <Tooltip content="名簿に残す">
+      <button
+        type="button"
+        data-keep={sessionId}
+        aria-label={`「${name}」を名簿に残す`}
+        onClick={() =>
+          void keepMember(rt, sessionId).then((m) => {
+            if (!m) return;
+            toast({
+              title: `「${m.name}」を名簿に残しました`,
+              tone: 'success',
+              sticky: false,
+              action: { label: '開く', run: () => openMember(m.id) },
+            });
+          })
+        }
+        className="absolute top-1/2 right-2 flex size-6 -translate-y-1/2 items-center justify-center rounded-sm text-fg-3 opacity-0 group-hover/cast:opacity-100 hover:bg-selected hover:text-fg focus-visible:opacity-100"
+      >
+        <BookmarkPlus size={14} strokeWidth={1.75} aria-hidden />
+      </button>
+    </Tooltip>
   );
 }

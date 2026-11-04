@@ -111,6 +111,22 @@ describe('formatEvent', () => {
     expect(line).toContain('run_a');
     expect(line).toContain('[system(recovery)]');
   });
+
+  it('names a member that was added to the roster', () => {
+    const e = {
+      seq: 8,
+      id: 'evt_y',
+      ts: '2026-01-01T00:00:00.000Z',
+      actor: { kind: 'human' },
+      projectId: null,
+      sessionId: null,
+      runId: null,
+      taskId: null,
+      type: 'character.created',
+      payload: { character: { id: 'chr_a', name: 'ハク' } },
+    } as Event;
+    expect(formatEvent(e)).toContain('ハク');
+  });
 });
 
 function captureIo(env: NodeJS.ProcessEnv, interrupted: Promise<void> = new Promise(() => {})) {

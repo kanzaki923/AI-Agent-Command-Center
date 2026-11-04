@@ -3,6 +3,7 @@ import {
   ApprovalId,
   ArtifactId,
   BudgetId,
+  CharacterId,
   Cursor,
   ErrorInfo,
   GrantId,
@@ -65,6 +66,7 @@ import {
 import { Event, EventFilter } from './events';
 import { attentionMethods } from './ext/attention';
 import { assistantMethods } from './ext/assistant';
+import { characterMethods } from './ext/character';
 import { providerMethods } from './ext/providers';
 import { costMethods } from './ext/cost';
 import { StreamingMessage, homeMethods } from './ext/home';
@@ -343,6 +345,7 @@ export const api = defineApi({
       assistant: params({
         model: z.string().min(1).nullable().optional().describe('null follows defaultModel'),
         dailyUsd: z.number().min(0).nullable().optional().describe('null removes the limit'),
+        characterId: CharacterId.nullable().optional().describe('The member in the seat; null: none'),
       }).optional(),
       providers: params({
         anthropic: params({
@@ -464,6 +467,9 @@ export const api = defineApi({
       workspace: WorkspaceSpec.optional().describe(
         'Where an agent session works: none (scratch), folder or worktree',
       ),
+      characterId: CharacterId.optional().describe(
+        'The member this conversation is with (its model is used unless `model` is given)',
+      ),
     }),
     result: Session,
     description:
@@ -499,6 +505,9 @@ export const api = defineApi({
       pinned: z.boolean().optional(),
       projectId: ProjectId.nullable().optional(),
       workspaceId: WorkspaceId.nullable().optional().describe('Humans only'),
+      characterId: CharacterId.nullable()
+        .optional()
+        .describe('Humans only, and only before anything was said in the conversation'),
     }),
     result: Session,
     description: 'Update session properties.',
@@ -1103,6 +1112,7 @@ export const api = defineApi({
   ...scheduleMethods,
   ...homeMethods,
   ...assistantMethods,
+  ...characterMethods,
   ...providerMethods,
 });
 

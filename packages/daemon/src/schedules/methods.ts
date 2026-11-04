@@ -20,6 +20,11 @@ const DEFAULT_TITLE_CHARS = 40;
 
 type RunInput = NonNullable<Params<'schedule.create'>['run']>;
 
+/** A member given to a schedule must be on the roster. */
+function assertMember(ctx: DaemonContext, input: RunInput | undefined): void {
+  if (input?.characterId) ctx.service('characters').requireActive(input.characterId);
+}
+
 function mergeRun(base: ScheduleRunSpec, input: RunInput | undefined): ScheduleRunSpec {
   const out = { ...base };
   for (const [k, v] of Object.entries(input ?? {})) {
@@ -138,6 +143,7 @@ export function scheduleMethods(ctx: DaemonContext, scheduler: Scheduler) {
         assertNoSupervise(call.actor, p.run);
         if (call.actor.kind === 'agent') assertScheduleLimit(ctx, call.actor);
         const trigger = normalizeTrigger(p.trigger, defaultTz());
+        assertMember(ctx, p.run);
         const run = mergeRun(DEFAULT_SCHEDULE_RUN, p.run);
         assertWorkspace(ctx, run, call.actor, owner);
         const nowMs = ctx.clock.now();
@@ -221,6 +227,7 @@ export function scheduleMethods(ctx: DaemonContext, scheduler: Scheduler) {
         const cur = ctx.repos.schedules.require(p.scheduleId);
         assertAgentMayChange(call.actor, cur);
         assertNoSupervise(call.actor, p.run);
+        assertMember(ctx, p.run);
         const next: Schedule = {
           ...cur,
           ...(p.title !== undefined ? { title: p.title } : {}),

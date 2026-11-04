@@ -11,6 +11,7 @@ import { useUi } from '../../store/ui';
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '../ui/Menu';
 import { Tooltip } from '../ui/Tooltip';
 import { composerKeyAction } from './Composer';
+import { MemberPicker } from '../members/MemberPicker';
 import { ModelPicker } from './ModelPicker';
 
 const NONE: never[] = [];
@@ -81,6 +82,8 @@ export function Draft() {
   const setDraft = useUi((s) => s.setDraft);
   const [place, setPlace] = useState<DraftPlace>('none');
   const [model, setModel] = useState<string | null>(null);
+  const memberId = useUi((s) => s.draftMemberId);
+  const setMember = useUi((s) => s.setDraftMember);
   const [sending, setSending] = useState(false);
   const composing = useRef(false);
   const project = projects.find((p) => p.id === projectId) ?? null;
@@ -99,11 +102,18 @@ export function Draft() {
     const go = async () => {
       setSending(true);
       const workspace = workspaceFor(effective, project) ?? undefined;
-      const s = await startConversation(rt, { text: t, projectId: project?.id ?? null, workspace, model });
+      const s = await startConversation(rt, {
+        text: t,
+        projectId: project?.id ?? null,
+        workspace,
+        model,
+        characterId: memberId,
+      });
       setSending(false);
       // Not created: the words stay in the field.
       if (!s) return;
       setDraft(DRAFT_KEY, '');
+      setMember(null);
       useUi.getState().openSession(s.id);
     };
     if (!promptConnectionThen(settings, () => void go())) void go();
@@ -148,6 +158,9 @@ export function Draft() {
             className="block max-h-[296px] w-full resize-none bg-transparent px-3.5 pt-3 pb-1 text-chat text-fg placeholder:text-fg-4"
           />
           <div className="flex h-9 items-center gap-1 px-2 pb-1">
+            <span className="flex px-1">
+              <MemberPicker value={memberId} onChange={setMember} label="会話の相手" />
+            </span>
             {projects.length > 0 && (
               <>
                 <Menu>

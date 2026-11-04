@@ -3,11 +3,14 @@ import type { ReactNode } from 'react';
 import { newChat } from '../../app/commands';
 import { useAssistantId } from '../../daemon/assistant';
 import { useHomeSelect } from '../../daemon/home';
-import { useSessions } from '../../daemon/queries';
+import { useAssistantSeat } from '../../daemon/members';
+import { useSessions, useSettings } from '../../daemon/queries';
 import { cn } from '../../lib/cn';
 import type { ShortcutId } from '../../lib/shortcuts';
 import { useUi, useUnread } from '../../store/ui';
+import { Roster } from '../members/Roster';
 import { ConversationTree } from '../sidebar/ConversationTree';
+import { MemberFace } from '../ui/Face';
 import { Kbd } from '../ui/Kbd';
 import { NumberRoll } from '../ui/Meta';
 import { ResizeHandle } from '../ui/ResizeHandle';
@@ -58,9 +61,17 @@ function AssistantRow() {
   const active = useUi((s) => s.mode === 'session' && !!id && s.focusSessionId === id);
   const openSession = useUi((s) => s.openSession);
   const unread = useUnread(session ?? { id: '', state: 'idle', stateSince: null });
+  // A member in the assistant's seat lends it its face and name; the seat stays 右腕.
+  const seat = useAssistantSeat(useSettings().data?.assistant?.characterId);
   if (!id) return null;
   return (
-    <NavRow icon={<Diamond size={15} strokeWidth={1.75} />} label="右腕" active={active} onClick={() => openSession(id)}>
+    <NavRow
+      icon={seat ? <MemberFace member={seat} size={16} /> : <Diamond size={15} strokeWidth={1.75} />}
+      label={seat ? seat.name : '右腕'}
+      active={active}
+      onClick={() => openSession(id)}
+    >
+      {seat && <span className="text-micro text-fg-3 group-hover:hidden">右腕</span>}
       {unread && <UnreadDot className="group-hover:hidden" />}
     </NavRow>
   );
@@ -98,6 +109,10 @@ export function Sidebar() {
 
       <div className="mt-3 min-h-0 flex-1 overflow-y-auto border-t border-line-subtle px-2 pt-2 pb-2">
         <ConversationTree />
+      </div>
+
+      <div className="border-t border-line-subtle">
+        <Roster />
       </div>
 
       <div className="flex h-11 items-center gap-2 border-t border-line-subtle px-2 pr-4 text-ui text-fg-2">

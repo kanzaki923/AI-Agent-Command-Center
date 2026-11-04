@@ -5,7 +5,7 @@
  * here widens it.
  */
 import { z } from 'zod';
-import { ProjectId, SessionId } from '../common';
+import { CharacterId, ProjectId, SessionId } from '../common';
 import { Session, WorkspaceSpec } from '../domain';
 import { type MethodDef, empty, params } from '../method';
 
@@ -41,6 +41,9 @@ export const assistantMethods = {
         "Where a single agent works (delegate false): a folder or a project's code (worktree). With delegate true the children get it instead.",
       ),
       model: z.string().min(1).optional(),
+      characterId: CharacterId.optional().describe(
+        'The member (from the roster in your instructions) the person asked to do or talk about this; only when they named one',
+      ),
     }),
     result: z.object({ session: Session }),
     description:

@@ -33,7 +33,7 @@ const VIEW: SettingsView = {
   maxConcurrentChats: 16,
   limits: { dailyUsd: 20, timezone: 'Asia/Tokyo' },
   autoResume: true,
-  assistant: { model: null, dailyUsd: 2 },
+  assistant: { model: null, dailyUsd: 2, characterId: null },
   providers: {
     anthropic: { baseUrl: null, hasApiKey: false, apiKeyMasked: null },
     openai: { baseUrl: null, hasApiKey: false, apiKeyMasked: null, chatgpt: null },

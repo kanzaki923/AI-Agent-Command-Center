@@ -58,7 +58,12 @@ export function summarizeEvent(e: Event): string {
     case 'message.updated':
     case 'artifact.updated':
     case 'schedule.updated':
+    case 'character.updated':
       return `changed: ${e.payload.changes.join(', ') || '-'}`;
+    case 'character.created':
+      return e.payload.character.name;
+    case 'character.reordered':
+      return `${e.payload.characterIds.length} members`;
     case 'session.created':
       return `${e.payload.session.kind} "${e.payload.session.title || '(無題)'}"`;
     case 'session.archived':

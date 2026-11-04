@@ -8,6 +8,7 @@ import {
   type SessionCard,
   type SessionRole,
   matchAnyPattern,
+  isSpeaker,
 } from '@acc/protocol';
 import { ASSISTANT_COMPONENT } from '../assistant/permissions';
 import type { DaemonContext } from '../core/context';
@@ -134,7 +135,7 @@ export function startedBy(s: Session): SessionCard['startedBy'] {
 export function roleOf(s: Session, facts: CardFacts): SessionRole {
   if (s.id === facts.assistantId) return 'assistant';
   if (facts.supervisors.has(s.id)) return 'supervisor';
-  return s.persona ? 'speaker' : s.kind;
+  return isSpeaker(s) ? 'speaker' : s.kind;
 }
 
 /** One session as a chip (home.get, session.tree). */
@@ -151,6 +152,7 @@ export function toCard(s: Session, depth: number, facts: CardFacts): SessionCard
     now: s.now,
     costUsd: s.cost.ownUsd,
     model: s.model,
+    characterId: s.characterId,
     budget: budget ? { limitUsd: budget.limitUsd, usedUsd: budget.spentUsd } : null,
     outputs: facts.outputs.get(s.id) ?? [],
     attentionIds: facts.attention.get(s.id) ?? [],

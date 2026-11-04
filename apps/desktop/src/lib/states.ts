@@ -14,7 +14,6 @@ import {
   Clock,
   Coins,
   Diamond,
-  Drama,
   Eye,
   FileText,
   Files,
@@ -31,6 +30,7 @@ import {
   ShieldQuestion,
   Table,
   TriangleAlert,
+  UserRound,
 } from 'lucide-react';
 
 /**
@@ -102,7 +102,7 @@ export const ROLE_META: Record<SessionRole, { icon: LucideIcon; label: string; f
   agent: { icon: Bot, label: 'エージェント', filled: false },
   supervisor: { icon: Diamond, label: '任せた会話', filled: true },
   assistant: { icon: Diamond, label: '右腕', filled: false },
-  speaker: { icon: Drama, label: 'キャラ', filled: false },
+  speaker: { icon: UserRound, label: 'メンバー', filled: false },
 };
 
 /** Who started a session; `ai` has no mark (the tree position says it). */

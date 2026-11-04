@@ -22,7 +22,13 @@ import {
   MAX_TREES_PER_MESSAGE,
 } from './permissions';
 import type { AssistantNotifier } from './notify';
-import { HINT_LABEL, MODEL_HINT_LABEL, buildAssistantPrompt, statusBlock } from './prompt';
+import {
+  HINT_LABEL,
+  MODEL_HINT_LABEL,
+  assistantMembersBlock,
+  buildAssistantPrompt,
+  statusBlock,
+} from './prompt';
 
 /** Longest title taken from a request (the rest is in the conversation). */
 export const REQUEST_TITLE_MAX = 40;
@@ -132,6 +138,7 @@ export class AssistantService {
           this.ctx.hasService('pricing') ? this.ctx.service('pricing').lookup : null,
         ),
       }),
+      assistantMembersBlock(this.ctx),
       session.systemPrompt,
     ]
       .filter(Boolean)
@@ -240,6 +247,7 @@ export class AssistantService {
       ...(projectId ? { projectId } : {}),
       ...(model ? { model } : {}),
       ...(workspace ? { workspace } : {}),
+      ...(p.characterId ? { characterId: p.characterId } : {}),
     });
     if (p.delegate) {
       delegateSession(

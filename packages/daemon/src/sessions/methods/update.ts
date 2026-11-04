@@ -1,7 +1,7 @@
 import type { Session } from '@acc/protocol';
 import { defineMethod } from '../../api/registry';
 import type { DaemonContext } from '../../core/context';
-import { forbidden, invalidParams } from '../../core/errors';
+import { conflict, forbidden, invalidParams } from '../../core/errors';
 import { assertRosterModel } from '../../llm/roster';
 import { sessionScope } from './shared';
 
@@ -20,6 +20,14 @@ export function sessionUpdate(ctx: DaemonContext) {
         // moved later, an agent could put a child in any workspace a human made.
         if (call.actor.kind === 'agent' && p.workspaceId !== undefined) {
           throw forbidden('会話の作業場所を付け替えられるのは人だけです');
+        }
+        if (p.characterId !== undefined) {
+          // Who the conversation is with is the person's to choose, and only before anything
+          // was said: a member changed later would contradict what was said before.
+          if (call.actor.kind === 'agent') throw forbidden('会話の相手を選べるのは人だけです');
+          if (p.characterId) ctx.service('characters').requireActive(p.characterId);
+          const said = repos.messages.count({ where: { session_id: p.sessionId } });
+          if (said > 0) throw conflict('話し始めた会話の相手は替えられません');
         }
         if (p.model) {
           const s = repos.sessions.require(p.sessionId);
@@ -56,6 +64,11 @@ export function sessionUpdate(ctx: DaemonContext) {
           assign('pinned', p.pinned);
           assign('projectId', p.projectId);
           assign('workspaceId', p.workspaceId);
+          assign('characterId', p.characterId);
+          // A member brings its model, as when a conversation is made with it.
+          if (p.characterId && p.model === undefined) {
+            assign('model', ctx.service('characters').get(p.characterId)?.model ?? undefined);
+          }
           if (changes.length > 0) next.updatedAt = ctx.clock.iso();
           return next;
         });

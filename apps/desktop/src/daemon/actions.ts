@@ -248,6 +248,8 @@ export async function startConversation(
     /** Start delegated (it leads children on its own) with the daemon's defaults. */
     delegate?: boolean;
     model?: string | null;
+    /** The member the conversation is with. */
+    characterId?: string | null;
   },
 ): Promise<Session | null> {
   const workspace =
@@ -259,6 +261,7 @@ export async function startConversation(
       ...(input.projectId ? { projectId: input.projectId } : {}),
       ...(workspace ? { workspace } : {}),
       ...(input.model ? { model: input.model } : {}),
+      ...(input.characterId ? { characterId: input.characterId } : {}),
     });
     upsertIn(rt.queryClient, qk.sessions, session, (a, b) =>
       b.lastActivityAt.localeCompare(a.lastActivityAt),

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import type { Actor, Artifact, Run, Workspace } from '@acc/protocol';
+import { type Actor, type Artifact, type Run, type Workspace, isSpeaker } from '@acc/protocol';
 import type { FinalizeResult, OutputsService } from '../contracts';
 import type { DaemonContext } from '../core/context';
 import { textOfParts } from '../llm/messages';
@@ -61,7 +61,7 @@ export class Outputs implements OutputsService {
     }
     // A speaker's turns are words in a conversation, not results: they go to the parent in
     // its wake message, and the parent publishes the conclusion.
-    if (completed && outputs.length === 0 && !session?.persona) {
+    if (completed && outputs.length === 0 && !(session && isSpeaker(session))) {
       const text = own.find((a) => a.source === 'final_message') ?? this.recordFinalText(run);
       if (text) outputs.push(text);
     }

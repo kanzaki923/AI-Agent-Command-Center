@@ -6,6 +6,7 @@ import { cn } from '../../lib/cn';
 import { shortModel } from '../../lib/models';
 import { LONG_WORK_MS, OUTPUT_META, STATE_META, formatSince, formatUsd, isAlarm, isLongWork, isSettled, sessionTitle } from '../../lib/states';
 import { Elapsed } from './Elapsed';
+import { MemberFaceOf } from './Face';
 import { OutputIcon, RoleIcon } from './SemanticIcons';
 import { StateIcon } from './StateIcon';
 import { Tooltip } from './Tooltip';
@@ -95,6 +96,7 @@ export function SessionChip({
           <span className={cn('min-w-0 flex-1 truncate font-medium text-fg', size === 'md' ? 'text-[14px] leading-5' : 'text-meta')}>
             {title}
           </span>
+          <MemberFaceOf characterId={card.characterId} size={size === 'md' ? 16 : 14} />
           {card.startedBy === 'schedule' && <RoleIcon role={card.role} scheduled size={12} className="text-fg-3" />}
         </span>
         <span className={cn('relative flex h-4 min-w-0 items-center gap-1 pl-5 text-meta', size === 'sm' && 'pl-[19px]')}>

@@ -3,7 +3,15 @@
  * 20261029 §2.2, §3.7, §6). Schemas are fixed by the Core track; T7 implements them.
  */
 import { z } from 'zod';
-import { ArtifactId, AttentionId, ProjectId, ScheduleId, SessionId, Timestamp } from '../common';
+import {
+  ArtifactId,
+  AttentionId,
+  CharacterId,
+  ProjectId,
+  ScheduleId,
+  SessionId,
+  Timestamp,
+} from '../common';
 import { SessionState } from '../domain';
 import { type MethodDef, params } from '../method';
 import { Attention } from './attention';
@@ -39,6 +47,8 @@ export const SessionCard = z.object({
   costUsd: z.number(),
   /** The session's model (null: the roster's last row). Absent from older daemons. */
   model: z.string().nullable().optional(),
+  /** The member of the session (its face is shown). Absent from older daemons. */
+  characterId: CharacterId.nullable().optional(),
   budget: z.object({ limitUsd: z.number(), usedUsd: z.number() }).nullable(),
   /** Latest 3 outputs. */
   outputs: z.array(z.object({ id: ArtifactId, kind: OutputKind, title: z.string() })).max(3),
