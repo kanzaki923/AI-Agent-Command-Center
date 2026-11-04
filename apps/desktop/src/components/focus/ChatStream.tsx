@@ -36,9 +36,10 @@ import { Kbd } from '../ui/Kbd';
 import { Skeleton, TimeStamp } from '../ui/Meta';
 import { Tooltip } from '../ui/Tooltip';
 import { ApprovalLine, BriefCard, FromLine, PlanCard, WakeCard } from './Cards';
-import { type ConversationBlock, buildBaseBlocks, stripMachineBlocks, toConversationBlocks } from './conversation';
+import { type ConversationBlock, buildBaseBlocks, forwardedParts, stripMachineBlocks, toConversationBlocks } from './conversation';
 import { Markdown } from './Markdown';
 import { ToolGroup } from './ToolBlocks';
+import { Speech, useSpeakerTones } from './Speech';
 
 const NONE: never[] = [];
 
@@ -70,6 +71,9 @@ function MessageActions({ children }: { children: ReactNode }) {
 
 /** What the screen shows of a message the person (or the leading conversation) wrote. */
 function displayText(message: ChatMessage): string {
+  // Quotes of others are shown as their words above; the bubble holds the sender's own text.
+  const forwarded = forwardedParts(message);
+  if (forwarded) return stripMachineBlocks(forwarded.own);
   const text = messageText(message);
   if (message.meta?.kind === 'answer') return message.meta.choiceLabel ?? text.replace(/^回答[:：]\s*/, '');
   return stripMachineBlocks(text);
@@ -134,9 +138,11 @@ function UserBlock({ message, editable }: { message: ChatMessage; editable: bool
     );
   }
   const folded = long && !expanded;
+  const quotes = forwardedParts(message)?.quotes ?? null;
   return (
     <div className="group/msg relative flex flex-col gap-1" data-delivery={message.delivery}>
       <Origin message={message} />
+      {quotes && quotes.length > 0 && <Forwarded quotes={quotes} sessionId={message.sessionId} />}
       <div className="flex items-end gap-1.5">
         <div
           className={cn(
@@ -355,7 +361,22 @@ const ConversationContext = createContext<ConversationCtx>({
 
 function Brief({ block }: { block: ConversationBlock & { kind: 'brief' } }) {
   const { session, card } = use(ConversationContext);
-  return <BriefCard brief={block.brief} card={card} workspaceId={session?.workspaceId ?? null} />;
+  const tones = useSpeakerTones(session?.persona ? session.id : null);
+  const speaker =
+    session?.persona ? { title: sessionTitle(session), persona: session.persona, tone: tones.get(session.id) } : null;
+  return <BriefCard brief={block.brief} card={card} workspaceId={session?.workspaceId ?? null} speaker={speaker} />;
+}
+
+/** What others said, passed on to this conversation with a message (`meta.forward`). */
+function Forwarded({ quotes, sessionId }: { quotes: { sessionId: string; title: string; text: string }[]; sessionId: string }) {
+  const tones = useSpeakerTones(sessionId);
+  return (
+    <div data-forwarded className="flex flex-col gap-2 border-l-2 border-line pl-3">
+      {quotes.map((q, i) => (
+        <Speech key={`${q.sessionId}:${i}`} sessionId={q.sessionId} title={q.title} text={q.text} tone={tones.get(q.sessionId)} compact />
+      ))}
+    </div>
+  );
 }
 
 /** The plan card reads the conversation's children from its tree (live states). */

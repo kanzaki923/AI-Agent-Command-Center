@@ -19,6 +19,8 @@
 //   35-child-code-review    B's child waiting for review of code, with the outputs panel
 //   36-child-approval       B's child waiting for a command approval
 //   37-chat-streaming       a plain chat still being written (opened mid-stream)
+//   38-discussion           conversation D: three speakers talking, led by its supervisor
+//   39-speaker              one speaker of D (its character, the words passed to it)
 //   40-settings             settings
 //   41-cost-popover         the title bar's cost popover
 //   42-repeat-popover       繰り返す of conversation A
@@ -181,6 +183,8 @@ export async function shoot({ url, out, theme, build }) {
     ['35-child-code-review', 'エラーメッセージを直す'],
     ['36-child-approval', '入力チェックを入れる'],
     ['37-chat-streaming', 'ブログ記事: リモートワークの 1 年'],
+    ['38-discussion', '朝食の定期便の企画会議'],
+    ['39-speaker', 'サエ'],
   ]) {
     await step(name, async () => {
       await open(title);

@@ -91,8 +91,18 @@ export function describeControlCall(
       return `質問${q(s('question'), 40)}`;
     case 'artifact.publish':
       return `${q(s('title')) || '成果物'}を提出`;
-    case 'session.send':
+    case 'session.send': {
+      // Passing on what others said (forward): whose words go to whom.
+      const forward = Array.isArray(o.forward)
+        ? o.forward.filter((f): f is string => typeof f === 'string').map((f) => titleOf(f))
+        : [];
+      const whose = forward.filter((t): t is string => !!t).map((t) => `「${shorten(t, 16)}」`);
+      if (forward.length > 0) {
+        const words = whose.length === forward.length ? `${whose.join('・')}の発言` : `${forward.length} 人の発言`;
+        return target ? `「${shorten(target, 32)}」に${words}を渡す` : `${words}を渡す`;
+      }
       return target ? `「${shorten(target, 32)}」に伝える` : '伝える';
+    }
     case 'session.stop':
       return target ? `「${shorten(target, 32)}」を止める` : '止める';
     case 'session.resume':

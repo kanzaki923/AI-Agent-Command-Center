@@ -224,6 +224,12 @@ const SessionObject = z.object({
   cost: SessionCost.default(EMPTY_SESSION_COST),
   /** The request a child was given (session.spawn / schedules). */
   brief: SessionBrief.nullable().default(null),
+  /**
+   * The character a speaker plays for its whole conversation (session.spawn `persona`). A
+   * child with a persona talks: its answers go to its parent as they are, and it leaves no
+   * outputs of its own.
+   */
+  persona: z.string().nullable().default(null),
   /** Schedule whose firing created this session. */
   scheduleId: ScheduleId.nullable().default(null),
   supervision: Supervision.default('active'),
@@ -289,8 +295,27 @@ export const WakeItemView = z.object({
     'resume',
   ]),
   artifactIds: z.array(ArtifactId).default([]),
+  /** What a speaker (a child with a persona) just said, as the supervisor read it. */
+  reply: z
+    .object({
+      text: z.string(),
+      /** The text was cut to fit the wake message. */
+      cut: z.boolean(),
+    })
+    .nullable()
+    .optional(),
 });
 export type WakeItemView = z.infer<typeof WakeItemView>;
+
+/** One answer passed on by `session.send` `forward`: whose it is, in the order of the quotes. */
+export const ForwardedView = z.object({
+  sessionId: SessionId,
+  title: z.string(),
+});
+export type ForwardedView = z.infer<typeof ForwardedView>;
+
+/** Most answers one `session.send` can pass on. */
+export const FORWARD_MAX = 8;
 
 /** Data for special rendering of a message; `content` stays the LLM-facing text. */
 export const MessageMeta = z.discriminatedUnion('kind', [
@@ -307,6 +332,12 @@ export const MessageMeta = z.discriminatedUnion('kind', [
    * the model the human chose for the work the message starts (`workModel`).
    */
   z.object({ kind: z.literal('hint'), text: z.string(), model: z.string().optional() }),
+  /**
+   * A message that passes on other conversations' answers (`session.send` `forward`): the
+   * first `items.length` text parts of `content` quote them, in this order; the rest is the
+   * sender's own text.
+   */
+  z.object({ kind: z.literal('forward'), items: z.array(ForwardedView) }),
 ]);
 export type MessageMeta = z.infer<typeof MessageMeta>;
 

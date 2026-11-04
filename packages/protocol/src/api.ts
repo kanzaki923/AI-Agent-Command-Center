@@ -32,6 +32,7 @@ import {
   TextPart,
   DiffFileStat,
   DiffStats,
+  FORWARD_MAX,
   GrantLifetime,
   GrantLimits,
   GrantScope,
@@ -548,6 +549,13 @@ export const api = defineApi({
         .optional()
         .describe(
           'To the assistant: the model the human chose for the work this message starts; the conversations it starts get it',
+        ),
+      forward: z
+        .array(SessionId)
+        .max(FORWARD_MAX)
+        .optional()
+        .describe(
+          'Pass on the latest answer of these conversations word for word, quoted with their names, before your text. Use it instead of repeating what someone said; write only your question or direction in content.',
         ),
     }),
     result: z.object({

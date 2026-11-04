@@ -1,5 +1,5 @@
 import type { Approval, SessionBrief, SessionCard, SessionState, WakeItemView } from '@acc/protocol';
-import { ChevronRight, Circle, CircleCheck, Coins, CornerDownLeft, Diamond, ShieldCheck, ShieldX } from 'lucide-react';
+import { ChevronRight, Circle, CircleCheck, Coins, CornerDownLeft, Diamond, Drama, ShieldCheck, ShieldX } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { useProjects, useWorkspace } from '../../daemon/queries';
 import { cn } from '../../lib/cn';
@@ -12,6 +12,7 @@ import { StateIcon } from '../ui/StateIcon';
 import { Tooltip } from '../ui/Tooltip';
 import type { ToolCallView } from '../../model/chat';
 import { spawnRequest, spawnedSessionId, stripMachineBlocks } from './conversation';
+import { SpeakerMark, Speech, speakerTones, useSpeakerTones } from './Speech';
 
 const NONE: never[] = [];
 
@@ -48,11 +49,14 @@ export function BriefCard({
   brief,
   card,
   workspaceId,
+  speaker = null,
 }: {
   brief: SessionBrief;
   /** The session's tree card (state, outputs, budget), when known. */
   card: SessionCard | null;
   workspaceId: string | null;
+  /** A speaker's character: who it plays, above what it was asked first. */
+  speaker?: { title: string; persona: string; tone: number | undefined } | null;
 }) {
   const [open, setOpen] = useState(false);
   const goal = stripMachineBlocks(brief.goal);
@@ -65,6 +69,12 @@ export function BriefCard({
         <span className="flex-1" />
         <WorkspaceTag workspaceId={workspaceId} />
       </div>
+      {speaker && (
+        <div data-persona className="flex items-start gap-2 border-b border-line-subtle pb-2">
+          <SpeakerMark title={speaker.title} tone={speaker.tone} />
+          <span className="selectable min-w-0 text-ui whitespace-pre-wrap text-fg-2">{speaker.persona}</span>
+        </div>
+      )}
       <div
         role={long ? 'button' : undefined}
         tabIndex={long ? 0 : undefined}
@@ -141,10 +151,34 @@ const CHANGE_LABEL: Record<WakeItemView['change'], string> = {
 };
 
 /**
- * The status card (spec §5.2): a supervisor was woken because children changed. One line of
- * the changes (icon + child); open it for one row per child (press a row to go there).
+ * The status card (spec §5.2): a supervisor was woken because children changed. What speakers
+ * said is shown as their words, one after another, so the leading conversation reads like the
+ * conversation itself; every other change stays one line (icon + child) that opens into one
+ * row per child (press a row to go there).
  */
 export function WakeCard({ items }: { items: WakeItemView[] }) {
+  const spoken = items.filter((it) => it.reply);
+  const tones = useSpeakerTones(spoken[0]?.sessionId);
+  if (spoken.length === 0) return <ChangesCard items={items} />;
+  const rest = items.filter((it) => !it.reply);
+  return (
+    <section aria-label="発言" data-spoken className="flex flex-col gap-3.5">
+      {spoken.map((it, i) => (
+        <Speech
+          key={`${it.sessionId}:${i}`}
+          sessionId={it.sessionId}
+          title={it.title}
+          text={it.reply!.text}
+          cut={it.reply!.cut}
+          tone={tones.get(it.sessionId)}
+        />
+      ))}
+      {rest.length > 0 && <ChangesCard items={rest} />}
+    </section>
+  );
+}
+
+function ChangesCard({ items }: { items: WakeItemView[] }) {
   const [open, setOpen] = useState(false);
   const openSession = useUi((s) => s.openSession);
   return (
@@ -240,6 +274,9 @@ export function PlanCard({
     const child = (id && children.find((c) => c.id === id)) || children.find((c) => c.title === req.title) || null;
     return { call, req, child };
   });
+  if (rows.length > 0 && rows.every((r) => r.req.persona)) {
+    return <CastCard rows={rows} rationale={rationale} tones={speakerTones(children)} />;
+  }
   return (
     <section aria-label="計画" data-plan className="flex flex-col rounded-md bg-surface">
       <div className="flex min-h-9 items-center gap-2 px-3 pt-2 pb-1">
@@ -277,6 +314,52 @@ export function PlanCard({
                   )}
                   {req.budgetUsd != null && <span className="tabular">${Number.isInteger(req.budgetUsd) ? req.budgetUsd : req.budgetUsd.toFixed(2)}</span>}
                 </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * The cast card: a supervisor brought speakers together (every child it started has a
+ * persona). One row per speaker — its mark, its name (press to go there) and who it plays —
+ * under the supervisor's reason when it recorded one.
+ */
+function CastCard({
+  rows,
+  rationale,
+  tones,
+}: {
+  rows: { call: ToolCallView; req: ReturnType<typeof spawnRequest>; child: SessionCard | null }[];
+  rationale: string | null;
+  tones: Map<string, number>;
+}) {
+  const openSession = useUi((s) => s.openSession);
+  return (
+    <section aria-label="話し手" data-cast className="flex flex-col rounded-md bg-surface">
+      <div className="flex min-h-9 items-center gap-2 px-3 pt-2 pb-1">
+        <Drama size={14} strokeWidth={1.75} className="text-fg-2" aria-hidden />
+        <span className="text-ui font-medium text-fg">{rows.length} 人で話す</span>
+      </div>
+      {rationale && <div className="selectable px-3 pb-1 text-meta text-fg-2">{rationale}</div>}
+      <ul className="flex flex-col py-1">
+        {rows.map(({ call, req, child }, i) => {
+          const title = child ? sessionTitle(child) : req.title || '話し手';
+          return (
+            <li key={call.id}>
+              <button
+                type="button"
+                data-cast-row={child?.id ?? undefined}
+                disabled={!child}
+                onClick={() => child && openSession(child.id)}
+                className="grid min-h-8 w-full grid-cols-[20px_minmax(80px,0.5fr)_minmax(0,2fr)] items-center gap-2.5 px-3 py-1 text-left text-ui enabled:hover:bg-hover"
+              >
+                <SpeakerMark title={title} tone={child ? tones.get(child.id) : i} />
+                <span className="min-w-0 truncate text-fg">{title}</span>
+                <span className="min-w-0 truncate text-meta text-fg-3">{req.persona?.split('\n')[0]}</span>
               </button>
             </li>
           );

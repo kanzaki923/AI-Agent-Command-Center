@@ -123,3 +123,74 @@ describe('<PlanCard>', () => {
     expect(useUi.getState().focusSessionId).toBe('ses_kid');
   });
 });
+
+describe('speakers (children with a persona)', () => {
+  const call = (id: string, input: unknown, output: unknown = null) => ({
+    id,
+    name: 'mcp__acc__session__spawn',
+    input,
+    output,
+    done: output != null,
+    isError: false,
+    desc: { category: 'control' as const, label: '', activity: '', target: null, additions: null, deletions: null },
+    at: iso(T0),
+    endedAt: null,
+    decision: null,
+  });
+
+  it('a wake shows what each speaker said, by name; other changes stay one line', () => {
+    wrap(
+      <WakeCard
+        items={[
+          { sessionId: 'ses_m', title: 'ミナト', change: 'done', artifactIds: [], reply: { text: 'まず小さく試しましょう。', cut: false } },
+          { sessionId: 'ses_s', title: 'サエ', change: 'done', artifactIds: [], reply: { text: '費用が気になります。', cut: true } },
+          { sessionId: 'ses_x', title: '下調べ', change: 'failed', artifactIds: [] },
+        ]}
+      />,
+    );
+    const spoken = screen.getByRole('region', { name: '発言' });
+    expect(spoken).toHaveTextContent('まず小さく試しましょう。');
+    expect(spoken).toHaveTextContent('費用が気になります。');
+    expect(screen.getByRole('region', { name: '状況' })).toHaveTextContent('下調べ');
+    // A cut turn offers the rest in the speaker's own conversation; the name goes there too.
+    fireEvent.click(within(spoken).getByRole('button', { name: '続きを読む' }));
+    expect(useUi.getState().focusSessionId).toBe('ses_s');
+    fireEvent.click(within(spoken).getByRole('button', { name: 'ミナト' }));
+    expect(useUi.getState().focusSessionId).toBe('ses_m');
+  });
+
+  it('starting speakers is a cast: who talks and who each plays', () => {
+    const minato = card({ id: 'ses_m', title: 'ミナト', role: 'speaker', parentId: 'ses_root', depth: 1 });
+    wrap(
+      <PlanCard
+        rationale={null}
+        spawns={[
+          call('t1', { title: 'ミナト', goal: '最初の意見', mode: 'chat', persona: '前のめりな企画屋。' }, JSON.stringify({ session: { id: 'ses_m' } })),
+          call('t2', { title: 'サエ', goal: '最初の意見', mode: 'chat', persona: '慎重なレビュアー。' }),
+        ]}
+        children={[minato]}
+      />,
+    );
+    const cast = screen.getByRole('region', { name: '話し手' });
+    expect(cast).toHaveTextContent('2 人で話す');
+    const rows = within(cast).getAllByRole('listitem');
+    expect(rows[0]).toHaveTextContent('前のめりな企画屋。');
+    expect(rows[1]).toHaveTextContent('慎重なレビュアー。');
+    expect(screen.queryByRole('region', { name: '計画' })).toBeNull();
+    fireEvent.click(within(rows[0]!).getByRole('button'));
+    expect(useUi.getState().focusSessionId).toBe('ses_m');
+  });
+
+  it("a speaker's request card says who it plays", () => {
+    const brief = { goal: '最初の意見を', doneWhen: [], fromSessionId: null, reviewBy: 'none' as const, givenAt: iso(T0) };
+    wrap(
+      <BriefCard
+        brief={brief}
+        card={null}
+        workspaceId={null}
+        speaker={{ title: 'サエ', persona: '慎重なレビュアー。', tone: 1 }}
+      />,
+    );
+    expect(screen.getByRole('region', { name: '依頼' })).toHaveTextContent('慎重なレビュアー。');
+  });
+});

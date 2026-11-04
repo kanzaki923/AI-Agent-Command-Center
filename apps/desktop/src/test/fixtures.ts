@@ -37,6 +37,7 @@ export function session(over: Partial<Session> = {}): Session {
     now: null,
     cost: { ownUsd: 0, treeUsd: 0, source: 'unknown' },
     brief: null,
+    persona: null,
     scheduleId: null,
     supervision: 'active',
     projectId: null,

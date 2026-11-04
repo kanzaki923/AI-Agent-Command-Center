@@ -15,9 +15,10 @@ import type { costEvents } from './cost';
 
 /**
  * Icon of a session: a supervisor holds a delegation grant; the assistant is the one chat
- * that stands beside the human (`system.assistant`); otherwise its kind.
+ * that stands beside the human (`system.assistant`); a speaker is a child with a persona (a
+ * character in a conversation between AIs); otherwise its kind.
  */
-export const SessionRole = z.enum(['chat', 'agent', 'supervisor', 'assistant']);
+export const SessionRole = z.enum(['chat', 'agent', 'supervisor', 'assistant', 'speaker']);
 export type SessionRole = z.infer<typeof SessionRole>;
 
 /** Output kinds as the UI names them (`code` = a diff). */

@@ -36,6 +36,9 @@ export type FolderInspection = z.infer<typeof FolderInspection>;
 
 export const spawnDomain = { SpawnMode, FolderInspection } as const;
 
+/** Longest persona a speaker can be given (it is part of every call of that speaker). */
+export const PERSONA_MAX_CHARS = 4000;
+
 // ---------------------------------------------------------------------------
 // Methods
 // ---------------------------------------------------------------------------
@@ -48,6 +51,14 @@ export const spawnMethods = {
       ),
       title: z.string().min(1).max(80).describe('Short name of the child, e.g. "FAQ を書く"'),
       goal: z.string().min(1).max(50_000).describe('What the child should do'),
+      persona: z
+        .string()
+        .min(1)
+        .max(PERSONA_MAX_CHARS)
+        .optional()
+        .describe(
+          'mode chat only. Makes the child a speaker that plays this character for its whole conversation: a name, a personality, a stance or expertise, a way of talking. A speaker answers like one turn of a conversation; each answer comes back to you in full when you are woken, and it leaves no outputs of its own (publish the conclusion yourself). For discussions, brainstorming, debates and reviews from several viewpoints.',
+        ),
       doneWhen: z
         .array(z.string().min(1).max(500))
         .max(20)

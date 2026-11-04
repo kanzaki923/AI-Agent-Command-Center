@@ -133,6 +133,7 @@ export class SessionService {
         taskId: input.taskId ?? null,
         parentSessionId: parent?.id ?? null,
         brief: input.brief ?? null,
+        persona: input.persona?.trim() || null,
         scheduleId: input.scheduleId ?? null,
         activeRunId: null,
         pinned: false,
@@ -160,6 +161,8 @@ export interface CreateSessionInput {
   parentSessionId?: string | null | undefined;
   /** The request a child was given (session.spawn, schedule firings). */
   brief?: SessionBrief | null | undefined;
+  /** The character a speaker plays (session.spawn `persona`). */
+  persona?: string | null | undefined;
   /** Schedule whose firing created the session. */
   scheduleId?: string | null | undefined;
 }

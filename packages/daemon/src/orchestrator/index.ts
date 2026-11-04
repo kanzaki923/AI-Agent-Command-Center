@@ -5,6 +5,7 @@ import { setupDemo } from './demo';
 import { createOrchestratorExecutor } from './executor';
 import { delegateSession, orchestrationGrants } from './grant';
 import { MOCK_ORCHESTRATOR_MODEL, mockOrchestrator } from './mockModel';
+import { MOCK_SPEAKER_MODEL, mockSpeaker } from './mockSpeaker';
 import { resumeAfterRestart, resumeInterruptedOrchestrators } from './resume';
 import { waitForIntegration, waitForTasks } from './wait';
 import { WorkerService, runEndedBy } from './workers';
@@ -36,6 +37,7 @@ export {
 } from './grant';
 export { RESTART_RESUME_TEXT, resumeAfterRestart, type RestartReport } from './resume';
 export { MOCK_ORCHESTRATOR_MODEL, mockOrchestrator } from './mockModel';
+export { MOCK_SPEAKER_MODEL, mockSpeaker } from './mockSpeaker';
 export {
   DEMO_FILES,
   DEMO_GOAL_HINT,
@@ -217,6 +219,9 @@ export const orchestratorModule = defineModule({
       start() {
         ctx.service('llm').mock.define(MOCK_ORCHESTRATOR_MODEL, mockOrchestrator, {
           label: 'モック（オーケストレーター）',
+        });
+        ctx.service('llm').mock.define(MOCK_SPEAKER_MODEL, mockSpeaker, {
+          label: 'モック（話し手）',
         });
         if (ctx.hasService('runs')) {
           ctx.service('runs').registerExecutor('orchestrator', createOrchestratorExecutor(ctx));

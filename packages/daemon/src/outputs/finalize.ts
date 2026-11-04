@@ -23,7 +23,8 @@ const MAX_FINAL_CHARS = 1_000_000;
  * 3. in a folder / scratch workspace, the files the run wrote with the file tools that it did
  *    not publish become one `files` output (`source: tracked_writes`);
  * 4. when nothing above exists, the last assistant text becomes a `document`
- *    (`source: final_message`), so every finished child has a result to show.
+ *    (`source: final_message`), so every finished child has a result to show — except for
+ *    a speaker (a child with a persona), whose turns go to its parent as they are.
  *
  * `brief.reviewBy: human` makes every output wait for a human too. Outputs that wait get
  * `review.state: pending`. Calling it again for the same run records nothing new.
@@ -58,7 +59,9 @@ export class Outputs implements OutputsService {
         own.find((a) => a.source === 'tracked_writes') ?? this.recordWrites(run, ws, published);
       if (files) outputs.push(files);
     }
-    if (completed && outputs.length === 0) {
+    // A speaker's turns are words in a conversation, not results: they go to the parent in
+    // its wake message, and the parent publishes the conclusion.
+    if (completed && outputs.length === 0 && !session?.persona) {
       const text = own.find((a) => a.source === 'final_message') ?? this.recordFinalText(run);
       if (text) outputs.push(text);
     }

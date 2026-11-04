@@ -109,6 +109,9 @@ export class Spawner implements SpawnerService {
     const allowed = parent
       ? this.policy()?.assertCanSpawnChild(actor, { parentSessionId: parent.id, projectId })
       : undefined;
+    if (p.persona !== undefined && p.mode !== 'chat') {
+      throw invalidParams('キャラ（persona）を持てるのは普通の会話（mode: chat）だけです');
+    }
     if (opts.supervise && p.mode !== 'chat') {
       throw invalidParams('子を率いる子（supervise）は普通の会話（mode: chat）だけです');
     }
@@ -281,6 +284,7 @@ export class Spawner implements SpawnerService {
         taskId: task.id,
         parentSessionId: parent?.id ?? null,
         brief,
+        persona: p.persona ?? null,
         scheduleId: opts.scheduleId ?? null,
       },
       actor,
@@ -343,7 +347,9 @@ export class Spawner implements SpawnerService {
       type: 'orchestrator.decision',
       actor: SPAWNER_SYSTEM,
       payload: {
-        decision: `「${truncate(p.title, 60)}」を任せました`,
+        decision: p.persona
+          ? `「${truncate(p.title, 60)}」に加わってもらいました`
+          : `「${truncate(p.title, 60)}」を任せました`,
         rationale: truncate(firstLine(p.goal), 200),
         refs: {
           taskIds: [task.id],

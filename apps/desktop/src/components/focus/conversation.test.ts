@@ -7,6 +7,7 @@ import {
   type ConversationBlock,
   buildBaseBlocks,
   describeControlCall,
+  forwardedParts,
   spawnRequest,
   spawnedSessionId,
   stripMachineBlocks,
@@ -40,6 +41,13 @@ describe('tool calls in the screen\'s words', () => {
     expect(describeControlCall('mcp__acc__human_ask', { question: '価格を載せる？' })).toBe('質問「価格を載せる？」');
     expect(describeControlCall('mcp__acc__artifact_publish', { title: 'プレスリリース' })).toBe('「プレスリリース」を提出');
     expect(describeControlCall('session.send', { sessionId: 'ses_1' }, () => 'FAQ')).toBe('「FAQ」に伝える');
+    const names: Record<string, string> = { ses_sae: 'サエ', ses_minato: 'ミナト' };
+    expect(
+      describeControlCall('session.send', { sessionId: 'ses_sae', forward: ['ses_minato'] }, (id) => names[id]),
+    ).toBe('「サエ」に「ミナト」の発言を渡す');
+    expect(describeControlCall('session.send', { sessionId: 'ses_sae', forward: ['ses_x', 'ses_y'] }, (id) => names[id])).toBe(
+      '「サエ」に2 人の発言を渡す',
+    );
     expect(describeControlCall('session.tree', {})).toBe('状況を確認');
     expect(describeControlCall('task.wait', {})).toBe('終わるのを待つ');
     expect(describeControlCall('Read', { file_path: 'a.md' })).toBeNull();
@@ -129,8 +137,28 @@ describe('the plan (ui-rework spec §4.1)', () => {
       doneWhen: ['5 組ある'],
       workspace: 'worktree',
       budgetUsd: 1,
+      persona: null,
     });
     expect(spawnedSessionId(plan.spawns[0]!.output)).toBe('ses_kid');
     expect(spawnedSessionId(plan.spawns[1]!.output)).toBeNull();
+  });
+});
+
+describe('words passed on (meta.forward)', () => {
+  it("splits the quotes, without their markers, from the sender's own text", () => {
+    const chat = session({ kind: 'chat' });
+    const m = message(chat, {
+      role: 'user',
+      content: [
+        { type: 'text', text: '<<<「ミナト」の発言ここから>>>\nまず小さく試しましょう。\n<<<「ミナト」の発言ここまで>>>' },
+        { type: 'text', text: 'どう思う？' },
+      ],
+      meta: { kind: 'forward', items: [{ sessionId: 'ses_minato', title: 'ミナト' }] },
+    });
+    expect(forwardedParts(m)).toEqual({
+      quotes: [{ sessionId: 'ses_minato', title: 'ミナト', text: 'まず小さく試しましょう。' }],
+      own: 'どう思う？',
+    });
+    expect(forwardedParts({ ...m, meta: null })).toBeNull();
   });
 });

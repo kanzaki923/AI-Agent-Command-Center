@@ -1,4 +1,4 @@
-import { type Approval, type Attention, type Run, type SessionBrief, type WakeItemView } from '@acc/protocol';
+import { type Approval, type Attention, type Message, type Run, type SessionBrief, type WakeItemView } from '@acc/protocol';
 import type { StreamingMessage } from '../../daemon/deltas';
 import type { ChatMessage } from '../../daemon/sync';
 import { type ChatBlock, type ToolCallView, buildChatBlocks } from '../../model/chat';
@@ -33,6 +33,8 @@ export interface SpawnRequest {
   doneWhen: string[];
   workspace: 'none' | 'folder' | 'worktree';
   budgetUsd: number | null;
+  /** The character of a speaker (session.spawn `persona`), when it is one. */
+  persona: string | null;
 }
 
 function asRecord(v: unknown): Record<string, unknown> {
@@ -49,7 +51,31 @@ export function spawnRequest(input: unknown): SpawnRequest {
     doneWhen: Array.isArray(o.doneWhen) ? o.doneWhen.filter((d): d is string => typeof d === 'string') : [],
     workspace: kind,
     budgetUsd: typeof o.budgetUsd === 'number' ? o.budgetUsd : null,
+    persona: typeof o.persona === 'string' && o.persona.trim() ? o.persona.trim() : null,
   };
+}
+
+const QUOTE_LINE = /^<<<.*ここ(?:から|まで)>>>$/;
+
+/**
+ * A message that passes on others' answers (`meta.kind === 'forward'`): the quotes (whose, and
+ * the words without their markers) and the sender's own text, for the screen.
+ */
+export function forwardedParts(message: Pick<Message, 'content' | 'meta'>): {
+  quotes: { sessionId: string; title: string; text: string }[];
+  own: string;
+} | null {
+  if (message.meta?.kind !== 'forward') return null;
+  const texts = message.content.filter((p) => p.type === 'text').map((p) => p.text);
+  const quotes = message.meta.items.map((item, i) => {
+    const lines = (texts[i] ?? '').split('\n');
+    if (lines.length >= 2 && QUOTE_LINE.test(lines[0]!) && QUOTE_LINE.test(lines.at(-1)!)) {
+      lines.splice(-1, 1);
+      lines.splice(0, 1);
+    }
+    return { ...item, text: lines.join('\n').trim() };
+  });
+  return { quotes, own: texts.slice(message.meta.items.length).join('\n') };
 }
 
 /** The session a spawn call created, from its result (JSON text or object); null until it answered. */

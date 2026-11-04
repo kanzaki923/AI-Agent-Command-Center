@@ -133,7 +133,8 @@ export function startedBy(s: Session): SessionCard['startedBy'] {
 
 export function roleOf(s: Session, facts: CardFacts): SessionRole {
   if (s.id === facts.assistantId) return 'assistant';
-  return facts.supervisors.has(s.id) ? 'supervisor' : s.kind;
+  if (facts.supervisors.has(s.id)) return 'supervisor';
+  return s.persona ? 'speaker' : s.kind;
 }
 
 /** One session as a chip (home.get, session.tree). */

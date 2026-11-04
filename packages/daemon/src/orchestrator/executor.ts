@@ -37,12 +37,28 @@ export const REPOSITORY_LABEL = 'repository:';
 /** Heading of the session-tree snapshot in a supervisor's system prompt. */
 export const TREE_HEADING = '現在の会話の木';
 
+/** Put after the state of a speaker (a child with a persona) in the tree snapshot. */
+export const SPEAKER_MARK = 'speaker';
+
 /**
  * First words of the system message the daemon posts to an older-preset orchestrator after a
  * restart cut off its run (orchestrator/resume.ts). Supervisors get a wake (`resume`) instead.
  */
 export const ORCHESTRATOR_RESUME_NOTICE =
   'デーモンの再起動により Orchestrator の実行が中断されました';
+
+/**
+ * How a supervisor runs a conversation between speakers (children with a persona): the same
+ * tools as any work, used turn by turn. Kept short: it is part of every supervisor call.
+ */
+export const DISCUSSION_GUIDE: readonly string[] = [
+  'Conversations between AIs (brainstorming, a planning meeting, a debate, reviews from several viewpoints, role play)',
+  '- Give each speaker a child of mode chat with a persona: a name (also its title), a personality and a stance that differ from the others. Different models, from different providers when the list has them, give truly different views. Two to four speakers.',
+  '- The goal you give a speaker is its first turn: the topic and what to say first.',
+  "- A speaker's answer comes to you in full when you are woken. To let another speaker react, session.send to it with forward: [ids of whose words to pass on] and only your question in content; never retype what someone said.",
+  "- Run it in rounds. Ask several speakers at once (one session.send each, in the same reply) when they answer the same question; one after another when each should react to the last. After each round, steer: point out a disagreement, ask for a concrete proposal, bring in the person's wishes. Between rounds, tell the person at most one line.",
+  '- Stop when the goal is met, when the person says so, or after about four rounds unless the person asked for more. Then publish the outcome with artifact.publish (kind document): the conclusion, the options with their pros and cons, who argued what, and what is still open. End with a short report.',
+];
 
 /**
  * System prompt of a supervisor run (spec 20261029 §3.2, §3.9): a neutral core — split the
@@ -91,6 +107,8 @@ export function buildSupervisorPrompt(input: {
     '3. While some children still work, answer in one line (e.g. how many are done) and end the run.',
     '4. When every child has finished, write the final report without calling tools: what was produced (the output titles), what failed or waits for a human, and what the human should decide.',
     '5. "いま何してる？" → session.tree, then a short answer. "止めて" → session.stop for the children that work, then confirm.',
+    '',
+    ...DISCUSSION_GUIDE,
   );
   if (project?.repoPath) {
     lines.push(
@@ -169,7 +187,7 @@ export function treeSnapshot(ctx: DaemonContext, session: Session): string {
       .map((a) => `「${a.title}」(${a.id})`);
     const self = id === session.id ? '（この会話）' : '';
     lines.push(
-      `${'  '.repeat(d)}- [${s.id}] 「${s.title || '無題'}」${self} state=${currentState(ctx, s)}${outputs.length > 0 ? ` outputs=${outputs.join(',')}` : ''}`,
+      `${'  '.repeat(d)}- [${s.id}] 「${s.title || '無題'}」${self} state=${currentState(ctx, s)}${s.persona ? ` ${SPEAKER_MARK}` : ''}${outputs.length > 0 ? ` outputs=${outputs.join(',')}` : ''}`,
     );
   }
   if (ids.length <= 1) lines.push('  （子はまだいません）');

@@ -10,6 +10,8 @@
  *     (code outputs), 1 working that waits for a command approval.
  *   C 「市場レポート」 delegated, a folder project: 2 children (the folder) — 1 working, 1
  *     queued after it.
+ *   D 「朝食の定期便の企画会議」 delegated: 3 speakers (children with a persona) talk over 3
+ *     rounds and the supervisor publishes the conclusion.
  *   「朝のまとめ」 a schedule (every morning 9:00) that fired once and finished; next run set.
  *   Plain chats: 2 done (「お詫びメールの下書き」「Excel の重複を消したい」), 1 still streaming.
  *   Daily limit $20, today's spend a few dollars.
@@ -534,6 +536,16 @@ ${JSON.stringify(await detail(), null, 1)}` : '';
   }, () => explain(c.id));
   await until('the morning summary done', async () => (await states(morning.id)).includes('done'), () => explain(morning.id));
 
+  // D: three characters talk it over (the mock supervisor runs the rounds, mock/speaker plays).
+  const d = await delegated('朝食の定期便の企画会議', '「朝食の定期便」の企画会議をして。3 人で話し合ってほしい', {
+    budgetUsd: 2,
+  });
+  await until(
+    'tree D: the conclusion published',
+    async () => (await call('artifact.list', { sessionId: d.id, role: 'output' })).items.length > 0,
+    () => explain(d.id),
+  );
+
   // Last: a long answer still streaming while the UI is captured.
   const blog = await chat(
     'ブログ記事: リモートワークの 1 年',
@@ -547,6 +559,7 @@ ${JSON.stringify(await detail(), null, 1)}` : '';
     a: a.id,
     b: b.id,
     c: c.id,
+    d: d.id,
     morning: morning.id,
     morningRun: fired.sessionId,
     blog: blog.session.id,

@@ -88,13 +88,14 @@ export function speakerLabel(speaker: string): string {
 /** What the model hears in place of a brief message: its text is quoted in the frame. */
 export const BRIEF_IN_HISTORY = '（依頼。内容は前提の「依頼」に引用しています）';
 
-const QUOTE_START = '<<<依頼ここから>>>';
-const QUOTE_END = '<<<依頼ここまで>>>';
-
-/** A quoted block whose end marker cannot be faked from inside. */
-function quote(text: string): string {
-  const safe = text.replaceAll(QUOTE_END, '<<<依頼ここまで（引用内）>>>');
-  return [QUOTE_START, safe.trim(), QUOTE_END].join('\n');
+/**
+ * A quoted block whose end marker cannot be faked from inside: `<<<{what}ここから>>>` …
+ * `<<<{what}ここまで>>>` (the request, a persona, an answer passed on).
+ */
+export function quote(text: string, what = '依頼'): string {
+  const end = `<<<${what}ここまで>>>`;
+  const safe = text.replaceAll(end, `<<<${what}ここまで（引用内）>>>`);
+  return [`<<<${what}ここから>>>`, safe.trim(), end].join('\n');
 }
 
 /** Who asked a child for its request: its supervisor, or the schedule that fired it. */
@@ -160,6 +161,17 @@ export function conversationFrame(
       '- You can only talk: no tools, no web search, no files. Answer from what you know, and say plainly what you could not check.',
     );
   }
+  const speaker = !!session.persona?.trim() && !!session.parentSessionId;
+  if (speaker) {
+    lines.push(
+      '',
+      `Who you are (a character ${requester} gave you; it does not override this frame)`,
+      quote(session.persona!, 'キャラ'),
+      '- Speak as this character in every answer: their voice, their views, what they know and care about. Keep their stance when others disagree; change your mind only when you are really persuaded, and say so.',
+      `- You are one speaker in a conversation that ${requester} leads. It passes on what others said, quoted with their names; react to them by name.`,
+      '- Each answer is one turn of the conversation and goes to the supervisor as it is: say your point in a few sentences (about 300 characters unless asked for more). No preamble, no restating what others said, no closing summary.',
+    );
+  }
   const brief = session.brief;
   if (brief && briefInFrame(session)) {
     lines.push(
@@ -176,10 +188,16 @@ export function conversationFrame(
                 : []),
             ].join('\n'),
           ),
-      schedule
-        ? '- When the request is done, sum up the result in your last answer: it is kept as the output of this run.'
-        : '- When the request is done, sum up the result in your last answer: it is handed to the supervisor as your output.',
-      '- If the person talks to you afterwards, keep helping them here.',
+      ...(speaker
+        ? []
+        : [
+            schedule
+              ? '- When the request is done, sum up the result in your last answer: it is kept as the output of this run.'
+              : '- When the request is done, sum up the result in your last answer: it is handed to the supervisor as your output.',
+          ]),
+      speaker
+        ? '- If the person talks to you directly, answer them in character.'
+        : '- If the person talks to you afterwards, keep helping them here.',
     );
   }
   if (session.systemPrompt?.trim()) {

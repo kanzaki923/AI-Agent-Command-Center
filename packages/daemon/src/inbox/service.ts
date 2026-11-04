@@ -23,6 +23,9 @@ import { CHILD_UPDATE_STATES, INJECTED_PREFIX, currentState, wakeEntries, wakeTe
 
 export const INBOX_SYSTEM: SystemActor = { kind: 'system', component: 'inbox' };
 
+/** Longest a wake waits for speakers that are still answering (Inbox.speakersHold). */
+export const SPEAKERS_HOLD_MS = 120_000;
+
 /** Delays before a supervisor whose run failed transiently is woken again (§3.2). */
 export const TRANSIENT_RETRY_DELAYS_MS = [60_000, 300_000, 900_000];
 
@@ -76,6 +79,8 @@ export interface InboxOptions {
  */
 export class Inbox implements InboxService {
   private readonly wakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Latest a wake waits for speakers still answering (speakersHold), per session. */
+  private readonly holdTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly retryTimers = new Set<ReturnType<typeof setTimeout>>();
   /** Last child state reported to the parent, per child (`state:runId`). */
   private readonly reported = new Map<string, string>();
@@ -270,6 +275,8 @@ export class Inbox implements InboxService {
     this.closed = true;
     for (const t of this.wakeTimers.values()) clearTimeout(t);
     this.wakeTimers.clear();
+    for (const t of this.holdTimers.values()) clearTimeout(t);
+    this.holdTimers.clear();
     for (const t of this.retryTimers) clearTimeout(t);
     this.retryTimers.clear();
   }
@@ -317,6 +324,14 @@ export class Inbox implements InboxService {
           this.drop(pending);
           return null;
         }
+        const hold = this.speakersHold(session.id, pending);
+        if (hold > 0) {
+          // Speakers are still talking: their turns come together in one wake (one call of
+          // the supervisor instead of one per speaker). A turn that ends delivers its own item
+          // and wakes again; the hold only bounds a speaker that never ends.
+          this.holdUntil(session.id, hold);
+          return null;
+        }
         if (this.overWakeLimit(session)) {
           setSupervision(ctx, session.id, 'paused', INBOX_SYSTEM);
           this.stuck(session, WAKE_LIMIT_TITLE, null, {});
@@ -347,6 +362,33 @@ export class Inbox implements InboxService {
       ctx.log.error('inbox: failed to wake a session', { sessionId, err });
       return null;
     }
+  }
+
+  /**
+   * How long a wake still waits for the speakers (children with a persona) that are answering
+   * right now: 0 when none is, or once the oldest item waited `SPEAKERS_HOLD_MS`.
+   */
+  private speakersHold(sessionId: string, pending: InboxItem[]): number {
+    const { ctx } = this;
+    const talking = ctx.repos.sessions
+      .find({ where: { parent_session_id: sessionId, archived_at: null } })
+      .some((c) => !!c.persona && !!this.activeRun(c.id));
+    if (!talking || pending.length === 0) return 0;
+    const oldest = Math.min(...pending.map((i) => Date.parse(i.createdAt)));
+    return Math.max(0, oldest + SPEAKERS_HOLD_MS - ctx.clock.now());
+  }
+
+  private holdUntil(sessionId: string, ms: number): void {
+    if (this.closed || this.holdTimers.has(sessionId)) return;
+    this.ctx.db.afterCommit(() => {
+      if (this.closed || this.holdTimers.has(sessionId)) return;
+      const timer = setTimeout(() => {
+        this.holdTimers.delete(sessionId);
+        this.wakeNow(sessionId);
+      }, ms);
+      timer.unref?.();
+      this.holdTimers.set(sessionId, timer);
+    });
   }
 
   /** More than `maxWakesPerHour` wakes since the later of an hour ago and the last human message. */

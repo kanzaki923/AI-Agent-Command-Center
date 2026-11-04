@@ -1,6 +1,9 @@
 import type { Artifact, InboxItem, Session, SessionState, WakeItemView } from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
 import { deriveSessionState, readStateFacts } from '../home/state';
+import { textOfParts } from '../llm/messages';
+import { latestAnswer } from '../sessions/forward';
+import { framedTitle, quote } from '../sessions/framing';
 
 /**
  * First line of the message that wakes a supervisor (stored as a system message with
@@ -46,6 +49,27 @@ function outputsOf(ctx: DaemonContext, sessionId: string, limit = 3): Artifact[]
     .slice(0, limit);
 }
 
+/** Longest speaker's turn put in a wake message as it is (a turn is far shorter). */
+export const MAX_REPLY_CHARS = 4000;
+
+/**
+ * What a speaker (a child with a persona) said in its latest run, or null for any other child
+ * (their results are outputs) and when that run left no words (it failed or was stopped).
+ */
+export function speakerReply(
+  ctx: DaemonContext,
+  child: Session,
+): { text: string; cut: boolean } | null {
+  if (!child.persona) return null;
+  const run = ctx.repos.runs.findOne({ where: { session_id: child.id } });
+  const answer = latestAnswer(ctx, child.id);
+  if (!run || !answer || answer.runId !== run.id) return null;
+  const full = textOfParts(answer.content).trim();
+  return full.length > MAX_REPLY_CHARS
+    ? { text: `${full.slice(0, MAX_REPLY_CHARS - 1)}…`, cut: true }
+    : { text: full, cut: false };
+}
+
 export interface WakeEntry {
   view: WakeItemView;
   /** LLM-facing line(s). */
@@ -65,7 +89,14 @@ export function wakeEntry(ctx: DaemonContext, owner: Session, item: InboxItem): 
     if (!CHILD_UPDATE_STATES.includes(state) && state !== 'stopped') return null;
     const change = state as Change;
     const outputs = outputsOf(ctx, child.id);
-    const lines = [`- 「${child.title || '無題'}」（${child.id}）: ${CHANGE_JA[change]}`];
+    const reply = change === 'done' ? speakerReply(ctx, child) : null;
+    const lines = [
+      `- 「${child.title || '無題'}」（${child.id}）: ${reply ? '発言' : CHANGE_JA[change]}`,
+    ];
+    if (reply) {
+      // The words themselves, so the supervisor needs no tool call to read them.
+      lines.push(quote(reply.text, `「${framedTitle(child.title)}」の発言`));
+    }
     if (outputs.length > 0) {
       lines.push(
         `  成果物: ${outputs.map((a) => `「${a.title}」（${a.id}, ${a.kind}）`).join('、')}`,
@@ -92,6 +123,7 @@ export function wakeEntry(ctx: DaemonContext, owner: Session, item: InboxItem): 
         title: child.title,
         change,
         artifactIds: outputs.map((a) => a.id),
+        reply,
       },
       text: lines.join('\n'),
     };

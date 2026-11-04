@@ -4,6 +4,7 @@ import type { DaemonContext } from '../../core/context';
 import { conflict, invalidParams } from '../../core/errors';
 import { assertRosterModel } from '../../llm/roster';
 import { ACTIVE_RUN_STATUSES } from '../../runs/manager';
+import { forwardedParts } from '../forward';
 import { sessionScope } from './shared';
 
 /**
@@ -15,7 +16,13 @@ import { sessionScope } from './shared';
 export function sessionSend(ctx: DaemonContext) {
   const { repos, db } = ctx;
   return defineMethod('session.send', {
-    scope: (p) => sessionScope(ctx, p.sessionId),
+    // Passing on an answer reads that conversation: it must be in the caller's reach too.
+    scope: (p) => {
+      const scope = sessionScope(ctx, p.sessionId);
+      return p.forward
+        ? { ...scope, sessionIds: [...new Set([...(scope.sessionIds ?? []), ...p.forward])] }
+        : scope;
+    },
     handler: (p, call) => {
       // Outside the transaction, so a refusal stays on the audit trail (policy.denied).
       if (ctx.hasService('policy')) {
@@ -33,11 +40,16 @@ export function sessionSend(ctx: DaemonContext) {
             agentRuntime: session.kind === 'agent' && session.runtime !== 'mock',
           });
         }
-        const content: ContentPart[] =
+        const own: ContentPart[] =
           typeof p.content === 'string' ? [{ type: 'text', text: p.content }] : p.content;
-        if (content.some((c) => c.type === 'tool_result' || c.type === 'tool_call')) {
+        if (own.some((c) => c.type === 'tool_result' || c.type === 'tool_call')) {
           throw invalidParams('User messages may only contain text parts');
         }
+        if (p.forward?.length && (p.hint || p.workModel)) {
+          throw invalidParams('forward は hint・workModel と一緒には使えません');
+        }
+        const forwarded = p.forward?.length ? forwardedParts(ctx, p.forward) : null;
+        const content: ContentPart[] = forwarded ? [...forwarded.parts, ...own] : own;
         const active = repos.runs.findOne({
           where: { session_id: session.id, status: [...ACTIVE_RUN_STATUSES] },
         });
@@ -48,6 +60,7 @@ export function sessionSend(ctx: DaemonContext) {
           content,
           author: call.actor,
           delivery: handsOverNow ? 'delivered' : 'queued',
+          ...(forwarded ? { meta: { kind: 'forward', items: forwarded.items } } : {}),
           ...(p.hint || p.workModel
             ? {
                 meta: {

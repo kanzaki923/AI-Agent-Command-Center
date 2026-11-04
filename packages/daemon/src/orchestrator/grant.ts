@@ -125,7 +125,8 @@ export function orchestrationGrants(ctx: DaemonContext, actor: AgentActor): Capa
 
 /**
  * The supervisor preset: start children (session.spawn) and talk to, stop, resume and
- * inspect them; read and send back their outputs; answer their questions; ask the human;
+ * inspect them; read and send back their outputs; publish its own conclusion of what they
+ * said; answer their questions; ask the human;
  * see the cost; record decisions. The session-tree scope keeps every session.* call inside
  * the supervisor's own tree. Not included: approvals of tool uses, accepting code (humans),
  * grants, budgets, settings, project changes.
@@ -143,6 +144,8 @@ export const SUPERVISOR_PERMISSIONS = [
   'artifact.get',
   'artifact.read',
   'artifact.review',
+  // Its own conclusion of what the children said (a discussion's outcome, a summary).
+  'artifact.publish',
   'attention.list',
   'attention.respond',
   'human.ask',

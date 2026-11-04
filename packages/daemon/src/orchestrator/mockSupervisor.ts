@@ -2,7 +2,8 @@ import type { MockCallInfo, MockReply } from '../llm/mock';
 import { methodForToolName, toolNameForMethod } from '../llm/tools';
 import type { ChatMessage, ChatRequest } from '../llm/types';
 import { INJECTED_PREFIX, WAKE_MARKER } from '../inbox/wake';
-import { PROJECT_ID_LABEL, REPOSITORY_LABEL } from './executor';
+import { PROJECT_ID_LABEL, REPOSITORY_LABEL, SPEAKER_MARK } from './executor';
+import { MOCK_SPEAKER_MODEL, topicOf } from './mockSpeaker';
 
 type ToolCall = NonNullable<MockReply['toolCalls']>[number];
 
@@ -13,10 +14,13 @@ export interface TreeNode {
   self: boolean;
   state: string;
   outputs: string[];
+  /** A child with a persona (a speaker in a discussion). */
+  speaker: boolean;
 }
 
-const TREE_LINE =
-  /^\s*- \[(ses_[0-9a-z]+)\] 「(.*?)」(（この会話）)? state=([a-z_]+)(?: outputs=(.*))?$/;
+const TREE_LINE = new RegExp(
+  `^\\s*- \\[(ses_[0-9a-z]+)\\] 「(.*?)」(（この会話）)? state=([a-z_]+)( ${SPEAKER_MARK})?(?: outputs=(.*))?$`,
+);
 const QUESTION_LINE = /^\s*質問: 「(.*?)」（(atn_[0-9a-z]+)）(?: 選択肢: (.*))?$/;
 const CHOICE = /(.+?)（([^（）]+)）$/;
 
@@ -78,7 +82,9 @@ export function mockSupervisor(req: ChatRequest, info: MockCallInfo): MockReply 
 
   // Mid-run: the previous reply called tools; answer from their results.
   if (after.some((m) => m.role === 'assistant')) return afterTools(p, after, info);
-  if (arrival.startsWith(WAKE_MARKER)) return onWake(p, arrival);
+  if (arrival.startsWith(WAKE_MARKER)) {
+    return p.children.some((c) => c.speaker) ? onDiscussionWake(p, req) : onWake(p, arrival);
+  }
   const text = arrival.startsWith(INJECTED_PREFIX)
     ? arrival.slice(INJECTED_PREFIX.length).trim()
     : arrival;
@@ -181,6 +187,22 @@ function afterTools(p: Parsed, after: ChatMessage[], info: MockCallInfo): MockRe
       error: error ? (error.message ?? 'エラー') : null,
     };
   });
+  const published = done.find((d) => d.method === 'artifact.publish');
+  if (published) {
+    if (published.error) return { text: `まとめを残せませんでした: ${published.error}` };
+    const title = (published.input?.title as string | undefined) ?? 'まとめ';
+    return {
+      text: `話し合いが終わりました。結論と論点を「${title}」にまとめました。続けたいときは、問いを送ってください。`,
+    };
+  }
+  const sends = done.filter((d) => d.method === 'session.send');
+  if (sends.length > 0) {
+    const ok = sends.filter((d) => !d.error).length;
+    return {
+      text:
+        ok > 0 ? `${ok} 人に次の問いを渡しました。` : `問いを渡せませんでした: ${sends[0]!.error}`,
+    };
+  }
   const spawned = done.filter((d) => d.method === 'session.spawn');
   if (spawned.length > 0) {
     const ok = spawned.filter((d) => !d.error);
@@ -188,6 +210,11 @@ function afterTools(p: Parsed, after: ChatMessage[], info: MockCallInfo): MockRe
       return { text: `作業を任せられませんでした: ${spawned[0]!.error}` };
     }
     const failed = spawned.filter((d) => d.error);
+    const speakers = ok.filter((d) => typeof d.input?.persona === 'string');
+    if (speakers.length === ok.length) {
+      const names = speakers.map((d) => `「${String(d.input?.title)}」`).join('と');
+      return { text: `${names}が話し始めます。発言がそろったら、次の問いを渡します。` };
+    }
     return {
       text: [
         `${ok.length} 人に任せました。終わったら知らせが届くので、そろったらまとめて報告します。`,
@@ -209,7 +236,14 @@ function afterTools(p: Parsed, after: ChatMessage[], info: MockCallInfo): MockRe
     ).filter((n) => n.parentId !== null);
     return {
       text: describeTree(
-        nodes.map((n) => ({ id: '', title: n.title, self: false, state: n.state, outputs: [] })),
+        nodes.map((n) => ({
+          id: '',
+          title: n.title,
+          self: false,
+          state: n.state,
+          outputs: [],
+          speaker: false,
+        })),
       ),
     };
   }
@@ -256,6 +290,7 @@ function plan(p: Parsed, goal: string): MockReply {
       text: 'この会話には作業を任せる権限がありません。「任せる」を有効にしてから、もう一度お願いします。',
     };
   }
+  if (DISCUSSION.test(goal)) return discussionPlan(p, goal);
   const children = childPlans(goal, p.hasRepository && p.projectId ? p.projectId : null);
   const titles = children.map((c) => `「${c.title}」`).join('、');
   const decision = p.tools.has('orchestrator.recordDecision')
@@ -289,6 +324,124 @@ function plan(p: Parsed, goal: string): MockReply {
       ...decision,
     ],
   };
+}
+
+// ---------------------------------------------------------------------------
+// Discussions (speakers with a persona)
+// ---------------------------------------------------------------------------
+
+/** A goal that asks AIs to talk with each other. */
+const DISCUSSION = /会議|壁打ち|ブレスト|ディベート|議論|話し合|座談|対談/;
+
+/** Rounds the mock runs before it publishes the outcome (the first turns count as one). */
+export const MOCK_DISCUSSION_ROUNDS = 3;
+
+const MOCK_SPEAKERS = [
+  {
+    title: 'ミナト',
+    persona:
+      'ミナト。前のめりな企画屋。新しいアイデアを次々に出し、まず小さく試すことを勧める。明るく、言い切る口調。',
+  },
+  {
+    title: 'サエ',
+    persona:
+      'サエ。慎重なレビュアー。費用・人手・続けられるかを気にして、リスクを具体的に指摘する。落ち着いた丁寧な口調。',
+  },
+  {
+    title: 'ふつうの人',
+    persona: '使う側の代表。専門用語は使わず、自分が使うか、お金を払うかの目線で率直に話す。',
+  },
+];
+
+const ROUND_QUESTIONS = [
+  'ほかの人の意見を聞いて、賛成できる点と気になる点をひとつずつ挙げてください。',
+  'ここまでを踏まえて、具体的に何をするか、ひとつに絞って提案してください。',
+];
+
+/** Two speakers (three when asked for), each a chat child with a persona on the mock speaker. */
+function discussionPlan(p: Parsed, goal: string): MockReply {
+  const count = /(3|３|三)\s*人/.test(goal) ? 3 : 2;
+  const speakers = MOCK_SPEAKERS.slice(0, count);
+  return {
+    text: `「${topicOf(goal)}」について ${count} 人で話し合ってもらいます。`,
+    toolCalls: [
+      ...speakers.map((s) =>
+        call('session.spawn', {
+          title: s.title,
+          goal: `「${topicOf(goal)}」について、あなたの最初の意見を聞かせてください。`,
+          mode: 'chat',
+          persona: s.persona,
+          model: MOCK_SPEAKER_MODEL,
+        }),
+      ),
+      ...(p.tools.has('orchestrator.recordDecision')
+        ? [
+            call('orchestrator.recordDecision', {
+              decision: `${speakers.map((s) => `「${s.title}」`).join('と')}で話し合う`,
+              rationale: '立場の違う話し手を並べると、案の良い点と危うい点が両方出るため。',
+            }),
+          ]
+        : []),
+    ],
+  };
+}
+
+/**
+ * A wake with speakers: wait while one still talks; pass everyone's words to the others with
+ * the next question; after the last round, publish the outcome.
+ */
+function onDiscussionWake(p: Parsed, req: ChatRequest): MockReply {
+  const speakers = p.children.filter((c) => c.speaker);
+  const talking = speakers.filter((c) => WORKING.has(c.state));
+  if (talking.length > 0) {
+    return {
+      text: `${speakers.length - talking.length}/${speakers.length} 人が話しました。${talking.map((c) => `「${c.title}」`).join('、')}を待ちます。`,
+    };
+  }
+  const wakes = req.messages.filter(
+    (m) => m.role === 'user' && m.content.startsWith(WAKE_MARKER),
+  ).length;
+  const question = ROUND_QUESTIONS[wakes - 1];
+  if (wakes < MOCK_DISCUSSION_ROUNDS && question && p.tools.has('session.send')) {
+    return {
+      text: `${wakes + 1} 巡目: ${question}`,
+      toolCalls: speakers.map((s) =>
+        call('session.send', {
+          sessionId: s.id,
+          content: question,
+          forward: speakers.filter((o) => o.id !== s.id).map((o) => o.id),
+        }),
+      ),
+    };
+  }
+  const goal = p.firstRequest.replace(/^新しい目標\s*[:：]\s*/, '').trim() || '話し合い';
+  const said = lastWords(req);
+  const title = `話し合いのまとめ（${topicOf(goal)}）`;
+  const content = [
+    `# ${title}`,
+    '',
+    '## それぞれの結論',
+    ...speakers.map((s) => `- **${s.title}**: ${said.get(s.title) ?? '（発言なし）'}`),
+    '',
+    '## 残っていること',
+    '- 試した結果を見て、続けるかどうかを決める',
+  ].join('\n');
+  if (!p.tools.has('artifact.publish')) return { text: content };
+  return {
+    text: 'まとめを残します。',
+    toolCalls: [call('artifact.publish', { kind: 'document', title, content })],
+  };
+}
+
+/** The latest words of each speaker, from the wake messages (`<<<「名前」の発言ここから>>>`). */
+function lastWords(req: ChatRequest): Map<string, string> {
+  const out = new Map<string, string>();
+  const quote = /<<<「(.+?)」の発言ここから>>>\n([\s\S]*?)\n<<<「\1」の発言ここまで>>>/g;
+  for (const m of req.messages) {
+    if (m.role !== 'user' || !m.content.startsWith(WAKE_MARKER)) continue;
+    for (const q of m.content.matchAll(quote)) out.set(q[1]!, q[2]!.trim());
+  }
+  return out;
 }
 
 /** Three non-code pieces (research with links, data, a document); one is code with a repository. */
@@ -490,7 +643,8 @@ function parse(req: ChatRequest): Parsed {
       title: m[2]!,
       self: !!m[3],
       state: m[4]!,
-      outputs: m[5] ? m[5].split(',').map((s) => s.replace(/\(art_[0-9a-z]+\)$/, '')) : [],
+      speaker: !!m[5],
+      outputs: m[6] ? m[6].split(',').map((s) => s.replace(/\(art_[0-9a-z]+\)$/, '')) : [],
     });
   }
   const first = req.messages.find((m) => m.role === 'user' && !m.content.startsWith(WAKE_MARKER));

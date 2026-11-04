@@ -243,7 +243,7 @@ Orchestrator は**セッション種別ではなく役割**（concept §3.1）�
 
 指揮役（supervisor）は**イベント駆動**：1 回の実行は「計画・指示して返事をしたら終わる」。子が動いている間、指揮役の会話には実行がない（いつでも話しかけられる）。仕様は `docs/snapshot/20261029_redesign-spec.md` §3.2・§3.10・§3.13。
 
-- **任せる**：`session.delegate`（人間だけ。`sessions/methods/delegate.ts` → `orchestrator/grant.ts`）がチャットに `SUPERVISOR_PERMISSIONS`（`session.spawn/send/stop/resume/tree/get/messages/update`、`artifact.list/get/read/review`、`attention.list/respond`、`human.ask`、`cost.summary`、`orchestrator.recordDecision`、`project.get`）を付ける。`allowSchedules` なら `schedule.*`、プロジェクトに `repoPath` があるときだけ `integration.create/run/get/list/resolveWithAgent`・`workspace.diff`。`limits { maxChildren（既定 4）, maxSchedules, maxDepth: 1 }`、プロジェクトがあればその限定（なければ会話の木のスコープだけ）、ルート予算（既定 $3。既にあれば使い続ける）。もう一度呼ぶと前の Grant を取り消して作り直す。`session.undelegate` で外す。役割の判定は「`session.spawn` を許す Grant を持つ」（`inbox/supervision.ts` の `isSupervisor`）。`session.grantOrchestration` は `session.delegate` の別名（§2.12）。
+- **任せる**：`session.delegate`（人間だけ。`sessions/methods/delegate.ts` → `orchestrator/grant.ts`）がチャットに `SUPERVISOR_PERMISSIONS`（`session.spawn/send/stop/resume/tree/get/messages/update`、`artifact.list/get/read/review/publish`（publish は自分の結論。話し合いのまとめなど）、`attention.list/respond`、`human.ask`、`cost.summary`、`orchestrator.recordDecision`、`project.get`）を付ける。`allowSchedules` なら `schedule.*`、プロジェクトに `repoPath` があるときだけ `integration.create/run/get/list/resolveWithAgent`・`workspace.diff`。`limits { maxChildren（既定 4）, maxSchedules, maxDepth: 1 }`、プロジェクトがあればその限定（なければ会話の木のスコープだけ）、ルート予算（既定 $3。既にあれば使い続ける）。もう一度呼ぶと前の Grant を取り消して作り直す。`session.undelegate` で外す。役割の判定は「`session.spawn` を許す Grant を持つ」（`inbox/supervision.ts` の `isSupervisor`）。`session.grantOrchestration` は `session.delegate` の別名（§2.12）。
 - **受信箱**（`inbox/`、サービス `inbox` / 具体クラス `supervisorInbox`、表 `inbox_items`）：起床の唯一の入口。`deliver(sessionId, { kind, refs, actor, interrupt?, model? })` が決める：
   - 発言（`user_message`、メッセージ付きの `answer`）：実行がなければすぐ新しい Run（trigger `user`、答えは `wake`）。実行中の会話・指揮役は次の区切りで差し込み（`injected`）、エージェントは今の Run の後（`queued`。1 通ずつ順に Run）。エージェントへの `interrupt` は今の Run を `cancelled`（`superseded`）にして新しい Run に渡す（Runtime は自分のセッションを再開）。待っている発言は `Message.delivery: queued`、渡した時点で `delivered`（`message.updated`）。人間の発言は止まっている会話の `supervision` を `active` に戻す。
   - それ以外（`child_update` / `budget` / `resume`、メッセージなしの `answer`）は指揮役を起こす材料。`supervisor.wakeDebounceMs`（1.5 秒）待ってまとめ、1 通の system メッセージ（`[状況の更新]` で始まる LLM 向けの本文 + `meta.wake` の `WakeItemView`）と `orchestrator` の Run（trigger `wake`）にする。項目は `consumedByRunId` 付きで consumed（`inbox.added` / `inbox.consumed`）。子の更新は起こす時点の状態で書き（もう動いている子は省く）、同じ子の未処理の項目は新しいもので置き換える。
@@ -360,6 +360,20 @@ spec §3.7・§2.2（home）・§6。型は `protocol/src/ext/home.ts`、実装�
 - **自分から話す**（`assistant/notify.ts` `AssistantNotifier`）：根の会話が `done` / `failed` になったら（`session.state_changed`。子と右腕自身は除く、根ごとに 1.5 秒の debounce、1 時間に 20 件まで、知らせる時点でまだその状態のものだけ）、右腕の会話に `system` メッセージ（`meta.wake`、`WAKE_MARKER` ＋「「題」が終わりました。できたもの: …」／「失敗しました」、成果物は最新 5 件）を置いて `inbox.deliver` で Run を始める。右腕はそれに 1 行で答える（プロンプトに規則あり。知らせから新しい仕事は始めない）。チャット Run では `meta.wake` のメッセージを監督役と同じく user の番として送る。
 - **`mock/right-hand`**（`assistant/mockRightHand.ts`）：文の形で分ける。知らせ（`WAKE_MARKER`）はその本文をそのまま 1 行で返す。末尾 ？ か 今・どう・何 で始まる → `home.get` → 1〜2 行。止めて・停止 ＋ 木の題（文に題が含まれるか、動詞を切った残りが題に含まれる）→ `session.stop {tree}`。再開 → `session.resume`。毎朝・毎日・毎週（＋ N 時）→ `assistant.startWork {delegate: false}` → `schedule.create`（cron）。それ以外 → `assistant.startWork` → 「「題」を始めます。終わったら知らせます。」。同じ文を 2 回続けて返さない。ツールの失敗は「できませんでした。<理由>」。
 - **UI**：§3 とユーザ向けの決めは `ui-design.md` §4.2・§5.1・§8.6。撮影の場面は `assistant.model` を `mock/right-hand` にし、`14-home-assistant`（今どう？の返事）と `62-assistant`（右腕の会話）を撮る。
+
+### 2.21 AI 同士の会話（キャラ）
+
+会議・壁打ち・ディベートのような「AI 同士で話す」ための専用の仕組みはない。指揮役（§2.13）が **キャラ（persona を持つ chat の子）** を立て、いつもの `session.send` で話を回す。新しい概念はキャラだけで、トークンを無駄にしない作りをデーモン側に置く。
+
+- **キャラ**：`session.spawn` の `persona`（mode chat のみ、4,000 字まで。`Session.persona`、木のカードの `role: speaker`）。枠（`sessions/framing.ts`）に `<<<キャラここから>>>` で引用し、「その人物として話す・会話の 1 ターンとして短く（目安 300 字）・前置きやまとめを書かない」を足す。「依頼が済んだら結果をまとめる」は言わない。
+- **発言は成果物にしない**：キャラの Run は `final_message` の文書を作らない（`outputs/finalize.ts`）。結論は指揮役が `artifact.publish` で残す（指揮役の Grant に `artifact.publish` を足した）。
+- **発言は起床に本文ごと載せる**（`inbox/wake.ts` の `speakerReply`）：キャラの最新の Run の発言を `<<<「名前」の発言ここから>>>` で引用し（4,000 字まで）、`WakeItemView.reply` にも入れる。指揮役は読みに行くツール呼び出しが要らない。
+- **発言は打ち直さずに渡す**（`session.send` の `forward`、8 件まで。`sessions/forward.ts`）：渡す相手の最新の発言（8,000 字まで）を名前つきの引用として、本文の前に text part で置く（`meta: { kind: 'forward', items }`）。指揮役の出力トークン（高い）と言い換えによるずれをなくす。渡す会話も呼び出し元の範囲に入っていること（scope）。まだ発言のない会話は `invalid_params`。`hint` / `workModel` とは併用できない。
+- **話している途中の発言をまとめて 1 回で起こす**（`Inbox.speakersHold`）：キャラのどれかが答えている間は、起床を最長 `SPEAKERS_HOLD_MS`（2 分）待つ。答え終わったキャラの項目がまた起床を予約するので、揃った時点で 1 回だけ起きる（キャラごとに指揮役を呼ばない）。キャラ以外の子は今までどおり。
+- **回し方**はプロンプト（`orchestrator/executor.ts` の `DISCUSSION_GUIDE`）：2〜4 人、違うモデル（プロバイダをまたげるなら別々に）、同じ問いは同じ返事で全員に、反応させたいときは `forward`、4 巡ほどで `artifact.publish` → 短い報告。右腕は「AI 同士で話させたい」を `delegate: true` で立てる（`assistant/prompt.ts`）。
+- **トークンの形**：キャラの system（枠 + キャラ）は会話中変わらず、履歴は追記だけなので、各プロバイダのプロンプトキャッシュに乗る。指揮役は起床ごとに 1 回だけ呼ばれ、発言の本文を読みに行かない・書き写さない。
+- **モック**：`mock/speaker`（`orchestrator/mockSpeaker.ts`。キャラの文から慎重派か前のめりかを決め、渡された相手に名前で反応し、意見 → 反応 → 具体案と進む）。モックの指揮役は「会議・壁打ち・ブレスト・ディベート・議論・話し合い・座談・対談」を含む依頼で 2 人（「3 人」なら 3 人）を立て、3 巡でまとめを公開する。木の行にはキャラに ` speaker` が付く（`SPEAKER_MARK`）。
+- テスト：`orchestrator/discussion.test.ts`。撮影は監査シーンの D「朝食の定期便の企画会議」（`38-discussion`・`39-speaker`）。
 
 ## 3. Desktop UI
 
