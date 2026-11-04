@@ -50,7 +50,7 @@ describe('the connection prompt (ui-rework spec §3.4)', () => {
     expect(unconfigured({ ...EMPTY, litellm: { baseUrl: 'http://x', hasApiKey: false, apiKeyMasked: null } })).toBe(false);
   });
 
-  it('opens on the first request, and あとで sends it on the mock and never asks again', async () => {
+  it('opens on the first request, and モックで送る sends it on the mock and never asks again', async () => {
     mount();
     const go = vi.fn();
     expect(promptConnectionThen(EMPTY, go)).toBe(true);
@@ -59,13 +59,36 @@ describe('the connection prompt (ui-rework spec §3.4)', () => {
     expect(within(dialog).getByRole('button', { name: '確かめる' })).toBeInTheDocument();
     expect(go).not.toHaveBeenCalled();
     await act(async () => {
-      fireEvent.click(within(dialog).getByRole('button', { name: 'あとで' }));
+      fireEvent.click(within(dialog).getByRole('button', { name: 'モックで送る' }));
     });
     expect(go).toHaveBeenCalledTimes(1);
     expect(useUi.getState().onboardingDone).toBe(true);
     expect(screen.queryByRole('dialog')).toBeNull();
     // Asked once: the next request goes straight through.
     expect(promptConnectionThen(EMPTY, vi.fn())).toBe(false);
+  });
+
+  it('closing it (outside or Esc) sends nothing and asks again next time', async () => {
+    mount();
+    const go = vi.fn();
+    promptConnectionThen(EMPTY, go);
+    let dialog = await screen.findByRole('dialog', { name: '接続先' });
+    await act(async () => {
+      fireEvent.click(dialog);
+    });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(go).not.toHaveBeenCalled();
+    expect(useUi.getState().onboardingDone).toBe(false);
+
+    const again = vi.fn();
+    expect(promptConnectionThen(EMPTY, again)).toBe(true);
+    dialog = await screen.findByRole('dialog', { name: '接続先' });
+    await act(async () => {
+      fireEvent.keyDown(within(dialog).getByLabelText('LiteLLM Proxy の URL'), { key: 'Escape' });
+    });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(again).not.toHaveBeenCalled();
+    expect(go).not.toHaveBeenCalled();
   });
 
   it('connecting (確かめる → 始める) sends the waiting request too', async () => {
