@@ -370,7 +370,7 @@ spec §3.7・§2.2（home）・§6。型は `protocol/src/ext/home.ts`、実装�
 - **発言は起床に本文ごと載せる**（`inbox/wake.ts` の `speakerReply`）：キャラの最新の Run の発言を `<<<「名前」の発言ここから>>>` で引用し（4,000 字まで）、`WakeItemView.reply` にも入れる。指揮役は読みに行くツール呼び出しが要らない。
 - **発言は打ち直さずに渡す**（`session.send` の `forward`、8 件まで。`sessions/forward.ts`）：渡す相手の最新の発言（8,000 字まで）を名前つきの引用として、本文の前に text part で置く（`meta: { kind: 'forward', items }`）。指揮役の出力トークン（高い）と言い換えによるずれをなくす。渡す会話も呼び出し元の範囲に入っていること（scope）。まだ発言のない会話は `invalid_params`。`hint` / `workModel` / `workPlace` とは併用できない。
 - **話している途中の発言をまとめて 1 回で起こす**（`Inbox.speakersHold`）：キャラのどれかが答えている間は、起床を最長 `SPEAKERS_HOLD_MS`（2 分）待つ。答え終わったキャラの項目がまた起床を予約するので、揃った時点で 1 回だけ起きる（キャラごとに指揮役を呼ばない）。キャラ以外の子は今までどおり。
-- **回し方**はプロンプト（`orchestrator/executor.ts` の `DISCUSSION_GUIDE`）：2〜4 人、違うモデル（プロバイダをまたげるなら別々に）、同じ問いは同じ返事で全員に、反応させたいときは `forward`、4 巡ほどで `artifact.publish` → 短い報告。右腕は「AI 同士で話させたい」を `delegate: true` で立てる（`assistant/prompt.ts`）。
+- **回し方**はプロンプト（`orchestrator/executor.ts` の `DISCUSSION_GUIDE`）：2〜4 人、違うモデル（プロバイダをまたげるなら別々に）、同じ問いは同じ返事で全員に、反応させたいときは `forward`、1 人ずつ回すときは後の番の人を `start: false` で立てて番が来たら `session.send` で始める（「待って」と頼むと空の発言が出る）、発言は人に見えているので書き写さない・まとめない、雑談なら仕切らずに番を回すだけ、4 巡ほどで `artifact.publish` → 短い報告。右腕は「AI 同士で話させたい」を `delegate: true` で立てる（`assistant/prompt.ts`）。
 - **トークンの形**：キャラの system（枠 + キャラ）は会話中変わらず、履歴は追記だけなので、各プロバイダのプロンプトキャッシュに乗る。指揮役は起床ごとに 1 回だけ呼ばれ、発言の本文を読みに行かない・書き写さない。
 - **モック**：`mock/speaker`（`orchestrator/mockSpeaker.ts`。キャラの文から慎重派か前のめりかを決め、渡された相手に名前で反応し、意見 → 反応 → 具体案と進む）。モックの指揮役は「会議・壁打ち・ブレスト・ディベート・議論・話し合い・座談・対談」を含む依頼で 2 人（「3 人」なら 3 人）を立て、3 巡でまとめを公開する。木の行にはキャラに ` speaker` が付く（`SPEAKER_MARK`）。
 - テスト：`orchestrator/discussion.test.ts`。撮影は監査シーンの D「朝食の定期便の企画会議」（`38-discussion`・`39-speaker`）。

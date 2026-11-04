@@ -206,6 +206,42 @@ describe('a discussion between speakers', () => {
   });
 });
 
+describe('one at a time', () => {
+  it('a speaker spawned with start: false stays silent and speaks when its turn is sent', async () => {
+    const d = await daemon();
+    const host = await lead(d);
+    const spawn = (title: string, start: boolean) =>
+      d.call(HUMAN, 'session.spawn', {
+        parentSessionId: host.id,
+        title,
+        goal: '「朝ごはん」についてひとこと',
+        mode: 'chat',
+        persona: `${title}。前のめりな人。`,
+        model: MOCK_SPEAKER_MODEL,
+        start,
+      });
+    const { session: first } = await spawn('一番手', true);
+    const { session: second } = await spawn('二番手', false);
+
+    // Only the first speaks; the silent one does not hold the wake back.
+    const wake = await until(() => wakesOf(d, host.id)[0]);
+    const items = wake.meta?.kind === 'wake' ? wake.meta.items : [];
+    expect(items.map((i) => i.title)).toEqual(['一番手']);
+    expect(messagesOf(d, second.id).filter((m) => m.role === 'assistant')).toEqual([]);
+
+    // Its turn: started by the message that passes the first one's words on.
+    await d.call(HUMAN, 'session.send', {
+      sessionId: second.id,
+      content: 'どう？',
+      forward: [first.id],
+    });
+    const next = await until(() => wakesOf(d, host.id)[1]);
+    const said = next.meta?.kind === 'wake' ? next.meta.items : [];
+    expect(said.map((i) => i.title)).toEqual(['二番手']);
+    expect(said[0]!.reply?.text).toContain('一番手さん');
+  });
+});
+
 describe('the frame of a speaker', () => {
   it('plays the persona turn by turn and is not told to hand in a result', async () => {
     const d = await daemon();

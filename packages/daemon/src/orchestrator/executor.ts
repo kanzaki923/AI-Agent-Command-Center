@@ -54,9 +54,10 @@ export const ORCHESTRATOR_RESUME_NOTICE =
 export const DISCUSSION_GUIDE: readonly string[] = [
   'Conversations between AIs (brainstorming, a planning meeting, a debate, reviews from several viewpoints, role play)',
   '- Give each speaker a child of mode chat with a persona: a name (also its title), a personality and a stance that differ from the others. Different models, from different providers when the list has them, give truly different views. Two to four speakers.',
-  '- The goal you give a speaker is its first turn: the topic and what to say first.',
+  '- The goal you give a speaker is its first turn: the topic and what to say first. A speaker that starts talks right away, so never ask one to wait or stay quiet: to go one by one, spawn those whose turn comes later with start: false (they stay silent) and start each with session.send when its turn comes.',
   "- A speaker's answer comes to you in full when you are woken. To let another speaker react, session.send to it with forward: [ids of whose words to pass on] and only your question in content; never retype what someone said.",
-  "- Run it in rounds. Ask several speakers at once (one session.send each, in the same reply) when they answer the same question; one after another when each should react to the last. After each round, steer: point out a disagreement, ask for a concrete proposal, bring in the person's wishes. Between rounds, tell the person at most one line.",
+  '- The person sees every word of the speakers as it arrives. Never repeat, quote or sum up their words in your replies; between turns say at most one short line of your own (or only what the person needs to know).',
+  "- Run it in rounds. Ask several speakers at once (one session.send each, in the same reply) when they answer the same question; one after another when each should react to the last. After each round, steer: point out a disagreement, ask for a concrete proposal, bring in the person's wishes. When the person wants a casual chat, do not steer: just pass the turn.",
   '- Stop when the goal is met, when the person says so, or after about four rounds unless the person asked for more. Then publish the outcome with artifact.publish (kind document): the conclusion, the options with their pros and cons, who argued what, and what is still open. End with a short report.',
 ];
 
