@@ -43,12 +43,11 @@ describe('<Draft> (Ctrl+N)', () => {
   beforeEach(() => useUi.setState({ mode: 'session', focusSessionId: null, projectId: null, drafts: {}, onboardingDone: true }));
 
   function mount(projects: Project[]) {
-    const assistant = session({ kind: 'chat', title: '右腕' });
+    const created = session({ kind: 'agent', title: 'ログイン画面を直して' });
     const fake = createFakeClient({
       'project.list': () => ({ items: projects, nextCursor: null }),
-      'system.assistant': () => ({ sessionId: assistant.id }),
+      'assistant.startWork': () => ({ session: created }),
       'session.messages': () => ({ items: [], hasMore: false, streaming: null }),
-      'session.send': () => ({ messageId: 'msg_00000000000000000000000001', runId: null, delivery: 'started' }),
     });
     render(
       <RuntimeProvider runtime={createRuntime(fake.client)}>
@@ -57,40 +56,45 @@ describe('<Draft> (Ctrl+N)', () => {
         </TooltipProvider>
       </RuntimeProvider>,
     );
-    return { fake, assistant };
+    return { fake, created };
   }
 
-  it('is the same field as the empty home, without the demo; the first send goes to the assistant with the chosen place and opens it', async () => {
+  it('starts a conversation of its own in the chosen project and place, and opens it (never the assistant)', async () => {
     const p = project();
     useUi.setState({ projectId: p.id });
-    const { fake, assistant } = mount([p]);
-    const input = screen.getByRole('textbox', { name: '何を頼みますか' });
+    const { fake, created } = mount([p]);
+    const input = screen.getByRole('textbox', { name: 'メッセージ' });
     expect(screen.queryByRole('button', { name: '試してみる' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '任せる' })).toBeNull();
     const code = await screen.findByRole('radio', { name: 'コード' });
+    expect(screen.getByTestId('draft-project')).toHaveTextContent('acme-web');
     // The project has code but no folder.
-    expect(screen.getByRole('radio', { name: 'フォルダ' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('radio', { name: 'フォルダ' })).toBeDisabled();
     fireEvent.click(code);
     expect(code).toHaveAttribute('aria-checked', 'true');
-    expect(screen.getByText('acme-web')).toBeInTheDocument();
 
     fireEvent.change(input, { target: { value: 'ログイン画面を直して' } });
-    expect(fake.calls.some((c) => c.method === 'session.send')).toBe(false);
     expect(useUi.getState().drafts[DRAFT_KEY]).toBe('ログイン画面を直して');
+    // Shift+Enter is a newline, as in any conversation.
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
+    expect(fake.calls.some((c) => c.method === 'assistant.startWork')).toBe(false);
     fireEvent.keyDown(input, { key: 'Enter' });
-    await waitFor(() => expect(useUi.getState().focusSessionId).toBe(assistant.id));
-    expect(fake.calls.find((c) => c.method === 'session.send')?.params).toEqual({
-      sessionId: assistant.id,
-      content: 'ログイン画面を直して',
-      hint: `コード（プロジェクト「acme-web」 projectId: ${p.id}）`,
+    await waitFor(() => expect(useUi.getState().focusSessionId).toBe(created.id));
+    expect(fake.calls.find((c) => c.method === 'assistant.startWork')?.params).toEqual({
+      text: 'ログイン画面を直して',
+      delegate: false,
+      projectId: p.id,
+      workspace: { kind: 'worktree', projectId: p.id },
     });
-    expect(fake.calls.map((c) => c.method)).not.toContain('session.create');
+    expect(fake.calls.map((c) => c.method)).not.toContain('system.assistant');
+    expect(fake.calls.map((c) => c.method)).not.toContain('session.send');
     expect(useUi.getState().drafts[DRAFT_KEY]).toBeUndefined();
   });
 
-  it('is only the input when there is no project', async () => {
+  it('is only the input, the model and send when there is no project', async () => {
     const { fake } = mount([]);
     await waitFor(() => expect(fake.calls.some((c) => c.method === 'project.list')).toBe(true));
     expect(screen.queryByRole('radiogroup', { name: '作業場所' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('draft-project')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '送信' })).toBeInTheDocument();
   });
 });

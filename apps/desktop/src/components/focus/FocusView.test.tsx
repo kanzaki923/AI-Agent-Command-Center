@@ -270,7 +270,7 @@ describe('<FocusView> flow', () => {
 
   it('opens the draft when no conversation is open', async () => {
     mount({ sessions: [], nodes: [card()] });
-    expect(await screen.findByRole('textbox', { name: '何を頼みますか' })).toBeInTheDocument();
+    expect(await screen.findByRole('textbox', { name: 'メッセージ' })).toBeInTheDocument();
   });
 });
 

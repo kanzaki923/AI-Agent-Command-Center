@@ -1,10 +1,12 @@
-import type { Approval, Run, Session } from '@acc/protocol';
-import { cancelRun, respondApproval, retryRun, startConversation } from '../daemon/actions';
+import type { Approval, Run, Session, SettingsView } from '@acc/protocol';
+import { cancelRun, respondApproval, retryRun } from '../daemon/actions';
+import { askAssistant } from '../daemon/assistant';
 import { homeSnapshot } from '../daemon/home';
 import { qk } from '../daemon/keys';
 import type { AppRuntime } from '../daemon/runtime';
 import { sessionTitle } from '../lib/states';
 import { useConfirm } from '../store/confirm';
+import { promptConnectionThen } from './connect';
 import { toast } from '../store/toast';
 import { type Mode, useUi } from '../store/ui';
 
@@ -107,11 +109,14 @@ export async function retry(rt: AppRuntime, run: Run): Promise<void> {
 }
 
 /**
- * Palette "AI に頼む": the sentence becomes the first message of a new conversation, which
- * opens (GUI and natural language reach the same features, concept §3.2).
+ * Palette 「右腕に頼む」: the same as the home field — the words go to the assistant — and its
+ * conversation opens, so the answer (or the work it starts) is right there wherever you asked
+ * from. The first real request without a connection asks for one first, like the home field.
  */
 export async function askAi(rt: AppRuntime, text: string): Promise<void> {
-  const ui = useUi.getState();
-  const s = await startConversation(rt, { text, projectId: ui.projectId });
-  if (s) ui.openSession(s.id);
+  const go = async () => {
+    const id = await askAssistant(rt, text);
+    if (id) useUi.getState().openSession(id);
+  };
+  if (!promptConnectionThen(rt.queryClient.getQueryData<SettingsView>(qk.settings), () => void go())) await go();
 }

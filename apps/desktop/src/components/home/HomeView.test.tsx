@@ -113,6 +113,7 @@ beforeEach(() =>
     selectedId: null,
     projectId: null,
     onboardingDone: true,
+    drafts: {},
   }),
 );
 
@@ -304,6 +305,17 @@ describe('<HomeView>', () => {
     expect(ids()).toEqual([s.faq.id, s.research.id, s.mail.id, s.press.id]);
     fireEvent.pointerLeave(main);
     expect(ids()).toEqual([s.faq.id, s.press.id, s.research.id, s.mail.id]);
+  });
+
+  it('keeps what is typed when home turns into the board, and Shift+Enter does not send', async () => {
+    const fake = mount({ 'home.get': () => homeSnapshot(), 'project.list': () => ({ items: [] }) });
+    const input = await screen.findByRole('textbox', { name: '何を頼みますか' });
+    fireEvent.change(input, { target: { value: '2 件目の依頼' } });
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
+    expect(fake.calls.map((c) => c.method)).not.toContain('session.send');
+    // A lane is born (the empty home becomes the board): the field is a new one, the words stay.
+    setSnap(fake.rt, homeSnapshot({ trees: [homeTree(card({ title: '競合調査', role: 'supervisor', state: 'supervising' }), [], { counts })] }));
+    await vi.waitFor(() => expect(screen.getByRole('textbox', { name: '何を頼みますか' })).toHaveValue('2 件目の依頼'));
   });
 
   it('is one field when there is nothing yet; Enter speaks to the assistant and stays home, its answer above the field', async () => {

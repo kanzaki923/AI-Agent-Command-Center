@@ -171,10 +171,10 @@ function MessageHits({
   );
 }
 
-/** §8.2: 「◯◯」に一致するものはありません, right above "AI に頼む" (cmdk counts the matches). */
+/** §8.2: 「◯◯」に一致するものはありません, right above 「右腕に頼む」 (cmdk counts the matches). */
 function NoMatches({ text, pending, hits }: { text: string; pending: boolean; hits: number }) {
   const count = useCommandState((s) => s.filtered.count);
-  // Forced rows (message hits, AI に頼む) are counted too; only the AI row means nothing matched.
+  // Forced rows (message hits, 右腕に頼む) are counted too; only the AI row means nothing matched.
   if (pending || hits > 0 || count > 1) return null;
   return (
     <div className="px-3 pt-3 pb-1 text-ui text-fg-3" data-testid="palette-no-match">
@@ -516,7 +516,7 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
                 >
                   <Sparkles size={15} strokeWidth={1.75} className="text-accent" />
                   <span className="min-w-0 truncate">
-                    AI に頼む：<span className="text-fg-2">「{askText}」</span>
+                    右腕に頼む：<span className="text-fg-2">「{askText}」</span>
                   </span>
                   <span className="flex-1" />
                   <CornerDownLeft size={13} strokeWidth={1.75} className="text-fg-4" />

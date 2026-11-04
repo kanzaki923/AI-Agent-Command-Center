@@ -94,13 +94,13 @@ describe('<CommandPalette>', () => {
     expect(document.activeElement).toBe(input);
   });
 
-  it('says when nothing matches and still offers to ask the AI', async () => {
+  it('says when nothing matches and still offers to ask the assistant', async () => {
     mount({ 'session.list': () => ({ items: [], nextCursor: null }), 'session.search': () => ({ items: [] }) });
     act(() => useUi.getState().openPalette());
     const input = await screen.findByRole('combobox');
     fireEvent.change(input, { target: { value: 'zzzzqqqq' } });
     expect(await screen.findByTestId('palette-no-match', {}, { timeout: 2000 })).toHaveTextContent('「zzzzqqqq」に一致するものはありません');
-    expect(screen.getByText(/AI に頼む/)).toBeInTheDocument();
+    expect(screen.getByText(/右腕に頼む/)).toBeInTheDocument();
   });
 
   it('reaches every action in the new words: next attention, stop, delegate, screens, theme', async () => {

@@ -9,6 +9,7 @@ import { useRuntime } from '../../daemon/runtime';
 import { cn } from '../../lib/cn';
 import { WORKSPACE_META, type WorkspaceKind } from '../../lib/states';
 import { useUi } from '../../store/ui';
+import { composerKeyAction } from '../focus/Composer';
 import { ModelPicker } from '../focus/ModelPicker';
 import { Button } from '../ui/Button';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu';
@@ -16,6 +17,8 @@ import { Tooltip } from '../ui/Tooltip';
 import { AssistantLine } from './AssistantLine';
 
 const NO_PROJECTS: Project[] = [];
+/** Key of the home field's text in the UI store. */
+export const HOME_DRAFT_KEY = '__home__';
 
 /** What a request can look like (ui-rework spec §3.4): examples under the empty home's field, not explanations. */
 export const EXAMPLES = ['来月のローンチ準備を進めて', 'ログイン画面のエラー文言とテストを直して', '毎朝 9 時に昨日のまとめを作って'];
@@ -33,34 +36,20 @@ function candidates(projects: readonly Project[], kind: WorkspaceKind): Project[
  * above the field (AssistantLine) and new lanes are born as it starts work. Ctrl+Enter sends
  * and opens its conversation. The workspace toggle (none / folder / code) rides along as a
  * hint. In the middle (`center`: the empty home and Ctrl+N) it is larger, examples cycle under
- * it and 試してみる starts the demo. `open` always opens the conversation (Ctrl+N). The first
- * real request without a saved LLM endpoint brings up the connection prompt first; the request
- * goes once it closes.
+ * it and 試してみる starts the demo (the empty home). What is typed is kept in the UI store, so
+ * it survives leaving home and the empty home turning into the board. The first real request
+ * without a saved LLM endpoint brings up the connection prompt first; the request goes once it
+ * closes.
  */
-export function HomeComposer({
-  center = false,
-  open = false,
-  draftKey,
-  demo = center,
-}: {
-  center?: boolean;
-  /** Open the assistant's conversation after sending (the draft screen). */
-  open?: boolean;
-  /** Keep the text in the UI store under this key (survives leaving the screen). */
-  draftKey?: string;
-  /** Offer 試してみる (the demo) under the field. */
-  demo?: boolean;
-}) {
+export function HomeComposer({ center = false }: { center?: boolean }) {
   const rt = useRuntime();
   const projects = (useProjects().data ?? NO_PROJECTS).filter((p) => !p.archivedAt);
   const settings = useSettings().data;
   const methods = useMethods();
   const uiProjectId = useUi((s) => s.projectId);
-  const stored = useUi((s) => (draftKey ? (s.drafts[draftKey] ?? '') : ''));
+  const text = useUi((s) => s.drafts[HOME_DRAFT_KEY] ?? '');
   const setDraft = useUi((s) => s.setDraft);
-  const [local, setLocal] = useState('');
-  const text = draftKey ? stored : local;
-  const setText = (t: string) => (draftKey ? setDraft(draftKey, t) : setLocal(t));
+  const setText = (t: string) => setDraft(HOME_DRAFT_KEY, t);
   const [kind, setKind] = useState<WorkspaceKind>('none');
   const [pickedProjectId, setPickedProjectId] = useState<string | null>(null);
   const [preparing, setPreparing] = useState(false);
@@ -126,10 +115,23 @@ export function HomeComposer({
         data-composer-input
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
-          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-          if (e.key === 'Enter') {
+          // One line: Shift+Enter neither sends nor breaks the line (a newline here would be a send by accident).
+          if (e.key === 'Enter' && e.shiftKey) {
             e.preventDefault();
-            void send(open || e.ctrlKey || e.metaKey);
+            return;
+          }
+          const action = composerKeyAction({
+            key: e.key,
+            shiftKey: e.shiftKey,
+            ctrlKey: e.ctrlKey,
+            metaKey: e.metaKey,
+            altKey: e.altKey,
+            isComposing: e.nativeEvent.isComposing,
+            keyCode: e.nativeEvent.keyCode,
+          });
+          if (action === 'send') {
+            e.preventDefault();
+            void send(e.ctrlKey || e.metaKey);
           }
         }}
         className={cn('h-full min-w-0 flex-1 bg-transparent px-1 text-fg placeholder:text-fg-4', center ? 'text-[15px]' : 'text-chat')}
@@ -154,7 +156,7 @@ export function HomeComposer({
       {field}
       <Examples />
       {projects.length > 0 && toggle}
-      {demo && (
+      {center && (
         <Button
           variant="ghost"
           size="md"

@@ -111,7 +111,7 @@ export async function sendMessage(
 ): Promise<boolean> {
   const qc = rt.queryClient;
   const key = qk.messages(sessionId);
-  // Never loaded (e.g. "AI に頼む" into a chat not opened yet): load the history first. A
+  // Never loaded (e.g. 右腕に頼む before its conversation was opened): load the history first. A
   // cache entry holding only the new message would look fresh (staleTime: Infinity) and the
   // chat would never fetch what came before.
   if (qc.getQueryState(key)?.status !== 'success') {
@@ -218,7 +218,7 @@ export async function createSession(
 }
 
 /**
- * A new conversation from its first message (the palette's AI に頼む; the home field goes
+ * A new conversation from its first message (Ctrl+N; the home field and the palette go
  * through the assistant instead): the daemon creates it, lets it lead when asked
  * (`delegate`), names it by the request and sends the words (`assistant.startWork`). Returns
  * the session (null when the daemon refused).
