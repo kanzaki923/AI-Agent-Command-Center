@@ -284,6 +284,24 @@ describe('2. a firing creates a child of the owner', () => {
     expect(p.model).toBe('m1');
     expect(p).not.toHaveProperty('workspace');
   });
+
+  it('a conversation on a mock model (the demo) repeats on the mock, so it never starts spending', async () => {
+    const env = await setup();
+    const o = await owner(env);
+    env.d.ctx.repos.sessions.update(o.id, (x) => ({ ...x, model: 'mock/orchestrator' }));
+    const agent = await daily9(env, o.id);
+    const chat = await daily9(env, o.id, { title: 'チャット', run: { mode: 'chat' } });
+    await env.d.call(HUMAN, 'schedule.runNow', { scheduleId: agent.id });
+    await env.d.call(HUMAN, 'schedule.runNow', { scheduleId: chat.id });
+    const [a, c] = env.spawner.calls.map((x) => x.params);
+    expect(a).toMatchObject({ mode: 'agent', runtime: 'mock' });
+    expect(c).toMatchObject({ mode: 'chat', model: 'mock/echo' });
+    // A model chosen for the repeat is kept.
+    const chosen = await daily9(env, o.id, { title: '指定', run: { mode: 'chat', model: 'm1' } });
+    await env.d.call(HUMAN, 'schedule.runNow', { scheduleId: chosen.id });
+    expect(env.spawner.calls[2]!.params).toMatchObject({ model: 'm1' });
+    expect(env.spawner.calls[2]!.params).not.toHaveProperty('runtime');
+  });
 });
 
 describe('3. catch-up after sleep', () => {

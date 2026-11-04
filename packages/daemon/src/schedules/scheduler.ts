@@ -15,8 +15,10 @@ import {
 import type { SchedulerService, SpawnOptions, SpawnerService } from '../contracts';
 import type { DaemonContext } from '../core/context';
 import { isApiError } from '../core/errors';
+import { MOCK_PREFIX } from '../llm/mock';
 import { assertRosterModel } from '../llm/roster';
 import { freeUsd } from '../policy/budget';
+import { OFFLINE_FALLBACK_MODEL } from '../sessions/chat';
 import { assertAgentFolder } from '../sessions/spawn';
 import { firingLabel, planDue } from './time';
 
@@ -401,6 +403,9 @@ export class Scheduler implements SchedulerService {
     const workspace = s.run.mode === 'agent' ? s.run.workspace : undefined;
     const projectId =
       owner.projectId ?? (workspace?.kind === 'worktree' ? workspace.projectId : undefined);
+    // A conversation on a built-in mock model (the demo) repeats on the mock too: a free tree
+    // must not start spending on its own every week.
+    const mock = !s.run.model && !!owner.model?.startsWith(MOCK_PREFIX);
     return {
       parentSessionId: owner.id,
       title,
@@ -409,6 +414,7 @@ export class Scheduler implements SchedulerService {
       ...(workspace ? { workspace } : {}),
       ...(projectId ? { projectId } : {}),
       ...(s.run.model ? { model: s.run.model } : {}),
+      ...(mock ? (s.run.mode === 'agent' ? { runtime: 'mock' } : { model: OFFLINE_FALLBACK_MODEL }) : {}),
       budgetUsd: s.run.budgetUsd,
       reviewBy: 'none',
       start: true,
