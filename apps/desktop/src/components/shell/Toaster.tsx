@@ -1,92 +1,111 @@
 import { CheckCircle2, Info, TriangleAlert, X } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
+import { useState } from 'react';
 import { cn } from '../../lib/cn';
 import { useToasts } from '../../store/toast';
 
 const MAX_VISIBLE = 3;
 
-/** Bottom-right, 360px, max 3 stacked; older ones fold into "ほか N 件" (§8.5). */
+/**
+ * Bottom-right, 360px, max 3 stacked; older ones fold into "ほか N 件" (§8.5). Pressing it
+ * shows them (an error that is still open must not vanish unread); たたむ folds them again.
+ */
 export function Toaster() {
   const toasts = useToasts((s) => s.toasts);
   const dismiss = useToasts((s) => s.dismiss);
   const pause = useToasts((s) => s.pause);
   const resume = useToasts((s) => s.resume);
-  const visible = toasts.slice(-MAX_VISIBLE);
+  const [expanded, setExpanded] = useState(false);
+  const folds = toasts.length > MAX_VISIBLE;
+  const open = expanded && folds;
+  const visible = open ? toasts : toasts.slice(-MAX_VISIBLE);
   const hidden = toasts.length - visible.length;
   return (
     <div
       className="pointer-events-none fixed right-4 bottom-4 z-[50] flex w-[360px] flex-col gap-2"
       aria-live="polite"
     >
-      {hidden > 0 && (
+      {folds && (
         <button
           type="button"
-          onClick={() => toasts.slice(0, hidden).forEach((t) => dismiss(t.id))}
+          aria-expanded={open}
+          onClick={() => setExpanded(!open)}
           className="pointer-events-auto self-end rounded-full border border-line bg-raised px-2.5 py-0.5 text-meta text-fg-3 shadow-float hover:text-fg"
         >
-          ほか {hidden} 件
+          {open ? 'たたむ' : `ほか ${hidden} 件`}
         </button>
       )}
-      <AnimatePresence initial={false}>
-        {visible.map((t) => (
-          <motion.div
-            key={t.id}
-            role={t.tone === 'error' ? 'alert' : 'status'}
-            onMouseEnter={() => pause(t.id)}
-            onMouseLeave={() => resume(t.id)}
-            className="pointer-events-auto flex items-start gap-2.5 rounded-md border border-line bg-raised px-3 py-2.5 shadow-float"
-            layout="position"
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0, transition: { duration: 0.18, ease: [0.16, 1, 0.3, 1] } }}
-            exit={{ opacity: 0, transition: { duration: 0.12, ease: [0.4, 0, 1, 1] } }}
-          >
-            <span
-              className={cn(
-                'mt-0.5 shrink-0',
-                t.tone === 'error'
-                  ? 'text-st-failed'
-                  : t.tone === 'success'
-                    ? 'text-st-completed'
-                    : 'text-fg-3',
-              )}
+      <div
+        className={cn(
+          'flex flex-col gap-2',
+          open && 'pointer-events-auto max-h-[calc(100vh-96px)] overflow-y-auto',
+        )}
+      >
+        <AnimatePresence initial={false}>
+          {visible.map((t) => (
+            <motion.div
+              key={t.id}
+              role={t.tone === 'error' ? 'alert' : 'status'}
+              onMouseEnter={() => pause(t.id)}
+              onMouseLeave={() => resume(t.id)}
+              className="pointer-events-auto flex items-start gap-2.5 rounded-md border border-line bg-raised px-3 py-2.5 shadow-float"
+              layout="position"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{
+                opacity: 1,
+                y: 0,
+                transition: { duration: 0.18, ease: [0.16, 1, 0.3, 1] },
+              }}
+              exit={{ opacity: 0, transition: { duration: 0.12, ease: [0.4, 0, 1, 1] } }}
             >
-              {t.tone === 'error' ? (
-                <TriangleAlert size={15} strokeWidth={1.75} />
-              ) : t.tone === 'success' ? (
-                <CheckCircle2 size={15} strokeWidth={1.75} />
-              ) : (
-                <Info size={15} strokeWidth={1.75} />
-              )}
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="text-ui text-fg">{t.title}</div>
-              {t.detail && (t.tone !== 'error' || t.showDetail) && (
-                <div className="mt-0.5 text-meta text-fg-3">{t.detail}</div>
-              )}
-              {t.action && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    t.action!.run();
-                    dismiss(t.id);
-                  }}
-                  className="mt-1 text-ui font-medium text-accent hover:underline"
-                >
-                  {t.action.label}
-                </button>
-              )}
-            </div>
-            <button
-              type="button"
-              aria-label="閉じる"
-              onClick={() => dismiss(t.id)}
-              className="flex size-5 shrink-0 items-center justify-center rounded-xs text-fg-3 hover:text-fg-2"
-            >
-              <X size={13} />
-            </button>
-          </motion.div>
-        ))}
-      </AnimatePresence>
+              <span
+                className={cn(
+                  'mt-0.5 shrink-0',
+                  t.tone === 'error'
+                    ? 'text-st-failed'
+                    : t.tone === 'success'
+                      ? 'text-st-completed'
+                      : 'text-fg-3',
+                )}
+              >
+                {t.tone === 'error' ? (
+                  <TriangleAlert size={15} strokeWidth={1.75} />
+                ) : t.tone === 'success' ? (
+                  <CheckCircle2 size={15} strokeWidth={1.75} />
+                ) : (
+                  <Info size={15} strokeWidth={1.75} />
+                )}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="text-ui text-fg">{t.title}</div>
+                {t.detail && (t.tone !== 'error' || t.showDetail) && (
+                  <div className="mt-0.5 text-meta text-fg-3">{t.detail}</div>
+                )}
+                {t.action && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      t.action!.run();
+                      dismiss(t.id);
+                    }}
+                    className="mt-1 text-ui font-medium text-accent hover:underline"
+                  >
+                    {t.action.label}
+                  </button>
+                )}
+              </div>
+              <button
+                type="button"
+                aria-label="閉じる"
+                onClick={() => dismiss(t.id)}
+                className="flex size-5 shrink-0 items-center justify-center rounded-xs text-fg-3 hover:text-fg-2"
+              >
+                <X size={13} />
+              </button>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
     </div>
   );
 }

@@ -210,7 +210,7 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
   const pages = useUi((s) => s.palettePages);
   const focusSessionId = useUi((s) => s.focusSessionId);
   const mode = useUi((s) => s.mode);
-  const canGoBack = useUi((s) => s.back.length > 0);
+  const canGoBack = useUi((s) => s.back.length > 0 || !!s.reviewIntegrationId);
   const recentCommands = useUi((s) => s.recentCommands);
   const theme = useUi((s) => s.theme);
   const reduceMotion = useUi((s) => s.reduceMotion);

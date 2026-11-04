@@ -38,7 +38,7 @@ export function TitleBar() {
   const openPalette = useUi((s) => s.openPalette);
   const goBack = useUi((s) => s.goBack);
   const goForward = useUi((s) => s.goForward);
-  const canBack = useUi((s) => s.back.length > 0);
+  const canBack = useUi((s) => s.back.length > 0 || !!s.reviewIntegrationId);
   const canForward = useUi((s) => s.forward.length > 0);
   const today = useTodaySpend();
   const needsYou = useHomeSelect((s) => s.totals.needsYou) ?? 0;

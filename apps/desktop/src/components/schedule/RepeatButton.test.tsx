@@ -5,6 +5,7 @@ import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
 import { createFakeClient } from '../../test/fakeClient';
 import { T0, iso, session } from '../../test/fixtures';
 import { TooltipProvider } from '../ui/Tooltip';
+import { useToasts } from '../../store/toast';
 import { RepeatButton } from './RepeatButton';
 import { CUSTOM, cronTrigger, formatFireTime, presetOf, repeatPrompt, repeatTitle } from './repeat';
 
@@ -17,7 +18,14 @@ function schedule(s: Session, over: Partial<Schedule> = {}): Schedule {
     title: s.title,
     prompt: '今週のまとめ',
     trigger: { kind: 'cron', expr: '0 9 * * 1-5', tz: 'Asia/Tokyo' },
-    run: { mode: 'agent', workspace: { kind: 'none' }, model: null, budgetUsd: 1, supervise: false, includePrevious: true },
+    run: {
+      mode: 'agent',
+      workspace: { kind: 'none' },
+      model: null,
+      budgetUsd: 1,
+      supervise: false,
+      includePrevious: true,
+    },
     catchUp: 'latest',
     maxLatenessMin: 720,
     enabled: true,
@@ -63,14 +71,30 @@ const openPopover = async () => {
 
 describe('<RepeatButton>', () => {
   it('picks a preset, shows the next 3 times and repeats with the budget of one firing', async () => {
-    const s = session({ kind: 'chat', title: '朝のまとめ', brief: { goal: '昨日のニュースを 5 行にまとめて', doneWhen: [], fromSessionId: null, reviewBy: 'none', givenAt: iso(T0) } });
+    const s = session({
+      kind: 'chat',
+      title: '朝のまとめ',
+      brief: {
+        goal: '昨日のニュースを 5 行にまとめて',
+        doneWhen: [],
+        fromSessionId: null,
+        reviewBy: 'none',
+        givenAt: iso(T0),
+      },
+    });
     const { calls } = mount(s);
     const pop = await openPopover();
-    expect(within(pop).getByRole('radio', { name: '毎朝 9:00' })).toHaveAttribute('aria-checked', 'true');
+    expect(within(pop).getByRole('radio', { name: '毎朝 9:00' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
     await waitFor(() => expect(within(pop).getByTestId('repeat-preview').children).toHaveLength(3));
     fireEvent.click(within(pop).getByRole('radio', { name: '平日 9:00' }));
     await waitFor(() =>
-      expect(calls('schedule.preview')).toContainEqual({ trigger: { kind: 'cron', expr: '0 9 * * 1-5' }, count: 3 }),
+      expect(calls('schedule.preview')).toContainEqual({
+        trigger: { kind: 'cron', expr: '0 9 * * 1-5' },
+        count: 3,
+      }),
     );
     const budget = within(pop).getByLabelText('1 回の予算');
     fireEvent.change(budget, { target: { value: '2.5' } });
@@ -90,21 +114,51 @@ describe('<RepeatButton>', () => {
     await waitFor(() => expect(screen.queryByTestId('repeat-popover')).toBeNull());
   });
 
-  it('shows the next time on the clock and changes or stops an existing schedule at once', async () => {
+  it('shows the next time on the clock; an existing schedule changes only with 変更, and stopping offers 元に戻す', async () => {
+    useToasts.setState({ toasts: [] });
     const s = session({ kind: 'chat', title: '週次レポート' });
     const existing = schedule(s);
     const { calls } = mount(s, [existing]);
-    await waitFor(() => expect(screen.getByRole('button', { name: '繰り返す' })).toHaveTextContent(/\d+:\d\d/));
-    const pop = await openPopover();
-    expect(within(pop).getByRole('radio', { name: '平日 9:00' })).toHaveAttribute('aria-checked', 'true');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '繰り返す' })).toHaveTextContent(/\d+:\d\d/),
+    );
+    let pop = await openPopover();
+    expect(within(pop).getByRole('radio', { name: '平日 9:00' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    expect(within(pop).getByRole('button', { name: '変更' })).toBeDisabled();
     await act(async () => {
       fireEvent.click(within(pop).getByRole('radio', { name: '毎時' }));
     });
-    expect(calls('schedule.update')).toEqual([{ scheduleId: existing.id, trigger: { kind: 'cron', expr: '0 * * * *' } }]);
+    // Picking only previews.
+    expect(calls('schedule.update')).toEqual([]);
+    await act(async () => {
+      fireEvent.click(within(pop).getByRole('button', { name: '変更' }));
+    });
+    expect(calls('schedule.update')).toEqual([
+      { scheduleId: existing.id, trigger: { kind: 'cron', expr: '0 * * * *' } },
+    ]);
+    await waitFor(() => expect(screen.queryByTestId('repeat-popover')).toBeNull());
+
+    pop = await openPopover();
     await act(async () => {
       fireEvent.click(within(pop).getByRole('button', { name: '繰り返しをやめる' }));
     });
     expect(calls('schedule.delete')).toEqual([{ scheduleId: existing.id }]);
+    const t = useToasts.getState().toasts.at(-1)!;
+    expect(t.title).toBe('繰り返しをやめました');
+    await act(async () => {
+      t.action!.run();
+    });
+    expect(calls('schedule.create')).toEqual([
+      expect.objectContaining({
+        sessionId: s.id,
+        prompt: existing.prompt,
+        trigger: existing.trigger,
+        run: existing.run,
+      }),
+    ]);
   });
 
   it('takes a hand-written cron expression and marks one the daemon rejects', async () => {
@@ -138,7 +192,12 @@ describe('repeat helpers', () => {
 
   it('repeats the brief (or the title) under the conversation title', () => {
     expect(repeatPrompt({ title: 'A', brief: null })).toBe('A');
-    expect(repeatPrompt({ title: 'A', brief: { goal: ' B ', doneWhen: [] } as unknown as Session['brief'] })).toBe('B');
+    expect(
+      repeatPrompt({
+        title: 'A',
+        brief: { goal: ' B ', doneWhen: [] } as unknown as Session['brief'],
+      }),
+    ).toBe('B');
     expect(repeatTitle({ title: '  ' })).toBeUndefined();
     expect(repeatTitle({ title: 'x'.repeat(100) })).toHaveLength(80);
   });

@@ -58,6 +58,15 @@ export interface UiState {
   glassScope: GlassScope;
   glassStrength: GlassStrength;
   drafts: Record<string, string>;
+  /**
+   * What the home field is set to besides its words (where, which project, which model): kept
+   * while the app runs, so it survives the empty home turning into the board. Not persisted.
+   */
+  homeChoice: {
+    kind: 'none' | 'folder' | 'worktree';
+    projectId: string | null;
+    model: string | null;
+  };
   viewedAt: Record<string, string>;
   /** Answers that settled before this (the first run of this store) are not shown as unread. */
   readBaseline: string;
@@ -137,6 +146,7 @@ interface UiActions {
   setGlassScope: (s: GlassScope) => void;
   setGlassStrength: (s: GlassStrength) => void;
   setDraft: (sessionId: string, text: string) => void;
+  setHomeChoice: (patch: Partial<UiState['homeChoice']>) => void;
   markViewed: (sessionId: string, at: string) => void;
   toggleCollapsed: (key: string, defaultCollapsed?: boolean) => void;
   finishOnboarding: () => void;
@@ -193,6 +203,7 @@ const initial: UiState = {
   glassScope: 'wings',
   glassStrength: 'mid',
   drafts: {},
+  homeChoice: { kind: 'none', projectId: null, model: null },
   viewedAt: {},
   readBaseline: '',
   collapsed: {},
@@ -233,18 +244,23 @@ export function normalizeMode(mode: unknown): Mode {
  * screens that no longer exist (task board, panel tabs) is dropped.
  */
 export function migrateUi(persisted: unknown, version: number): Partial<UiState> {
-  const p = { ...((persisted && typeof persisted === 'object' ? persisted : {}) as Record<string, unknown>) };
+  const p = {
+    ...((persisted && typeof persisted === 'object' ? persisted : {}) as Record<string, unknown>),
+  };
   if (version < 2) {
     const panel = p.panelOpen;
     p.panelOpen =
-      panel && typeof panel === 'object' ? (panel as Record<string, unknown>).focus !== false : panel !== false;
+      panel && typeof panel === 'object'
+        ? (panel as Record<string, unknown>).focus !== false
+        : panel !== false;
     delete p.panelTab;
     delete p.commandView;
     delete p.taskGoal;
     if ('mode' in p) p.mode = normalizeMode(p.mode);
     for (const k of ['back', 'forward'] as const) {
       const list = p[k];
-      if (Array.isArray(list)) p[k] = (list as View[]).map((v) => ({ ...v, mode: normalizeMode(v.mode) }));
+      if (Array.isArray(list))
+        p[k] = (list as View[]).map((v) => ({ ...v, mode: normalizeMode(v.mode) }));
     }
   }
   return p;
@@ -315,7 +331,8 @@ export const createUiStore = () =>
         goHome: () => {
           const s = get();
           // Coming back from a conversation selects it on the home screen.
-          if (s.mode === 'session') set({ selectedId: s.focusSessionId, viewedAt: touchViewed(s, s.focusSessionId) });
+          if (s.mode === 'session')
+            set({ selectedId: s.focusSessionId, viewedAt: touchViewed(s, s.focusSessionId) });
           get().setMode('home');
         },
         openTimeline: () => get().setMode('timeline'),
@@ -324,7 +341,8 @@ export const createUiStore = () =>
         setTimelineSelected: (key) => set({ timelineSelected: key }),
         setProject: (projectId) => set({ projectId }),
         toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
-        setSidebarWidth: (px) => set({ sidebarWidth: Math.round(Math.min(360, Math.max(200, px))) }),
+        setSidebarWidth: (px) =>
+          set({ sidebarWidth: Math.round(Math.min(360, Math.max(200, px))) }),
         setPanelWidth: (px) => set({ panelWidth: Math.round(Math.min(560, Math.max(320, px))) }),
         togglePanel: () => set((s) => ({ panelOpen: !s.panelOpen })),
         setPanelOpen: (open) => set((s) => (s.panelOpen === open ? s : { panelOpen: open })),
@@ -332,8 +350,10 @@ export const createUiStore = () =>
           set({ paletteOpen: true, paletteSeed: seed, paletteQuery: seed, palettePages: [] }),
         closePalette: () => set({ paletteOpen: false }),
         setPaletteQuery: (paletteQuery) => set({ paletteQuery }),
-        pushPalettePage: (page) => set((s) => ({ palettePages: [...s.palettePages, page], paletteQuery: '' })),
-        popPalettePage: () => set((s) => ({ palettePages: s.palettePages.slice(0, -1), paletteQuery: '' })),
+        pushPalettePage: (page) =>
+          set((s) => ({ palettePages: [...s.palettePages, page], paletteQuery: '' })),
+        popPalettePage: () =>
+          set((s) => ({ palettePages: s.palettePages.slice(0, -1), paletteQuery: '' })),
         setSettingsOpen: (settingsOpen, tab) =>
           set({ settingsOpen, settingsTab: tab ?? (settingsOpen ? get().settingsTab : 'general') }),
         setSettingsTab: (settingsTab) => set({ settingsTab }),
@@ -345,6 +365,7 @@ export const createUiStore = () =>
         setGlass: (glass) => set({ glass }),
         setGlassScope: (glassScope) => set({ glassScope }),
         setGlassStrength: (glassStrength) => set({ glassStrength }),
+        setHomeChoice: (patch) => set((s) => ({ homeChoice: { ...s.homeChoice, ...patch } })),
         setDraft: (sessionId, text) =>
           set((s) => {
             if ((s.drafts[sessionId] ?? '') === text) return s;
@@ -355,17 +376,29 @@ export const createUiStore = () =>
           }),
         markViewed: (sessionId, at) =>
           set((s) =>
-            (s.viewedAt[sessionId] ?? '') >= at ? s : { viewedAt: { ...s.viewedAt, [sessionId]: at } },
+            (s.viewedAt[sessionId] ?? '') >= at
+              ? s
+              : { viewedAt: { ...s.viewedAt, [sessionId]: at } },
           ),
         toggleCollapsed: (key, defaultCollapsed = false) =>
-          set((s) => ({ collapsed: { ...s.collapsed, [key]: !(s.collapsed[key] ?? defaultCollapsed) } })),
+          set((s) => ({
+            collapsed: { ...s.collapsed, [key]: !(s.collapsed[key] ?? defaultCollapsed) },
+          })),
         finishOnboarding: () => set({ onboardingDone: true, connectPromptOpen: false }),
         setConnectPromptOpen: (connectPromptOpen) => set({ connectPromptOpen }),
         noteAssistantAsk: (assistantAskedAt) => set({ assistantAskedAt }),
         rememberCommand: (id) =>
-          set((s) => ({ recentCommands: [id, ...s.recentCommands.filter((x) => x !== id)].slice(0, 8) })),
+          set((s) => ({
+            recentCommands: [id, ...s.recentCommands.filter((x) => x !== id)].slice(0, 8),
+          })),
         goBack: () => {
           const s = get();
+          // The full-screen code view is a step of its own: 戻る first closes it, back to
+          // the conversation it was opened from (as its own 戻る and Esc do).
+          if (s.reviewIntegrationId) {
+            set({ reviewIntegrationId: null });
+            return;
+          }
           const prev = s.back[s.back.length - 1];
           if (!prev) return;
           set({
@@ -404,8 +437,12 @@ export const createUiStore = () =>
           setTimeout(() => set((s) => (s.flash === flash ? { flash: null } : s)), FLASH_MS);
         },
         setNotify: (patch) =>
-          set((s) => ({ notifyOs: patch.os ?? s.notifyOs, notifyInApp: patch.inApp ?? s.notifyInApp })),
-        markSuperseded: (messageId) => set((s) => ({ superseded: { ...s.superseded, [messageId]: true } })),
+          set((s) => ({
+            notifyOs: patch.os ?? s.notifyOs,
+            notifyInApp: patch.inApp ?? s.notifyInApp,
+          })),
+        markSuperseded: (messageId) =>
+          set((s) => ({ superseded: { ...s.superseded, [messageId]: true } })),
         setEditing: (e) =>
           set((s) => {
             if (!e) {
@@ -418,7 +455,9 @@ export const createUiStore = () =>
             }
             // Switching to another message keeps the draft from before the first edit.
             const prevDraft =
-              s.editing?.sessionId === e.sessionId ? s.editing.prevDraft : (s.drafts[e.sessionId] ?? '');
+              s.editing?.sessionId === e.sessionId
+                ? s.editing.prevDraft
+                : (s.drafts[e.sessionId] ?? '');
             return {
               editing: { sessionId: e.sessionId, messageId: e.messageId, prevDraft },
               drafts: { ...s.drafts, [e.sessionId]: e.text },
@@ -476,7 +515,10 @@ interface Settling {
  * A conversation whose answer (or whole tree's work) settled after you last looked at it:
  * idle or done since later than you left it, and not the one open now.
  */
-export function isUnread(s: Pick<UiState, 'viewedAt' | 'readBaseline' | 'mode' | 'focusSessionId'>, c: Settling): boolean {
+export function isUnread(
+  s: Pick<UiState, 'viewedAt' | 'readBaseline' | 'mode' | 'focusSessionId'>,
+  c: Settling,
+): boolean {
   if ((c.state !== 'idle' && c.state !== 'done') || !c.stateSince) return false;
   if (s.mode === 'session' && s.focusSessionId === c.id) return false;
   const seen = s.viewedAt[c.id] ?? '';

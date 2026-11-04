@@ -21,7 +21,11 @@ const NO_PROJECTS: Project[] = [];
 export const HOME_DRAFT_KEY = '__home__';
 
 /** What a request can look like (ui-rework spec §3.4): examples under the empty home's field, not explanations. */
-export const EXAMPLES = ['来月のローンチ準備を進めて', 'ログイン画面のエラー文言とテストを直して', '毎朝 9 時に昨日のまとめを作って'];
+export const EXAMPLES = [
+  '来月のローンチ準備を進めて',
+  'ログイン画面のエラー文言とテストを直して',
+  '毎朝 9 時に昨日のまとめを作って',
+];
 
 /** Projects a workspace kind can use: a folder needs a folder, code a git repository. */
 function candidates(projects: readonly Project[], kind: WorkspaceKind): Project[] {
@@ -50,11 +54,14 @@ export function HomeComposer({ center = false }: { center?: boolean }) {
   const text = useUi((s) => s.drafts[HOME_DRAFT_KEY] ?? '');
   const setDraft = useUi((s) => s.setDraft);
   const setText = (t: string) => setDraft(HOME_DRAFT_KEY, t);
-  const [kind, setKind] = useState<WorkspaceKind>('none');
-  const [pickedProjectId, setPickedProjectId] = useState<string | null>(null);
-  const [preparing, setPreparing] = useState(false);
+  // Kept in the UI store, like the words: the empty home and the board each have their field.
+  const { kind, projectId: pickedProjectId, model } = useUi((s) => s.homeChoice);
+  const setHomeChoice = useUi((s) => s.setHomeChoice);
+  const setKind = (k: WorkspaceKind) => setHomeChoice({ kind: k });
+  const setPickedProjectId = (id: string | null) => setHomeChoice({ projectId: id });
   // The model for the work this request starts; none: the assistant picks from the roster.
-  const [model, setModel] = useState<string | null>(null);
+  const setModel = (m: string | null) => setHomeChoice({ model: m });
+  const [preparing, setPreparing] = useState(false);
   const roster = [
     ...new Set([
       ...(settings?.modelRules ?? []).map((r) => r.model),
@@ -65,7 +72,10 @@ export function HomeComposer({ center = false }: { center?: boolean }) {
   // The project the workspace comes from: the one picked here, else the current one, else the first that fits.
   const fits = candidates(projects, kind);
   const project =
-    fits.find((p) => p.id === pickedProjectId) ?? fits.find((p) => p.id === uiProjectId) ?? fits[0] ?? null;
+    fits.find((p) => p.id === pickedProjectId) ??
+    fits.find((p) => p.id === uiProjectId) ??
+    fits[0] ??
+    null;
 
   const send = async (openIt: boolean) => {
     const t = text.trim();
@@ -134,9 +144,19 @@ export function HomeComposer({ center = false }: { center?: boolean }) {
             void send(e.ctrlKey || e.metaKey);
           }
         }}
-        className={cn('h-full min-w-0 flex-1 bg-transparent px-1 text-fg placeholder:text-fg-4', center ? 'text-[15px]' : 'text-chat')}
+        className={cn(
+          'h-full min-w-0 flex-1 bg-transparent px-1 text-fg placeholder:text-fg-4',
+          center ? 'text-[15px]' : 'text-chat',
+        )}
       />
-      <ModelPicker value={model} fallback={null} roster={roster} autoLabel="自動" autoHint="設定の名簿に沿って選びます" onChange={setModel} />
+      <ModelPicker
+        value={model}
+        fallback={null}
+        roster={roster}
+        autoLabel="自動"
+        autoHint="設定の名簿に沿って選びます"
+        onChange={setModel}
+      />
       {!center && projects.length > 0 && toggle}
     </div>
   );
@@ -163,7 +183,13 @@ export function HomeComposer({ center = false }: { center?: boolean }) {
           className="mt-4"
           disabled={preparing}
           onClick={tryDemo}
-          icon={preparing ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} strokeWidth={1.75} />}
+          icon={
+            preparing ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <Play size={14} strokeWidth={1.75} />
+            )
+          }
         >
           試してみる
         </Button>
@@ -242,7 +268,14 @@ function WorkspaceToggle({
           </MenuContent>
         </Menu>
       )}
-      <span role="radiogroup" aria-label="作業場所" className={cn('flex items-center rounded-sm p-0.5', large ? 'gap-0.5 bg-surface' : 'bg-canvas')}>
+      <span
+        role="radiogroup"
+        aria-label="作業場所"
+        className={cn(
+          'flex items-center rounded-sm p-0.5',
+          large ? 'gap-0.5 bg-surface' : 'bg-canvas',
+        )}
+      >
         {KINDS.map(({ kind: k, label }) => {
           const Icon = k === 'none' ? MessageSquare : WORKSPACE_META[k].icon;
           const none = k !== 'none' && candidates(projects, k).length === 0;
@@ -268,7 +301,9 @@ function WorkspaceToggle({
                 className={cn(
                   'flex items-center justify-center rounded-[3px] transition-colors duration-[120ms]',
                   large ? 'size-8' : 'size-6',
-                  on ? 'bg-selected text-fg' : 'text-fg-3 hover:text-fg aria-disabled:text-fg-4 aria-disabled:opacity-50',
+                  on
+                    ? 'bg-selected text-fg'
+                    : 'text-fg-3 hover:text-fg aria-disabled:text-fg-4 aria-disabled:opacity-50',
                 )}
               >
                 <Icon size={large ? 16 : 13} strokeWidth={1.75} />

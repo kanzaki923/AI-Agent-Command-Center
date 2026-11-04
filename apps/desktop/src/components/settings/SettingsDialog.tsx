@@ -1,11 +1,18 @@
-import type { ParamsInput, PermissionProfile, SettingsView } from '@acc/protocol';
+import {
+  type ParamsInput,
+  type PermissionProfile,
+  type Project,
+  type Run,
+  type SettingsView,
+  isTerminalRunStatus,
+} from '@acc/protocol';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronRight, Monitor, Moon, ShieldAlert, ShieldCheck, Sun, Zap } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { useStore } from 'zustand';
 import { setDailyLimit } from '../../daemon/cost';
 import { qk } from '../../daemon/keys';
-import { useInfo, useModels, useSettings } from '../../daemon/queries';
+import { useInfo, useModels, useProjects, useRuns, useSettings } from '../../daemon/queries';
 import { useRuntime } from '../../daemon/runtime';
 import { confirmShutdown, resumesAfterRestart } from '../../daemon/shutdown';
 import { cn } from '../../lib/cn';
@@ -53,6 +60,25 @@ export const PROFILE_OPTIONS: SegmentOption<PermissionProfile>[] = [
     hint: '読み取りと編集のほかはすべて確認する',
   },
 ];
+
+/**
+ * Agent runs still at work on another profile than the default (a project with a profile of
+ * its own does not follow the default): a run keeps the profile it started with to the end.
+ */
+export function runsOnOtherProfile(
+  runs: readonly Run[],
+  projects: readonly Pick<Project, 'id' | 'permissionProfile'>[],
+  profile: PermissionProfile,
+): number {
+  const own = new Set(projects.filter((p) => p.permissionProfile).map((p) => p.id));
+  return runs.filter(
+    (r) =>
+      !isTerminalRunStatus(r.status) &&
+      !!r.permission &&
+      r.permission.profile !== profile &&
+      !(r.projectId && own.has(r.projectId)),
+  ).length;
+}
 
 const THEME_OPTIONS: SegmentOption<ThemePref>[] = [
   { value: 'dark', label: 'ダーク', icon: icon(Moon), iconOnly: true },
@@ -164,6 +190,9 @@ export function SettingsDialog() {
   };
   const status = connectionStatus(settings, models.data, models.isError);
   const profile = settings?.defaultPermissionProfile;
+  const runs = useRuns().data;
+  const projects = useProjects().data;
+  const onOther = profile ? runsOnOtherProfile(runs ?? [], projects ?? [], profile) : 0;
   const daily = settings?.limits?.dailyUsd ?? null;
 
   return (
@@ -179,7 +208,11 @@ export function SettingsDialog() {
       title="設定"
       className={editingModels || tab === 'usage' ? 'w-[640px]' : 'w-[520px]'}
     >
-      <div role="tablist" aria-label="設定の画面" className="-mt-1 mb-1 flex gap-4 border-b border-line-subtle">
+      <div
+        role="tablist"
+        aria-label="設定の画面"
+        className="-mt-1 mb-1 flex gap-4 border-b border-line-subtle"
+      >
         {TABS.map((t) => (
           <button
             key={t.value}
@@ -189,7 +222,9 @@ export function SettingsDialog() {
             onClick={() => setTab(t.value)}
             className={cn(
               '-mb-px h-8 border-b-2 text-ui',
-              tab === t.value ? 'border-accent text-fg' : 'border-transparent text-fg-3 hover:text-fg-2',
+              tab === t.value
+                ? 'border-accent text-fg'
+                : 'border-transparent text-fg-3 hover:text-fg-2',
             )}
           >
             {t.label}
@@ -200,140 +235,148 @@ export function SettingsDialog() {
         <UsageStatsPanel />
       ) : (
         <>
-      <Group className="pt-0">
-        <FieldRow label="接続">
-          <span
-            className="flex min-w-0 items-center gap-2 text-ui text-fg-2"
-            data-testid="connection-status"
-          >
-            <span className={cn('size-2 shrink-0 rounded-full', DOT[status.tone])} aria-hidden />
-            <span className="truncate font-mono text-meta">{status.text}</span>
-          </span>
-          {!editing && (
-            <Button size="sm" variant="secondary" onClick={() => setEditing(true)}>
-              変更
-            </Button>
-          )}
-        </FieldRow>
-        {editing && (
-          <div className="mt-1 mb-2 rounded-md border border-line-subtle bg-canvas px-3 py-2">
-            <ProviderPanel />
-          </div>
-        )}
-        <FieldRow label="モデル" hint="上から順に、最初に当てはまったものを使います">
-          <span className="truncate font-mono text-meta text-fg-2" data-testid="roster-summary">
-            {rosterSummary(settings)}
-          </span>
-          {!editingModels && (
-            <Button
-              size="sm"
-              variant="secondary"
-              aria-label="モデルを変更"
-              onClick={() => setEditingModels(true)}
-            >
-              変更
-            </Button>
-          )}
-        </FieldRow>
-        {editingModels && (
-          <div className="mt-1 mb-2 rounded-md border border-line-subtle bg-canvas px-3 py-2">
-            <ModelRosterPanel settings={settings} onSave={update} />
-          </div>
-        )}
-        {profile && (
-          <FieldRow label="任せ方">
-            <Segmented<PermissionProfile>
-              label="任せ方"
-              value={profile}
-              options={PROFILE_OPTIONS}
-              onChange={(v) => update({ defaultPermissionProfile: v })}
-            />
-          </FieldRow>
-        )}
-        <FieldRow label="1 日の上限" htmlFor="daily-limit">
-          <UsdField
-            id="daily-limit"
-            label="1 日の上限"
-            value={daily}
-            allowEmpty
-            placeholder="—"
-            onCommit={(v) => void setDailyLimit(rt, v)}
-          />
-        </FieldRow>
-        {settings?.assistant && (
-          <FieldRow
-            label="右腕の上限"
-            hint="右腕自身のモデル費用。1 日あたり"
-            htmlFor="assistant-limit"
-          >
-            <UsdField
-              id="assistant-limit"
-              label="右腕の上限"
-              value={settings.assistant.dailyUsd}
-              allowEmpty
-              allowZero
-              placeholder="—"
-              onCommit={(v) => update({ assistant: { dailyUsd: v } })}
-            />
-          </FieldRow>
-        )}
-        <FieldRow label="テーマ">
-          <Segmented<ThemePref>
-            label="テーマ"
-            value={theme}
-            options={THEME_OPTIONS}
-            onChange={setTheme}
-          />
-        </FieldRow>
-        <FieldRow label="動き">
-          <Segmented<MotionPref>
-            label="動きを減らす"
-            value={reduceMotion}
-            options={MOTION_OPTIONS}
-            onChange={setReduceMotion}
-          />
-        </FieldRow>
-        {isTauri() && (
-          <FieldRow label="透け">
-            <Segmented<GlassChoice>
-              label="透け"
-              value={glass === 'off' ? 'off' : glassScope}
-              options={GLASS_OPTIONS}
-              onChange={(v) => {
-                if (v === 'off') setGlass('off');
-                else {
-                  setGlassScope(v);
-                  setGlass('on');
-                }
-              }}
-            />
-            {glass === 'on' && (
-              <Segmented<GlassStrength>
-                label="透けの強さ"
-                value={glassStrength}
-                options={GLASS_STRENGTH_OPTIONS}
-                onChange={setGlassStrength}
-              />
+          <Group className="pt-0">
+            <FieldRow label="接続">
+              <span
+                className="flex min-w-0 items-center gap-2 text-ui text-fg-2"
+                data-testid="connection-status"
+              >
+                <span
+                  className={cn('size-2 shrink-0 rounded-full', DOT[status.tone])}
+                  aria-hidden
+                />
+                <span className="truncate font-mono text-meta">{status.text}</span>
+              </span>
+              {!editing && (
+                <Button size="sm" variant="secondary" onClick={() => setEditing(true)}>
+                  変更
+                </Button>
+              )}
+            </FieldRow>
+            {editing && (
+              <div className="mt-1 mb-2 rounded-md border border-line-subtle bg-canvas px-3 py-2">
+                <ProviderPanel />
+              </div>
             )}
-          </FieldRow>
-        )}
-      </Group>
-      <div className="border-t border-line-subtle">
-        <button
-          type="button"
-          aria-expanded={more}
-          onClick={() => setMore((m) => !m)}
-          className="flex h-9 w-full items-center gap-1.5 text-ui text-fg-3 hover:text-fg-2"
-        >
-          <ChevronRight
-            size={14}
-            strokeWidth={1.75}
-            className={cn('transition-transform duration-[120ms]', more && 'rotate-90')}
-          />
-          詳細
-        </button>
-        {more && <Details settings={settings} update={update} />}
-      </div>
+            <FieldRow label="モデル" hint="上から順に、最初に当てはまったものを使います">
+              <span className="truncate font-mono text-meta text-fg-2" data-testid="roster-summary">
+                {rosterSummary(settings)}
+              </span>
+              {!editingModels && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  aria-label="モデルを変更"
+                  onClick={() => setEditingModels(true)}
+                >
+                  変更
+                </Button>
+              )}
+            </FieldRow>
+            {editingModels && (
+              <div className="mt-1 mb-2 rounded-md border border-line-subtle bg-canvas px-3 py-2">
+                <ModelRosterPanel settings={settings} onSave={update} />
+              </div>
+            )}
+            {profile && (
+              <FieldRow label="任せ方">
+                <Segmented<PermissionProfile>
+                  label="任せ方"
+                  value={profile}
+                  options={PROFILE_OPTIONS}
+                  onChange={(v) => update({ defaultPermissionProfile: v })}
+                />
+              </FieldRow>
+            )}
+            {onOther > 0 && (
+              <p className="-mt-0.5 mb-1 text-right text-meta text-fg-3" data-profile-note>
+                動いている {onOther} 件は、終わるまで前の任せ方のままです
+              </p>
+            )}
+            <FieldRow label="1 日の上限" htmlFor="daily-limit">
+              <UsdField
+                id="daily-limit"
+                label="1 日の上限"
+                value={daily}
+                allowEmpty
+                placeholder="—"
+                onCommit={(v) => void setDailyLimit(rt, v)}
+              />
+            </FieldRow>
+            {settings?.assistant && (
+              <FieldRow
+                label="右腕の上限"
+                hint="右腕自身のモデル費用。1 日あたり"
+                htmlFor="assistant-limit"
+              >
+                <UsdField
+                  id="assistant-limit"
+                  label="右腕の上限"
+                  value={settings.assistant.dailyUsd}
+                  allowEmpty
+                  allowZero
+                  placeholder="—"
+                  onCommit={(v) => update({ assistant: { dailyUsd: v } })}
+                />
+              </FieldRow>
+            )}
+            <FieldRow label="テーマ">
+              <Segmented<ThemePref>
+                label="テーマ"
+                value={theme}
+                options={THEME_OPTIONS}
+                onChange={setTheme}
+              />
+            </FieldRow>
+            <FieldRow label="動き">
+              <Segmented<MotionPref>
+                label="動きを減らす"
+                value={reduceMotion}
+                options={MOTION_OPTIONS}
+                onChange={setReduceMotion}
+              />
+            </FieldRow>
+            {isTauri() && (
+              <FieldRow label="透け">
+                <Segmented<GlassChoice>
+                  label="透け"
+                  value={glass === 'off' ? 'off' : glassScope}
+                  options={GLASS_OPTIONS}
+                  onChange={(v) => {
+                    if (v === 'off') setGlass('off');
+                    else {
+                      setGlassScope(v);
+                      setGlass('on');
+                    }
+                  }}
+                />
+                {glass === 'on' && (
+                  <Segmented<GlassStrength>
+                    label="透けの強さ"
+                    value={glassStrength}
+                    options={GLASS_STRENGTH_OPTIONS}
+                    onChange={setGlassStrength}
+                  />
+                )}
+              </FieldRow>
+            )}
+          </Group>
+          <div className="border-t border-line-subtle">
+            <button
+              type="button"
+              aria-expanded={more}
+              onClick={() => setMore((m) => !m)}
+              className="flex h-9 w-full items-center gap-1.5 text-ui text-fg-3 hover:text-fg-2"
+            >
+              <ChevronRight
+                size={14}
+                strokeWidth={1.75}
+                className={cn('transition-transform duration-[120ms]', more && 'rotate-90')}
+              />
+              詳細
+            </button>
+            {more && <Details settings={settings} update={update} />}
+          </div>
         </>
       )}
     </Dialog>

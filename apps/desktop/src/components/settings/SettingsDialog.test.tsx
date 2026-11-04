@@ -6,7 +6,8 @@ import { useConfirm } from '../../store/confirm';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
 import { TooltipProvider } from '../ui/Tooltip';
-import { connectionStatus, SettingsDialog } from './SettingsDialog';
+import { connectionStatus, runsOnOtherProfile, SettingsDialog } from './SettingsDialog';
+import { run, session } from '../../test/fixtures';
 import {
   cacheShare,
   costPerMTok,
@@ -182,7 +183,14 @@ describe('cacheShare', () => {
       prefixBreaks: 0,
       cache: null,
     });
-    const colors = seriesColors([row('a', 1), row('b', 5), row('c', 3), row('d', 2), row('e', 0.5), row('plan', 0)]);
+    const colors = seriesColors([
+      row('a', 1),
+      row('b', 5),
+      row('c', 3),
+      row('d', 2),
+      row('e', 0.5),
+      row('plan', 0),
+    ]);
     expect([...colors]).toEqual([
       ['b', 'var(--series-1)'],
       ['c', 'var(--series-2)'],
@@ -407,10 +415,20 @@ describe('<SettingsDialog> モデル', () => {
   const MODELS = {
     'models.list': () => ({
       models: [
-        { id: 'anthropic/claude-sonnet-5-5', label: 'Claude Sonnet 5.5', provider: 'anthropic', price: { inputPerMTok: 3, outputPerMTok: 15 } },
+        {
+          id: 'anthropic/claude-sonnet-5-5',
+          label: 'Claude Sonnet 5.5',
+          provider: 'anthropic',
+          price: { inputPerMTok: 3, outputPerMTok: 15 },
+        },
         { id: 'gemini-3-pro', label: null, provider: 'litellm', price: null },
         { id: 'openai/gpt-6-luna', label: 'GPT-6 Luna', provider: 'chatgpt', price: null },
-        { id: 'anthropic/claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'anthropic', price: { inputPerMTok: 5, outputPerMTok: 25 } },
+        {
+          id: 'anthropic/claude-opus-5-5',
+          label: 'Claude Opus 5.5',
+          provider: 'anthropic',
+          price: { inputPerMTok: 5, outputPerMTok: 25 },
+        },
       ],
       source: 'providers',
     }),
@@ -558,7 +576,10 @@ describe('<SettingsDialog> 利用統計', () => {
                 usd: 1.2,
                 inputTokens: 100_000,
                 outputTokens: 4_000,
-                models: [{ model: 'claude-sonnet-5', usd: 1.1 }, { model: 'anthropic/claude-sonnet-5-5', usd: 0.1 }],
+                models: [
+                  { model: 'claude-sonnet-5', usd: 1.1 },
+                  { model: 'anthropic/claude-sonnet-5-5', usd: 0.1 },
+                ],
               },
               {
                 day: '2026-10-31',
@@ -599,7 +620,8 @@ describe('<SettingsDialog> 利用統計', () => {
     expect(width(bars[2]!, 'tokens')).toBe('max(2px, 100%)');
     expect(screen.getByTestId('usage-legend')).toHaveTextContent('費用トークン');
     // A model has one colour: its swatch, its spend bar and its part of the days.
-    const swatch = (bar: HTMLElement) => within(bar).getByTestId<HTMLElement>('usage-swatch').style.background;
+    const swatch = (bar: HTMLElement) =>
+      within(bar).getByTestId<HTMLElement>('usage-swatch').style.background;
     expect(swatch(bars[0]!)).toBe('var(--series-1)');
     expect(swatch(bars[1]!)).toBe('var(--series-2)');
     expect(swatch(bars[2]!)).toBe('transparent');
@@ -730,5 +752,30 @@ describe('<SettingsDialog> 詳細', () => {
       within(screen.getByRole('group', { name: '同時に動くエージェント' })).getByText('8'),
     ).toBeInTheDocument();
     expect(screen.queryByRole('radiogroup', { name: '自動判定' })).toBeNull();
+  });
+});
+
+describe('runsOnOtherProfile', () => {
+  it('counts agent runs still at work on another profile, leaving out projects with their own', () => {
+    const s = session({ kind: 'agent' });
+    const on = (profile: 'autonomous' | 'standard' | 'careful', over = {}) =>
+      run(s, {
+        kind: 'agent',
+        status: 'running',
+        permission: { profile, gate: 'rules', note: null },
+        ...over,
+      });
+    const runs = [
+      on('careful'),
+      on('standard'),
+      on('careful', { status: 'completed' }),
+      on('careful', { projectId: 'prj_00000000000000000000000001' }),
+      run(s, { kind: 'chat', status: 'running' }),
+    ];
+    const projects = [
+      { id: 'prj_00000000000000000000000001', permissionProfile: 'careful' as const },
+    ];
+    expect(runsOnOtherProfile(runs, projects, 'standard')).toBe(1);
+    expect(runsOnOtherProfile(runs, [], 'autonomous')).toBe(3);
   });
 });

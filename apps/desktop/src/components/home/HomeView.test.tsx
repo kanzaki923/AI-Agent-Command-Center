@@ -115,6 +115,7 @@ beforeEach(() =>
     projectId: null,
     onboardingDone: true,
     drafts: {},
+    homeChoice: { kind: 'none', projectId: null, model: null },
   }),
 );
 
@@ -313,8 +314,10 @@ describe('<HomeView>', () => {
     expect(ids()).toEqual([s.faq.id, s.press.id, s.research.id, s.mail.id]);
   });
 
-  it('keeps what is typed when home turns into the board, and Shift+Enter does not send', async () => {
-    const fake = mount({ 'home.get': () => homeSnapshot(), 'project.list': () => ({ items: [] }) });
+  it('keeps what is typed and where it should happen when home turns into the board, and Shift+Enter does not send', async () => {
+    const project = { id: 'prj_1', name: 'app', repoPath: '/repo', folderPath: null } as Project;
+    const fake = mount({ 'home.get': () => homeSnapshot(), 'project.list': () => ({ items: [project] }) });
+    fireEvent.click(await screen.findByRole('radio', { name: 'コード' }));
     const input = await screen.findByRole('textbox', { name: '何を頼みますか' });
     fireEvent.change(input, { target: { value: '2 件目の依頼' } });
     fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
@@ -322,6 +325,7 @@ describe('<HomeView>', () => {
     // A lane is born (the empty home becomes the board): the field is a new one, the words stay.
     setSnap(fake.rt, homeSnapshot({ trees: [homeTree(card({ title: '競合調査', role: 'supervisor', state: 'supervising' }), [], { counts })] }));
     await vi.waitFor(() => expect(screen.getByRole('textbox', { name: '何を頼みますか' })).toHaveValue('2 件目の依頼'));
+    expect(screen.getByRole('radio', { name: 'コード' })).toHaveAttribute('aria-checked', 'true');
   });
 
   it('is one field when there is nothing yet; Enter speaks to the assistant and stays home, its answer above the field', async () => {

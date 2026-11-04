@@ -68,6 +68,16 @@ describe('screens and navigation', () => {
     expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: null });
   });
 
+  it('戻る from the full-screen code view goes back to the conversation it was opened from first', () => {
+    useUi.getState().openSession('s1');
+    useUi.getState().openSession('s2');
+    useUi.getState().openIntegration('int1');
+    useUi.getState().goBack();
+    expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: 's2', reviewIntegrationId: null });
+    useUi.getState().goBack();
+    expect(useUi.getState()).toMatchObject({ mode: 'session', focusSessionId: 's1' });
+  });
+
   it('records the same conversation only once', () => {
     useUi.getState().openSession('s1');
     useUi.getState().openSession('s1');
