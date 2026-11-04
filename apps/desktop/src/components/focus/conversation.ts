@@ -15,6 +15,10 @@ export type ConversationBlock =
   | Exclude<ChatBlock, { kind: 'grant' }>
   | { kind: 'brief'; id: string; message: ChatMessage; brief: SessionBrief }
   | { kind: 'wake'; id: string; message: ChatMessage; items: WakeItemView[] }
+  /** A member's remark (`character.aside`, @name). */
+  | { kind: 'aside'; id: string; message: ChatMessage; characterId: string }
+  /** A remark asked for and not answered yet (this window only). */
+  | { kind: 'aside-pending'; id: string; characterId: string; text: string }
   | {
       /** The moment of delegation (ui-rework spec §4.1): the children a supervisor started. */
       kind: 'plan';
@@ -196,6 +200,8 @@ export function toConversationBlocks(
     let mapped: ConversationBlock = b;
     if (b.kind === 'user' && b.message.meta?.kind === 'brief') {
       mapped = { kind: 'brief', id: b.id, message: b.message, brief: b.message.meta.brief };
+    } else if (b.kind === 'user' && b.message.meta?.kind === 'aside' && b.message.meta.reply) {
+      mapped = { kind: 'aside', id: b.id, message: b.message, characterId: b.message.meta.characterId };
     } else if (b.kind === 'user' && b.message.meta?.kind === 'wake') {
       mapped = { kind: 'wake', id: b.id, message: b.message, items: b.message.meta.items };
     } else if (b.kind === 'tools') {

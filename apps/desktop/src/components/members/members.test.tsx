@@ -8,6 +8,8 @@ import { T0, card, homeSnapshot, iso, session } from '../../test/fixtures';
 import { speakerTones } from '../focus/Speech';
 import { Sidebar } from '../shell/Sidebar';
 import { TooltipProvider } from '../ui/Tooltip';
+import { Composer } from '../focus/Composer';
+import { AsideRemark } from './Aside';
 import { MemberPage } from './MemberPage';
 import { memberActivity } from './Roster';
 
@@ -216,5 +218,73 @@ describe('what members are doing', () => {
     const busy = memberActivity([q, w, idle]);
     expect(busy.get(HAKU.id)?.id).toBe(w.id);
     expect(busy.has(LUNA.id)).toBe(false);
+  });
+});
+
+describe('calling a member in with @name', () => {
+  it('lists members after @, picks one with Enter, and sends the ask to the member instead of the conversation', async () => {
+    useUi.setState({ drafts: {}, asking: {} });
+    const s = session({ kind: 'chat', title: 'API の命名' });
+    let answer!: (v: unknown) => void;
+    const fake = createFakeClient({
+      'character.list': () => ({ items: [HAKU, LUNA] }),
+      'character.aside': () => new Promise((r) => (answer = r)),
+    });
+    render(
+      <RuntimeProvider runtime={createRuntime(fake.client)}>
+        <TooltipProvider>
+          <Composer session={s} activeRun={null} onSent={() => {}} />
+        </TooltipProvider>
+      </RuntimeProvider>,
+    );
+    const input = screen.getByRole('textbox', { name: 'メッセージ' });
+    fireEvent.change(input, { target: { value: '@ル' } });
+    const list = await screen.findByRole('listbox', { name: '呼ぶメンバー' });
+    expect(within(list).getAllByRole('option').map((o) => o.textContent)).toEqual(['🌙ルナ']);
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(input).toHaveValue('@ルナ ');
+    fireEvent.change(input, { target: { value: '@ルナ どう思う？' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() =>
+      expect(fake.calls).toContainEqual({
+        method: 'character.aside',
+        params: { sessionId: s.id, characterId: LUNA.id, text: '@ルナ どう思う？' },
+      }),
+    );
+    expect(fake.calls.some((c) => c.method === 'session.send')).toBe(false);
+    // Waiting for the answer in this window.
+    expect(useUi.getState().asking[s.id]).toEqual([expect.objectContaining({ characterId: LUNA.id, text: '@ルナ どう思う？' })]);
+    answer({ ask: {}, reply: {} });
+    await waitFor(() => expect(useUi.getState().asking[s.id]).toEqual([]));
+  });
+
+  it('an @ that names nobody on the roster is an ordinary message', async () => {
+    useUi.setState({ drafts: {}, asking: {} });
+    const s = session({ kind: 'chat' });
+    const fake = createFakeClient({
+      'character.list': () => ({ items: [HAKU] }),
+      'session.send': () => ({ messageId: 'msg_00000000000000000000000009', runId: null, delivery: 'delivered' }),
+    });
+    render(
+      <RuntimeProvider runtime={createRuntime(fake.client)}>
+        <TooltipProvider>
+          <Composer session={s} activeRun={null} onSent={() => {}} />
+        </TooltipProvider>
+      </RuntimeProvider>,
+    );
+    const input = screen.getByRole('textbox', { name: 'メッセージ' });
+    fireEvent.change(input, { target: { value: '@everyone 見て' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(fake.calls.some((c) => c.method === 'session.send')).toBe(true));
+  });
+});
+
+describe('a remark in the conversation', () => {
+  it("shows the member's face and name; the name opens its page", async () => {
+    mount(<AsideRemark characterId={LUNA.id} text="cancel に一票〜" />);
+    const name = await screen.findByRole('button', { name: 'ルナ' });
+    expect(screen.getByText('cancel に一票〜')).toBeInTheDocument();
+    fireEvent.click(name);
+    expect(useUi.getState()).toMatchObject({ mode: 'member', memberId: LUNA.id });
   });
 });

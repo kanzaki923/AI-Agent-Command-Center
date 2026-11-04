@@ -39,6 +39,7 @@ export const SPEAKER = {
   conversation: (title: string) => `会話「${framedTitle(title)}」`,
   assistant: '右腕',
   schedule: '繰り返しの予定',
+  member: (name: string) => `メンバー「${framedTitle(name)}」`,
 } as const;
 
 const ASSISTANT_COMPONENT = 'assistant';
@@ -66,6 +67,12 @@ function isAssistantSession(ctx: DaemonContext, sessionId: string): boolean {
 export function speakerOf(ctx: DaemonContext, session: Session, m: Message): string | null {
   // The daemon's notices carry their own marker ([状況の更新]).
   if (m.role !== 'user' || m.meta?.kind === 'wake') return null;
+  // A member's remark (character.aside): from that member, by name.
+  if (m.meta?.kind === 'aside') {
+    if (!m.meta.reply) return null;
+    const name = ctx.hasService('characters') ? ctx.service('characters').get(m.meta.characterId)?.name : undefined;
+    return SPEAKER.member(name ?? 'メンバー');
+  }
   if (m.meta?.kind === 'schedule') return SPEAKER.schedule;
   const a = m.author;
   if (a.kind === 'system') {

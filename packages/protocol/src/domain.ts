@@ -371,6 +371,12 @@ export const MessageMeta = z.discriminatedUnion('kind', [
    * sender's own text.
    */
   z.object({ kind: z.literal('forward'), items: z.array(ForwardedView) }),
+  /**
+   * A member's remark in someone else's conversation (`character.aside`): the person's ask
+   * (`reply: false`, their words starting with @name) and the member's answer (`reply: true`,
+   * a user turn from the member for the conversation's own model). Neither starts a run.
+   */
+  z.object({ kind: z.literal('aside'), characterId: CharacterId, reply: z.boolean() }),
 ]);
 export type MessageMeta = z.infer<typeof MessageMeta>;
 

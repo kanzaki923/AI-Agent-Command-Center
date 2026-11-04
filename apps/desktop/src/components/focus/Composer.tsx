@@ -4,11 +4,13 @@ import { motion } from 'motion/react';
 import { type KeyboardEvent, useRef, useState } from 'react';
 import { newChat, stopGenerating } from '../../app/commands';
 import { resendEdited, sendMessage, stopIfMoving } from '../../daemon/actions';
+import { askMember, mentionOf, useMembers } from '../../daemon/members';
 import { useMessages } from '../../daemon/queries';
 import { lastUnanswered, messageText } from '../../model/chat';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { cn } from '../../lib/cn';
 import { useUi } from '../../store/ui';
+import { MemberFace } from '../ui/Face';
 import { Kbd } from '../ui/Kbd';
 import { Tooltip } from '../ui/Tooltip';
 
@@ -119,6 +121,20 @@ export function Composer({
   const canStopInline = generating && activeRun?.kind === 'chat';
   const agentBusy = generating && session.kind === 'agent';
   const delivery = composerDelivery(session.kind, generating, interrupt);
+  // @name at the start calls a member in for one remark (character.aside).
+  const members = useMembers();
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [mentionClosed, setMentionClosed] = useState<string | null>(null);
+  const mentionQuery = /^[@＠](\S*)$/.exec(draft)?.[1] ?? null;
+  const candidates =
+    mentionQuery !== null && mentionClosed !== draft
+      ? members.filter((m) => m.name.toLowerCase().startsWith(mentionQuery.toLowerCase())).slice(0, 8)
+      : [];
+  const pickMention = (name: string) => {
+    setDraft(session.id, `@${name} `);
+    setMentionIndex(0);
+    textarea.current?.focus();
+  };
 
   const send = () => {
     const text = draft.trim();
@@ -137,6 +153,14 @@ export function Composer({
     if (text === '/model') {
       setDraft(session.id, '');
       setModelPickerOpen(true);
+      return;
+    }
+    const called = editing ? null : mentionOf(text, members).member;
+    if (called) {
+      setDraft(session.id, '');
+      setAttachments([]);
+      onSent();
+      void askMember(rt, session.id, called.id, body);
       return;
     }
     // Optimistic: clear in the same frame the message appears (§6).
@@ -170,6 +194,25 @@ export function Composer({
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (candidates.length > 0 && !e.nativeEvent.isComposing && !composing.current) {
+      const at = Math.min(mentionIndex, candidates.length - 1);
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionIndex((at + (e.key === 'ArrowDown' ? 1 : candidates.length - 1)) % candidates.length);
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        pickMention(candidates[at]!.name);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        setMentionClosed(draft);
+        return;
+      }
+    }
     const action = composerKeyAction(
       {
         key: e.key,
@@ -235,7 +278,7 @@ export function Composer({
       )}
       <div
         className={cn(
-          'rounded-md border bg-surface transition-colors duration-[120ms]',
+          'relative rounded-md border bg-surface transition-colors duration-[120ms]',
           'border-line focus-within:border-line-strong',
         )}
         onClick={(e) => {
@@ -244,6 +287,31 @@ export function Composer({
           textarea.current?.focus();
         }}
       >
+        {candidates.length > 0 && (
+          <ul
+            role="listbox"
+            aria-label="呼ぶメンバー"
+            data-mention-list
+            className="absolute bottom-full left-2 z-20 mb-1.5 flex w-48 flex-col rounded-md border border-line bg-raised p-1 shadow-float"
+          >
+            {candidates.map((m, i) => (
+              <li key={m.id} role="option" aria-selected={i === Math.min(mentionIndex, candidates.length - 1)}>
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => pickMention(m.name)}
+                  className={cn(
+                    'flex h-7 w-full items-center gap-2 rounded-sm px-2 text-left text-ui text-fg',
+                    i === Math.min(mentionIndex, candidates.length - 1) ? 'bg-selected' : 'hover:bg-hover',
+                  )}
+                >
+                  <MemberFace member={m} size={16} />
+                  <span className="truncate">{m.name}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
             {attachments.map((a) => (

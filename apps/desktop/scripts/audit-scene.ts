@@ -480,7 +480,8 @@ ${JSON.stringify(await detail(), null, 1)}` : '';
     const r = await call('session.send', { sessionId: s.id, content });
     return { session: s, runId: r.runId };
   };
-  await ended((await chat('Excel の重複を消したい', 'Excel で、A 列が同じ行の重複を消す方法を教えて', 'mock/assistant')).runId);
+  const excel = await chat('Excel の重複を消したい', 'Excel で、A 列が同じ行の重複を消す方法を教えて', 'mock/assistant');
+  await ended(excel.runId);
   await ended(
     (await chat('お詫びメールの下書き', '納品が 2 日遅れることを取引先に伝えるお詫びメールを書いて', 'mock/assistant')).runId,
   );
@@ -504,6 +505,8 @@ ${JSON.stringify(await detail(), null, 1)}` : '';
   await call('character.memory.add', { characterId: haku.id, kind: 'self', text: '表の金額は右寄せにする', work: true });
   await call('character.memory.add', { characterId: haku.id, kind: 'you', text: '朝が弱い。費用にはうるさい' });
   await call('character.digest', { characterId: haku.id });
+  // Haku called into an ordinary chat for one remark (@ハク).
+  await call('character.aside', { sessionId: excel.session.id, characterId: haku.id, text: '@ハク 数字に細かいハクはどう思う？' });
 
   // ---------------------------------------------------------------- a schedule that already ran
   const morning = await call('session.create', { kind: 'chat', title: '朝のまとめ', model: 'mock/assistant' });

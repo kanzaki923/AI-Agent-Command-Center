@@ -40,6 +40,7 @@ import { type ConversationBlock, buildBaseBlocks, forwardedParts, stripMachineBl
 import { Markdown } from './Markdown';
 import { ToolGroup } from './ToolBlocks';
 import { Speech, useSpeakerTones } from './Speech';
+import { AsidePending, AsideRemark } from '../members/Aside';
 import { useMember } from '../../daemon/members';
 
 const NONE: never[] = [];
@@ -406,6 +407,10 @@ const Block = memo(function Block({ block, editableId }: { block: ConversationBl
       return <Brief block={block} />;
     case 'wake':
       return <WakeCard items={block.items} />;
+    case 'aside':
+      return <AsideRemark characterId={block.characterId} text={displayText(block.message)} />;
+    case 'aside-pending':
+      return <AsidePending characterId={block.characterId} text={block.text} />;
     case 'plan':
       return <Plan block={block} />;
     case 'assistant':
@@ -442,6 +447,8 @@ const Block = memo(function Block({ block, editableId }: { block: ConversationBl
 });
 
 /** Vertical rhythm: tighter between consecutive tool blocks, roomier around turns. */
+const NO_ASKS: { id: string; characterId: string; text: string }[] = [];
+
 function gapBefore(prev: ConversationBlock | undefined, cur: ConversationBlock): number {
   if (!prev) return 24;
   if (prev.kind === 'tools' && cur.kind === 'tools') return 6;
@@ -452,7 +459,7 @@ function gapBefore(prev: ConversationBlock | undefined, cur: ConversationBlock):
 
 /** The message a block shows (jump targets). */
 function blockMessageId(b: ConversationBlock): string | null {
-  if (b.kind === 'user' || b.kind === 'assistant' || b.kind === 'brief' || b.kind === 'wake') return b.message.id;
+  if (b.kind === 'user' || b.kind === 'assistant' || b.kind === 'brief' || b.kind === 'wake' || b.kind === 'aside') return b.message.id;
   return null;
 }
 
@@ -513,7 +520,14 @@ export function ChatStream({
       }),
     );
   }, [previous, messages.data, pending, resolved, streaming, runs, session.id, decisions, attention]);
-  const blocks = useMemo(() => toConversationBlocks(base, mapped, titleOf), [base, mapped, titleOf]);
+  const asking = useUi((s) => s.asking[session.id] ?? NO_ASKS);
+  const blocks = useMemo(() => {
+    const out = toConversationBlocks(base, mapped, titleOf);
+    // Remarks asked for here and not answered yet (@name) come last, waiting.
+    return asking.length === 0
+      ? out
+      : [...out, ...asking.map((a) => ({ kind: 'aside-pending' as const, id: a.id, characterId: a.characterId, text: a.text }))];
+  }, [base, mapped, titleOf, asking]);
   const failureOpen = attention.some((a) => a.kind === 'failure');
   const ctx = useMemo<ConversationCtx>(
     () => ({ session, card, titleOf, failureOpen }),

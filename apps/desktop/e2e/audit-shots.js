@@ -31,6 +31,7 @@
 //   62-assistant            the conversation of the assistant (the fixed sidebar row)
 //   63-member-page          the page of a member (ハク, from the roster at the foot of the sidebar)
 //   64-member-talk          a conversation with a member (ハク)
+//   65-member-aside         an ordinary chat where ハク was called in for one remark (@ハク)
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { log } from './harness.js';
@@ -259,6 +260,13 @@ export async function shoot({ url, out, theme, build }) {
   await step('member talk', async () => {
     await open('週末なにする');
     await snap('64-member-talk');
+  });
+  await step('member aside', async () => {
+    await open('Excel の重複を消したい');
+    await page.getByRole('textbox', { name: 'メッセージ' }).fill('@');
+    await pause(400);
+    await snap('65-member-aside');
+    await page.getByRole('textbox', { name: 'メッセージ' }).fill('');
   });
 
   // Light theme, home once (a context of its own: the init script sets the theme).

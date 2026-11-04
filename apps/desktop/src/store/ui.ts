@@ -35,6 +35,8 @@ export interface UiState {
   memberId: string | null;
   /** Member the draft of a new conversation is with (null: nobody). */
   draftMemberId: string | null;
+  /** Remarks asked for (@name) and not answered yet, per conversation. Not persisted. */
+  asking: Record<string, { id: string; characterId: string; text: string }[]>;
   /** Keyboard selection on the home screen (an attention id or a session id). */
   selectedId: string | null;
   /** Keyboard selection in Timeline Mode (event seq or run header key). */
@@ -126,6 +128,8 @@ interface UiActions {
    */
   openDraft: (memberId?: string | null) => void;
   setDraftMember: (memberId: string | null) => void;
+  /** A remark asked for (`add`) or answered / failed (`remove`). */
+  setAsking: (sessionId: string, id: string, ask: { characterId: string; text: string } | null) => void;
   /** The home screen (Ctrl+1). */
   goHome: () => void;
   /** The timeline (Ctrl+2). */
@@ -194,6 +198,7 @@ const initial: UiState = {
   focusSessionId: null,
   memberId: null,
   draftMemberId: null,
+  asking: {},
   selectedId: null,
   timelineSelected: null,
   projectId: null,
@@ -338,6 +343,11 @@ export const createUiStore = () =>
             };
           }),
         setDraftMember: (draftMemberId) => set({ draftMemberId }),
+        setAsking: (sessionId, id, ask) =>
+          set((s) => {
+            const list = (s.asking[sessionId] ?? []).filter((a) => a.id !== id);
+            return { asking: { ...s.asking, [sessionId]: ask ? [...list, { id, ...ask }] : list } };
+          }),
         openDraft: (memberId) =>
           set((s) => ({
             ...(memberId !== undefined ? { draftMemberId: memberId } : {}),

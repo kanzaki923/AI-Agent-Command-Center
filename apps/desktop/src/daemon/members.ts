@@ -2,6 +2,7 @@ import type { Character, CharacterDetail, ParamsInput } from '@acc/protocol';
 import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { toastError } from '../store/toast';
+import { useUi } from '../store/ui';
 import { qk } from './keys';
 import { type AppRuntime, useRuntime } from './runtime';
 
@@ -127,3 +128,32 @@ export const updateMemory = (rt: AppRuntime, memoryId: string, text: string) =>
 
 export const deleteMemory = (rt: AppRuntime, memoryId: string) =>
   attempt(rt, () => rt.client.call('character.memory.delete', { memoryId }), '忘れさせられませんでした');
+
+let askSeq = 0;
+
+/**
+ * Ask a member for one remark in a conversation (@name). The ask shows at once as waiting
+ * (ui `asking`); the daemon adds both messages when the answer is there.
+ */
+export async function askMember(rt: AppRuntime, sessionId: string, characterId: string, text: string): Promise<boolean> {
+  const id = `ask-${++askSeq}`;
+  const { setAsking } = useUi.getState();
+  setAsking(sessionId, id, { characterId, text });
+  try {
+    await rt.client.call('character.aside', { sessionId, characterId, text });
+    return true;
+  } catch (err) {
+    toastError(err, '一言をもらえませんでした');
+    return false;
+  } finally {
+    setAsking(sessionId, id, null);
+  }
+}
+
+/** The member an @name at the start of a message calls in, and whether one was meant. */
+export function mentionOf(text: string, members: readonly Character[]): { member: Character | null; mention: boolean } {
+  const m = /^[@＠](\S+)/.exec(text.trim());
+  if (!m) return { member: null, mention: false };
+  const name = m[1]!;
+  return { member: members.find((c) => c.name === name) ?? null, mention: true };
+}

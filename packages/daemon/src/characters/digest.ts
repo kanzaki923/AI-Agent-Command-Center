@@ -296,6 +296,42 @@ export class MemoryDigest {
       const lines = this.linesOf(s, messages, out);
       if (lines.length > 0) blocks.push({ at: messages[0]!.createdAt, lines: [`--- 「${s.title || '無題'}」（${sceneLabel(s)}）`, ...lines] });
     }
+    // Remarks it made in other conversations (@name): the ask and its answer, by that
+    // conversation's scene.
+    const own = new Set(sessions.map((s) => s.id));
+    const asides = ctx.repos.messages.find({
+      sql: {
+        clause: "json_extract(data, '$.meta.kind') = 'aside' AND json_extract(data, '$.meta.characterId') = ?",
+        params: [characterId],
+      },
+      orderBy: 'id',
+      direction: 'asc',
+    });
+    const byHost = new Map<string, Message[]>();
+    for (const m of asides) {
+      if (own.has(m.sessionId)) continue;
+      const after = marks.get(m.sessionId);
+      if (after && m.id <= after) continue;
+      byHost.set(m.sessionId, [...(byHost.get(m.sessionId) ?? []), m]);
+    }
+    for (const [hostId, list] of byHost) {
+      const host = ctx.repos.sessions.get(hostId);
+      if (!host) continue;
+      out.marks.set(hostId, list.at(-1)!.id);
+      const work = sceneOf(host) === 'work';
+      const lines: string[] = [];
+      for (const m of list) {
+        const text = oneLine(textOfParts(m.content));
+        if (!text || m.meta?.kind !== 'aside') continue;
+        if (!m.meta.reply) {
+          lines.push(`[person] ${text}`);
+          if (work) out.personAtWork += 1;
+        } else if (!work) {
+          lines.push(`[self] ${text}`);
+        }
+      }
+      if (lines.length > 0) blocks.push({ at: list[0]!.createdAt, lines: [`--- 「${host.title || '無題'}」に呼ばれて（${sceneLabel(host)}）`, ...lines] });
+    }
     // Newest kept when there is too much.
     let budget = DIGEST_MATERIAL_CHARS;
     const kept: string[][] = [];

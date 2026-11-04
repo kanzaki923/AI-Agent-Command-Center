@@ -172,6 +172,13 @@ export class CharacterService {
         WHERE l.day >= ? AND json_extract(s.data, '$.characterId') = ?`,
       [firstDay, characterId],
     );
-    return (row?.n ?? 0) / 1_000_000;
+    const calls = this.ctx.db.get<{ n: number | null }>(
+      // A remark in the member's own conversation is already counted above.
+      `SELECT SUM(c.cost_micro) AS n FROM character_calls c
+        WHERE c.character_id = ? AND c.day >= ?
+          AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = c.session_id AND json_extract(s.data, '$.characterId') = ?)`,
+      [characterId, firstDay, characterId],
+    );
+    return ((row?.n ?? 0) + (calls?.n ?? 0)) / 1_000_000;
   }
 }

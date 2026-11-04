@@ -3,6 +3,7 @@ import { defineMethod } from '../api/registry';
 import { forbidden, invalidParams, notFound } from '../core/errors';
 import { assertRosterModel } from '../llm/roster';
 import { defineModule } from '../module';
+import { ASIDE_MIGRATION, askAside } from './aside';
 import { MemoryDigest } from './digest';
 import { MEMORY_MIGRATION } from './memory';
 import { CharacterService } from './service';
@@ -48,6 +49,7 @@ CREATE INDEX characters_sort ON characters(sort_key);
 `,
     },
     { id: 'characters/0002_memories', sql: MEMORY_MIGRATION },
+    { id: 'characters/0003_calls', sql: ASIDE_MIGRATION },
   ],
   register(ctx) {
     const service = new CharacterService(ctx);
@@ -260,6 +262,17 @@ CREATE INDEX characters_sort ON characters(sort_key);
             emitMemory(call.actor, memory.characterId, { removed: [memory.text] });
             return { ok: true as const };
           }),
+      }),
+
+      defineMethod('character.aside', {
+        scope: (p) => {
+          const s = ctx.repos.sessions.get(p.sessionId);
+          return { projectIds: s?.projectId ? [s.projectId] : [], sessionIds: [p.sessionId] };
+        },
+        handler: (p, call) => {
+          humansOnly(call.actor);
+          return askAside(ctx, service, p, call.actor);
+        },
       }),
 
       defineMethod('character.digest', {

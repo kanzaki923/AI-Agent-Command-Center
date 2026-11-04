@@ -5,7 +5,7 @@
  */
 import { z } from 'zod';
 import { CharacterId, MemoryId, SessionId, Timestamp } from '../common';
-import { Session } from '../domain';
+import { Message, Session } from '../domain';
 import { type MethodDef, Ok, params } from '../method';
 
 // ---------------------------------------------------------------------------
@@ -44,6 +44,11 @@ export type Character = z.infer<typeof Character>;
  */
 export const MemoryKind = z.enum(['self', 'relation', 'you']);
 export type MemoryKind = z.infer<typeof MemoryKind>;
+
+/** Longest ask of a remark (`character.aside`). */
+export const ASIDE_TEXT_MAX = 4000;
+/** Latest messages a remark reads, and how much of their text. */
+export const ASIDE_CONTEXT = { messages: 12, chars: 12_000 } as const;
 
 /** Bounds the daemon enforces on what a member keeps. */
 export const MEMORY_LIMITS = { self: 20, relationPerMember: 5, you: 15, textChars: 80 } as const;
@@ -197,6 +202,18 @@ export const characterMethods = {
     params: params({ memoryId: MemoryId }),
     result: Ok,
     description: 'Forget one memory (sorting will not bring it back).',
+    tool: false,
+    mutates: true,
+  },
+  'character.aside': {
+    params: params({
+      sessionId: SessionId.describe('The conversation the member is called into'),
+      characterId: CharacterId,
+      text: z.string().trim().min(1).max(ASIDE_TEXT_MAX).describe("The person's words, as they wrote them (@name included)"),
+    }),
+    result: z.object({ ask: Message, reply: Message }),
+    description:
+      "Ask a member for one remark in a conversation (@name): it reads the latest messages and answers once in its own voice. Both the person's words and the answer are added to the conversation; its own model does not answer.",
     tool: false,
     mutates: true,
   },
