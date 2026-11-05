@@ -95,7 +95,7 @@ UI とデーモンは同じ `ACC_HOME` を見る（Vite の開発ミドルウェ
 - **本物の経路**：設定の「接続」で、LiteLLM Proxy の URL とキー（または `ACC_LITELLM_BASE_URL` / `ACC_LITELLM_API_KEY`）、Anthropic の API キー（モデルは `anthropic/claude-…`）、OpenAI の API キー（`openai/gpt-…`）、ChatGPT のサインイン（契約の枠で `openai/…` を使う）のどれでも、いくつでも。コーディングエージェント（Claude Code）は LiteLLM があればそこを、なければ Anthropic のキー、なければ手元のログインを使う。
   1. 自分のプロジェクトを追加し（`testCommand` を設定すると統合後に検証される）、チャットを作ってモデルに LiteLLM のモデル名（例 `claude-sonnet-4`）を選ぶ。
   2. そのチャットを `session.delegate({ sessionId })`（既定 4 人・$3）で指揮役にする（UI ではホームや会話の「任せる」）。git のプロジェクトなら、コードの子は worktree で動き、その成果物を採用すると反映される。
-  3. Worker を Claude Code にするには `settings.update({ defaultRuntime: 'claude-agent-sdk' })`（Run ごとなら `task.spawnWorker` の `runtime`）。LiteLLM が設定されていれば SDK もそこを通り、なければ手元の Claude Code のログインを使う。SDK が読み込めないと Worker の Run は理由つきで失敗する。
+  3. フォルダ・コードで動く会話と Worker は、設定の「エージェント」が既定の「自動」なら、Claude Code の CLI が見つかれば Claude Code で動く（`pnpm dev:desktop` / `pnpm dev:daemon` も同じ。テストの daemon は検出しないのでモック）。明示するなら設定の「エージェント」か `settings.update({ defaultRuntime: 'claude-agent-sdk' | 'mock' })`（Run ごとなら `task.spawnWorker` の `runtime`）。LiteLLM が設定されていれば SDK もそこを通り、なければ Anthropic のキー、なければ手元の Claude Code のログインを使う。SDK が読み込めないと Worker の Run は理由つきで失敗する。
   4. 費用が発生するのはこの経路だけ。テストでは呼ばない（下記 §6）。
   5. 右腕だけを本物のモデルで確かめるには `packages/daemon/scripts/real-right-hand.ts`（一時 `ACC_HOME`、キーは環境変数名で渡す、立てた木はモック。`docs/snapshot/20261030_right-hand-real.md`）。
 

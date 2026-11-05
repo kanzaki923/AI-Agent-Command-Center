@@ -443,6 +443,13 @@ describe('runtimes service', () => {
     await d.call(HUMAN, 'settings.update', { defaultRuntime: 'claude-agent-sdk' });
     expect(runtimes.defaultId()).toBe('claude-agent-sdk');
     expect((await d.call(HUMAN, 'settings.get', {})).defaultRuntime).toBe('claude-agent-sdk');
+    // The screen reads what agent conversations run on from the settings view.
+    expect((await d.call(HUMAN, 'settings.get', {})).agentRuntime).toEqual({
+      configured: 'claude-agent-sdk',
+      effective: 'claude-agent-sdk',
+      detected: null,
+      reason: '自動では選ばない設定です',
+    });
     await d.call(HUMAN, 'settings.update', { defaultRuntime: 'nope' });
     expect(runtimes.defaultId()).toBe('mock');
     expect(() => runtimes.get('nope')).toThrow(/runtime not found/);

@@ -66,7 +66,7 @@ async function executeAgentRun(
   const readRoots = agentReadRoots(ctx, run, workspace);
 
   const runtimes = ctx.service('runtimes');
-  const runtimeId = run.runtime || session.runtime || runtimes.defaultId();
+  const runtimeId = run.runtime || session.runtime || runtimes.defaultId(session.model);
   const runtime = runtimes.get(runtimeId);
   const availability = await runtime.available();
   if (!availability.ok) throw new Error(availability.reason);

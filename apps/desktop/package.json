@@ -1,7 +1,7 @@
 {
   "name": "@acc/desktop",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Desktop UI (Tauri 2 + React). A client of the Core Daemon.",
   "scripts": {

@@ -19,6 +19,7 @@ import { MOCK_PREFIX } from '../llm/mock';
 import { assertRosterModel } from '../llm/roster';
 import { freeUsd } from '../policy/budget';
 import { OFFLINE_FALLBACK_MODEL } from '../sessions/chat';
+import { defaultRuntimeOf } from '../runtime/registry';
 import { assertAgentFolder } from '../sessions/spawn';
 import { firingLabel, planDue } from './time';
 
@@ -88,7 +89,7 @@ export function assertAgentRun(
     assertAgentFolder(ctx, owner.projectId, run.workspace.path);
   }
   if (run.model) {
-    const runtime = ctx.settings.get().defaultRuntime ?? 'mock';
+    const runtime = defaultRuntimeOf(ctx, run.model);
     assertRosterModel(ctx, agent, run.model, {
       agentRuntime: run.mode === 'agent' && runtime !== 'mock',
     });

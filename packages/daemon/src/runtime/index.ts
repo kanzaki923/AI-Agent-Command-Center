@@ -21,8 +21,10 @@ export { classifyToolRisk, isHighRiskCommand } from './risk';
 /**
  * Agent Runtime abstraction (architecture.md §2.3).
  *
- * - Provides `ctx.service('runtimes')` with the built-in runtimes: "mock" (offline, the
- *   default) and "claude-agent-sdk" (Claude Code via the Agent SDK; LiteLLM when configured).
+ * - Provides `ctx.service('runtimes')` with the built-in runtimes: "mock" (offline) and
+ *   "claude-agent-sdk" (Claude Code via the Agent SDK; LiteLLM when configured). With no
+ *   runtime in the settings (「自動」) the daemon process uses Claude Code when its CLI is
+ *   found, else the mock; tests and scripts always get the mock.
  * - Provides `ctx.service('permissionRules')` (remembered tool approvals) and the methods
  *   permissionRule.list / permissionRule.revoke.
  * - Registers the "agent" RunExecutor with the runs service in `start()` (after every module
@@ -32,7 +34,17 @@ export const runtimeModule = defineModule({
   name: 'runtime',
   migrations: [...runtimeMigrations, ...ruleMigrations],
   register(ctx) {
-    const registry = new RuntimeRegistry(() => ctx.settings.get());
+    const registry = new RuntimeRegistry(() => ctx.settings.get(), {
+      // 自動: Claude Code when its CLI is here (the SDK itself is bundled with the daemon).
+      ...(ctx.detectAgentRuntime
+        ? {
+            detect: () => {
+              const exe = locateClaudeCode();
+              return exe.ok ? { id: CLAUDE_RUNTIME_ID } : { id: null, reason: exe.reason };
+            },
+          }
+        : {}),
+    });
     registry.register(new MockAgentRuntime());
     registry.register(
       new ClaudeAgentSdkRuntime({

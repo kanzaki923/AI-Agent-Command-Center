@@ -1300,6 +1300,22 @@ export const ProviderSettingsView = z.object({
 });
 export type ProviderSettingsView = z.infer<typeof ProviderSettingsView>;
 
+/**
+ * Which runtime agent conversations (a folder, the code) run on when the settings name none
+ * (`defaultRuntime: null`, 「自動」): Claude Code when the daemon finds its CLI, else the mock.
+ */
+export const AgentRuntimeChoice = z.object({
+  /** The runtime the settings name; null = 自動. */
+  configured: z.string().nullable(),
+  /** What an agent conversation runs on now. */
+  effective: z.string(),
+  /** What 自動 picks here; null when it falls back to the mock. */
+  detected: z.string().nullable(),
+  /** Why 自動 falls back to the mock (Japanese, user-facing). */
+  reason: z.string().optional(),
+});
+export type AgentRuntimeChoice = z.infer<typeof AgentRuntimeChoice>;
+
 /** Settings as returned by the API: secrets masked. */
 export const SettingsView = z.object({
   litellm: z.object({
@@ -1337,6 +1353,7 @@ export const SettingsView = z.object({
   summaries: SummarySettings.optional(),
   background: BackgroundSettings.optional(),
   modelRules: z.array(ModelRule).optional(),
+  agentRuntime: AgentRuntimeChoice.optional(),
 });
 export type SettingsView = z.infer<typeof SettingsView>;
 

@@ -66,6 +66,32 @@ export const PROFILE_OPTIONS: SegmentOption<PermissionProfile>[] = [
  * Agent runs still at work on another profile than the default (a project with a profile of
  * its own does not follow the default): a run keeps the profile it started with to the end.
  */
+/**
+ * エージェント: what conversations working in a folder or the code run on. Claude Code says
+ * which account pays for it (a key or LiteLLM costs per token; the login is the person's
+ * plan); it cannot be chosen when the daemon does not find it, and says why.
+ */
+export function agentRuntimeOptions(settings: SettingsView): SegmentOption<string>[] {
+  const choice = settings.agentRuntime;
+  const route = settings.litellm.baseUrl
+    ? 'LiteLLM を通ります'
+    : settings.providers?.anthropic.hasApiKey
+      ? 'Anthropic の API キーで動きます（従量課金）'
+      : 'あなたの Claude Code のログインで動きます';
+  const missing =
+    choice && !choice.detected && choice.configured !== CLAUDE_CODE ? choice.reason : undefined;
+  return [
+    {
+      value: CLAUDE_CODE,
+      label: 'Claude Code',
+      hint: missing ?? route,
+      ...(missing ? { disabled: true } : {}),
+    },
+    { value: 'mock', label: 'モック', hint: '本物のエージェントは動かさず、流れだけを試します' },
+  ];
+}
+const CLAUDE_CODE = 'claude-agent-sdk';
+
 const MEMORY_OPTIONS: { value: 'on' | 'off'; label: string }[] = [
   { value: 'on', label: '覚える' },
   { value: 'off', label: '覚えない' },
@@ -299,6 +325,16 @@ export function SettingsDialog() {
                   value={profile}
                   options={PROFILE_OPTIONS}
                   onChange={(v) => update({ defaultPermissionProfile: v })}
+                />
+              </FieldRow>
+            )}
+            {settings?.agentRuntime && (
+              <FieldRow label="エージェント" hint="フォルダやコードで動く会話を動かすもの">
+                <Segmented<string>
+                  label="エージェント"
+                  value={settings.agentRuntime.effective}
+                  options={agentRuntimeOptions(settings)}
+                  onChange={(v) => update({ defaultRuntime: v })}
                 />
               </FieldRow>
             )}

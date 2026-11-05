@@ -6,7 +6,12 @@ import { useConfirm } from '../../store/confirm';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
 import { TooltipProvider } from '../ui/Tooltip';
-import { connectionStatus, runsOnOtherProfile, SettingsDialog } from './SettingsDialog';
+import {
+  agentRuntimeOptions,
+  connectionStatus,
+  runsOnOtherProfile,
+  SettingsDialog,
+} from './SettingsDialog';
 import { run, session } from '../../test/fixtures';
 import {
   cacheShare,
@@ -282,6 +287,32 @@ describe('<SettingsDialog> up front', () => {
       fireEvent.click(within(group).getByRole('radio', { name: '慎重' }));
     });
     await waitFor(() => expect(updates).toEqual([{ defaultPermissionProfile: 'careful' }]));
+  });
+
+  it('shows what agent conversations run on, and switches it with one press', async () => {
+    const { updates } = mount({
+      ...VIEW,
+      agentRuntime: {
+        configured: null,
+        effective: 'claude-agent-sdk',
+        detected: 'claude-agent-sdk',
+      },
+    });
+    const group = await screen.findByRole('radiogroup', { name: 'エージェント' });
+    expect(within(group).getByRole('radio', { name: 'Claude Code' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    await act(async () => {
+      fireEvent.click(within(group).getByRole('radio', { name: 'モック' }));
+    });
+    await waitFor(() => expect(updates).toEqual([{ defaultRuntime: 'mock' }]));
+  });
+
+  it('hides the エージェント row from a daemon that does not say', async () => {
+    mount();
+    await screen.findByRole('radiogroup', { name: '任せ方' });
+    expect(screen.queryByRole('radiogroup', { name: 'エージェント' })).toBeNull();
   });
 
   it('changes the daily limit in place, and an empty field removes it', async () => {
@@ -806,5 +837,44 @@ describe('runsOnOtherProfile', () => {
     ];
     expect(runsOnOtherProfile(runs, projects, 'standard')).toBe(1);
     expect(runsOnOtherProfile(runs, [], 'autonomous')).toBe(3);
+  });
+});
+
+describe('agentRuntimeOptions', () => {
+  const found = { configured: null, effective: 'claude-agent-sdk', detected: 'claude-agent-sdk' };
+  const claude = (v: SettingsView) => agentRuntimeOptions(v)[0]!;
+
+  it('says which account Claude Code runs on', () => {
+    expect(claude({ ...VIEW, agentRuntime: found }).hint).toBe('LiteLLM を通ります');
+    const noProxy = { ...VIEW, litellm: { baseUrl: null, hasApiKey: false, apiKeyMasked: null } };
+    expect(claude({ ...noProxy, agentRuntime: found }).hint).toBe(
+      'あなたの Claude Code のログインで動きます',
+    );
+    const keyed: SettingsView = {
+      ...noProxy,
+      agentRuntime: found,
+      providers: {
+        ...VIEW.providers!,
+        anthropic: { baseUrl: null, hasApiKey: true, apiKeyMasked: 'sk-…a1b2' },
+      },
+    };
+    expect(claude(keyed).hint).toBe('Anthropic の API キーで動きます（従量課金）');
+  });
+
+  it('cannot pick Claude Code when the daemon does not find it, and says why', () => {
+    const missing = {
+      configured: null,
+      effective: 'mock',
+      detected: null,
+      reason: 'Claude Code が見つかりません',
+    };
+    expect(claude({ ...VIEW, agentRuntime: missing })).toMatchObject({
+      disabled: true,
+      hint: 'Claude Code が見つかりません',
+    });
+    // Chosen by hand, it stays selectable (its runs say what is missing).
+    expect(
+      claude({ ...VIEW, agentRuntime: { ...missing, configured: 'claude-agent-sdk' } }).disabled,
+    ).toBeUndefined();
   });
 });

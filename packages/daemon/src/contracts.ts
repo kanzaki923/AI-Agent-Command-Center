@@ -9,6 +9,7 @@
 import type { CallLog } from './cost/calls';
 import type {
   Actor,
+  AgentRuntimeChoice,
   Approval,
   ApprovalKind,
   Attention,
@@ -379,8 +380,13 @@ export interface RuntimesService {
   register(runtime: AgentRuntime): void;
   get(id: string): AgentRuntime;
   list(): AgentRuntime[];
-  /** Runtime used when a session does not name one (settings, falling back to 'mock'). */
-  defaultId(): string;
+  /**
+   * Runtime used when a session does not name one: the settings', else (自動) the detected
+   * one, else 'mock'. A mock model keeps the mock under 自動.
+   */
+  defaultId(model?: string | null): string;
+  /** What 自動 resolves to and why, for the settings screen. */
+  choice(): AgentRuntimeChoice;
 }
 
 // ---------------------------------------------------------------------------

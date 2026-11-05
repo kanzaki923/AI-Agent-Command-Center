@@ -45,6 +45,12 @@ export interface CreateDaemonOptions {
   dbPath?: string;
   /** Override the policy engine (otherwise GrantPolicyEngine over the grants table). */
   policy?: PolicyEngine;
+  /**
+   * Let 「自動」 (no `defaultRuntime` in the settings) run agent conversations on Claude Code
+   * when its CLI is found. The process entry point turns it on; tests and scripts leave it off
+   * so nothing they start reaches a real agent.
+   */
+  detectAgentRuntime?: boolean;
 }
 
 export interface StartDaemonOptions extends CreateDaemonOptions {
@@ -103,6 +109,7 @@ class Context implements DaemonContext {
     readonly settings: SettingsStore,
     readonly log: Logger,
     policy: PolicyEngine | undefined,
+    readonly detectAgentRuntime = false,
   ) {
     this.startedAt = clock.iso();
     this.repos = createRepos(db);
@@ -201,6 +208,7 @@ export async function createDaemon(opts: CreateDaemonOptions = {}): Promise<Daem
       new SettingsStore(paths.config, env),
       log,
       opts.policy,
+      opts.detectAgentRuntime ?? false,
     );
     const dispatcher = new Dispatcher(ctx);
     ctx.dispatcher = dispatcher;

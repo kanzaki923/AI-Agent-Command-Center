@@ -35,7 +35,7 @@ async function main(): Promise<void> {
 
   let daemon: Awaited<ReturnType<typeof startDaemon>>;
   try {
-    daemon = await startDaemon({ log });
+    daemon = await startDaemon({ log, detectAgentRuntime: true });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw err;
     // Lost a start race (UI and CLI at once): the winner writes daemon.json right after

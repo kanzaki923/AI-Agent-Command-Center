@@ -6,7 +6,7 @@ import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
 import { iso, session, T0 } from '../../test/fixtures';
 import { TooltipProvider } from '../ui/Tooltip';
-import { DRAFT_KEY, Draft, workspaceFor } from './Draft';
+import { DRAFT_KEY, Draft, defaultPlace, workspaceFor } from './Draft';
 
 function project(over: Partial<Project> = {}): Project {
   return {
@@ -36,6 +36,16 @@ describe('workspaceFor', () => {
     expect(workspaceFor('worktree', code)).toEqual({ kind: 'worktree', projectId: code.id });
     expect(workspaceFor('folder', code)).toBeNull();
     expect(workspaceFor('folder', docs)).toEqual({ kind: 'folder', path: 'C:/docs' });
+  });
+});
+
+describe('defaultPlace', () => {
+  it('starts in the project: its code, else its folder', () => {
+    expect(defaultPlace(null)).toBe('none');
+    expect(defaultPlace(project())).toBe('worktree');
+    expect(defaultPlace(project({ folderPath: 'C:/work/acme-web' }))).toBe('worktree');
+    expect(defaultPlace(project({ repoPath: null, folderPath: 'C:/docs' }))).toBe('folder');
+    expect(defaultPlace(project({ repoPath: null }))).toBe('none');
   });
 });
 
@@ -88,6 +98,28 @@ describe('<Draft> (Ctrl+N)', () => {
     expect(fake.calls.map((c) => c.method)).not.toContain('system.assistant');
     expect(fake.calls.map((c) => c.method)).not.toContain('session.send');
     expect(useUi.getState().drafts[DRAFT_KEY]).toBeUndefined();
+  });
+
+  it('works in the project without a pick, and keeps 作業場所なし once chosen', async () => {
+    const p = project();
+    useUi.setState({ projectId: p.id });
+    const { fake } = mount([p]);
+    const code = await screen.findByRole('radio', { name: 'コード' });
+    expect(code).toHaveAttribute('aria-checked', 'true');
+    const none = screen.getByRole('radio', { name: '作業場所なし' });
+    fireEvent.click(none);
+    expect(none).toHaveAttribute('aria-checked', 'true');
+    fireEvent.change(screen.getByRole('textbox', { name: 'メッセージ' }), {
+      target: { value: 'ちょっと相談' },
+    });
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'メッセージ' }), { key: 'Enter' });
+    await waitFor(() =>
+      expect(fake.calls.find((c) => c.method === 'assistant.startWork')?.params).toEqual({
+        text: 'ちょっと相談',
+        delegate: false,
+        projectId: p.id,
+      }),
+    );
   });
 
   it('is only the input, the model and send when there is no project', async () => {

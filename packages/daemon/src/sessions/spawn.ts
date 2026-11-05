@@ -134,7 +134,11 @@ export class Spawner implements SpawnerService {
       });
     }
     const after = this.siblings(p.after ?? [], parent?.id ?? null);
-    const runtime = p.mode === 'agent' ? (p.runtime ?? ctx.service('runtimes').defaultId()) : null;
+    // A mock parent keeps its agent children on the mock under 自動 (the demo stays offline).
+    const runtime =
+      p.mode === 'agent'
+        ? (p.runtime ?? ctx.service('runtimes').defaultId(p.model ?? parent?.model))
+        : null;
     if (runtime) ctx.service('runtimes').get(runtime);
 
     const prepared = await prepareWorkspace(ctx, {

@@ -9,6 +9,7 @@ import {
 } from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
 import { assertRosterModel, rosterPromptBlock } from '../llm/roster';
+import { defaultRuntimeOf } from '../runtime/registry';
 import { budgetExceeded, conflict, forbidden, limitExceeded } from '../core/errors';
 import { dayOf, fromMicro } from '../cost/ledger';
 import { delegateSession } from '../orchestrator/grant';
@@ -214,7 +215,7 @@ export class AssistantService {
     if (p.model && !personal.model) {
       // The root is an agent when it works alone in a workspace (see below).
       const agent = !p.delegate && !!asked;
-      const runtime = ctx.settings.get().defaultRuntime ?? 'mock';
+      const runtime = defaultRuntimeOf(ctx, p.model);
       assertRosterModel(ctx, actor, p.model, { agentRuntime: agent && runtime !== 'mock' });
     }
     // Only a conversation leads others: delegated, it stays a conversation in the chosen

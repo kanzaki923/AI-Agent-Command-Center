@@ -42,6 +42,8 @@ export interface DaemonContext {
   readonly settings: SettingsStore;
   readonly methods: MethodRegistry;
   readonly log: Logger;
+  /** 「自動」 may pick Claude Code for agent conversations (CreateDaemonOptions). */
+  readonly detectAgentRuntime?: boolean;
   /** Port the server listens on (0 until listening). */
   port: number;
   /** Capability enforcement used by the dispatcher. The policy module replaces the default. */

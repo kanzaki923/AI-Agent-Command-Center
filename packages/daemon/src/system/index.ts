@@ -7,6 +7,11 @@ import { defineModule } from '../module';
 export const systemModule = defineModule({
   name: 'system',
   register(ctx) {
+    // The settings plus what 「自動」 runs agent conversations on here (the screen shows it).
+    const view = () => ({
+      ...ctx.settings.view(),
+      ...(ctx.hasService('runtimes') ? { agentRuntime: ctx.service('runtimes').choice() } : {}),
+    });
     ctx.methods.register(
       defineMethod('system.health', {
         handler: () => ({
@@ -65,7 +70,7 @@ export const systemModule = defineModule({
       }),
 
       defineMethod('settings.get', {
-        handler: () => ctx.settings.view(),
+        handler: () => view(),
       }),
 
       defineMethod('settings.update', {
@@ -78,7 +83,7 @@ export const systemModule = defineModule({
             // Key names only: never put secret values into events.
             ctx.bus.emit({ type: 'settings.updated', actor: call.actor, payload: { changes } });
           }
-          return ctx.settings.view();
+          return view();
         },
       }),
     );

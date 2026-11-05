@@ -317,7 +317,8 @@ describe('artifact.publish', () => {
     ).toBe('ok');
     unlinkSync(join(a.dir, 'many', 'f000.txt'));
     expect(await publish({ kind: 'files', paths: ['many'] })).toBe('ok');
-  });
+    // 500 files and megabytes on disk: under the full parallel suite it outlasts 5 s.
+  }, 20_000);
 
   it('publishes data inline, from CSV and from JSON', async () => {
     const d = await daemon();

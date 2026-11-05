@@ -27,6 +27,17 @@ export function workspaceFor(place: DraftPlace, project: Project | null): Worksp
   return { kind: 'none' };
 }
 
+/**
+ * Where a conversation in `project` starts until the person picks: the project's own place
+ * (its code, else its folder). A conversation in a project that cannot see the project is
+ * not what anyone means by it.
+ */
+export function defaultPlace(project: Project | null): DraftPlace {
+  if (project?.repoPath) return 'worktree';
+  if (project?.folderPath) return 'folder';
+  return 'none';
+}
+
 function Segment({
   active,
   disabled,
@@ -80,7 +91,8 @@ export function Draft() {
   const setProject = useUi((s) => s.setProject);
   const text = useUi((s) => s.drafts[DRAFT_KEY] ?? '');
   const setDraft = useUi((s) => s.setDraft);
-  const [place, setPlace] = useState<DraftPlace>('none');
+  // null: not picked yet, so the place follows the chosen project.
+  const [place, setPlace] = useState<DraftPlace | null>(null);
   const [model, setModel] = useState<string | null>(null);
   const memberId = useUi((s) => s.draftMemberId);
   const setMember = useUi((s) => s.setDraftMember);
@@ -88,7 +100,8 @@ export function Draft() {
   const composing = useRef(false);
   const project = projects.find((p) => p.id === projectId) ?? null;
   // A place the chosen project cannot offer falls back to none (derived, not stored).
-  const effective: DraftPlace = workspaceFor(place, project) ? place : 'none';
+  const wanted = place ?? defaultPlace(project);
+  const effective: DraftPlace = workspaceFor(wanted, project) ? wanted : 'none';
   const roster = [
     ...new Set([
       ...(settings?.modelRules ?? []).map((r) => r.model),

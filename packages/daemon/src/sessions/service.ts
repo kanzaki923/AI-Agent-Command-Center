@@ -12,6 +12,7 @@ import type {
 import type { DaemonContext } from '../core/context';
 import { invalidParams } from '../core/errors';
 import { assertRosterModel } from '../llm/roster';
+import { defaultRuntimeOf } from '../runtime/registry';
 
 export interface AppendMessageInput {
   sessionId: string;
@@ -95,7 +96,7 @@ export class SessionService {
   create(input: CreateSessionInput, actor: Actor): Session {
     const { ctx } = this;
     if (input.model) {
-      const runtime = input.runtime ?? ctx.settings.get().defaultRuntime ?? 'mock';
+      const runtime = input.runtime ?? defaultRuntimeOf(ctx, input.model);
       assertRosterModel(ctx, actor, input.model, {
         agentRuntime: input.kind === 'agent' && runtime !== 'mock',
       });

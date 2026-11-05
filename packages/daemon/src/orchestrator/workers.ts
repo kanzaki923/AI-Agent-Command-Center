@@ -102,7 +102,8 @@ export class WorkerService {
     policy.assertCanSpawnWorker(actor, { projectId: task.projectId });
 
     const workspace = await this.workspaceFor(task, actor);
-    const runtime = p.runtime ?? ctx.service('runtimes').defaultId();
+    const runtime =
+      p.runtime ?? ctx.service('runtimes').defaultId(p.model ?? callerModel(ctx, actor));
     // Validate the runtime name before anything is created.
     ctx.service('runtimes').get(runtime);
 
@@ -234,7 +235,8 @@ export class WorkerService {
     if (ctx.service('workspaces').isLocked(ws.id)) {
       throw conflict('このタスクのワークスペースは別の Run が使用中です', { workspaceId: ws.id });
     }
-    const runtime = p.runtime ?? session.runtime ?? ctx.service('runtimes').defaultId();
+    const runtime =
+      p.runtime ?? session.runtime ?? ctx.service('runtimes').defaultId(p.model ?? session.model);
     ctx.service('runtimes').get(runtime);
 
     return ctx.db.transaction(() => {
@@ -321,7 +323,8 @@ export class WorkerService {
     const integrations = ctx.service('integrations');
     const integ = integrations.get(p.integrationId);
     policy.assertCanSpawnWorker(actor, { projectId: integ.projectId });
-    const runtime = p.runtime ?? ctx.service('runtimes').defaultId();
+    const runtime =
+      p.runtime ?? ctx.service('runtimes').defaultId(p.model ?? callerModel(ctx, actor));
     ctx.service('runtimes').get(runtime);
 
     const prepared = await integrations.prepareResolution(integ.id, actor);
@@ -474,7 +477,8 @@ export class WorkerService {
     if (ctx.service('workspaces').isLocked(ws.id)) {
       throw conflict('この子の作業場所は別の実行が使用中です', { workspaceId: ws.id });
     }
-    const runtime = p.runtime ?? child.runtime ?? ctx.service('runtimes').defaultId();
+    const runtime =
+      p.runtime ?? child.runtime ?? ctx.service('runtimes').defaultId(p.model ?? child.model);
     ctx.service('runtimes').get(runtime);
 
     return ctx.db.transaction(() => {
@@ -1172,4 +1176,9 @@ function firstLineOf(text: string): string {
 function oneLine(s: string, max: number): string {
   const t = s.replace(/\s+/g, ' ').trim();
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+/** The model of the agent asking (a mock caller keeps its workers on the mock under 自動). */
+function callerModel(ctx: DaemonContext, actor: Actor): string | null {
+  return actor.kind === 'agent' ? (ctx.repos.sessions.get(actor.sessionId)?.model ?? null) : null;
 }
