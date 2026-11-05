@@ -46,13 +46,37 @@ export function assertRosterModel(
       `モデル「${model}」は使うモデルの名簿にありません。名簿: ${allowed.join(', ')}（指定しなければ「それ以外」の ${s.defaultModel ?? '既定'}）`,
     );
   }
-  if (opts.agentRuntime && !agentCanUse(s, model)) {
-    throw invalidParams(
-      `モデル「${model}」ではエージェント（Claude Code）を動かせません。${
-        s.litellm.baseUrl ? 'LiteLLM のモデル' : 'Claude のモデル'
-      }を名簿から選ぶか、指定しないでください`,
-    );
-  }
+  if (opts.agentRuntime) assertAgentModel(ctx, model, 'agent');
+}
+
+/**
+ * Refuse a model the agent runtime cannot drive, for anyone (people too): Claude Code would
+ * quietly run another model, and the conversation would name one that never answered.
+ * `runtime`: the agent session's runtime id (the mock runs anything).
+ */
+export function assertAgentModel(ctx: DaemonContext, model: string, runtime: string): void {
+  if (runtime === 'mock' || providerOf(model) === 'mock') return;
+  const s = ctx.settings.get();
+  if (agentCanUse(s, model)) return;
+  throw invalidParams(
+    `モデル「${model}」ではエージェント（Claude Code）を動かせません。${
+      s.litellm.baseUrl ? 'LiteLLM のモデル' : 'Claude のモデル'
+    }を選ぶか、指定しないでください（Claude Code の既定で動きます）`,
+  );
+}
+
+/**
+ * The model a new agent session inherits (a member's, the project's, the settings'), or null
+ * when its runtime cannot drive it: then Claude Code runs its own default, and the session
+ * names the model only once one answers.
+ */
+export function agentDefaultModel(
+  ctx: DaemonContext,
+  model: string | null,
+  runtime: string,
+): string | null {
+  if (!model || runtime === 'mock' || providerOf(model) === 'mock') return model;
+  return agentCanUse(ctx.settings.get(), model) ? model : null;
 }
 
 /** List price per 1M tokens, `plan` on a ChatGPT plan (or offline), null when unknown. */

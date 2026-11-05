@@ -1,4 +1,4 @@
-import type { Run, Session, SessionCard, SessionState } from '@acc/protocol';
+import type { Run, Session, SessionCard, SessionState, SettingsView } from '@acc/protocol';
 import { ArrowUp, MoreHorizontal, Pin, Play, Square } from 'lucide-react';
 import { useState } from 'react';
 import { archiveSession, renameSession, resumeTree, setPinned, setSessionModel, stopHere } from '../../daemon/actions';
@@ -6,9 +6,11 @@ import { useAssistantId } from '../../daemon/assistant';
 import { useHomeSelect } from '../../daemon/home';
 import { useSlowNow } from '../../hooks/useNow';
 import { useMessages, useSessions, useSettings } from '../../daemon/queries';
+import type { ChatMessage } from '../../daemon/sync';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { type SessionTree, treeControl, treeRelations } from '../../daemon/tree';
 import { cn } from '../../lib/cn';
+import { agentCanRun } from '../../lib/models';
 import { STATE_META, formatUsd, isLongWork, isSettled, sessionTitle } from '../../lib/states';
 import { useUi } from '../../store/ui';
 import { setAssistantSeat, useMember } from '../../daemon/members';
@@ -301,19 +303,60 @@ export function FocusHeader({
 function SessionModel({ session, assistant }: { session: Session; assistant: boolean }) {
   const rt = useRuntime();
   const settings = useSettings().data;
-  const started = (useMessages(session.id).data?.length ?? 0) > 0;
+  const messages = useMessages(session.id).data;
+  const started = (messages?.length ?? 0) > 0;
   // Without a model of its own: the assistant's setting, then the roster's last row.
-  const fallback = (assistant ? settings?.assistant?.model : null) ?? settings?.defaultModel ?? null;
-  const roster = [...new Set([...(settings?.modelRules ?? []).map((r) => r.model), ...(fallback ? [fallback] : [])])];
+  const chatFallback = (assistant ? settings?.assistant?.model : null) ?? settings?.defaultModel ?? null;
+  const roster = [...new Set([...(settings?.modelRules ?? []).map((r) => r.model), ...(chatFallback ? [chatFallback] : [])])];
+  const view: AgentModelView | { value: string | null; fallback: string | null; autoLabel?: undefined; autoHint?: undefined; allow?: undefined } =
+    session.kind === 'agent'
+      ? agentModelView(session, settings, messages ?? [])
+      : { value: session.model, fallback: chatFallback };
   return (
     <ModelPicker
-      value={session.model}
-      fallback={fallback}
+      value={view.value}
+      fallback={view.fallback}
       roster={roster}
       side="bottom"
       align="end"
       note={started ? '途中で変えると、会話を最初から読み直すため費用が増えます' : null}
-      onChange={(m) => m && void setSessionModel(rt, session, m)}
+      {...(view.autoLabel ? { autoLabel: view.autoLabel, autoHint: view.autoHint } : {})}
+      {...(view.allow ? { allow: view.allow } : {})}
+      onChange={(m) => (m || view.autoLabel) && void setSessionModel(rt, session, m)}
     />
   );
+}
+
+interface AgentModelView {
+  value: string | null;
+  fallback: string | null;
+  autoLabel: string;
+  autoHint: string;
+  allow?: (model: string) => boolean;
+}
+
+/**
+ * What an agent conversation's model chip says: the model that answers, never one that only
+ * was asked for. Claude Code runs a model of the conversation's only when it can (else its
+ * own default); the mock runs none. Until a model is set or something answered, the chip
+ * names the runtime's default.
+ */
+export function agentModelView(
+  session: Pick<Session, 'model' | 'runtime'>,
+  settings: Pick<SettingsView, 'litellm' | 'agentRuntime'> | undefined,
+  messages: readonly Pick<ChatMessage, 'role' | 'model'>[],
+): AgentModelView {
+  const runtime = session.runtime ?? settings?.agentRuntime?.effective ?? null;
+  const answered = messages.findLast((m) => m.role === 'assistant' && m.model)?.model ?? null;
+  if (runtime === 'mock') {
+    return { value: null, fallback: answered, autoLabel: 'モック', autoHint: 'モックが答えます（モデルは動きません）' };
+  }
+  const allow = (m: string) => agentCanRun(m, settings?.litellm.baseUrl);
+  return {
+    value: session.model && allow(session.model) ? session.model : null,
+    fallback: answered,
+    autoLabel: 'Claude Code の既定',
+    autoHint: 'Claude Code が自分の既定のモデルで答えます',
+    allow,
+  };
 }

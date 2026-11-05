@@ -11,7 +11,13 @@ import type {
   Workspace,
   WorkspaceKind,
 } from '@acc/protocol';
-import type { AgentEvent, AgentTool, RunController, RunExecutor } from '../contracts';
+import type {
+  AgentEvent,
+  AgentTool,
+  RunController,
+  RunExecutor,
+  WorkspacesService,
+} from '../contracts';
 import type { DaemonContext } from '../core/context';
 import { apiTools } from '../llm/tools';
 import { abortError } from './async';
@@ -86,6 +92,9 @@ async function executeAgentRun(
 
   ctl.setActivity('エージェントを起動中');
   const model = run.model ?? session.model ?? null;
+  // What answers, once the runtime says (Claude Code runs its own default for a model it cannot
+  // drive): messages and the ledger name it, never the model that was only asked for.
+  let answering = model;
   const resumeSessionId = store.get(session.id, runtimeId);
   const gate = createToolGate(ctx, ctl, workspace.path, workspace.projectId, readRoots);
 
@@ -141,7 +150,7 @@ async function executeAgentRun(
       case 'message': {
         const id = idFor(ev.messageId);
         persisted.add(id);
-        ctl.appendMessage({ role: 'assistant', content: ev.content, id, model });
+        ctl.appendMessage({ role: 'assistant', content: ev.content, id, model: answering });
         return;
       }
       case 'tool_call':
@@ -177,6 +186,10 @@ async function executeAgentRun(
       case 'session':
         rememberRuntimeSession(ctx, store, session.id, runtimeId, ev.runtimeSessionId, ctl.actor);
         return;
+      case 'model':
+        answering = ev.model;
+        ctl.setModel(ev.model);
+        return;
       case 'tool_decision':
         // Runtimes hand these to their gate, which records them.
         return;
@@ -187,21 +200,63 @@ async function executeAgentRun(
     handleEvent(ev);
   }
   if (signal.aborted) throw abortError(signal);
-  // Only git workspaces are committed; a user's folder and a scratch folder have no git.
+  // Only git workspaces have a diff to record; a user's folder and a scratch folder have no git.
   if (!isGitWorkspace(workspace.kind)) {
     ctl.setActivity(null);
     return;
   }
 
-  ctl.setActivity('変更をコミット中');
   const title = task?.title ?? firstLine(instructions ?? prompt);
-  const sha = await workspaces.commitAll(
-    workspaceId,
-    `${truncate(title, 72)}\n\nRun: ${run.id}`,
-    ctl.actor,
-  );
-  if (sha) await recordDiffArtifact(ctx, ctl, workspaceId, title);
+  if (task || isIntegrationWorkspace(ctx, workspaceId)) {
+    // A Task's work is handed over as its branch (integration merges commits), and an
+    // integrator's resolved merge must be committed for the integration to resume: each
+    // run of either ends in a commit.
+    ctl.setActivity('変更をコミット中');
+    const sha = await workspaces.commitAll(
+      workspaceId,
+      `${truncate(title, 72)}\n\nRun: ${run.id}`,
+      ctl.actor,
+    );
+    if (sha) await recordDiffArtifact(ctx, ctl, workspaceId, title);
+  } else if (await changedSinceLastDiff(ctx, workspaceId)) {
+    // A conversation is not asked to commit: its changes stay in the worktree as they are
+    // and become a commit only when someone brings them over (integration.create).
+    await recordDiffArtifact(ctx, ctl, workspaceId, title);
+  }
   ctl.setActivity(null);
+}
+
+/** An integration's own worktree (where an integrator agent resolves its conflicts). */
+function isIntegrationWorkspace(ctx: DaemonContext, workspaceId: string): boolean {
+  return (
+    ctx.repos.integrations.find({
+      sql: { clause: "json_extract(data, '$.workspaceId') = ?", params: [workspaceId] },
+      limit: 1,
+    }).length > 0
+  );
+}
+
+/**
+ * Whether the workspace now differs from its newest recorded change: an uncommitted
+ * conversation's diff covers every turn so far, so a turn that changed nothing records none.
+ */
+async function changedSinceLastDiff(ctx: DaemonContext, workspaceId: string): Promise<boolean> {
+  let d: Awaited<ReturnType<WorkspacesService['diff']>>;
+  try {
+    d = await ctx.service('workspaces').diff(workspaceId);
+  } catch (err) {
+    // Like a missing diff artifact, an unreadable diff must not fail the run.
+    ctx.log.warn('failed to diff workspace', { workspaceId, error: (err as Error).message });
+    return false;
+  }
+  if (d.files.length === 0) return false;
+  const last = ctx.repos.artifacts
+    .find({
+      where: { kind: 'diff' },
+      sql: { clause: "json_extract(data, '$.workspaceId') = ?", params: [workspaceId] },
+    })
+    .find((a) => a.role === 'output');
+  return !(last?.kind === 'diff' && last.data.patch === d.patch);
 }
 
 /** The project's permission profile, else the global default (architecture.md §2.10). */
@@ -289,7 +344,7 @@ export function agentReadRoots(ctx: DaemonContext, run: Run, workspace: Workspac
   return roots;
 }
 
-/** Workspaces the daemon commits and diffs (a worktree, or the repository checkout). */
+/** Workspaces the daemon diffs, and commits for a Task (a worktree, or the repository checkout). */
 export function isGitWorkspace(kind: WorkspaceKind): boolean {
   return kind === 'worktree' || kind === 'main';
 }

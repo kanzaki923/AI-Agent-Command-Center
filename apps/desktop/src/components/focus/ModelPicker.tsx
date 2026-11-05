@@ -30,6 +30,7 @@ export function ModelPicker({
   onChange,
   disabled,
   local = false,
+  allow,
 }: {
   value: string | null;
   fallback: string | null;
@@ -50,6 +51,11 @@ export function ModelPicker({
    * state with the conversation's, so two mounted at once would open and close together.
    */
   local?: boolean;
+  /**
+   * Only the models this can run (an agent conversation: what Claude Code can drive). The
+   * others are left out rather than offered and silently replaced by another model.
+   */
+  allow?: (model: string) => boolean;
 }) {
   const sharedOpen = useUi((s) => s.modelPickerOpen);
   const setSharedOpen = useUi((s) => s.setModelPickerOpen);
@@ -59,12 +65,12 @@ export function ModelPicker({
   const recent = useUi((s) => s.recentCommands);
   const rememberCommand = useUi((s) => s.rememberCommand);
   const models = useModels();
-  const list: ModelInfo[] = models.data?.models ?? [];
+  const list: ModelInfo[] = (models.data?.models ?? []).filter((m) => !allow || allow(m.id));
   const current = value ?? fallback;
   const recentModels = recent.filter((c) => c.startsWith('model:')).map((c) => c.slice(6));
   const inRoster = roster.flatMap((id) => list.find((m) => m.id === id) ?? []);
   const rest = list
-    .filter((m) => !roster.includes(m.id))
+    .filter((m) => !inRoster.includes(m))
     .sort((a, b) => {
       const ra = recentModels.indexOf(a.id);
       const rb = recentModels.indexOf(b.id);
@@ -91,7 +97,8 @@ export function ModelPicker({
   );
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <Tooltip content={current === null && autoHint ? autoHint : null}>
+      {/* The chip is short (`opus`); the full name says which one answers (`claude-opus-5-5`). */}
+      <Tooltip content={current === null ? (autoHint ?? null) : current}>
         <PopoverTrigger asChild>
           <button
             type="button"

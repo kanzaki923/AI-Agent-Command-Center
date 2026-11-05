@@ -113,6 +113,12 @@ export interface RunController {
   /** Short "what is it doing now" line shown in Command Mode (e.g. "npm test を実行中"). */
   setActivity(text: string | null): void;
   /**
+   * The model that actually answers, as the runtime reports it (run.updated `["model"]`):
+   * the ledger books usage under it from then on. Claude Code may run another model than the
+   * one asked for (its own default when the conversation's model is not one it can drive).
+   */
+  setModel(model: string): void;
+  /**
    * Record how a tool use was decided: `tool.decided` (unless routine) and the counts on
    * `Run.toolDecisions` (run.updated `["toolDecisions"]`, batched for routine decisions).
    */
@@ -299,6 +305,8 @@ export type AgentEvent =
       component?: 'classifier';
     }
   | { type: 'session'; runtimeSessionId: string }
+  /** The model answering, as the runtime reports it (sent when it is first known or changes). */
+  | { type: 'model'; model: string }
   /**
    * How the runtime itself decided a tool use (Claude Code: the auto mode classifier's
    * denials, `tool_result_meta`). Runtimes hand these to their gate; executors ignore them.

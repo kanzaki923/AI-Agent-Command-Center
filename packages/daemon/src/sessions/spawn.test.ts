@@ -709,6 +709,78 @@ describe('how a child ends (§3.4)', () => {
     await taskSettles(h, r.session.id, 'done');
   });
 
+  it('books the run, its messages and its cost under the model that answered', async () => {
+    const h = await setup();
+    const { d } = h;
+    const teller: AgentRuntime = {
+      id: 'teller',
+      displayName: 'teller',
+      available: () => Promise.resolve({ ok: true }),
+      async *run(): AsyncGenerator<AgentEvent> {
+        yield { type: 'model', model: 'claude-opus-5-5' };
+        yield {
+          type: 'message',
+          messageId: 'm1',
+          role: 'assistant',
+          content: [{ type: 'text', text: '書きました' }],
+        };
+        yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 2, costUsd: 0.01 } };
+      },
+    };
+    d.ctx.service('runtimes').register(teller);
+    const sup = await supervisor(d);
+    const r = await d.call(sup.actor, 'session.spawn', {
+      title: 'FAQ',
+      goal: 'FAQ を書く',
+      runtime: 'teller',
+    });
+    await taskSettles(h, r.session.id, 'done');
+    const run = d.ctx.repos.runs.find({ where: { session_id: r.session.id } })[0]!;
+    expect(run.model).toBe('claude-opus-5-5');
+    const said = d.ctx.repos.messages
+      .find({ where: { session_id: r.session.id } })
+      .filter((m) => m.role === 'assistant');
+    expect(said.map((m) => m.model)).toEqual(['claude-opus-5-5']);
+    const booked = d.ctx.db.all<{ model: string | null }>(
+      'SELECT model FROM usage_ledger WHERE run_id = ?',
+      [run.id],
+    );
+    expect(booked.length).toBeGreaterThan(0);
+    expect(new Set(booked.map((b) => b.model))).toEqual(new Set(['claude-opus-5-5']));
+  });
+
+  it('gives an agent no chat model Claude Code cannot run, and refuses one named', async () => {
+    const { d } = await setup();
+    await d.call(HUMAN, 'settings.update', { defaultModel: 'openai/gpt-6.1-sol' });
+    const agent = await d.call(HUMAN, 'session.create', {
+      kind: 'agent',
+      runtime: 'claude-agent-sdk',
+    });
+    // Claude Code runs its own default: the session names no model until one answers.
+    expect(agent.model).toBeNull();
+    const chat = await d.call(HUMAN, 'session.create', { kind: 'chat' });
+    expect(chat.model).toBe('openai/gpt-6.1-sol');
+    // The mock runs anything (it says it is the mock when it answers).
+    const mock = await d.call(HUMAN, 'session.create', { kind: 'agent', runtime: 'mock' });
+    expect(mock.model).toBe('openai/gpt-6.1-sol');
+    // Named by a person, a model it would quietly replace is refused, not stored.
+    await expect(
+      d.call(HUMAN, 'session.create', {
+        kind: 'agent',
+        runtime: 'claude-agent-sdk',
+        model: 'openai/gpt-6.1-sol',
+      }),
+    ).rejects.toThrow(/Claude Code）を動かせません/);
+    await expect(
+      d.call(HUMAN, 'session.update', { sessionId: agent.id, model: 'openai/gpt-6.1-sol' }),
+    ).rejects.toThrow(/Claude Code）を動かせません/);
+    const claude = await d.call(HUMAN, 'session.update', {
+      sessionId: agent.id,
+      model: 'claude-opus-5-5',
+    });
+    expect(claude.model).toBe('claude-opus-5-5');
+  });
+
   it('a failure opens a failure item on the child and tells the parent', async () => {
     const h = await setup();
     const { d } = h;

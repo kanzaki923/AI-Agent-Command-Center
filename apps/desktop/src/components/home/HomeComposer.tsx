@@ -10,6 +10,7 @@ import { cn } from '../../lib/cn';
 import { WORKSPACE_META, type WorkspaceKind } from '../../lib/states';
 import { useUi } from '../../store/ui';
 import { composerKeyAction } from '../focus/Composer';
+import { agentModelFilter } from '../focus/Draft';
 import { ModelPicker } from '../focus/ModelPicker';
 import { Button } from '../ui/Button';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '../ui/Menu';
@@ -76,6 +77,9 @@ export function HomeComposer({ center = false }: { center?: boolean }) {
     fits.find((p) => p.id === uiProjectId) ??
     fits[0] ??
     null;
+  // A folder or the code picked here: Claude Code does the work, on a model it can run.
+  const allow = agentModelFilter(!!workPlaceOf(kind, project), settings);
+  const workModel = model && (!allow || allow(model)) ? model : null;
 
   const send = async (openIt: boolean) => {
     const t = text.trim();
@@ -84,7 +88,7 @@ export function HomeComposer({ center = false }: { center?: boolean }) {
       setText('');
       const id = await askAssistant(rt, t, {
         hint: workspaceHint(kind, project),
-        model,
+        model: workModel,
         place: workPlaceOf(kind, project),
       });
       if (!id) {
@@ -154,11 +158,12 @@ export function HomeComposer({ center = false }: { center?: boolean }) {
         )}
       />
       <ModelPicker
-        value={model}
+        value={workModel}
         fallback={null}
         roster={roster}
         autoLabel="自動"
-        autoHint="設定の名簿に沿って選びます"
+        autoHint={allow ? 'Claude Code の既定のモデルで動きます' : '設定の名簿に沿って選びます'}
+        {...(allow ? { allow } : {})}
         onChange={setModel}
       />
       {!center && projects.length > 0 && toggle}

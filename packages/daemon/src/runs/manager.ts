@@ -683,6 +683,22 @@ export class RunManager implements RunsService {
     });
   }
 
+  /** The model that answers (run.updated `["model"]`); the ledger books usage under it. */
+  private updateModel(runId: string, model: string, actor: Actor): Run | null {
+    const { ctx } = this;
+    return ctx.db.transaction(() => {
+      const cur = ctx.repos.runs.get(runId);
+      if (!cur || isTerminalRunStatus(cur.status) || cur.model === model) return null;
+      const run = ctx.repos.runs.update(runId, (r) => ({
+        ...r,
+        model,
+        updatedAt: ctx.clock.iso(),
+      }));
+      ctx.bus.emit({ type: 'run.updated', actor, payload: { run, changes: ['model'] } });
+      return run;
+    });
+  }
+
   /** Write pending tool decision counts to the run (run.updated `["toolDecisions"]`). */
   private flushToolCounts(a: ActiveRun): void {
     if (a.toolCountTimer) {
@@ -844,6 +860,12 @@ export class RunManager implements RunsService {
       setActivity: (text) => {
         if (!live() || ended()) return;
         const run = this.updateActivity(a.runId, text, actor);
+        if (run) a.run = run;
+      },
+
+      setModel: (model) => {
+        if (!live() || ended()) return;
+        const run = this.updateModel(a.runId, model, actor);
         if (run) a.run = run;
       },
 

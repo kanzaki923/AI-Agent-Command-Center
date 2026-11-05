@@ -6,7 +6,8 @@ import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
 import { iso, session, T0 } from '../../test/fixtures';
 import { TooltipProvider } from '../ui/Tooltip';
-import { DRAFT_KEY, Draft, defaultPlace, workspaceFor } from './Draft';
+import { agentCanRun } from '../../lib/models';
+import { DRAFT_KEY, Draft, agentModelFilter, defaultPlace, workspaceFor } from './Draft';
 
 function project(over: Partial<Project> = {}): Project {
   return {
@@ -46,6 +47,30 @@ describe('defaultPlace', () => {
     expect(defaultPlace(project({ folderPath: 'C:/work/acme-web' }))).toBe('worktree');
     expect(defaultPlace(project({ repoPath: null, folderPath: 'C:/docs' }))).toBe('folder');
     expect(defaultPlace(project({ repoPath: null }))).toBe('none');
+  });
+});
+
+describe('the models an agent conversation can start on', () => {
+  const claude = { configured: null, effective: 'claude-agent-sdk', detected: 'claude-agent-sdk' };
+  const direct = { baseUrl: null, hasApiKey: false, apiKeyMasked: null };
+
+  it('is a Claude model, any LiteLLM model through LiteLLM, or a mock', () => {
+    expect(agentCanRun('openai/gpt-6.1-sol', null)).toBe(false);
+    expect(agentCanRun('anthropic/claude-opus-5-5', null)).toBe(true);
+    expect(agentCanRun('claude-sonnet-5-5', null)).toBe(true);
+    expect(agentCanRun('mock/echo', null)).toBe(true);
+    expect(agentCanRun('team-gpt', 'http://127.0.0.1:4000')).toBe(true);
+    expect(agentCanRun('anthropic/claude-opus-5-5', 'http://127.0.0.1:4000')).toBe(false);
+  });
+
+  it('limits only agent conversations that Claude Code answers', () => {
+    expect(agentModelFilter(false, { litellm: direct, agentRuntime: claude })).toBeUndefined();
+    expect(
+      agentModelFilter(true, { litellm: direct, agentRuntime: { ...claude, effective: 'mock' } }),
+    ).toBeUndefined();
+    const allow = agentModelFilter(true, { litellm: direct, agentRuntime: claude });
+    expect(allow?.('openai/gpt-6.1-sol')).toBe(false);
+    expect(allow?.('anthropic/claude-opus-5-5')).toBe(true);
   });
 });
 

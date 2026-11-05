@@ -2,7 +2,8 @@ import type { Session } from '@acc/protocol';
 import { defineMethod } from '../../api/registry';
 import type { DaemonContext } from '../../core/context';
 import { conflict, forbidden, invalidParams } from '../../core/errors';
-import { assertRosterModel } from '../../llm/roster';
+import { assertAgentModel, assertRosterModel } from '../../llm/roster';
+import { defaultRuntimeOf } from '../../runtime/registry';
 import { sessionScope } from './shared';
 
 export function sessionUpdate(ctx: DaemonContext) {
@@ -31,9 +32,10 @@ export function sessionUpdate(ctx: DaemonContext) {
         }
         if (p.model) {
           const s = repos.sessions.require(p.sessionId);
-          assertRosterModel(ctx, call.actor, p.model, {
-            agentRuntime: s.kind === 'agent' && s.runtime !== 'mock',
-          });
+          assertRosterModel(ctx, call.actor, p.model);
+          if (s.kind === 'agent') {
+            assertAgentModel(ctx, p.model, s.runtime ?? defaultRuntimeOf(ctx, p.model));
+          }
         }
         if (p.projectId) repos.projects.require(p.projectId);
         if (p.workspaceId) repos.workspaces.require(p.workspaceId);

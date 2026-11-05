@@ -279,6 +279,58 @@ describe('integration', () => {
     });
   });
 
+  it("commits a conversation's uncommitted changes only when they are brought over", async () => {
+    const s = await setup();
+    const ws = await s.d.call(HUMAN, 'workspace.create', { projectId: s.project.id });
+    s.d.ctx.service('sessions').create(
+      {
+        kind: 'agent',
+        projectId: s.project.id,
+        title: '設定を新しくする',
+        model: null,
+        runtime: null,
+        workspaceId: ws.id,
+        taskId: null,
+        parentSessionId: null,
+      },
+      HUMAN,
+    );
+    // What a conversation's runs leave behind: changes, no commit.
+    s.repo.write('a.txt', 'a changed\n', ws.path);
+    s.repo.write('new.txt', 'new\n', ws.path);
+    const before = await gitOut(ws.path, ['rev-parse', 'HEAD']);
+
+    const integ = await s.d.call(HUMAN, 'integration.create', {
+      projectId: s.project.id,
+      workspaceIds: [ws.id],
+    });
+    expect(await gitOut(ws.path, ['log', '-1', '--format=%s%n%an'])).toBe(
+      '会話「設定を新しくする」の変更\nAI Agent Command Center',
+    );
+    expect(await gitOut(ws.path, ['rev-parse', 'HEAD~1'])).toBe(before);
+    expect(await gitOut(ws.path, ['status', '--porcelain'])).toBe('');
+
+    const done = await runToEnd(s, integ.id);
+    expect(done.status).toBe('awaiting_approval');
+    const intWs = s.d.ctx.repos.workspaces.require(integ.workspaceId!);
+    expect(readFileSync(join(intWs.path, 'a.txt'), 'utf8')).toBe('a changed\n');
+    expect(readFileSync(join(intWs.path, 'new.txt'), 'utf8')).toBe('new\n');
+  });
+
+  it("leaves a Task's uncommitted leftovers out of its integration", async () => {
+    const s = await setup();
+    const ws = await workOn(s, { 'b.txt': 'b\n' });
+    const task = insertTask(s, 'B を足す', ws.id);
+    s.d.ctx.repos.workspaces.update(ws.id, (w) => ({ ...w, taskId: task.id }));
+    s.repo.write('stray.txt', 'half done\n', ws.path);
+    const head = await gitOut(ws.path, ['rev-parse', 'HEAD']);
+    await s.d.call(HUMAN, 'integration.create', {
+      projectId: s.project.id,
+      workspaceIds: [ws.id],
+    });
+    expect(await gitOut(ws.path, ['rev-parse', 'HEAD'])).toBe(head);
+  });
+
   it('fails when the tests fail, keeps the output tail, and can be re-run', async () => {
     const s = await setup({ testCommand: FAIL });
     const ws = await workOn(s, { 'b.txt': 'b\n' });

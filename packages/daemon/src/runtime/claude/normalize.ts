@@ -191,6 +191,9 @@ export class ClaudeMessageNormalizer {
    */
   serverJudgeLost = false;
 
+  /** The model answering (system/init, then each main-agent API message). */
+  model: string | null = null;
+
   private pending: { id: string; parts: ContentPart[] } | null = null;
   private readonly toolNames = new Map<string, string>();
   private lastAssistantError: string | null = null;
@@ -280,6 +283,7 @@ export class ClaudeMessageNormalizer {
         }
         this.checkTools(msg);
         this.permissionMode = asString(msg.permissionMode) ?? this.permissionMode;
+        out.push(...this.answeredBy(asString(msg.model)));
         out.push({ type: 'activity', text: 'Claude Code を起動しました' });
         return out;
       }
@@ -430,6 +434,8 @@ export class ClaudeMessageNormalizer {
     const content = Array.isArray(message.content) ? message.content : [];
     const out: AgentEvent[] = [];
     if (!isSubagent && this.pending && this.pending.id !== id) out.push(...this.flush());
+    // Sub-agents may run a smaller model: the conversation is answered by the main agent's.
+    if (!isSubagent) out.push(...this.answeredBy(asString(message.model)));
 
     const parts: ContentPart[] = [];
     for (const raw of content) {
@@ -721,6 +727,14 @@ export class ClaudeMessageNormalizer {
       // had no price for a model (e.g. a gateway alias): costUSD is then a guess.
       usage: { ...delta, ...cache, costSource: costSourceOf(entries) },
     };
+  }
+
+  /** A `model` event when the answering model is first known or changes. */
+  private answeredBy(model: string | null | undefined): AgentEvent[] {
+    // `<synthetic>`: a message the CLI made up itself (an error notice), not a model's.
+    if (!model || model.startsWith('<') || model === this.model) return [];
+    this.model = model;
+    return [{ type: 'model', model }];
   }
 
   private flush(): AgentEvent[] {

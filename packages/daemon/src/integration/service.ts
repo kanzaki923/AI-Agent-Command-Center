@@ -26,6 +26,7 @@ import {
   resolveCommit,
   statusLines,
 } from '../workspace/git';
+import { truncate } from '../runtime/tools';
 import { KeyedMutex } from '../workspace/mutex';
 import { shortId } from '../workspace/service';
 import { redactSecrets, runShellCommand } from './command';
@@ -152,6 +153,7 @@ export class IntegrationService {
     if (!(await branchExists(repo, target))) {
       throw invalidParams(`反映先ブランチ「${target}」が見つかりません`);
     }
+    await this.commitPending(sources, input.actor);
     const id = ctx.ids.next('integration');
     const branch = `acc/integration-${shortId(id)}`;
     const workspace = await this.workspaces.createWorktree({
@@ -191,6 +193,26 @@ export class IntegrationService {
       ctx.bus.emit({ type: 'integration.created', actor: input.actor, payload: { integration } });
       return integration;
     });
+  }
+
+  /**
+   * A conversation's runs leave their changes uncommitted (only a Task's runs commit), and a
+   * merge sees commits only: bringing the changes over is when they become one. A Task's
+   * workspace keeps what its runs committed, and one a run is still writing is left as it is.
+   */
+  private async commitPending(sources: Source[], actor: Actor): Promise<void> {
+    for (const s of sources) {
+      if (s.taskId || this.workspaces.isLocked(s.workspace.id)) continue;
+      const session = this.ctx.repos.sessions.find({
+        sql: { clause: "json_extract(data, '$.workspaceId') = ?", params: [s.workspace.id] },
+        direction: 'asc',
+        limit: 1,
+      })[0];
+      const message = session?.title
+        ? `会話「${truncate(session.title, 60)}」の変更`
+        : '会話の変更';
+      await this.workspaces.commitAll(s.workspace.id, message, actor);
+    }
   }
 
   private resolveSources(

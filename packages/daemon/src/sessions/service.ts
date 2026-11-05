@@ -11,7 +11,7 @@ import type {
 } from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
 import { invalidParams } from '../core/errors';
-import { assertRosterModel } from '../llm/roster';
+import { agentDefaultModel, assertAgentModel, assertRosterModel } from '../llm/roster';
 import { defaultRuntimeOf } from '../runtime/registry';
 
 export interface AppendMessageInput {
@@ -97,9 +97,8 @@ export class SessionService {
     const { ctx } = this;
     if (input.model) {
       const runtime = input.runtime ?? defaultRuntimeOf(ctx, input.model);
-      assertRosterModel(ctx, actor, input.model, {
-        agentRuntime: input.kind === 'agent' && runtime !== 'mock',
-      });
+      assertRosterModel(ctx, actor, input.model);
+      if (input.kind === 'agent') assertAgentModel(ctx, input.model, runtime);
     }
     const { repos } = ctx;
     return ctx.db.transaction(() => {
@@ -123,6 +122,13 @@ export class SessionService {
       const member = input.characterId
         ? ctx.service('characters').requireActive(input.characterId)
         : null;
+      // The chat default is not the agent's: Claude Code cannot run a GPT model, so an agent
+      // session takes it only when its runtime can (else Claude Code's own default answers).
+      const inherited = () => {
+        const fallback = member?.model ?? project?.defaultModel ?? ctx.settings.get().defaultModel;
+        if (input.kind !== 'agent') return fallback;
+        return agentDefaultModel(ctx, fallback, input.runtime ?? defaultRuntimeOf(ctx, fallback));
+      };
       const now = ctx.clock.iso();
       const id = ctx.ids.next('session');
       const session = repos.sessions.insert({
@@ -131,11 +137,7 @@ export class SessionService {
         projectId: project?.id ?? null,
         kind: input.kind,
         title: input.title?.trim() ?? '',
-        model:
-          input.model ??
-          member?.model ??
-          project?.defaultModel ??
-          ctx.settings.get().defaultModel,
+        model: input.model ?? inherited(),
         runtime: input.runtime ?? null,
         systemPrompt: input.systemPrompt ?? null,
         workspaceId: input.workspaceId ?? null,

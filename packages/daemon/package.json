@@ -1,6 +1,6 @@
 {
   "name": "@acc/daemon",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "description": "Core Daemon: persistence, event bus, Control API server and all domain modules.",

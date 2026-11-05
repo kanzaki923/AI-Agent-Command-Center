@@ -7,6 +7,7 @@ import { createFakeClient } from '../../test/fakeClient';
 import { attention, card, homeSnapshot, homeTree, iso, message, session, T0 } from '../../test/fixtures';
 import { TooltipProvider } from '../ui/Tooltip';
 import { treeControl } from '../../daemon/tree';
+import { agentModelView } from './FocusHeader';
 import { FocusView } from './FocusView';
 
 // jsdom has no layout: give the virtualized chat a viewport so it renders its rows.
@@ -255,6 +256,48 @@ describe('<FocusView> flow', () => {
     expect(updates).toEqual([{ sessionId: chat.id, model: 'anthropic/claude-opus-5-5' }]);
   });
 
+  it('names the model that answered an agent conversation, and offers only what Claude Code runs', async () => {
+    // Made before the fix: the chat default (GPT) stuck to it, but Claude Code answered.
+    const agent = session({ kind: 'agent', title: '直して', model: 'openai/gpt-6-luna' });
+    const reply = message(agent, {
+      role: 'assistant',
+      model: 'claude-opus-5-5',
+      author: { kind: 'agent', sessionId: agent.id, runId: 'run_1' },
+      content: [{ type: 'text', text: '直しました' }],
+    });
+    useUi.setState({ focusSessionId: agent.id, modelPickerOpen: false });
+    mount({
+      sessions: [agent],
+      nodes: [card({ id: agent.id, title: agent.title, role: 'agent', state: 'idle' })],
+      messages: { [agent.id]: [reply] },
+      extra: {
+        'settings.get': () => ({
+          defaultModel: 'openai/gpt-6-luna',
+          modelRules: [],
+          litellm: { baseUrl: null, hasApiKey: false, apiKeyMasked: null },
+          agentRuntime: { configured: null, effective: 'claude-agent-sdk', detected: 'claude-agent-sdk' },
+        }),
+        'models.list': () => ({
+          models: [
+            { id: 'openai/gpt-6-luna', label: 'GPT-6 Luna', provider: 'chatgpt', price: null },
+            { id: 'anthropic/claude-sonnet-5-5', label: 'Claude Sonnet 5.5', provider: 'anthropic', price: null },
+          ],
+          source: 'providers',
+        }),
+      },
+    });
+    const chip = await screen.findByRole('button', { name: /opus/ });
+    expect(chip.closest('[data-focus-header]')).not.toBeNull();
+    expect(screen.queryByRole('button', { name: /gpt-6-luna/ })).toBeNull();
+    act(() => useUi.getState().setModelPickerOpen(true));
+    await waitFor(() =>
+      expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual([
+        expect.stringContaining('Claude Code の既定'),
+        expect.stringContaining('Claude Sonnet 5.5'),
+      ]),
+    );
+  });
+
   it('shows the answer being written when opened mid-stream', async () => {
     const chat = session({ kind: 'chat', title: 'ブログ記事', state: 'working' });
     const ask = message(chat, { content: [{ type: 'text', text: 'ブログを書いて' }] });
@@ -303,5 +346,41 @@ describe('<FocusView> resume', () => {
     await waitFor(() =>
       expect(fake.calls.find((c) => c.method === 'session.resume')?.params).toMatchObject({ sessionId: s.id, tree: true }),
     );
+  });
+});
+
+describe('agentModelView', () => {
+  const claude = { configured: null, effective: 'claude-agent-sdk', detected: 'claude-agent-sdk' };
+  const settings = { litellm: { baseUrl: null, hasApiKey: false, apiKeyMasked: null }, agentRuntime: claude };
+  const answered = [{ role: 'assistant' as const, model: 'claude-opus-5-5' }];
+
+  it('names Claude Code’s default until something answers, then the model that did', () => {
+    expect(agentModelView({ model: null, runtime: null }, settings, [])).toMatchObject({
+      value: null,
+      fallback: null,
+      autoLabel: 'Claude Code の既定',
+    });
+    expect(agentModelView({ model: null, runtime: null }, settings, answered).fallback).toBe(
+      'claude-opus-5-5',
+    );
+  });
+
+  it('never shows a model Claude Code cannot run as the conversation’s', () => {
+    const v = agentModelView({ model: 'openai/gpt-6.1-sol', runtime: null }, settings, answered);
+    expect(v.value).toBeNull();
+    expect(v.fallback).toBe('claude-opus-5-5');
+    expect(v.allow?.('openai/gpt-6.1-sol')).toBe(false);
+    expect(v.allow?.('anthropic/claude-sonnet-5-5')).toBe(true);
+    expect(agentModelView({ model: 'claude-sonnet-5-5', runtime: null }, settings, []).value).toBe(
+      'claude-sonnet-5-5',
+    );
+  });
+
+  it('says the mock answers when it does, whatever model is named', () => {
+    const v = agentModelView({ model: 'claude-sonnet-5-5', runtime: 'mock' }, settings, [
+      { role: 'assistant', model: 'mock/mock-agent' },
+    ]);
+    expect(v).toMatchObject({ value: null, fallback: 'mock/mock-agent', autoLabel: 'モック' });
+    expect(v.allow).toBeUndefined();
   });
 });

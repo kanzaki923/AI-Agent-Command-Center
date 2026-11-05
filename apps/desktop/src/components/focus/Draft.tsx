@@ -1,4 +1,4 @@
-import type { Project, WorkspaceSpec } from '@acc/protocol';
+import type { Project, SettingsView, WorkspaceSpec } from '@acc/protocol';
 import { ArrowUp, Check, ChevronDown, Layers, MessageSquare } from 'lucide-react';
 import { type ReactNode, useRef, useState } from 'react';
 import { promptConnectionThen } from '../../app/connect';
@@ -6,6 +6,7 @@ import { startConversation } from '../../daemon/actions';
 import { useProjects, useSettings } from '../../daemon/queries';
 import { useConnectionState, useRuntime } from '../../daemon/runtime';
 import { cn } from '../../lib/cn';
+import { agentCanRun } from '../../lib/models';
 import { WORKSPACE_META } from '../../lib/states';
 import { useUi } from '../../store/ui';
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '../ui/Menu';
@@ -19,6 +20,18 @@ const NONE: never[] = [];
 export const DRAFT_KEY = '__new__';
 
 export type DraftPlace = 'none' | 'folder' | 'worktree';
+
+/**
+ * The models an agent conversation can be started on (Claude Code can run), or undefined when
+ * the conversation is a chat or the mock answers (it runs anything).
+ */
+export function agentModelFilter(
+  agent: boolean,
+  settings: Pick<SettingsView, 'litellm' | 'agentRuntime'> | undefined,
+): ((model: string) => boolean) | undefined {
+  if (!agent || settings?.agentRuntime?.effective === 'mock') return undefined;
+  return (m) => agentCanRun(m, settings?.litellm.baseUrl);
+}
 
 /** The workspace a new conversation gets for a place, or why it cannot have it. */
 export function workspaceFor(place: DraftPlace, project: Project | null): WorkspaceSpec | null {
@@ -108,6 +121,9 @@ export function Draft() {
       ...(settings?.defaultModel ? [settings.defaultModel] : []),
     ]),
   ];
+  // Working in a folder or the code, Claude Code answers: only the models it can run.
+  const allow = agentModelFilter(effective !== 'none', settings);
+  const sendModel = model && (!allow || allow(model)) ? model : null;
 
   const send = () => {
     const t = text.trim();
@@ -119,7 +135,7 @@ export function Draft() {
         text: t,
         projectId: project?.id ?? null,
         workspace,
-        model,
+        model: sendModel,
         characterId: memberId,
       });
       setSending(false);
@@ -227,7 +243,15 @@ export function Draft() {
               </>
             )}
             <span className="flex-1" />
-            <ModelPicker value={model} fallback={null} roster={roster} autoLabel="自動" autoHint="設定の名簿に沿って選びます" onChange={setModel} />
+            <ModelPicker
+              value={sendModel}
+              fallback={null}
+              roster={roster}
+              autoLabel="自動"
+              autoHint={allow ? 'Claude Code の既定のモデルで動きます' : '設定の名簿に沿って選びます'}
+              {...(allow ? { allow } : {})}
+              onChange={setModel}
+            />
             <Tooltip content={connected ? '送信（Enter）' : '接続していません'}>
               <span className="inline-flex">
                 <button

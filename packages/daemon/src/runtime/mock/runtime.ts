@@ -6,6 +6,7 @@ import type { AgentEvent, AgentRunInput, AgentRuntime, ApprovalDecision } from '
 import { sleep, throwIfAborted } from '../async';
 import { askReason, ToolGate } from '../gate';
 import { isInside } from '../policy';
+import { MOCK_PREFIX } from '../../llm/mock';
 import { MOCK_RUNTIME_ID } from '../registry';
 import { describeToolActivity, truncate } from '../tools';
 import { conflictedFiles } from '../../workspace/git';
@@ -45,6 +46,9 @@ const DEFAULT_PRICE = { inputPerMTok: 3, outputPerMTok: 15 };
  * the mock carries on like a real agent would (`onDeny`); what the gate asks about goes to
  * the approval flow via `canUseTool`.
  */
+/** The model name the mock agent answers under (it runs no model at all). */
+export const MOCK_AGENT_MODEL = 'mock/mock-agent';
+
 export class MockAgentRuntime implements AgentRuntime {
   readonly id = MOCK_RUNTIME_ID;
   readonly displayName = 'モックエージェント（オフライン）';
@@ -93,6 +97,11 @@ class MockRun implements StepContext {
     throwIfAborted(input.signal);
     const runtimeSessionId = input.resumeSessionId ?? `mock_${input.runId}`;
     yield { type: 'session', runtimeSessionId };
+    // The mock answers, whatever model the conversation names: say so (a mock model stays).
+    yield {
+      type: 'model',
+      model: input.model?.startsWith(MOCK_PREFIX) ? input.model : MOCK_AGENT_MODEL,
+    };
     yield { type: 'activity', text: '依頼内容を確認中' };
 
     const parsed = parseMockPlan(input.prompt);

@@ -38,10 +38,14 @@ const ofType = <T extends AgentEvent['type']>(events: AgentEvent[], type: T) =>
 describe('ClaudeMessageNormalizer (recorded streams)', () => {
   it('maps a streamed reply with thinking to deltas, one message and an estimated cost', () => {
     const { n, events } = normalize(R.TEXT);
-    expect(events.slice(0, 2)).toEqual([
+    expect(events.slice(0, 3)).toEqual([
       { type: 'session', runtimeSessionId: sessionOf(R.TEXT) },
+      // The model that answers, from system/init: said once, not again per API message.
+      { type: 'model', model: 'claude-sonnet-4-5' },
       { type: 'activity', text: 'Claude Code を起動しました' },
     ]);
+    expect(ofType(events, 'model')).toHaveLength(1);
+    expect(n.model).toBe('claude-sonnet-4-5');
     const deltas = ofType(events, 'text_delta');
     expect(new Set(deltas.map((d) => d.messageId)).size).toBe(1);
     expect(ofType(events, 'message')).toEqual([
@@ -83,12 +87,32 @@ describe('ClaudeMessageNormalizer (recorded streams)', () => {
     expect(ofType(events, 'usage')[0]?.usage.costSource).toBe('unknown');
   });
 
+  it('names the model that answers: init, then a change; never a sub-agent or a CLI notice', () => {
+    const n = new ClaudeMessageNormalizer(CWD);
+    const said = (raw: unknown) => ofType(n.push(raw), 'model').map((e) => e.model);
+    const assistant = (model: string, extra: Record<string, unknown> = {}) => ({
+      type: 'assistant',
+      session_id: 's1',
+      message: { id: `m-${model}`, model, content: [{ type: 'text', text: 'はい' }] },
+      ...extra,
+    });
+    expect(said({ type: 'system', subtype: 'init', session_id: 's1', model: 'claude-opus-5-5' })).toEqual([
+      'claude-opus-5-5',
+    ]);
+    expect(said(assistant('claude-opus-5-5'))).toEqual([]);
+    expect(said(assistant('claude-haiku-5-5', { parent_tool_use_id: 'toolu_1' }))).toEqual([]);
+    expect(said(assistant('<synthetic>'))).toEqual([]);
+    expect(said(assistant('claude-sonnet-5-5'))).toEqual(['claude-sonnet-5-5']);
+    expect(n.model).toBe('claude-sonnet-5-5');
+  });
+
   it('maps tool uses and their results, persisting each message before its tool runs', () => {
     const { events } = normalize(R.EDIT_INSIDE);
     const types = events.map((e) => e.type);
     // Per tool: call → activity → message (flushed at message_stop) → result.
     expect(types.filter((t) => t !== 'text_delta')).toEqual([
       'session',
+      'model',
       'activity',
       'tool_call',
       'activity',

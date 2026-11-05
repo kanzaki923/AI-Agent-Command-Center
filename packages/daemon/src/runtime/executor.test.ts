@@ -131,6 +131,7 @@ function fakeController(run: Run, decisions: ApprovalDecision[] = []) {
     activity: [] as (string | null)[],
     decisions: [] as Parameters<RunController['recordToolDecision']>[0][],
     permission: [] as Parameters<RunController['setPermission']>[0][],
+    models: [] as string[],
   };
   const ctl: RunController = {
     run,
@@ -148,6 +149,7 @@ function fakeController(run: Run, decisions: ApprovalDecision[] = []) {
     reserveBudget: () => ({ amountUsd: 0, settle: (u) => calls.usage.push(u), cancel: () => {} }),
     assertBudgetLeft: () => {},
     setActivity: (t) => calls.activity.push(t),
+    setModel: (m) => calls.models.push(m),
     recordToolDecision: (d) => calls.decisions.push(d),
     setPermission: (p) => calls.permission.push(p),
   };
@@ -329,9 +331,9 @@ describe('agent executor', () => {
     expect(calls.permission).toEqual([{ profile: 'careful', gate: 'rules', note: null }]);
     expect(calls.decisions.map((x) => [x.toolName, x.decision])).toEqual([['Bash', 'asked']]);
     expect(existsSync(join(dir, 'ran.txt'))).toBe(false);
-    expect(fakes.commits).toHaveLength(1);
-    // The fake commitAll always returns a sha; the title comes from the message.
-    expect(fakes.commits[0]!.message.startsWith('スクリプトを動かして')).toBe(true);
+    // A conversation is not committed; its change is recorded under the message's first line.
+    expect(fakes.commits).toEqual([]);
+    expect(fakes.artifacts).toEqual([expect.objectContaining({ title: 'スクリプトを動かして' })]);
   });
 
   it('runs without asking in the autonomous profile (the default) and records the decisions', async () => {
@@ -398,6 +400,35 @@ describe('agent executor', () => {
     expect(inputs).toHaveLength(2);
   });
 
+  it('names the model that answered on messages and the run, not the one asked for', async () => {
+    const teller: AgentRuntime = {
+      id: 'teller',
+      displayName: 'teller',
+      available: async () => ({ ok: true }),
+      async *run(): AsyncGenerator<AgentEvent> {
+        yield { type: 'session', runtimeSessionId: 'teller-1' };
+        // Claude Code runs its own default for a model it cannot drive, and says which.
+        yield { type: 'model', model: 'claude-opus-5-5' };
+        yield { type: 'message', messageId: 'm1', role: 'assistant', content: [{ type: 'text', text: 'はい' }] };
+      },
+    };
+    const { ctx, run } = await setup({ message: 'やって', runtime: 'teller' });
+    ctx.service('runtimes').register(teller);
+    const { ctl, calls } = fakeController({ ...run, model: 'openai/gpt-6.1-sol' });
+    await createAgentExecutor(ctx)(ctl);
+    expect(calls.models).toEqual(['claude-opus-5-5']);
+    expect(calls.messages.map((m) => m.model)).toEqual(['claude-opus-5-5']);
+
+    // The mock runs no model at all: it says so instead of borrowing the conversation's.
+    useFastMock(ctx);
+    const mock = fakeController({ ...run, id: ctx.ids.next('run'), runtime: 'mock', model: 'openai/gpt-6.1-sol' });
+    await createAgentExecutor(ctx)(mock.ctl);
+    expect(mock.calls.models).toEqual(['mock/mock-agent']);
+    expect(new Set(mock.calls.messages.filter((m) => m.role === 'assistant').map((m) => m.model))).toEqual(
+      new Set(['mock/mock-agent']),
+    );
+  });
+
   it('fails clearly without a workspace, instructions or an available runtime', async () => {
     const { ctx, run } = await setup({ message: 'やって' });
     await expect(
@@ -433,6 +464,53 @@ describe('agent executor', () => {
     await expect(p).rejects.toThrow('run cancelled');
     expect(fakes.commits).toEqual([]);
   });
+
+  it('leaves a conversation turn uncommitted and records the change as a diff', async () => {
+    const { ctx, run } = await setup({ message: 'バージョンを 5.5 に上げて\n理由は古いから' });
+    useFastMock(ctx);
+    const { ctl } = fakeController(run);
+    await createAgentExecutor(ctx)(ctl);
+    expect(fakes.commits).toEqual([]);
+    expect(fakes.artifacts).toEqual([
+      expect.objectContaining({
+        workspaceId: fakes.workspaceId,
+        title: 'バージョンを 5.5 に上げて',
+        runId: run.id,
+        taskId: null,
+      }),
+    ]);
+  });
+
+  it('records no new diff for a conversation turn that changed nothing', async () => {
+    const { ctx, run } = await setup({ message: '今どういう状況？' });
+    useFastMock(ctx);
+    // The previous turn's change, as the real artifacts service records it.
+    ctx.repos.artifacts.insert({
+      id: ctx.ids.next('artifact'),
+      kind: 'diff',
+      projectId: run.projectId,
+      sessionId: run.sessionId,
+      runId: null,
+      taskId: null,
+      workspaceId: fakes.workspaceId,
+      title: '前の変更',
+      data: {
+        patch: (await fakes.workspaces.diff(fakes.workspaceId)).patch,
+        baseRef: 'main',
+        headRef: 'acc/test',
+        stats: { files: 1, additions: 3, deletions: 0 },
+        files: [{ path: 'notes/x.md', status: 'added', additions: 3, deletions: 0 }],
+      },
+      createdBy: HUMAN,
+      createdAt: ctx.clock.iso(),
+    });
+    const { ctl } = fakeController(run);
+    await createAgentExecutor(ctx)(ctl);
+    expect(fakes.commits).toEqual([]);
+    expect(fakes.artifacts).toEqual([]);
+  });
+  // An integrator's run (no Task, in the integration worktree) still commits: covered with
+  // real git in integration/resolution.test.ts, whose integration resumes only on that commit.
 });
 
 describe('runtimes service', () => {

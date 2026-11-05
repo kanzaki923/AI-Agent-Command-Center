@@ -41,3 +41,14 @@ export function priceText(info: Pick<ModelInfo, 'provider' | 'price'> | undefine
   const parts = priceParts(info);
   return parts ? `${parts[0]} / ${parts[1]}` : '—';
 }
+
+/**
+ * Whether the agent runtime (Claude Code) can run `model`, as the daemon decides it
+ * (`agentCanUse`): through LiteLLM any of its models, else a Claude model. The mocks run
+ * anything. Other models it would quietly replace with its own default.
+ */
+export function agentCanRun(model: string, litellmBaseUrl: string | null | undefined): boolean {
+  if (model.startsWith('mock/')) return true;
+  if (litellmBaseUrl) return !/^(anthropic|openai)\//.test(model);
+  return /claude|opus|sonnet|haiku/i.test(model);
+}

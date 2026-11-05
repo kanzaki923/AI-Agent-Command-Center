@@ -401,7 +401,8 @@ export async function renameSession(
 export async function setSessionModel(
   rt: AppRuntime,
   session: Session,
-  model: string,
+  /** null: no model of its own (an agent conversation: Claude Code's default). */
+  model: string | null,
 ): Promise<void> {
   const prev = session.model;
   patchIn<Session>(rt.queryClient, qk.sessions, session.id, (s) => ({ ...s, model }));

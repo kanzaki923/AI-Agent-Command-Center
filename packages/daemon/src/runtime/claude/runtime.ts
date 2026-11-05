@@ -111,7 +111,7 @@ export const AUTO_MODE_SETTINGS = {
   environment: [
     '$defaults',
     'You are an unattended worker agent of AI Agent Command Center. You work in an isolated git worktree (the current directory) that the daemon created for this task.',
-    'Nobody answers questions during the run. The daemon commits the worktree when the run ends and integrates it into the protected branch only after a human approves. Pushing, publishing or changing remotes is never needed.',
+    'Nobody answers questions during the run. The daemon takes the changes in the worktree when the run ends and integrates them into the protected branch only after a human approves. Pushing, publishing or changing remotes is never needed.',
     'Tests, builds, linters and installing dependencies from the manifest inside the worktree are the normal work of this agent.',
   ],
   hard_deny: [

@@ -2,7 +2,8 @@ import type { ContentPart } from '@acc/protocol';
 import { defineMethod } from '../../api/registry';
 import type { DaemonContext } from '../../core/context';
 import { conflict, invalidParams } from '../../core/errors';
-import { assertRosterModel } from '../../llm/roster';
+import { assertAgentModel, assertRosterModel } from '../../llm/roster';
+import { defaultRuntimeOf } from '../../runtime/registry';
 import { ACTIVE_RUN_STATUSES } from '../../runs/manager';
 import { forwardedParts } from '../forward';
 import { sessionScope } from './shared';
@@ -36,9 +37,10 @@ export function sessionSend(ctx: DaemonContext) {
           throw conflict('アーカイブ済みのセッションには送信できません');
         }
         if (p.model) {
-          assertRosterModel(ctx, call.actor, p.model, {
-            agentRuntime: session.kind === 'agent' && session.runtime !== 'mock',
-          });
+          assertRosterModel(ctx, call.actor, p.model);
+          if (session.kind === 'agent') {
+            assertAgentModel(ctx, p.model, session.runtime ?? defaultRuntimeOf(ctx, p.model));
+          }
         }
         const own: ContentPart[] =
           typeof p.content === 'string' ? [{ type: 'text', text: p.content }] : p.content;
