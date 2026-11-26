@@ -300,6 +300,18 @@ CREATE INDEX messages_aside_character ON messages(json_extract(data, '$.meta.cha
         },
       }),
 
+      // The conversation's model asks; only the daemon's sorting writes (no text goes in).
+      defineMethod('character.remember', {
+        handler: (_p, call) => {
+          if (call.actor.kind !== 'agent') {
+            throw invalidParams('記憶の整理を頼めるのは、メンバーのいる会話のモデルだけです');
+          }
+          const session = ctx.repos.sessions.require(call.actor.sessionId);
+          if (!session.characterId) throw invalidParams('この会話にはメンバーがいません');
+          return digest.request(session.characterId);
+        },
+      }),
+
       defineMethod('character.digestStatus', {
         handler: (p) => {
           if (!service.get(p.characterId)) throw notFound('character', p.characterId);

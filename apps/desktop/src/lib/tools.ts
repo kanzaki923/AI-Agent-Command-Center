@@ -109,6 +109,8 @@ export function describeControlCall(
       return target ? `「${shorten(target, 32)}」を再開` : '再開';
     case 'attention.respond':
       return '質問に回答';
+    case 'character.remember':
+      return '覚えておく';
     case 'artifact.review':
       return s('decision') === 'accept' ? '成果物を採用' : 'やり直しを依頼';
     case 'artifact.read':

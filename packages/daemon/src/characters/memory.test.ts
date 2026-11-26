@@ -2,7 +2,7 @@ import type { ChatRequest } from '../llm/types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { HUMAN, type TestDaemonNoServer, agentActor, createTestDaemon } from '../testing';
 import { createManualClock } from '../core/clock';
-import { DIGEST_IDLE_MS, mockDigest, parseDigestReply } from './digest';
+import { DIGEST_IDLE_MS, DIGEST_MAX_WAIT_MS, DIGEST_REQUEST_GAP_MS, mockDigest, parseDigestReply } from './digest';
 import { memoryWhen } from './frame';
 
 const cleanups: (() => unknown)[] = [];
@@ -296,6 +296,92 @@ describe('when sorting happens', () => {
       '雨の日は昼寝',
     ]);
     expect(digest.due(haku.id)).toBe(false);
+  });
+});
+
+describe('sorting keeps up with daily use on its own', () => {
+  it('a member talked to without a break is sorted at the end of a turn once hours have passed', async () => {
+    const clock = createManualClock(Date.UTC(2026, 10, 5, 1));
+    const d = await createTestDaemon({ clock });
+    cleanups.push(() => d.cleanup());
+    d.ctx.service('llm').mock.chunkDelayMs = 0;
+    const { haku } = await setup(d);
+    spy(d, 'mock/talk');
+    sorter(d, { self: [{ text: '雨の日は昼寝' }] });
+    const digest = d.ctx.service('memoryDigest');
+    await talk(d, haku.id, ['雨だね', 'なにしよう']);
+    expect(digest.due(haku.id)).toBe(false); // just talked, and not long since it was added
+    clock.advance(DIGEST_MAX_WAIT_MS - DIGEST_IDLE_MS + 120_000);
+    await talk(d, haku.id, ['まだいる？']);
+    clock.advance(DIGEST_IDLE_MS - 60_000);
+    await talk(d, haku.id, ['ずっと話してる']);
+    // Never quiet for 30 minutes, but hours since it was added: sorted between turns.
+    expect(digest.overdue(haku.id)).toBe(true);
+    expect(digest.due(haku.id)).toBe(true);
+    await digest.check(haku.id);
+    expect((await d.call(HUMAN, 'character.get', { characterId: haku.id })).memories.map((m) => m.text)).toEqual([
+      '雨の日は昼寝',
+    ]);
+    // Just sorted: back to waiting for quiet.
+    expect(digest.overdue(haku.id)).toBe(false);
+  });
+
+  it('a roster kept for Claude Code alone is no model to sort with', async () => {
+    const d = await daemon();
+    await d.call(HUMAN, 'settings.update', { modelRules: [{ model: 'claude-sonnet-5-5', when: '' }] });
+    const haku = await d.call(HUMAN, 'character.create', { name: 'ハク' });
+    expect(await d.call(HUMAN, 'character.digestStatus', { characterId: haku.id })).toMatchObject({
+      model: 'mock/memory',
+      offline: true,
+    });
+  });
+});
+
+describe('a member asked to remember something asks for a sorting', () => {
+  it('has the tool, and asking sorts even a little at the end of the turn', async () => {
+    const clock = createManualClock(Date.UTC(2026, 10, 5, 1));
+    const d = await createTestDaemon({ clock });
+    cleanups.push(() => d.cleanup());
+    d.ctx.service('llm').mock.chunkDelayMs = 0;
+    const { haku } = await setup(d);
+    const seen = spy(d, 'mock/talk', 'わかった、覚えておくね');
+    const sorted = sorter(d, { you: [{ text: '会議は火曜' }] });
+    const s = await talk(d, haku.id, ['会議は火曜って覚えておいて']);
+    // The member's model can ask (and nothing else): the tool is there from the first turn.
+    expect(seen[0]!.tools?.map((t) => t.name)).toEqual(['character__remember']);
+    const run = d.ctx.repos.runs.find({ where: { session_id: s.id } })[0]!;
+    const digest = d.ctx.service('memoryDigest');
+    expect(digest.due(haku.id)).toBe(false); // two lines, just talked
+    const asked = await d.call(agentActor(s.id, run.id), 'character.remember', {});
+    expect(asked.accepted).toBe(true);
+    expect(digest.due(haku.id)).toBe(true);
+    await digest.check(haku.id);
+    expect(sorted).toHaveLength(1);
+    expect(userOf(sorted[0]!)).toContain('会議は火曜って覚えておいて');
+    expect((await d.call(HUMAN, 'character.get', { characterId: haku.id })).memories.map((m) => m.text)).toEqual([
+      '会議は火曜',
+    ]);
+    // Asking every turn does not sort every turn.
+    await talk(d, haku.id, ['あとこれも']);
+    await d.call(agentActor(s.id, run.id), 'character.remember', {});
+    expect(digest.due(haku.id)).toBe(false);
+    clock.advance(DIGEST_REQUEST_GAP_MS);
+    expect(digest.due(haku.id)).toBe(true);
+  });
+
+  it('only a member conversation can ask, and with memory off it says so', async () => {
+    const d = await daemon();
+    const { haku } = await setup(d);
+    spy(d, 'mock/talk');
+    const plain = await d.call(HUMAN, 'session.create', { model: 'mock/talk', title: '相談' });
+    const r = await d.call(HUMAN, 'session.send', { sessionId: plain.id, content: 'こんにちは' });
+    await d.ctx.service('runs').waitForEnd(r.runId!);
+    await expect(d.call(agentActor(plain.id, r.runId!), 'character.remember', {})).rejects.toThrow();
+    await expect(d.call(HUMAN, 'character.remember', {})).rejects.toThrow();
+    const s = await talk(d, haku.id, ['覚えておいて']);
+    const run = d.ctx.repos.runs.find({ where: { session_id: s.id } })[0]!;
+    await d.call(HUMAN, 'settings.update', { members: { memory: false } });
+    expect((await d.call(agentActor(s.id, run.id), 'character.remember', {})).accepted).toBe(false);
   });
 });
 

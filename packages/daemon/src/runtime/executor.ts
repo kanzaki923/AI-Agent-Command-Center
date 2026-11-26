@@ -27,6 +27,7 @@ import { classifyToolRisk } from './risk';
 import { RuntimeSessionStore } from './state';
 import { approvalDetailFor, approvalTitleFor, truncate } from './tools';
 import { ruleMatcher } from './rules';
+import { ensureMemberGrant } from '../characters/remember';
 import { ensureLeadGrant } from '../orchestrator/grant';
 import { spendCapUsd } from '../runs/usage';
 import {
@@ -73,6 +74,7 @@ async function executeAgentRun(
   const readRoots = agentReadRoots(ctx, run, workspace);
   // A top-level code conversation may split its work into children (tools below follow it).
   if (ctx.hasService('policy')) ensureLeadGrant(ctx, session, workspace);
+  ensureMemberGrant(ctx, session);
 
   const runtimes = ctx.service('runtimes');
   const runtimeId = run.runtime || session.runtime || runtimes.defaultId(session.model);

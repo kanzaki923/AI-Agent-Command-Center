@@ -1,3 +1,4 @@
+import type { Settings } from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
 import { dayOf, fromMicro } from '../cost/ledger';
 import { isFastModel } from './autoModel';
@@ -36,7 +37,9 @@ export function cheapestModel(
 export function backgroundModel(ctx: DaemonContext, offline: string): string {
   const s = ctx.settings.get();
   if (s.background.model) return s.background.model;
-  const roster = rosterModels(s).filter((m) => !m.startsWith(MOCK_PREFIX));
+  // Only a model the gateway can call: a roster kept for Claude Code (its login is not the
+  // gateway's) would otherwise fail every sorting, out of sight.
+  const roster = rosterModels(s).filter((m) => gatewayCanCall(s, m));
   const pricing = ctx.hasService('pricing') ? ctx.service('pricing').lookup : null;
   // Signed in with ChatGPT, the OpenAI models run on the plan.
   const plan = !!s.providers.openai.chatgpt;
@@ -47,6 +50,24 @@ export function backgroundModel(ctx: DaemonContext, offline: string): string {
       (m) => pricing?.(m)?.inputPerMTok ?? null,
     ) ?? offline
   );
+}
+
+/**
+ * Whether the gateway has a way to call the model: a connection for its prefix (LiteLLM for
+ * plain names, an Anthropic key, an OpenAI key or a ChatGPT sign-in). The mocks are not a way.
+ */
+export function gatewayCanCall(s: Settings, model: string): boolean {
+  if (model.startsWith(MOCK_PREFIX)) return false;
+  switch (providerOf(model)) {
+    case 'anthropic':
+      return !!s.providers.anthropic.apiKey;
+    case 'openai':
+      return !!s.providers.openai.apiKey || !!s.providers.openai.chatgpt;
+    case 'litellm':
+      return !!s.litellm.baseUrl?.trim();
+    default:
+      return false;
+  }
 }
 
 /** What background work cost today (USD). */

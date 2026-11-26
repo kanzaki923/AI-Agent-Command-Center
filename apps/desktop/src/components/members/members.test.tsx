@@ -1,7 +1,7 @@
 import type { Character, CharacterDetail, CharacterMemory, DigestStatus, Session } from '@acc/protocol';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ASK_TIMEOUT_MS, askMember, digestLine, mentionOf } from '../../daemon/members';
+import { ASK_TIMEOUT_MS, askMember, digestProblem, mentionOf } from '../../daemon/members';
 import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
 import { useToasts } from '../../store/toast';
 import { useUi } from '../../store/ui';
@@ -509,7 +509,7 @@ describe('a remark in the conversation', () => {
   });
 });
 
-describe('how sorting memories stands, on the page of a member', () => {
+describe('memories sort themselves; the page speaks only when they cannot', () => {
   const NOW = Date.parse('2026-11-26T10:00:00Z');
   const status = (over: Partial<DigestStatus> = {}): DigestStatus => ({
     enabled: true,
@@ -527,49 +527,30 @@ describe('how sorting memories stands, on the page of a member', () => {
     ...over,
   });
 
-  it('says first what holds it back, then what there is and when', () => {
-    const line = (over: Partial<DigestStatus>) => digestLine(status(over), NOW);
-    expect(line({ enabled: false })).toMatchObject({ text: '記憶はオフ', tone: 'muted' });
-    expect(line({ offline: true })).toMatchObject({ text: '整理のモデルがありません', tone: 'warn' });
+  it('says nothing while sorting works, and what holds it back when something does', () => {
+    const problem = (over: Partial<DigestStatus>) => digestProblem(status(over), NOW);
+    expect(problem({})).toBeNull();
+    expect(problem({ newLines: 2, enough: false, quietAt: new Date(NOW + 60_000).toISOString() })).toBeNull();
+    expect(problem({ enabled: false })).toBeNull(); // the memories already say 記憶はオフ
+    expect(problem({ offline: true })).toMatchObject({ text: '整理のモデルがありません', tone: 'warn' });
     const retry = new Date(NOW + 30 * 60_000).toISOString();
-    expect(line({ lastError: '接続できませんでした', retryAt: retry })).toMatchObject({
-      text: '失敗: 接続できませんでした',
-      tone: 'fail',
-    });
-    // A failure that no longer holds anything back is not shown as one.
-    expect(line({ lastError: '接続できませんでした' }).tone).not.toBe('fail');
-    expect(line({ limitReached: true })).toMatchObject({ text: '今日の上限に達しました', tone: 'warn' });
-    expect(line({ newLines: 0, enough: false }).text).toBe('新しく覚えることはありません');
-    expect(line({ newLines: 2, enough: false }).text).toBe('まだ少なめ（2 行）');
-    const quiet = new Date(NOW + 12 * 60_000).toISOString();
-    expect(line({ quietAt: quiet }).text).toMatch(/ごろ整理$/);
-    expect(line({}).text).toBe('まもなく整理');
+    const failed = problem({ lastError: '接続できませんでした', retryAt: retry });
+    expect(failed).toMatchObject({ text: '記憶を整理できていません', tone: 'fail' });
+    expect(failed!.hint).toContain('接続できませんでした');
+    // A failure that no longer holds anything back is not shown.
+    expect(problem({ lastError: '接続できませんでした' })).toBeNull();
+    expect(problem({ limitReached: true })).toMatchObject({ tone: 'warn' });
   });
 
-  it('shows the line and sorts now on demand, saying how it went', async () => {
+  it('has no button to sort: nothing on the page while it just works', async () => {
     useUi.setState({ mode: 'member', memberId: HAKU.id });
-    let calls = 0;
-    mount(<MemberPage />, {
-      extra: {
-        'character.digestStatus': () => status({ offline: false, newLines: 2, enough: false }),
-        'character.digest': () => {
-          calls++;
-          return { outcome: 'nothing_new' };
-        },
-      },
-    });
-    const block = await screen.findByText('まだ少なめ（2 行）');
-    expect(block.closest('[data-digest-state]')).not.toBeNull();
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: '今すぐ整理' }));
-    });
-    expect(calls).toBe(1);
-    await waitFor(() =>
-      expect(useToasts.getState().toasts.at(-1)?.title).toBe('新しく覚えることはありませんでした'),
-    );
+    mount(<MemberPage />, { extra: { 'character.digestStatus': () => status() } });
+    await screen.findByLabelText('覚えたこと');
+    expect(screen.queryByRole('button', { name: '今すぐ整理' })).toBeNull();
+    expect(document.querySelector('[data-digest-problem]')).toBeNull();
   });
 
-  it('opens the settings when there is no model to sort with', async () => {
+  it('opens the settings from the line when there is no model to sort with', async () => {
     useUi.setState({ mode: 'member', memberId: HAKU.id, settingsOpen: false });
     mount(<MemberPage />, { extra: { 'character.digestStatus': () => status({ offline: true }) } });
     fireEvent.click(await screen.findByText('整理のモデルがありません'));

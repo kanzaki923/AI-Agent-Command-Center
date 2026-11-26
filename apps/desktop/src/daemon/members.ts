@@ -1,8 +1,8 @@
-import type { Character, CharacterDetail, DigestOutcome, DigestStatus, ParamsInput } from '@acc/protocol';
+import type { Character, CharacterDetail, DigestStatus, ParamsInput } from '@acc/protocol';
 import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { formatTimestamp } from '../lib/format';
-import { toast, toastError } from '../store/toast';
+import { toastError } from '../store/toast';
 import { useUi } from '../store/ui';
 import { qk } from './keys';
 import { type AppRuntime, useRuntime } from './runtime';
@@ -193,65 +193,36 @@ export function useDigestStatus(id: string | null) {
   });
 }
 
-const DIGEST_TOAST: Record<DigestOutcome, string> = {
-  done: '整理しました',
-  nothing_new: '新しく覚えることはありませんでした',
-  off: 'メンバーの記憶はオフです',
-  limit: '今日の裏の整理の上限に達しています',
-  rejected: '一度に忘れすぎるため、今回の整理は使いませんでした',
-  failed: '整理できませんでした',
-};
-
-/** Sort a member's memories now (character.digest), and say how it went. */
-export async function digestNow(rt: AppRuntime, member: Pick<Character, 'id' | 'name'>): Promise<void> {
-  try {
-    const { outcome } = await rt.client.call('character.digest', { characterId: member.id });
-    refresh(rt);
-    const why =
-      outcome === 'failed'
-        ? (await rt.client.call('character.digestStatus', { characterId: member.id }).catch(() => null))
-            ?.lastError
-        : null;
-    toast({
-      title: DIGEST_TOAST[outcome],
-      detail: why ?? undefined,
-      tone: outcome === 'failed' ? 'error' : outcome === 'done' ? 'success' : 'info',
-      sticky: false,
-    });
-  } catch (err) {
-    toastError(err, '整理できませんでした');
-  }
-}
-
-export type DigestTone = 'muted' | 'warn' | 'fail';
+export type DigestTone = 'warn' | 'fail';
 
 /**
- * One line for a member's page: why nothing is remembered yet, or when it will be. The first
- * thing that holds sorting back wins (off, no model, a failure, a limit), then what there is to
- * read and when the member has been quiet long enough.
+ * What keeps a member from remembering, in one line, or null while sorting just works (it then
+ * happens on its own and the page says nothing): no model to sort with, a failure that holds
+ * it back, or today's limit.
  */
-export function digestLine(
+export function digestProblem(
   s: DigestStatus,
   now: number,
-): { text: string; tone: DigestTone; hint?: string } {
-  const at = (iso: string) => formatTimestamp(iso, now);
-  if (!s.enabled) return { text: '記憶はオフ', tone: 'muted', hint: '設定の「メンバーの記憶」でオンにできます' };
+): { text: string; tone: DigestTone; hint: string } | null {
+  if (!s.enabled) return null; // the memories already say 記憶はオフ
   if (s.offline) {
     return {
       text: '整理のモデルがありません',
       tone: 'warn',
-      hint: '名簿に呼べるモデルがないため、ほとんど覚えられません。設定の「裏の整理」でモデルを選んでください',
+      hint: '呼べるモデルがないため、ほとんど覚えられません。設定の「裏の整理」でモデルを選んでください',
     };
   }
   const waitUntil = [s.retryAt, s.pausedUntil].filter((x): x is string => !!x).sort().at(-1);
   if (s.lastError && waitUntil) {
-    return { text: `失敗: ${s.lastError}`, tone: 'fail', hint: `${at(waitUntil)} にもう一度試します（${s.model}）` };
+    return {
+      text: '記憶を整理できていません',
+      tone: 'fail',
+      hint: `${s.lastError}
+${formatTimestamp(waitUntil, now)} にもう一度試します（${s.model}）`,
+    };
   }
-  if (s.limitReached) return { text: '今日の上限に達しました', tone: 'warn', hint: '設定の「裏の整理」の上限か、1 日の上限です' };
-  if (s.newLines === 0) return { text: '新しく覚えることはありません', tone: 'muted' };
-  if (!s.enough) return { text: `まだ少なめ（${s.newLines} 行）`, tone: 'muted', hint: 'もう少し話すと整理します' };
-  if (s.quietAt) {
-    return { text: `${at(s.quietAt)} ごろ整理`, tone: 'muted', hint: 'どの会話でも 30 分話さなかったら整理します' };
+  if (s.limitReached) {
+    return { text: '今日は記憶を整理できません', tone: 'warn', hint: '設定の「裏の整理」の上限か、1 日の上限に達しました' };
   }
-  return { text: 'まもなく整理', tone: 'muted' };
+  return null;
 }

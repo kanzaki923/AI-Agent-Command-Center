@@ -20,6 +20,20 @@ import { type CharacterService, sceneIn } from './service';
 
 /** A member is sorted out once it has been quiet this long everywhere (past a prompt cache). */
 export const DIGEST_IDLE_MS = 30 * 60_000;
+/**
+ * A member that never goes quiet (talked to all day) is sorted anyway once this long has
+ * passed since its last sorting, at the end of a turn: memories keep up with daily use, and
+ * the conversation's prompt cache is given up at most once in this long.
+ */
+export const DIGEST_MAX_WAIT_MS = 3 * 60 * 60_000;
+/** The end of a turn of an overdue member looks again this soon (the turn has settled). */
+export const DIGEST_OVERDUE_DELAY_MS = 5_000;
+/**
+ * A member's conversation may ask for a sorting (`character.remember`, "覚えておいて"): it runs
+ * once the turn has ended, but not sooner than this after the previous sorting, so a model
+ * that asks every turn does not sort every turn.
+ */
+export const DIGEST_REQUEST_GAP_MS = 10 * 60_000;
 /** At start, each member is looked at once after this long. */
 export const DIGEST_START_DELAY_MS = 60_000;
 /** After a failed sorting, the member waits this long before the next try. */
@@ -219,6 +233,8 @@ export class MemoryDigest {
   private readonly failedAt = new Map<string, number>();
   /** Why the newest failed sorting of a member failed (for its page; not kept across restarts). */
   private readonly failedWhy = new Map<string, string>();
+  /** Members whose conversation asked for a sorting (character.remember), until it runs. */
+  private readonly requested = new Set<string>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly backoff: BackgroundBackoff;
   private closed = false;
@@ -243,7 +259,7 @@ export class MemoryDigest {
       if (e.type !== 'run.status_changed' || !isTerminalRunStatus(e.payload.to)) return;
       const run = ctx.repos.runs.get(e.payload.runId);
       const characterId = run ? ctx.repos.sessions.get(run.sessionId)?.characterId : null;
-      if (characterId) this.touch(characterId);
+      if (characterId) this.touch(characterId, this.nextLook(characterId));
     });
     // What was left when the daemon stopped: each member is looked at once, a little later.
     for (const c of this.members.list()) this.touch(c.id, DIGEST_START_DELAY_MS);
@@ -274,10 +290,42 @@ export class MemoryDigest {
   async check(characterId: string): Promise<void> {
     if (this.closed || !this.ctx.settings.get().members.memory || !this.backoff.open()) return;
     if (!this.due(characterId)) return;
-    await this.digest(characterId).catch(() => undefined);
+    // Asked for: any amount is worth a sorting (the person said what to remember).
+    const force = this.requested.delete(characterId);
+    await this.digest(characterId, { force }).catch(() => undefined);
   }
 
-  /** Quiet everywhere for long enough, not failed lately, and something new to read. */
+  /**
+   * The member's conversation asks for a sorting (`character.remember`): it runs once the turn
+   * has ended (and not sooner than DIGEST_REQUEST_GAP_MS after the previous one). It only asks:
+   * what is kept is decided by the sorting, from what was said, under the usual guards.
+   */
+  request(characterId: string): { accepted: boolean; message: string } {
+    if (!this.ctx.settings.get().members.memory) {
+      return { accepted: false, message: 'メンバーの記憶はオフです。覚えられないことを、そのまま伝えてください。' };
+    }
+    this.requested.add(characterId);
+    this.touch(characterId, this.nextLook(characterId));
+    return {
+      accepted: true,
+      message:
+        'このターンのあとで、会話から記憶を整理します。何を覚えるかはアプリの整理が決めます。覚えておくと伝えてかまいません。',
+    };
+  }
+
+  /** How soon to look again after a turn: asked for, overdue, or once it has been quiet. */
+  private nextLook(characterId: string): number {
+    if (this.requested.has(characterId)) {
+      const gap = this.lastSortedAt(characterId) + DIGEST_REQUEST_GAP_MS - this.ctx.clock.now();
+      return Math.max(DIGEST_OVERDUE_DELAY_MS, gap);
+    }
+    return this.overdue(characterId) ? DIGEST_OVERDUE_DELAY_MS : DIGEST_IDLE_MS;
+  }
+
+  /**
+   * Quiet everywhere for long enough (or overdue: talked to without a break for hours), between
+   * turns, not failed lately, and something new to read.
+   */
   due(characterId: string): boolean {
     const now = this.ctx.clock.now();
     const failed = this.failedAt.get(characterId);
@@ -285,7 +333,11 @@ export class MemoryDigest {
     const sessions = this.members.sessionsOf(characterId, 500);
     if (sessions.some((s) => s.activeRunId)) return false;
     const last = Math.max(0, ...sessions.map((s) => Date.parse(s.lastActivityAt)));
-    if (now - last < DIGEST_IDLE_MS) return false;
+    if (this.requested.has(characterId)) {
+      // Asked for: between turns, once the gap since the previous sorting has passed.
+      return now - this.lastSortedAt(characterId) >= DIGEST_REQUEST_GAP_MS && this.material(characterId).lines.length > 0;
+    }
+    if (now - last < DIGEST_IDLE_MS && !this.overdue(characterId)) return false;
     const m = this.material(characterId);
     return m.lines.length >= DIGEST_MIN_LINES || m.personAtWork > 0;
   }
@@ -471,6 +523,21 @@ export class MemoryDigest {
         : null,
       lastError: this.failedWhy.get(characterId) ?? null,
     };
+  }
+
+  /** Hours since the member was last sorted (or added) without a sorting: do not wait for quiet. */
+  overdue(characterId: string): boolean {
+    return this.ctx.clock.now() - this.lastSortedAt(characterId, true) >= DIGEST_MAX_WAIT_MS;
+  }
+
+  /** When the member was last sorted (ms), else 0, or when it was added with `orAdded`. */
+  private lastSortedAt(characterId: string, orAdded = false): number {
+    const row = this.ctx.db.get<{ ts: string }>(
+      "SELECT ts FROM character_digests WHERE character_id = ? AND outcome IN ('done', 'rejected') ORDER BY id DESC LIMIT 1",
+      [characterId],
+    );
+    const since = row?.ts ?? (orAdded ? this.members.get(characterId)?.createdAt : undefined);
+    return since ? Date.parse(since) : orAdded ? Number.POSITIVE_INFINITY : 0;
   }
 
   /** The model of a sorting (`settings.background`). */

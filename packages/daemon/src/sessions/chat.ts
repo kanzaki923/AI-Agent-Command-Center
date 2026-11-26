@@ -1,5 +1,6 @@
 import type { Message, Run, Session } from '@acc/protocol';
 import type { RunExecutor } from '../contracts';
+import { ensureMemberGrant } from '../characters/remember';
 import type { DaemonContext } from '../core/context';
 import { rememberPastRuns } from '../assistant/history';
 import { MOCK_RIGHT_HAND_MODEL } from '../assistant/permissions';
@@ -71,6 +72,8 @@ export function createChatExecutor(ctx: DaemonContext): RunExecutor {
     const inbox = ctx.hasService('supervisorInbox') ? ctx.service('supervisorInbox') : null;
     inbox?.drain(run.id);
     const history = chatHistory(ctx, run, session);
+    // A conversation with a member may ask for its memories to be sorted (the tool follows).
+    ensureMemberGrant(ctx, session);
     const tools = apiTools(ctx, ctl.actor);
     // The assistant remembers past runs by what was said (assistant/history.ts). Its fixed
     // prompt comes first and the status of this run last, after the history: the fixed

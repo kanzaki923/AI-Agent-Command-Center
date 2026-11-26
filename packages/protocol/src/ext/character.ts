@@ -269,6 +269,14 @@ export const characterMethods = {
     tool: false,
     mutates: true,
   },
+  'character.remember': {
+    params: params({}),
+    result: z.object({ accepted: z.boolean(), message: z.string() }),
+    description:
+      "Ask the app to sort this conversation into your memories (the member you are) soon after this turn, for example when the person asks you to remember something. You cannot write a memory yourself: the app decides what to keep from what was said, so tell the person you will keep it in mind.",
+    tool: true,
+    mutates: true,
+  },
   'character.digestStatus': {
     params: params({ characterId: CharacterId }),
     result: DigestStatus,
