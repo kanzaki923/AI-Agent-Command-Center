@@ -29,7 +29,15 @@ export interface FakeUsage {
   output_tokens?: number;
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
+  /**
+   * The request's cost as LiteLLM reports it on a stream: put on `message_delta.usage.cost`
+   * when the request opts in with `x-litellm-include-cost-in-streaming-usage: true`.
+   */
+  cost?: number;
 }
+
+/** LiteLLM's per-request opt-in for `usage.cost` on streams (litellm_core_utils/core_helpers.py). */
+export const FAKE_STREAM_COST_HEADER = 'x-litellm-include-cost-in-streaming-usage';
 
 export interface FakeReply {
   content: FakeBlock[];
@@ -291,7 +299,11 @@ export class FakeAnthropicServer {
         isMain && !intercepted && body.safeguards !== undefined
           ? this.safeguards?.(view, toolUseIds)
           : undefined;
-      await streamMessage(res, message, reply, this.jsonChunkSize, safeguardResults);
+      const cost =
+        String(req.headers[FAKE_STREAM_COST_HEADER] ?? '').trim().toLowerCase() === 'true'
+          ? reply.usage?.cost
+          : undefined;
+      await streamMessage(res, message, reply, this.jsonChunkSize, safeguardResults, cost);
     } else {
       sendJson(res, 200, message);
     }
@@ -308,7 +320,7 @@ interface ApiMessage {
   content: Record<string, unknown>[];
   stop_reason: string;
   stop_sequence: null;
-  usage: Required<FakeUsage> & { service_tier: string };
+  usage: Required<Omit<FakeUsage, 'cost'>> & { service_tier: string };
 }
 
 function buildMessage(model: string, reply: FakeReply): ApiMessage {
@@ -348,6 +360,7 @@ async function streamMessage(
   reply: FakeReply,
   jsonChunkSize: number,
   safeguardResults?: unknown[],
+  cost?: number,
 ): Promise<void> {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
@@ -445,6 +458,7 @@ async function streamMessage(
       cache_creation_input_tokens: message.usage.cache_creation_input_tokens,
       cache_read_input_tokens: message.usage.cache_read_input_tokens,
       output_tokens: message.usage.output_tokens,
+      ...(cost !== undefined ? { cost } : {}),
     },
   });
   await send('message_stop', { type: 'message_stop' });

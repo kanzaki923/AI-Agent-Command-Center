@@ -53,6 +53,21 @@ export const scenarios = {
       run: { prompt: 'こんにちは' },
     }),
   },
+  /** a) A gateway alias behind LiteLLM that bills the stream (`usage.cost` on message_delta). */
+  textBilled: {
+    name: 'textBilled',
+    setup: () => ({
+      turns: [
+        text('請求つきの返答です。', {
+          input_tokens: 900,
+          output_tokens: 20,
+          cache_read_input_tokens: 4000,
+          cost: 0.0042,
+        }),
+      ],
+      run: { prompt: 'こんにちは', model: 'team-sonnet' },
+    }),
+  },
   /** a) Same, but a gateway alias the CLI has no price for (costBasis "unknown"). */
   textAlias: {
     name: 'textAlias',

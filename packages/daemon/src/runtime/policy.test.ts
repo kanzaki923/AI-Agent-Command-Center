@@ -287,6 +287,8 @@ describe('child env', () => {
       ANTHROPIC_MODEL: 'team-sonnet',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'team-sonnet',
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+      // LiteLLM puts the billed cost on each stream's usage.
+      ANTHROPIC_CUSTOM_HEADERS: 'x-litellm-include-cost-in-streaming-usage: true',
     });
     expect(env).not.toHaveProperty('ANTHROPIC_API_KEY');
     // Logging uses names only.

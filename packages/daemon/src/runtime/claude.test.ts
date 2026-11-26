@@ -215,6 +215,36 @@ describe('ClaudeMessageNormalizer (recorded streams)', () => {
     });
   });
 
+  it('takes what LiteLLM billed when it billed every call, else the CLI estimate stands', () => {
+    const call = (id: string, cost?: number) => [
+      { type: 'stream_event', event: { type: 'message_start', message: { id, model: 'team-sonnet', usage: { input_tokens: 10, output_tokens: 1 } } } },
+      { type: 'stream_event', event: { type: 'message_delta', usage: { input_tokens: 10, output_tokens: 5, ...(cost !== undefined ? { cost } : {}) } } },
+    ];
+    const result = (total: number) => ({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      total_cost_usd: total,
+      usage: { input_tokens: 20, output_tokens: 10 },
+    });
+    const finalOf = (events: AgentEvent[]) =>
+      events.find((e): e is Extract<AgentEvent, { type: 'usage' }> => e.type === 'usage' && e.phase === 'final')!.usage;
+
+    const all = new ClaudeMessageNormalizer(CWD);
+    const billed = [...call('m1', 0.01), ...call('m2', 0.02), result(0.5)].flatMap((m) => all.push(m));
+    expect(finalOf(billed)).toMatchObject({ costSource: 'reported' });
+    expect(finalOf(billed).costUsd).toBeCloseTo(0.03, 9);
+    // A billed call shows as billed while the turn goes on, too.
+    expect(billed.find((e) => e.type === 'usage' && e.phase === 'estimate')).toMatchObject({
+      usage: { costSource: 'reported' },
+    });
+
+    const some = new ClaudeMessageNormalizer(CWD);
+    const mixed = [...call('m1', 0.01), ...call('m2'), result(0.5)].flatMap((m) => some.push(m));
+    expect(finalOf(mixed).costSource).not.toBe('reported');
+    expect(finalOf(mixed).costUsd).toBeCloseTo(0.5, 9);
+  });
+
   it('treats a rejected credential as fatal at the first retry', () => {
     const n = new ClaudeMessageNormalizer(CWD);
     const retry = rec(R.AUTH_ERROR).find(
@@ -624,6 +654,7 @@ describe('ClaudeAgentSdkRuntime', () => {
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'team-sonnet',
       CLAUDE_CODE_SUBAGENT_MODEL: 'team-sonnet',
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+      ANTHROPIC_CUSTOM_HEADERS: 'x-litellm-include-cost-in-streaming-usage: true',
       CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
       NoDefaultCurrentDirectoryInExePath: '1',
       CLAUDE_AGENT_SDK_CLIENT_APP: 'acc/test',

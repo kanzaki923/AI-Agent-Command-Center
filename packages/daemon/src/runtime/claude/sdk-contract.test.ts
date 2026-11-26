@@ -27,6 +27,7 @@ import {
   createCliSandbox,
   locateBundledCli,
 } from './contract/harness';
+import { FAKE_STREAM_COST_HEADER } from './contract/fakeAnthropic';
 import { type ScenarioResult, loadRealSdk, playScenario, runScenario } from './contract/runner';
 import {
   type Scenario,
@@ -145,6 +146,20 @@ describe.skipIf(!cli).concurrent('Claude Agent SDK contract (real CLI, fake API)
       expect(mu['team-sonnet']?.costBasis).toBe('unknown');
       // An alias is treated as the newest model family (adaptive thinking): item 7.
       expect(sb.api.mainRequests[0]!.summary.thinking).toMatchObject({ type: 'adaptive' });
+    },
+  );
+
+  it(
+    'takes the cost LiteLLM billed on the stream instead of the CLI estimate',
+    { timeout: TIMEOUT },
+    async () => {
+      const { sb, r } = await play('textBilled');
+      expect(r.error).toBeNull();
+      // The CLI asked LiteLLM for the cost on its streamed requests.
+      expect(sb.api.mainRequests[0]!.headers[FAKE_STREAM_COST_HEADER]).toBe('true');
+      const final = usage(r).find((u) => u.phase === 'final')!;
+      expect(final.usage.costSource).toBe('reported');
+      expect(final.usage.costUsd).toBeCloseTo(0.0042, 6);
     },
   );
 

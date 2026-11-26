@@ -42,6 +42,8 @@ interface CallUsage {
   cacheRead: number;
   cacheWrite: number;
   output: number;
+  /** What LiteLLM billed for the call (`message_delta.usage.cost`), in micro-USD. */
+  reportedMicro?: number;
   /** Already reported as estimates. */
   sentMicro: number;
   sentIn: number;
@@ -202,6 +204,8 @@ export class ClaudeMessageNormalizer {
   private readonly serverEvaluated = new Set<string>();
   /** Usage per API message id (estimates). */
   private readonly calls = new Map<string, CallUsage>();
+  /** Billed cost (micro-USD) of the calls already settled by a result. */
+  private reportedSettledMicro = 0;
   /** The API message streaming now, per agent (main = '', sub-agents by parent tool use id). */
   private readonly streaming = new Map<string, string>();
 
@@ -231,8 +235,9 @@ export class ClaudeMessageNormalizer {
     }
     const parent = msg.parent_tool_use_id;
     const isSubagent = typeof parent === 'string' && parent.length > 0;
-    // Sub-agents' calls cost money too: estimate every agent's calls.
-    if (this.opts.price) out.push(...this.estimate(msg, isSubagent ? parent : ''));
+    // Sub-agents' calls cost money too: estimate every agent's calls (and take what LiteLLM
+    // billed for them, which needs no price list).
+    out.push(...this.estimate(msg, isSubagent ? parent : ''));
 
     switch (msg.type) {
       case 'system':
@@ -561,16 +566,22 @@ export class ClaudeMessageNormalizer {
     c.cacheRead = Math.max(c.cacheRead, num(usage.cache_read_input_tokens));
     c.cacheWrite = Math.max(c.cacheWrite, num(usage.cache_creation_input_tokens));
     c.output = Math.max(c.output, num(usage.output_tokens));
+    // Behind LiteLLM (asked with LITELLM_STREAM_COST_HEADER), the stream's last usage carries
+    // what the call was billed: that is the cost, not our estimate.
+    const billed = typeof usage.cost === 'number' && usage.cost >= 0 ? usage.cost : null;
+    if (billed !== null) c.reportedMicro = Math.round(billed * 1_000_000);
     const price = this.opts.price?.(c.model);
-    if (!price) return [];
-    const costMicro = Math.round(
-      costOf(price, {
-        inputTokens: c.input,
-        outputTokens: c.output,
-        cacheReadTokens: c.cacheRead,
-        cacheWriteTokens: c.cacheWrite,
-      }) * 1_000_000,
-    );
+    if (!price && c.reportedMicro === undefined) return [];
+    const costMicro =
+      c.reportedMicro ??
+      Math.round(
+        costOf(price!, {
+          inputTokens: c.input,
+          outputTokens: c.output,
+          cacheReadTokens: c.cacheRead,
+          cacheWriteTokens: c.cacheWrite,
+        }) * 1_000_000,
+      );
     const inTok = c.input + c.cacheRead + c.cacheWrite;
     const d = {
       micro: costMicro - c.sentMicro,
@@ -594,7 +605,7 @@ export class ClaudeMessageNormalizer {
           outputTokens: Math.max(0, d.output),
           ...cacheCounts(d.read, d.write),
           costUsd: Math.max(0, d.micro) / 1_000_000,
-          costSource: 'estimated',
+          costSource: c.reportedMicro !== undefined ? 'reported' : 'estimated',
         },
       },
     ];
@@ -710,6 +721,7 @@ export class ClaudeMessageNormalizer {
     };
     this.totals = next;
     if (delta.inputTokens === 0 && delta.outputTokens === 0 && delta.costUsd === 0) return null;
+    const billed = this.billedSinceLastResult();
     // Cache counts only against a known baseline (totals restored after a restart have none):
     // otherwise the estimates of this run stand.
     const cache =
@@ -724,9 +736,23 @@ export class ClaudeMessageNormalizer {
       // Replaces this run's estimates (the CLI's totals cover every call of the query).
       phase: 'final',
       // The CLI prices tokens with its own table (an estimate, not a bill). "unknown" when it
-      // had no price for a model (e.g. a gateway alias): costUSD is then a guess.
-      usage: { ...delta, ...cache, costSource: costSourceOf(entries) },
+      // had no price for a model (e.g. a gateway alias): costUSD is then a guess. When LiteLLM
+      // billed every call of the run, their sum is the cost instead.
+      usage: { ...delta, ...cache, ...(billed ?? { costSource: costSourceOf(entries) }) },
     };
+  }
+
+  /**
+   * What LiteLLM billed for the calls since the last result, when it billed every one of them
+   * (one call without a bill and the CLI's estimate stands for the whole result).
+   */
+  private billedSinceLastResult(): { costUsd: number; costSource: 'reported' } | null {
+    const calls = [...this.calls.values()];
+    if (calls.length === 0 || calls.some((c) => c.reportedMicro === undefined)) return null;
+    const total = calls.reduce((n, c) => n + (c.reportedMicro ?? 0), 0);
+    const micro = Math.max(0, total - this.reportedSettledMicro);
+    this.reportedSettledMicro = total;
+    return { costUsd: micro / 1_000_000, costSource: 'reported' };
   }
 
   /** A `model` event when the answering model is first known or changes. */

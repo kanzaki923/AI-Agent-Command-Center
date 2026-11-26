@@ -65,6 +65,9 @@ export const BASE_ENV_ALLOWLIST: readonly string[] = [
   'CLAUDE_CODE_GIT_BASH_PATH',
 ];
 
+/** LiteLLM's per-request opt-in for the cost on a stream's usage (litellm core_helpers.py). */
+export const LITELLM_STREAM_COST_HEADER = 'x-litellm-include-cost-in-streaming-usage';
+
 /**
  * The user's own Claude Code login, inherited only when LiteLLM is NOT configured (so the
  * agent behaves like `claude` in their terminal). With LiteLLM these are replaced.
@@ -177,6 +180,9 @@ export function buildChildEnv(
       env.CLAUDE_CODE_SUBAGENT_MODEL = routing.model;
     }
     env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1';
+    // LiteLLM then puts what each streamed request cost on its usage (`usage.cost` of the
+    // message_delta): the CLI only knows its own price list, LiteLLM knows the bill.
+    env.ANTHROPIC_CUSTOM_HEADERS = `${LITELLM_STREAM_COST_HEADER}: true`;
   }
   // One turn per run: a background sub-agent or command would outlive the turn (killed when
   // the CLI exits, or reported in a notification turn after our result). Observed against
