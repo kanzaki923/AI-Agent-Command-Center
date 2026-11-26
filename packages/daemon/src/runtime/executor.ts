@@ -220,7 +220,11 @@ async function executeAgentRun(
       `${truncate(title, 72)}\n\nRun: ${run.id}`,
       ctl.actor,
     );
-    if (sha) await recordDiffArtifact(ctx, ctl, workspaceId, title);
+    // The agent may have committed its work itself (local git is allowed): what changed is
+    // still the run's code change, so it is recorded even when nothing was left to commit.
+    if (sha || (await changedSinceLastDiff(ctx, workspaceId))) {
+      await recordDiffArtifact(ctx, ctl, workspaceId, title);
+    }
   } else if (await changedSinceLastDiff(ctx, workspaceId)) {
     // A conversation is not asked to commit: its changes stay in the worktree as they are
     // and become a commit only when someone brings them over (integration.create).

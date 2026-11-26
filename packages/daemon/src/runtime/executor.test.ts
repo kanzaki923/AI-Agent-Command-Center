@@ -465,6 +465,18 @@ describe('agent executor', () => {
     expect(fakes.commits).toEqual([]);
   });
 
+  it("records a task's code change even when the agent committed it itself", async () => {
+    const { ctx, run } = await setup({ task: {} });
+    useFastMock(ctx);
+    // Nothing left to commit: the agent ran `git commit` on its own (local git is allowed).
+    vi.spyOn(fakes.workspaces, 'commitAll').mockResolvedValue(null);
+    const { ctl } = fakeController(run);
+    await createAgentExecutor(ctx)(ctl);
+    expect(fakes.artifacts).toEqual([
+      expect.objectContaining({ workspaceId: fakes.workspaceId, runId: run.id, taskId: run.taskId }),
+    ]);
+  });
+
   it('leaves a conversation turn uncommitted and records the change as a diff', async () => {
     const { ctx, run } = await setup({ message: 'バージョンを 5.5 に上げて\n理由は古いから' });
     useFastMock(ctx);
