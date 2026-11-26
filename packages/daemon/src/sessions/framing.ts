@@ -2,6 +2,8 @@ import { type Character, type Message, type Session, isSpeaker } from '@acc/prot
 import { characterFrame, characterText } from '../characters/frame';
 import { sceneIn } from '../characters/service';
 import type { DaemonContext } from '../core/context';
+import { WAKE_MARKER } from '../inbox/wake';
+import { supervisorGrantsOf } from '../orchestrator/grant';
 
 /**
  * How a conversation is framed for its model (snapshot 20261031_conversation-framing-spec.md):
@@ -170,6 +172,7 @@ export function conversationFrame(
       '- You are a Claude Code agent: you read and write files in your workspace, run commands there, and can search and read the web.',
       "- Folders outside your workspace (such as the person's desktop) are out of reach unless they are given to you.",
     );
+    lines.push(...leadLines(ctx, session));
   } else if (abilities.tools > 0) {
     lines.push(
       '- You can talk, and use only the tools you are given. You cannot search the web or touch files.',
@@ -244,6 +247,43 @@ export function conversationFrame(
   }
   lines.push('', "Write in the person's language (Japanese unless they write otherwise).");
   return lines.join('\n');
+}
+
+/**
+ * How a Claude Code conversation that leads (a code conversation, orchestrator/grant.ts
+ * ensureLeadGrant, or one the person delegated) works in parallel: children in their own
+ * worktrees cut from its branch, woken instead of waiting, combined by an integration. Empty
+ * for a conversation that does not lead.
+ */
+function leadLines(ctx: DaemonContext, session: Session): string[] {
+  if (!ctx.hasService('policy')) return [];
+  const grant = supervisorGrantsOf(ctx, session.id)[0];
+  if (!grant) return [];
+  const projectId = grant.scope.projectIds?.[0] ?? session.projectId;
+  const project = projectId ? ctx.repos.projects.get(projectId) : undefined;
+  const maxChildren = grant.limits.maxChildren ?? grant.limits.maxWorkers;
+  const code = project?.repoPath ? project : null;
+  const where = code
+    ? `workspace {"kind":"worktree","projectId":"${code.id}"}`
+    : 'a workspace that fits the piece';
+  return [
+    '',
+    'Working in parallel (you can lead children of your own)',
+    `- When the work splits into pieces that can go on side by side, give each piece to a child with the acc tool session_spawn: mode "agent", ${where}, a short title, the goal and doneWhen. Keep pieces that depend on each other, and small or tightly coupled work, to yourself: splitting has a cost.`,
+    ...(code
+      ? [
+          '- Each child works in its own git worktree, cut from your current branch with your changes so far (the daemon commits them first), so it builds on your latest work. Never make worktrees or switch branches yourself: git worktree, git switch / checkout -b, and a subagent with isolation "worktree" are refused.',
+        ]
+      : []),
+    `- At most ${maxChildren ?? 'a few'} unfinished children at a time; children cannot start children.`,
+    `- After starting them, carry on with your own piece if you have one, then say in a line or two who does what and end your turn. Do not wait, sleep or poll: you are woken by a message starting with "${WAKE_MARKER}" when a child finishes, fails, needs the person or is stopped.`,
+    '- When woken, check what the child did (session_tree, artifact_list / artifact_read, workspace_diff). If it misses the goal, send it back with artifact_review (redo) and a note.',
+    ...(code
+      ? [
+          `- When every child is done, combine their work with yours: integration_create with projectId "${code.id}" and sessionIds (the children, then yourself: ${session.id}), then integration_run. It merges into the project's default branch and runs its tests; the person approves applying it. On a conflict, integration_resolveWithAgent.`,
+        ]
+      : []),
+  ];
 }
 
 /**

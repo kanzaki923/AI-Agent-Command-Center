@@ -4,6 +4,8 @@ import {
   type BudgetAllocation,
   type CapabilityGrant,
   type Params,
+  type Session,
+  type Workspace,
   matchAnyPattern,
 } from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
@@ -270,4 +272,51 @@ export function undelegateSession(
     }
     return { revoked };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Lead: a code conversation splits its own work (no button)
+// ---------------------------------------------------------------------------
+
+/** Recorded as the reason of a lead's grant. */
+export const LEAD_REASON = 'lead';
+
+/** Unfinished children a lead runs at once (the same default as session.delegate). */
+export const LEAD_MAX_CHILDREN = 4;
+
+const LEAD_SYSTEM: Actor = { kind: 'system', component: 'lead' };
+
+/**
+ * A top-level Claude Code conversation working in a worktree of a project with a repository
+ * may split its work into children of its own, each in its own worktree, without the person
+ * pressing anything: the work they asked for is the permission. It gets the supervisor preset
+ * for that project (code included, no schedules), at most LEAD_MAX_CHILDREN children at once
+ * and depth 1 (children cannot start children). No budget is created: the conversation and its
+ * children spend under today's limit as the conversation alone did (a budget it already has
+ * keeps bounding them). A child, a repeat's firing, a task's worker, or a conversation that
+ * already leads gets nothing.
+ */
+export function ensureLeadGrant(
+  ctx: DaemonContext,
+  session: Session,
+  workspace: Pick<Workspace, 'kind' | 'projectId'>,
+): CapabilityGrant | null {
+  if (session.kind !== 'agent' || session.archivedAt) return null;
+  if (session.parentSessionId || session.scheduleId || session.taskId) return null;
+  if (workspace.kind !== 'worktree' || !workspace.projectId) return null;
+  const project = ctx.repos.projects.get(workspace.projectId);
+  if (!project?.repoPath || project.archivedAt) return null;
+  if (supervisorGrantsOf(ctx, session.id).length > 0) return null;
+  return ctx.service('policy').createGrant(
+    {
+      subject: { kind: 'session', sessionId: session.id },
+      permissions: supervisorPermissions({ schedules: false, code: true }),
+      scope: { projectIds: [project.id] },
+      limits: { maxChildren: LEAD_MAX_CHILDREN, maxSchedules: 0, maxDepth: ORCHESTRATOR_MAX_DEPTH },
+      lifetime: 'session',
+      expiresAt: null,
+      reason: LEAD_REASON,
+    },
+    LEAD_SYSTEM,
+  );
 }

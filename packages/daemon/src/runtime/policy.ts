@@ -140,8 +140,8 @@ export const NOTABLE_CATEGORIES: ReadonlySet<ToolCategory> = new Set([
 
 const RULE_TEXT: Record<DenyRule, { ja: string; en: string }> = {
   git_metadata: {
-    ja: 'git のメタデータ（.git、git の設定・ref・worktree）は変更できません。worktree の git はデーモンが管理しています。ファイルだけを変更すれば、終了時にデーモンがコミットします。',
-    en: 'Git metadata (.git, git config, refs, worktrees) is managed by the daemon. Change only the working files; the daemon commits them when you finish.',
+    ja: 'git のメタデータ（.git、git の設定・ref・worktree）は変更できません。worktree の git はデーモンが管理しています。ファイルだけを変更すれば、終了時にデーモンがコミットします。作業を並列に分けたいときは、acc の session_spawn で子の会話を立ててください（使えるとき）。子ごとの worktree はデーモンが作ります。',
+    en: 'Git metadata (.git, git config, refs, worktrees) is managed by the daemon. Change only the working files; the daemon commits them when you finish. To split work into parallel pieces, start children with the acc tool session_spawn when you have it: the daemon makes a worktree for each.',
   },
   outside_write: {
     ja: 'この worktree の外には書き込めません。作業（一時ファイルも）はこのディレクトリの中で行ってください。',
@@ -382,6 +382,9 @@ export function decideToolPermission(req: ToolPolicyInput): ToolPolicyResult {
     return { ...gray(forced, r.reason, outside), category: top };
   }
   if (SUBAGENT_TOOLS.has(toolName)) {
+    // Claude Code's own worktree for a subagent: made outside the daemon, from an unknown base.
+    const isolation = asRecord(input)?.isolation;
+    if (isolation === 'worktree') return hard('git_metadata', 'subagent', 'isolation: worktree');
     return gray('subagent', 'sub-agent tool uses are checked individually');
   }
   if (AGENT_INTERNAL_TOOLS.has(toolName)) return gray('agent_internal', 'agent bookkeeping tool');

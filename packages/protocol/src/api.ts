@@ -893,6 +893,13 @@ export const api = defineApi({
         .min(1)
         .optional()
         .describe('Workspaces to integrate, in merge order (alternative to taskIds)'),
+      sessionIds: z
+        .array(SessionId)
+        .min(1)
+        .optional()
+        .describe(
+          "Conversations whose worktrees to integrate, in merge order, e.g. a lead's children and the lead itself (alternative to taskIds / workspaceIds)",
+        ),
       title: z.string().max(300).optional(),
       targetRef: z
         .string()
@@ -902,7 +909,7 @@ export const api = defineApi({
     }),
     result: Integration,
     description:
-      'Create an integration branch (in its own worktree) from the target branch for several tasks or workspaces. Pass taskIds or workspaceIds. Then call integration.run.',
+      'Create an integration branch (in its own worktree) from the target branch for several tasks, workspaces or conversations. Pass one of taskIds, workspaceIds or sessionIds. Then call integration.run.',
     mutates: true,
   },
   'integration.list': {

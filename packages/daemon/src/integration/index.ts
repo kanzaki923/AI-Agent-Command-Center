@@ -1,6 +1,7 @@
 import { isTerminalRunStatus } from '@acc/protocol';
 import { type CallScope, defineMethod } from '../api/registry';
 import type { DaemonContext } from '../core/context';
+import { invalidParams } from '../core/errors';
 import { defineModule } from '../module';
 import { artifactScope } from '../outputs/scope';
 import { ArtifactService } from './artifacts';
@@ -78,8 +79,22 @@ export function createIntegrationModule(opts: Partial<IntegrationOptions> = {}) 
         }),
 
         defineMethod('integration.create', {
-          scope: (p) => ({ projectIds: [p.projectId] }),
-          handler: (p, call) => integrations.create({ ...p, actor: call.actor }),
+          // Conversations named by an agent must be in its own tree.
+          scope: (p) => ({ projectIds: [p.projectId], sessionIds: p.sessionIds ?? [] }),
+          handler: (p, call) => {
+            const { sessionIds, ...rest } = p;
+            if (!sessionIds) return integrations.create({ ...rest, actor: call.actor });
+            if (rest.taskIds || rest.workspaceIds) {
+              throw invalidParams(
+                'taskIds・workspaceIds・sessionIds はどれか 1 つだけ指定してください',
+              );
+            }
+            return integrations.create({
+              ...rest,
+              workspaceIds: workspacesOfSessions(ctx, sessionIds),
+              actor: call.actor,
+            });
+          },
         }),
 
         defineMethod('integration.list', {
@@ -137,3 +152,14 @@ export function createIntegrationModule(opts: Partial<IntegrationOptions> = {}) 
  * Services: `integrations`, `artifacts`.
  */
 export const integrationModule = createIntegrationModule();
+
+/** The worktree of each conversation, in the given order (one without a workspace is refused). */
+function workspacesOfSessions(ctx: DaemonContext, sessionIds: readonly string[]): string[] {
+  return sessionIds.map((id) => {
+    const session = ctx.repos.sessions.require(id);
+    if (!session.workspaceId) {
+      throw invalidParams(`会話「${session.title || id}」には作業場所がないため、統合できません`);
+    }
+    return session.workspaceId;
+  });
+}

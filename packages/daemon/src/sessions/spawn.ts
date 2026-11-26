@@ -143,7 +143,7 @@ export class Spawner implements SpawnerService {
 
     const prepared = await prepareWorkspace(ctx, {
       mode: p.mode,
-      spec: p.workspace,
+      spec: await this.fromCallersBranch(p.workspace, actor),
       projectId,
       label: p.title,
       actor,
@@ -383,6 +383,31 @@ export class Spawner implements SpawnerService {
       budgetId: budget?.id ?? null,
       waitingFor: i.after.filter((a) => a.task.status !== 'done').map((a) => a.session.id),
     };
+  }
+
+  /**
+   * A child's worktree starts where its parent is: when an agent working in a worktree of the
+   * same project splits off a piece without naming a base, the daemon commits the parent's
+   * changes so far and cuts the child's worktree from the parent's branch. The child then
+   * builds on the parent's latest work instead of the default branch it started from.
+   */
+  private async fromCallersBranch(
+    spec: WorkspaceSpec | undefined,
+    actor: Actor,
+  ): Promise<WorkspaceSpec | undefined> {
+    if (spec?.kind !== 'worktree' || spec.baseRef || actor.kind !== 'agent') return spec;
+    const { ctx } = this;
+    const run = ctx.repos.runs.get(actor.runId);
+    const ws = run?.workspaceId ? ctx.repos.workspaces.get(run.workspaceId) : undefined;
+    if (!ws || ws.kind !== 'worktree' || ws.projectId !== spec.projectId || !ws.branch) {
+      return spec;
+    }
+    const session = ctx.repos.sessions.get(actor.sessionId);
+    const title = session?.title?.trim();
+    await ctx
+      .service('workspaceManager')
+      .commitAll(ws.id, title ? `会話「${truncate(title, 60)}」の途中の変更` : '会話の途中の変更', actor);
+    return { ...spec, baseRef: ws.branch };
   }
 
   /** A budget the daemon decided (schedules): it must fit before anything is created. */

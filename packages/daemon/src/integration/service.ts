@@ -198,11 +198,16 @@ export class IntegrationService {
   /**
    * A conversation's runs leave their changes uncommitted (only a Task's runs commit), and a
    * merge sees commits only: bringing the changes over is when they become one. A Task's
-   * workspace keeps what its runs committed, and one a run is still writing is left as it is.
+   * workspace keeps what its runs committed, and one a run is still writing is left as it is,
+   * unless that run is the caller itself (a lead combining its children's work with its own:
+   * it waits for this call, so nothing writes meanwhile).
    */
   private async commitPending(sources: Source[], actor: Actor): Promise<void> {
     for (const s of sources) {
-      if (s.taskId || this.workspaces.isLocked(s.workspace.id)) continue;
+      if (s.taskId) continue;
+      const holder = this.workspaces.lockHolder(s.workspace.id);
+      const ownRun = actor.kind === 'agent' && holder === actor.runId;
+      if (this.workspaces.isLocked(s.workspace.id) && !ownRun) continue;
       const session = this.ctx.repos.sessions.find({
         sql: { clause: "json_extract(data, '$.workspaceId') = ?", params: [s.workspace.id] },
         direction: 'asc',
@@ -213,6 +218,22 @@ export class IntegrationService {
         : '会話の変更';
       await this.workspaces.commitAll(s.workspace.id, message, actor);
     }
+  }
+
+  /**
+   * The task of a spawned child working in this workspace (its worktree is made before its
+   * task, so the workspace does not name it): applying the integration settles that task.
+   */
+  private childTaskOf(workspaceId: string): string | null {
+    const { repos } = this.ctx;
+    const sessions = repos.sessions.find({
+      sql: { clause: "json_extract(data, '$.workspaceId') = ?", params: [workspaceId] },
+    });
+    for (const s of sessions) {
+      if (!s.brief || !s.taskId) continue;
+      if (repos.tasks.get(s.taskId)?.workspaceId === workspaceId) return s.taskId;
+    }
+    return null;
   }
 
   private resolveSources(
@@ -243,8 +264,9 @@ export class IntegrationService {
     } else {
       for (const workspaceId of workspaceIds ?? []) {
         const ws = repos.workspaces.require(workspaceId);
-        const task = ws.taskId ? repos.tasks.get(ws.taskId) : undefined;
-        sources.push({ workspace: ws, taskId: ws.taskId, title: task?.title ?? null });
+        const taskId = ws.taskId ?? this.childTaskOf(ws.id);
+        const task = taskId ? repos.tasks.get(taskId) : undefined;
+        sources.push({ workspace: ws, taskId, title: task?.title ?? null });
       }
     }
     for (const s of sources) {
