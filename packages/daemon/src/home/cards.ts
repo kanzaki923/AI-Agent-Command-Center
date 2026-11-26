@@ -134,6 +134,9 @@ export function startedBy(s: Session): SessionCard['startedBy'] {
 
 export function roleOf(s: Session, facts: CardFacts): SessionRole {
   if (s.id === facts.assistantId) return 'assistant';
+  // A code conversation that leads children of its own (orchestrator/grant.ts ensureLeadGrant)
+  // is still an agent: it works itself, and is not one to delegate or un-delegate.
+  if (s.kind === 'agent') return 'agent';
   if (facts.supervisors.has(s.id)) return 'supervisor';
   return isSpeaker(s) ? 'speaker' : s.kind;
 }

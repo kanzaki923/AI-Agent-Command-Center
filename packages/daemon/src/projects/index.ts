@@ -196,5 +196,22 @@ function stopProjectWork(ctx: DaemonContext, projectId: string, actor: Actor): S
   for (const id of ids) {
     if (hasWorkToStop(ctx, id)) stopSessions(ctx, id, { tree: false }, actor);
   }
-  return disableSchedules(ctx, [...ids], actor);
+  const off = disableSchedules(ctx, [...ids], actor);
+  // A repeat owned elsewhere (the assistant's) that starts its work in this project's code
+  // would fail at every firing now: it is turned off as well.
+  for (const sch of ctx.repos.schedules.find({ where: { enabled: true } })) {
+    const ws = sch.run.workspace;
+    if (ws?.kind !== 'worktree' || ws.projectId !== projectId) continue;
+    const next = ctx.repos.schedules.update(sch.id, (cur) => ({
+      ...cur,
+      enabled: false,
+      nextRunAt: null,
+      updatedAt: ctx.clock.iso(),
+    }));
+    if (ctx.hasService('scheduler')) {
+      ctx.service('scheduler').emitUpdated(next, ['enabled', 'nextRunAt'], actor);
+    }
+    off.push(next);
+  }
+  return off;
 }

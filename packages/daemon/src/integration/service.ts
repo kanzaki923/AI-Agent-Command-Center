@@ -52,6 +52,11 @@ interface Source {
   workspace: Workspace;
   taskId: string | null;
   title: string | null;
+  /**
+   * A spawned child's worktree named as a workspace: its task is known through the child, but
+   * like any conversation's worktree its uncommitted changes (a stopped child's) are brought in.
+   */
+  childWorktree?: boolean;
 }
 
 const short = (sha: string | null | undefined) => (sha ? sha.slice(0, 8) : '');
@@ -204,7 +209,7 @@ export class IntegrationService {
    */
   private async commitPending(sources: Source[], actor: Actor): Promise<void> {
     for (const s of sources) {
-      if (s.taskId) continue;
+      if (s.taskId && !s.childWorktree) continue;
       const holder = this.workspaces.lockHolder(s.workspace.id);
       const ownRun = actor.kind === 'agent' && holder === actor.runId;
       if (this.workspaces.isLocked(s.workspace.id) && !ownRun) continue;
@@ -264,9 +269,10 @@ export class IntegrationService {
     } else {
       for (const workspaceId of workspaceIds ?? []) {
         const ws = repos.workspaces.require(workspaceId);
-        const taskId = ws.taskId ?? this.childTaskOf(ws.id);
+        const child = ws.taskId ? null : this.childTaskOf(ws.id);
+        const taskId = ws.taskId ?? child;
         const task = taskId ? repos.tasks.get(taskId) : undefined;
-        sources.push({ workspace: ws, taskId, title: task?.title ?? null });
+        sources.push({ workspace: ws, taskId, title: task?.title ?? null, childWorktree: !!child });
       }
     }
     for (const s of sources) {

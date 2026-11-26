@@ -239,6 +239,13 @@ describe('ClaudeMessageNormalizer (recorded streams)', () => {
       usage: { costSource: 'reported' },
     });
 
+    // A call the CLI did not stream (fetching a page, compacting) is in its totals only: the
+    // streamed calls do not add up, so the CLI's estimate stands.
+    const unseen = new ClaudeMessageNormalizer(CWD);
+    const hidden = [...call('m1', 0.01), ...call('m2', 0.02), { ...result(0.5), usage: { input_tokens: 25, output_tokens: 12 } }].flatMap((m) => unseen.push(m));
+    expect(finalOf(hidden).costSource).not.toBe('reported');
+    expect(finalOf(hidden).costUsd).toBeCloseTo(0.5, 9);
+
     const some = new ClaudeMessageNormalizer(CWD);
     const mixed = [...call('m1', 0.01), ...call('m2'), result(0.5)].flatMap((m) => some.push(m));
     expect(finalOf(mixed).costSource).not.toBe('reported');

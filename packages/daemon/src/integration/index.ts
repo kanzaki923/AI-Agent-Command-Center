@@ -79,8 +79,17 @@ export function createIntegrationModule(opts: Partial<IntegrationOptions> = {}) 
         }),
 
         defineMethod('integration.create', {
-          // Conversations named by an agent must be in its own tree.
-          scope: (p) => ({ projectIds: [p.projectId], sessionIds: p.sessionIds ?? [] }),
+          // What an agent combines must be of its own tree: the conversations it names, and the
+          // conversations that own the workspaces or tasks it names (one with no owner names
+          // itself, which no tree holds).
+          scope: (p) => ({
+            projectIds: [p.projectId],
+            sessionIds: [
+              ...(p.sessionIds ?? []),
+              ...(p.workspaceIds ?? []).map((id) => ownerOfWorkspace(ctx, id)),
+              ...(p.taskIds ?? []).map((id) => ownerOfTask(ctx, id)),
+            ],
+          }),
           handler: (p, call) => {
             const { sessionIds, ...rest } = p;
             if (!sessionIds) return integrations.create({ ...rest, actor: call.actor });
@@ -162,4 +171,25 @@ function workspacesOfSessions(ctx: DaemonContext, sessionIds: readonly string[])
     }
     return session.workspaceId;
   });
+}
+
+/** The conversation working in a workspace, else the workspace id (owned by no tree). */
+function ownerOfWorkspace(ctx: DaemonContext, workspaceId: string): string {
+  const session = ctx.repos.sessions.find({
+    sql: { clause: "json_extract(data, '$.workspaceId') = ?", params: [workspaceId] },
+    direction: 'asc',
+    limit: 1,
+  })[0];
+  return session?.id ?? workspaceId;
+}
+
+/** The conversation a task is assigned to (or made for), else the task id. */
+function ownerOfTask(ctx: DaemonContext, taskId: string): string {
+  const task = ctx.repos.tasks.get(taskId);
+  if (task?.assigneeSessionId) return task.assigneeSessionId;
+  const session = ctx.repos.sessions.find({
+    sql: { clause: "json_extract(data, '$.taskId') = ?", params: [taskId] },
+    limit: 1,
+  })[0];
+  return session?.id ?? taskId;
 }

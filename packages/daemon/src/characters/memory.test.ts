@@ -382,6 +382,10 @@ describe('a member asked to remember something asks for a sorting', () => {
     const run = d.ctx.repos.runs.find({ where: { session_id: s.id } })[0]!;
     await d.call(HUMAN, 'settings.update', { members: { memory: false } });
     expect((await d.call(agentActor(s.id, run.id), 'character.remember', {})).accepted).toBe(false);
+    // A member chat started with memory off has no tool at all.
+    const later = await talk(d, haku.id, ['こんにちは']);
+    const grants = d.ctx.service('policy').sessionGrantsAllowing(later.id, 'character.remember');
+    expect(grants).toHaveLength(0);
   });
 });
 

@@ -241,6 +241,53 @@ describe('a code conversation leads its own children', () => {
   });
 });
 
+describe('a lead stays an agent, inside its own tree', () => {
+  it('shows as an agent (nothing to delegate) and cannot combine another conversation by its worktree', async () => {
+    const s = await scene();
+    ensureLeadGrant(s.d.ctx, s.lead, s.ws);
+    const tree = await s.d.call(HUMAN, 'session.tree', { sessionId: s.lead.id });
+    expect(tree.nodes.find((n) => n.id === s.lead.id)?.role).toBe('agent');
+    const other = await s.d.call(HUMAN, 'session.create', {
+      kind: 'agent',
+      title: '別の会話',
+      projectId: s.project.id,
+      workspace: { kind: 'worktree', projectId: s.project.id },
+    });
+    const theirs = s.d.ctx.repos.workspaces.require(other.workspaceId!).path;
+    writeFileSync(join(theirs, 'theirs.txt'), 'x');
+    expect(
+      await codeOf(
+        s.d.call(leadRun(s), 'integration.create', {
+          projectId: s.project.id,
+          workspaceIds: [other.workspaceId!],
+        }),
+      ),
+    ).toBe('forbidden');
+    // Nothing of theirs was committed on the way.
+    expect(await gitOut(theirs, ['status', '--porcelain'])).toContain('theirs.txt');
+  });
+
+  it("brings in a stopped child's uncommitted changes, as any conversation's", async () => {
+    const s = await scene();
+    ensureLeadGrant(s.d.ctx, s.lead, s.ws);
+    const actor = leadRun(s);
+    const { session: child, runId } = await s.d.call(actor, 'session.spawn', {
+      title: 'テストを書く',
+      goal: 'ログインのテストを書く',
+      mode: 'agent',
+      workspace: { kind: 'worktree', projectId: s.project.id },
+    });
+    if (runId) await s.d.ctx.service('runs').waitForEnd(runId);
+    const childPath = s.d.ctx.repos.workspaces.require(child.workspaceId!).path;
+    writeFileSync(join(childPath, 'half.txt'), '書きかけ');
+    await s.d.call(actor, 'integration.create', {
+      projectId: s.project.id,
+      sessionIds: [child.id, s.lead.id],
+    });
+    expect(await gitOut(childPath, ['status', '--porcelain'])).toBe('');
+  });
+});
+
 describe('making worktrees by hand is refused, with the way to split work', () => {
   const cwd = process.platform === 'win32' ? 'C:\\work\\ws' : '/work/ws';
   it('git worktree and a subagent in its own worktree point at session_spawn', () => {

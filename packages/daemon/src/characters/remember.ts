@@ -14,6 +14,8 @@ const MEMBER_SYSTEM: Actor = { kind: 'system', component: 'member' };
  */
 export function ensureMemberGrant(ctx: DaemonContext, session: Session): void {
   if (!session.characterId || session.archivedAt) return;
+  // With memory off there is nothing to ask for: no tool (a chat stays tool-free as before).
+  if (!ctx.settings.get().members.memory) return;
   if (!ctx.hasService('policy') || !ctx.hasService('characters')) return;
   const member = ctx.service('characters').get(session.characterId);
   if (!member || member.archivedAt) return;

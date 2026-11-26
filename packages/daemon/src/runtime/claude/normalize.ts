@@ -204,8 +204,10 @@ export class ClaudeMessageNormalizer {
   private readonly serverEvaluated = new Set<string>();
   /** Usage per API message id (estimates). */
   private readonly calls = new Map<string, CallUsage>();
-  /** Billed cost (micro-USD) of the calls already settled by a result. */
+  /** Billed cost (micro-USD) and tokens of the calls already settled by a result. */
   private reportedSettledMicro = 0;
+  private settledIn = 0;
+  private settledOut = 0;
   /** The API message streaming now, per agent (main = '', sub-agents by parent tool use id). */
   private readonly streaming = new Map<string, string>();
 
@@ -721,7 +723,7 @@ export class ClaudeMessageNormalizer {
     };
     this.totals = next;
     if (delta.inputTokens === 0 && delta.outputTokens === 0 && delta.costUsd === 0) return null;
-    const billed = this.billedSinceLastResult();
+    const billed = this.billedSinceLastResult(delta.inputTokens, delta.outputTokens);
     // Cache counts only against a known baseline (totals restored after a restart have none):
     // otherwise the estimates of this run stand.
     const cache =
@@ -744,14 +746,26 @@ export class ClaudeMessageNormalizer {
 
   /**
    * What LiteLLM billed for the calls since the last result, when it billed every one of them
-   * (one call without a bill and the CLI's estimate stands for the whole result).
+   * and they are all the result counts: the CLI also makes calls it does not stream (fetching a
+   * page, compacting), which its totals include. Any call without a bill, or tokens the streamed
+   * calls do not add up to, and the CLI's estimate stands for the whole result.
    */
-  private billedSinceLastResult(): { costUsd: number; costSource: 'reported' } | null {
+  private billedSinceLastResult(
+    inputTokens: number,
+    outputTokens: number,
+  ): { costUsd: number; costSource: 'reported' } | null {
     const calls = [...this.calls.values()];
-    if (calls.length === 0 || calls.some((c) => c.reportedMicro === undefined)) return null;
     const total = calls.reduce((n, c) => n + (c.reportedMicro ?? 0), 0);
+    const inTok = calls.reduce((n, c) => n + c.input + c.cacheRead + c.cacheWrite, 0);
+    const outTok = calls.reduce((n, c) => n + c.output, 0);
+    const streamedIn = inTok - this.settledIn;
+    const streamedOut = outTok - this.settledOut;
     const micro = Math.max(0, total - this.reportedSettledMicro);
     this.reportedSettledMicro = total;
+    this.settledIn = inTok;
+    this.settledOut = outTok;
+    if (calls.length === 0 || calls.some((c) => c.reportedMicro === undefined)) return null;
+    if (streamedIn !== inputTokens || streamedOut !== outputTokens) return null;
     return { costUsd: micro / 1_000_000, costSource: 'reported' };
   }
 
