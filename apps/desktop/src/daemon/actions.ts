@@ -3,6 +3,7 @@ import {
   type ApprovalRemember,
   type ParamsInput,
   type PermissionRule,
+  type Project,
   type WorkPlace,
   type Run,
   type SendDelivery,
@@ -531,5 +532,85 @@ async function doArchive(rt: AppRuntime, session: Session): Promise<void> {
   } catch (err) {
     upsertIn(rt.queryClient, qk.sessions, session);
     toastError(err, 'アーカイブできませんでした');
+  }
+}
+
+/** What removing a project would stop: work that moves in its conversations, repeats that are on. */
+async function whatRemovingStops(
+  rt: AppRuntime,
+  project: Project,
+): Promise<{ moving: boolean; repeats: number }> {
+  const sessions = rt.queryClient.getQueryData<Session[]>(qk.sessions) ?? [];
+  const inProject = sessions
+    .filter((s) => s.projectId === project.id)
+    .flatMap((s) => subtreeOf(sessions, s.id));
+  const moving = inProject.some((s) => !!s.activeRunId || ARCHIVE_STOPS.has(s.state));
+  let repeats = 0;
+  try {
+    const ids = new Set(inProject.map((s) => s.id));
+    const { items } = await rt.client.call('schedule.list', { enabled: true });
+    repeats = items.filter((x) => ids.has(x.sessionId)).length;
+  } catch {
+    // Unknown: say nothing about repeats rather than block removing.
+  }
+  return { moving, repeats };
+}
+
+/**
+ * Remove a project from the app (`project.update archived`), with a 5s undo toast. Its
+ * conversations, their outputs and the folder stay as they are; the daemon stops what still
+ * works in the project and turns its repeats off, and when there is any of that a confirmation
+ * says so first (止めて外す), as archiving a conversation does. `onDone` runs once it is gone
+ * (the settings go back to the list).
+ */
+export async function removeProject(
+  rt: AppRuntime,
+  project: Project,
+  onDone?: () => void,
+): Promise<void> {
+  const { moving, repeats } = await whatRemovingStops(rt, project);
+  const go = () => void doRemoveProject(rt, project, onDone);
+  if (!moving && repeats === 0) return go();
+  const what = [
+    moving ? '動いている作業は止まります。' : '',
+    repeats > 0 ? `繰り返し ${repeats} 件はオフになります。` : '',
+  ].join('');
+  useConfirm.getState().ask({
+    title: `プロジェクト「${project.name}」を外しますか？`,
+    body: `${what}会話とフォルダはそのまま残ります。元に戻しても、止めたものは止まったままです。`,
+    confirmLabel: '止めて外す',
+    onConfirm: go,
+  });
+}
+
+async function doRemoveProject(rt: AppRuntime, project: Project, onDone?: () => void): Promise<void> {
+  const qc = rt.queryClient;
+  const byName = (a: Project, b: Project) => a.name.localeCompare(b.name);
+  removeFrom(qc, qk.projects, project.id);
+  const ui = useUi.getState();
+  if (ui.projectId === project.id) ui.setProject(null);
+  onDone?.();
+  try {
+    await rt.client.call('project.update', { projectId: project.id, archived: true });
+    void qc.invalidateQueries({ queryKey: qk.sessions });
+    void qc.invalidateQueries({ queryKey: qk.home });
+    toast({
+      title: `プロジェクト「${project.name}」を外しました`,
+      tone: 'info',
+      sticky: false,
+      action: {
+        label: '元に戻す',
+        undo: true,
+        run: () => {
+          void rt.client
+            .call('project.update', { projectId: project.id, archived: false })
+            .then((p) => upsertIn(qc, qk.projects, p, byName))
+            .catch((err: unknown) => toastError(err));
+        },
+      },
+    });
+  } catch (err) {
+    upsertIn(qc, qk.projects, project, byName);
+    toastError(err, 'プロジェクトを外せませんでした');
   }
 }

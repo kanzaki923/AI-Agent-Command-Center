@@ -10,7 +10,7 @@ import type {
   SessionKind,
 } from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
-import { invalidParams } from '../core/errors';
+import { conflict, invalidParams } from '../core/errors';
 import { agentDefaultModel, assertAgentModel, assertRosterModel } from '../llm/roster';
 import { defaultRuntimeOf } from '../runtime/registry';
 
@@ -103,6 +103,7 @@ export class SessionService {
     const { repos } = ctx;
     return ctx.db.transaction(() => {
       const project = input.projectId ? repos.projects.require(input.projectId) : null;
+      if (project?.archivedAt) throw conflict('外したプロジェクトでは会話を始められません');
       // The session's runs write to the workspace (or the task's): both must be in its project,
       // or a project-limited caller could reach another project's worktree through them.
       if (input.workspaceId) {

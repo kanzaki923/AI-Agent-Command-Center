@@ -7,6 +7,7 @@ import {
   inspectRepo,
   updateProject,
 } from '../../daemon/orchestration';
+import { removeProject } from '../../daemon/actions';
 import { useProjects, useSettings } from '../../daemon/queries';
 import { DEFAULT_PROFILE } from '../../model/permissions';
 import { HardRulesNote, ProfilePicker, RememberedRules } from '../permissions/Permissions';
@@ -371,7 +372,19 @@ export function ProjectPlace({ project }: { project: Project }) {
   );
 }
 
-export function EditProjectForm({ project, onDone }: { project: Project; onDone: () => void }) {
+/**
+ * One project's settings. With `removable`, the footer also offers to remove the project from
+ * the app (its conversations and folder stay); `onDone` runs after saving, cancelling or removing.
+ */
+export function EditProjectForm({
+  project,
+  onDone,
+  removable = false,
+}: {
+  project: Project;
+  onDone: () => void;
+  removable?: boolean;
+}) {
   const rt = useRuntime();
   const [name, setName] = useState(project.name);
   const [branch, setBranch] = useState(project.defaultBranch ?? '');
@@ -459,6 +472,16 @@ export function EditProjectForm({ project, onDone }: { project: Project; onDone:
         <RememberedRules projectId={project.id} />
       </div>
       <div className="mt-1 flex justify-end gap-2">
+        {removable && (
+          <Button
+            variant="ghost"
+            className="mr-auto text-st-failed hover:text-st-failed"
+            hint="会話とフォルダはそのまま残ります"
+            onClick={() => void removeProject(rt, project, onDone)}
+          >
+            プロジェクトを外す
+          </Button>
+        )}
         <Button variant="ghost" onClick={onDone}>
           キャンセル
         </Button>

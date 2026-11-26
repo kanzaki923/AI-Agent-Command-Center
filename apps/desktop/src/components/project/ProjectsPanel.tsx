@@ -75,7 +75,7 @@ export function ProjectsPanel({
           {editing ? editing.name : 'プロジェクトを追加'}
         </button>
         {editing ? (
-          <EditProjectForm key={editing.id} project={editing} onDone={toList} />
+          <EditProjectForm key={editing.id} project={editing} onDone={toList} removable />
         ) : (
           <NewProjectForm onDone={toList} />
         )}

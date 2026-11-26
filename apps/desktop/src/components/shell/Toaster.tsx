@@ -22,8 +22,10 @@ export function Toaster() {
   const hidden = toasts.length - visible.length;
   return (
     <div
-      className="pointer-events-none fixed right-4 bottom-4 z-[50] flex w-[360px] flex-col gap-2"
+      // Above dialogs (60), below the palette (70): a toast's 元に戻す must stay pressable over the settings.
+      className="pointer-events-none fixed right-4 bottom-4 z-[65] flex w-[360px] flex-col gap-2"
       aria-live="polite"
+      data-toaster
     >
       {folds && (
         <button

@@ -22,4 +22,14 @@ describe('Toaster', () => {
     await waitFor(() => expect(screen.queryByText('保存できませんでした')).toBeNull());
     expect(screen.getByRole('button', { name: 'ほか 1 件' })).toBeInTheDocument();
   });
+
+  it('sits above dialogs and marks itself, so a dialog lets its 元に戻す be pressed', () => {
+    render(<Toaster />);
+    act(() => {
+      toast({ title: '外しました', tone: 'info', sticky: true, action: { label: '元に戻す', undo: true, run: () => {} } });
+    });
+    const region = screen.getByRole('button', { name: '元に戻す' }).closest('[data-toaster]');
+    expect(region).not.toBeNull();
+    expect(region!.className).toContain('z-[65]');
+  });
 });

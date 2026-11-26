@@ -45,8 +45,9 @@ export async function inspectRepo(ctx: DaemonContext, path: string): Promise<Rep
       .then((l) => l.length > 0)
       .catch(() => null),
   ]);
+  // A removed (archived) project does not hold its folder: adding it again makes a new one.
   const existing = ctx.repos.projects
-    .find({ where: {} })
+    .find({ where: { archived_at: null } })
     .find((p) => p.repoPath && samePath(p.repoPath, path));
   return {
     ok: true,
@@ -94,8 +95,9 @@ export async function inspectFolder(ctx: DaemonContext, path: string): Promise<F
   const defaultBranch = rootPath
     ? await detectDefaultBranch(rootPath, await currentBranch(rootPath)).catch(() => null)
     : null;
+  // A removed (archived) project does not hold its folder: adding it again makes a new one.
   const existing = ctx.repos.projects
-    .find({ where: {} })
+    .find({ where: { archived_at: null } })
     .find(
       (p) =>
         (p.folderPath && samePath(p.folderPath, abs)) ||

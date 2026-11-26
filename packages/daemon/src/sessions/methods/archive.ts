@@ -51,7 +51,7 @@ export function sessionArchive(ctx: DaemonContext) {
 }
 
 /** Turn off the enabled repeats owned by these sessions; returns the ones turned off. */
-function disableSchedules(ctx: DaemonContext, sessionIds: readonly string[], actor: Actor): Schedule[] {
+export function disableSchedules(ctx: DaemonContext, sessionIds: readonly string[], actor: Actor): Schedule[] {
   const out: Schedule[] = [];
   for (const s of ctx.repos.schedules.find({ where: { session_id: [...sessionIds], enabled: true } })) {
     const next = ctx.repos.schedules.update(s.id, (cur) => ({

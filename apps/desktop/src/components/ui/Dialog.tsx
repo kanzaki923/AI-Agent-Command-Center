@@ -4,6 +4,14 @@ import type { ReactNode } from 'react';
 import { cn } from '../../lib/cn';
 import { InDialog } from './layer';
 
+/**
+ * A press on a toast (its 元に戻す) is not a press outside: the dialog stays open. Toasts sit
+ * above dialogs, so what was just done in a dialog can be undone without leaving it.
+ */
+export function keepOpenForToasts(e: { target: EventTarget | null; preventDefault: () => void }): void {
+  if (e.target instanceof Element && e.target.closest('[data-toaster]')) e.preventDefault();
+}
+
 /** Modal dialog (level 3, z-dialog 60): scale 0.98 → 1 + fade, 140ms (§3.2). */
 export function Dialog({
   open,
@@ -27,6 +35,7 @@ export function Dialog({
       <D.Portal>
         <D.Overlay className="fixed inset-0 z-[60] bg-overlay data-[state=open]:animate-[acc-fade-in_140ms_var(--ease-out)]" />
         <D.Content
+          onInteractOutside={keepOpenForToasts}
           className={cn(
             'fixed top-1/2 left-1/2 z-[60] flex max-h-[85vh] w-[560px] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-lg border border-line-strong bg-raised shadow-modal outline-none',
             'data-[state=open]:animate-[acc-dialog-in_140ms_var(--ease-out)]',

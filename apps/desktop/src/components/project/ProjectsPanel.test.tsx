@@ -1,7 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
+import { qk } from '../../daemon/keys';
+import { useConfirm } from '../../store/confirm';
+import { useToasts } from '../../store/toast';
 import { useUi } from '../../store/ui';
+import { session } from '../../test/fixtures';
 import { createFakeClient } from '../../test/fakeClient';
 import { TooltipProvider } from '../ui/Tooltip';
 import { ProjectsPanel } from './ProjectsPanel';
@@ -41,29 +45,35 @@ const FOLDER = {
   testCommand: null,
 };
 
-function mount() {
+function mount(extra: Parameters<typeof createFakeClient>[0] = {}) {
   const updates: unknown[] = [];
   const fake = createFakeClient({
     'project.list': () => ({ items: [CODE, FOLDER] }),
+    'session.list': () => ({ items: [], nextCursor: null }),
+    'schedule.list': () => ({ items: [] }),
     'settings.get': () => ({ defaultPermissionProfile: 'autonomous' }),
     'permissionRule.list': () => ({ items: [] }),
     'project.update': (p) => {
       updates.push(p);
       return { ...CODE, ...(p as object) };
     },
+    ...extra,
   });
+  const rt = createRuntime(fake.client);
   render(
-    <RuntimeProvider runtime={createRuntime(fake.client)}>
+    <RuntimeProvider runtime={rt}>
       <TooltipProvider>
         <Tab />
       </TooltipProvider>
     </RuntimeProvider>,
   );
-  return { updates };
+  return { updates, rt };
 }
 
 beforeEach(() => {
   useUi.setState({ settingsOpen: false, settingsTab: 'general', projectsView: { kind: 'list' } });
+  useConfirm.setState({ request: null });
+  useToasts.setState({ toasts: [] });
 });
 
 describe('the projects tab of the settings', () => {
@@ -108,6 +118,45 @@ describe('the projects tab of the settings', () => {
     expect(screen.getByLabelText('フォルダ')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'キャンセル' }));
     expect(await screen.findByTestId('projects-panel')).toBeInTheDocument();
+  });
+
+  it('removes a project at once when nothing would stop, with an undo, and forgets it as the current one', async () => {
+    act(() => {
+      useUi.getState().openProjects(FOLDER.id);
+      useUi.getState().setProject(FOLDER.id);
+    });
+    const { updates } = mount();
+    fireEvent.click(await screen.findByRole('button', { name: 'プロジェクトを外す' }));
+    await waitFor(() => expect(updates).toContainEqual({ projectId: FOLDER.id, archived: true }));
+    expect(useConfirm.getState().request).toBeNull();
+    expect(useUi.getState().projectsView).toEqual({ kind: 'list' });
+    expect(useUi.getState().projectId).toBeNull();
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'notes の設定' })).toBeNull());
+    const toast = useToasts.getState().toasts.at(-1)!;
+    expect(toast.title).toBe('プロジェクト「notes」を外しました');
+    await act(async () => {
+      toast.action!.run();
+    });
+    await waitFor(() => expect(updates).toContainEqual({ projectId: FOLDER.id, archived: false }));
+  });
+
+  it('asks first when removing would stop work or turn repeats off', async () => {
+    const busy = session({ projectId: CODE.id, state: 'working' });
+    act(() => useUi.getState().openProjects(CODE.id));
+    const { updates, rt } = mount({
+      'schedule.list': () => ({ items: [{ id: 'sch_1', sessionId: busy.id, enabled: true }] }),
+    });
+    rt.queryClient.setQueryData(qk.sessions, [busy]);
+    fireEvent.click(await screen.findByRole('button', { name: 'プロジェクトを外す' }));
+    await waitFor(() => expect(useConfirm.getState().request).not.toBeNull());
+    const ask = useConfirm.getState().request!;
+    expect(ask.body).toContain('動いている作業は止まります。繰り返し 1 件はオフになります。');
+    expect(ask.confirmLabel).toBe('止めて外す');
+    expect(updates).toEqual([]);
+    await act(async () => {
+      ask.onConfirm();
+    });
+    await waitFor(() => expect(updates).toContainEqual({ projectId: CODE.id, archived: true }));
   });
 
   it('opens on the list again when the tab is switched away and back', () => {

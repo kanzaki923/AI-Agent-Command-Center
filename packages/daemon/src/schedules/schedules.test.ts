@@ -739,6 +739,43 @@ describe('6. schedule.runNow', () => {
     expect(get(env, s.id).lastRun).toMatchObject({ outcome: 'failed_to_start' });
   });
 
+  it('removing a project stops its work and turns off its repeats; its conversations stay', async () => {
+    const env = await setup();
+    const folder = mkdtempSync(join(tmpdir(), 'acc-proj-'));
+    homes.push(folder);
+    const project = await env.d.call(HUMAN, 'project.create', { name: '資料', folderPath: folder });
+    const other = await env.d.call(HUMAN, 'project.create', { name: '別', folderPath: folder });
+    const root = await env.d.call(HUMAN, 'session.create', { title: '整理', projectId: project.id });
+    const child = await env.d.call(HUMAN, 'session.create', { parentSessionId: root.id });
+    const elsewhere = await env.d.call(HUMAN, 'session.create', { projectId: other.id });
+    const mine = await daily9(env, root.id);
+    const kids = await daily9(env, child.id);
+    const kept = await daily9(env, elsewhere.id);
+    const running = insertRun(env.d.ctx, { sessionId: root.id, projectId: project.id });
+    const untouched = insertRun(env.d.ctx, { sessionId: elsewhere.id, projectId: other.id });
+
+    await env.d.call(HUMAN, 'project.update', { projectId: project.id, archived: true });
+    expect(env.d.ctx.repos.runs.require(running.id).status).toBe('cancelled');
+    for (const id of [mine.id, kids.id]) {
+      expect(env.d.ctx.repos.schedules.require(id)).toMatchObject({ enabled: false, nextRunAt: null });
+    }
+    // Another project's work and repeats go on; the removed project's conversations stay.
+    expect(env.d.ctx.repos.runs.require(untouched.id).status).toBe('running');
+    expect(env.d.ctx.repos.schedules.require(kept.id).enabled).toBe(true);
+    expect(env.d.ctx.repos.sessions.require(root.id).archivedAt).toBeNull();
+    // No new conversation starts in it, and adding the folder again is not "already added".
+    await expect(
+      env.d.call(HUMAN, 'session.create', { projectId: project.id }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    const again = await env.d.call(HUMAN, 'project.inspectFolder', { path: folder });
+    expect(again.existingProjectId).toBe(other.id);
+
+    // Back again, nothing restarts on its own.
+    await env.d.call(HUMAN, 'project.update', { projectId: project.id, archived: false });
+    expect(env.d.ctx.repos.schedules.require(mine.id).enabled).toBe(false);
+    expect(env.d.ctx.repos.runs.require(running.id).status).toBe('cancelled');
+  });
+
   it('archiving a tree turns off its repeats, and bringing it back leaves them off', async () => {
     const env = await setup();
     const root = await owner(env, 'root');

@@ -1,9 +1,13 @@
 import { existsSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import type { Actor, Project } from '@acc/protocol';
+import type { Actor, Project, Schedule } from '@acc/protocol';
 import { defineMethod } from '../api/registry';
 import { forbidden, invalidParams } from '../core/errors';
+import type { DaemonContext } from '../core/context';
+import { subtreeIds } from '../home/tree';
 import { defineModule } from '../module';
+import { disableSchedules } from '../sessions/methods/archive';
+import { hasWorkToStop, stopSessions } from '../sessions/methods/stop';
 import { isInside } from '../runtime/policy';
 import { inspectFolder, inspectRepo } from './inspect';
 
@@ -117,12 +121,17 @@ export const projectsModule = defineModule({
 
       defineMethod('project.update', {
         scope: (p) => ({ projectIds: [p.projectId] }),
-        handler: (p, call) =>
-          db.transaction(() => {
+        handler: (p, call) => {
+          const disabled: Schedule[] = [];
+          const updated = db.transaction(() => {
             // Who may set it comes before whether it is valid.
             checkHumanOnly(p, call.actor);
             checkRepoPath(p.repoPath);
             checkProjectFolder(p.folderPath, ctx.paths.home);
+            const cur = repos.projects.require(p.projectId);
+            if (p.archived === true && cur.archivedAt === null) {
+              disabled.push(...stopProjectWork(ctx, cur.id, call.actor));
+            }
             const changes: string[] = [];
             const project = repos.projects.update(p.projectId, (cur) => {
               const next: Project = { ...cur };
@@ -164,8 +173,28 @@ export const projectsModule = defineModule({
               });
             }
             return project;
-          }),
+          });
+          if (disabled.length > 0 && ctx.hasService('scheduler')) ctx.service('scheduler').rearm();
+          return updated;
+        },
       }),
     );
   },
 });
+
+/**
+ * Removing (archiving) a project hides it from every list and place picker, so nothing in it
+ * may go on working out of sight: what still runs in its conversations is stopped and their
+ * repeats are turned off, as when a conversation is archived. The conversations, their outputs
+ * and the folder itself stay as they are; bringing the project back restarts nothing.
+ */
+function stopProjectWork(ctx: DaemonContext, projectId: string, actor: Actor): Schedule[] {
+  const ids = new Set<string>();
+  for (const s of ctx.repos.sessions.find({ where: { project_id: projectId } })) {
+    for (const id of subtreeIds(ctx, s.id)) ids.add(id);
+  }
+  for (const id of ids) {
+    if (hasWorkToStop(ctx, id)) stopSessions(ctx, id, { tree: false }, actor);
+  }
+  return disableSchedules(ctx, [...ids], actor);
+}
