@@ -9,7 +9,7 @@ import type { Event } from '@acc/protocol';
 import { type Command, HELP, parseArgs } from './args';
 import { formatEvent, formatSession, formatStatus } from './format';
 
-export const CLI_VERSION = '0.1.3';
+export const CLI_VERSION = '0.1.4';
 
 export interface Io {
   out(line: string): void;
