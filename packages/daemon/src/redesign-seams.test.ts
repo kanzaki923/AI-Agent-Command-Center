@@ -2,6 +2,9 @@
  * T0 seams (spec 20261029 §5.2): placeholders the tracks replace, and the call sites Core
  * created for them (usage → ledger, deltas → streams, mock steps → handlers).
  */
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { METHOD_NAMES, type MethodName, api } from '@acc/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MethodRegistry, defineMethod, stubMethod } from './api/registry';
@@ -132,13 +135,15 @@ describe('call sites for the tracks', () => {
 
   it('projects keep an optional folder (no git needed)', async () => {
     d = await createTestDaemon();
-    const p = await d.call(HUMAN, 'project.create', { name: '資料', folderPath: d.home });
-    expect(p).toMatchObject({ repoPath: null, folderPath: d.home });
+    const docs = mkdtempSync(join(tmpdir(), 'acc-docs-'));
+    const p = await d.call(HUMAN, 'project.create', { name: '資料', folderPath: docs });
+    expect(p).toMatchObject({ repoPath: null, folderPath: docs });
     const u = await d.call(HUMAN, 'project.update', { projectId: p.id, folderPath: null });
     expect(u.folderPath).toBeNull();
     await expect(
       d.call(HUMAN, 'project.create', { name: 'x', folderPath: 'relative/path' }),
     ).rejects.toMatchObject({ code: 'invalid_params' });
+    rmSync(docs, { recursive: true, force: true });
   });
 
   it('session.list walks the tree (rootsOnly / parentSessionId)', async () => {

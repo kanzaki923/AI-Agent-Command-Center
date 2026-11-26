@@ -8,7 +8,12 @@ import type {
   Task,
 } from '@acc/protocol';
 import { type OrchestratorGrantInput, grantParams } from '../model/grant';
-import { type RepoInspection, failedInspection } from '../model/repo';
+import {
+  type FolderInspection,
+  type RepoInspection,
+  failedFolder,
+  failedInspection,
+} from '../model/repo';
 import { toast, toastError } from '../store/toast';
 import { isConnectionError, isNotImplemented } from './errors';
 import { qk } from './keys';
@@ -188,8 +193,10 @@ export async function revokeGrant(
 // Projects
 // ---------------------------------------------------------------------------
 
+/** A project backed by a code repository (`repoPath`) or by an ordinary folder (`folderPath`). */
 export interface NewProjectInput {
-  repoPath: string;
+  repoPath?: string;
+  folderPath?: string;
   name: string;
   defaultBranch?: string;
   testCommand?: string;
@@ -199,10 +206,11 @@ export type CreateProjectResult =
   { ok: true; project: Project; detectedBranch: string | null } | { ok: false; error: string };
 
 /**
- * Create a project from a local repository. The daemon only checks that the path exists,
- * so registering the repository checkout (`workspace.create kind main`) is the git check:
- * a folder that is not a repository is archived again and reported inline. The checked-out
- * branch becomes the default branch unless one was given.
+ * Create a project from a local repository or folder. For a repository the daemon only checks
+ * that the path exists, so registering the repository checkout (`workspace.create kind main`)
+ * is the git check: a folder that is not a repository is archived again and reported inline.
+ * The checked-out branch becomes the default branch unless one was given. A folder project
+ * has no checkout to register.
  */
 export async function createProject(
   rt: AppRuntime,
@@ -213,12 +221,17 @@ export async function createProject(
   try {
     project = await rt.client.call('project.create', {
       name: input.name,
-      repoPath: input.repoPath,
+      ...(input.repoPath ? { repoPath: input.repoPath } : {}),
+      ...(input.folderPath ? { folderPath: input.folderPath } : {}),
       ...(input.defaultBranch ? { defaultBranch: input.defaultBranch } : {}),
       ...(input.testCommand ? { testCommand: input.testCommand } : {}),
     });
   } catch (err) {
     return { ok: false, error: projectError(err) };
+  }
+  if (!input.repoPath) {
+    upsertIn(qc, qk.projects, project, (a, b) => a.name.localeCompare(b.name));
+    return { ok: true, project, detectedBranch: null };
   }
   let detectedBranch: string | null = null;
   try {
@@ -251,6 +264,7 @@ export function projectErrorText(err: unknown): string | null {
     return 'フォルダが見つかりません。パスを確認してください';
   if (/not a git repository|git リポジトリではありません/i.test(msg))
     return 'git リポジトリではありません。リポジトリのルートフォルダを選んでください';
+  if (/データフォルダ/.test(msg)) return msg.replace(/^.*?(アプリのデータフォルダ)/, '$1');
   if (/detached HEAD/.test(msg))
     return 'detached HEAD のため既定ブランチを決められません。既定ブランチを入力してください';
   return null;
@@ -276,6 +290,29 @@ export async function inspectRepo(rt: AppRuntime, path: string): Promise<RepoIns
     }
     if (isConnectionError(err)) return null;
     return failedInspection(
+      projectErrorText(err) ?? (err instanceof Error ? err.message : String(err)),
+    );
+  }
+}
+
+/**
+ * Look at any folder before creating a project (`project.inspectFolder`, read-only): whether
+ * it exists, whether it is (inside) a git repository, a project already registered for it.
+ * Null when the check cannot run; the form then validates on create.
+ */
+export async function inspectFolder(
+  rt: AppRuntime,
+  path: string,
+): Promise<FolderInspection | null> {
+  try {
+    return await rt.client.call('project.inspectFolder', { path });
+  } catch (err) {
+    if (isNotImplemented(err)) {
+      rt.markUnimplemented('project.inspectFolder');
+      return null;
+    }
+    if (isConnectionError(err)) return null;
+    return failedFolder(
       projectErrorText(err) ?? (err instanceof Error ? err.message : String(err)),
     );
   }
@@ -389,7 +426,10 @@ export async function cancelTask(rt: AppRuntime, task: Task): Promise<boolean> {
   const qc = rt.queryClient;
   patchIn<Task>(qc, qk.tasks, task.id, (t) => ({ ...t, status: 'cancelled' }));
   try {
-    const next = await rt.client.call('task.cancel', { taskId: task.id, reason: 'デスクトップから中止' });
+    const next = await rt.client.call('task.cancel', {
+      taskId: task.id,
+      reason: 'デスクトップから中止',
+    });
     upsertIn(qc, qk.tasks, next);
     return true;
   } catch (err) {

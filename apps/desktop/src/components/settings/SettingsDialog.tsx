@@ -34,6 +34,7 @@ import { FieldRow, type SegmentOption, Segmented, Stepper, UsdField } from './co
 import { ModelPicker } from '../focus/ModelPicker';
 import { ModelRosterPanel, rosterSummary } from './ModelRoster';
 import { ProviderPanel } from './ProviderPanel';
+import { ProjectsPanel } from '../project/ProjectsPanel';
 import { UsageStatsPanel } from './UsageStats';
 
 type SettingsPatch = ParamsInput<'settings.update'>;
@@ -184,6 +185,7 @@ const DOT = { ok: 'bg-st-done', off: 'bg-st-idle', error: 'bg-st-failed' } as co
 
 const TABS: readonly { value: SettingsTab; label: string }[] = [
   { value: 'general', label: '一般' },
+  { value: 'projects', label: 'プロジェクト' },
   { value: 'usage', label: '利用統計' },
 ];
 
@@ -202,6 +204,8 @@ export function SettingsDialog() {
   const setOpen = useUi((s) => s.setSettingsOpen);
   const tab = useUi((s) => s.settingsTab);
   const setTab = useUi((s) => s.setSettingsTab);
+  const projectsView = useUi((s) => s.projectsView);
+  const setProjectsView = useUi((s) => s.setProjectsView);
   const theme = useUi((s) => s.theme);
   const setTheme = useUi((s) => s.setTheme);
   const reduceMotion = useUi((s) => s.reduceMotion);
@@ -273,6 +277,8 @@ export function SettingsDialog() {
       </div>
       {tab === 'usage' ? (
         <UsageStatsPanel />
+      ) : tab === 'projects' ? (
+        <ProjectsPanel view={projectsView} onView={setProjectsView} />
       ) : (
         <>
           <Group className="pt-0">

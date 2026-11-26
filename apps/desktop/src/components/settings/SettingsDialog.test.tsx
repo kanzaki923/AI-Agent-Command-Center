@@ -280,6 +280,13 @@ describe('<SettingsDialog> up front', () => {
     expect(dialog).not.toHaveTextContent(/Orchestrator|Worker|Task|Run /);
   });
 
+  it('keeps the projects in their own tab', async () => {
+    mount();
+    fireEvent.click(await screen.findByRole('tab', { name: 'プロジェクト' }));
+    expect(await screen.findByTestId('projects-panel')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'プロジェクトを追加' })).toBeInTheDocument();
+  });
+
   it('changes 任せ方 with one press', async () => {
     const { updates } = mount();
     const group = await screen.findByRole('radiogroup', { name: '任せ方' });

@@ -26,6 +26,7 @@ import {
   Play,
   Rows3,
   Settings,
+  Layers,
   Sparkles,
   Square,
   Sun,
@@ -303,6 +304,7 @@ function PaletteContents({ open, onClosed }: { open: boolean; onClosed: () => vo
 
   const create: PaletteItem[] = [
     { id: 'create.chat', label: '新しい会話', icon: I(MessageSquarePlus), keywords: ['new chat atarashii kaiwa'], shortcut: 'newChat', run: () => newChat(rt) },
+    { id: 'project.settings', label: 'プロジェクトの設定', icon: I(Layers), keywords: ['project settings purojekuto settei branch burannchi edit henshuu folder'], run: () => ui.openProjects() },
     { id: 'project.add', label: 'プロジェクトを追加…', icon: I(FolderPlus), keywords: ['project add purojekuto tsuika folder git'], run: () => ui.setProjectDialog({ kind: 'new' }) },
     { id: 'demo.start', label: 'デモを始める', icon: I(Play), keywords: ['demo hajimeru try mock'], run: () => void startDemo(rt, methods) },
   ];

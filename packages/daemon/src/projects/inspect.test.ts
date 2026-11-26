@@ -87,6 +87,26 @@ describe('project.inspectFolder (any folder, git optional)', () => {
     expect(await fail(join(dir, 'missing'))).toContain('見つかりません');
     expect(await fail(join(dir, 'a.txt'))).toContain('フォルダを指定');
   });
+
+  it("refuses a folder that holds or lies in the daemon's data, before anything is created", async () => {
+    const parent = tempDir();
+    const home = join(parent, 'acc-home');
+    mkdirSync(home);
+    d = await createTestDaemon({ home });
+    const holds = await d.call(HUMAN, 'project.inspectFolder', { path: parent });
+    expect(holds.ok).toBe(false);
+    expect(holds.reason).toContain('データフォルダを含む');
+    const inside = await d.call(HUMAN, 'project.inspectFolder', { path: home });
+    expect(inside.ok).toBe(false);
+    expect(inside.reason).toContain('データフォルダの中');
+    await expect(
+      d.call(HUMAN, 'project.create', { name: 'ホーム', folderPath: parent }),
+    ).rejects.toThrow('データフォルダを含む');
+    const ok = await d.call(HUMAN, 'project.create', { name: '資料', folderPath: tempDir() });
+    await expect(
+      d.call(HUMAN, 'project.update', { projectId: ok.id, folderPath: parent }),
+    ).rejects.toThrow('データフォルダを含む');
+  });
 });
 
 describe('project.inspectRepo', () => {

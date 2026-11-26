@@ -1,8 +1,8 @@
-import type { RepoInspection } from '@acc/protocol';
+import type { FolderInspection, RepoInspection } from '@acc/protocol';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
-import { branchText, dirtyText, failedInspection, suggestedRoot } from '../../model/repo';
+import { branchText, dirtyText, failedFolder, projectKindOf } from '../../model/repo';
 import { useUi } from '../../store/ui';
 import { createFakeClient } from '../../test/fakeClient';
 import { TooltipProvider } from '../ui/Tooltip';
@@ -36,6 +36,31 @@ const repoOk = (over: Partial<RepoInspection> = {}): RepoInspection => ({
   ...over,
 });
 
+/** A `project.inspectFolder` result for the root of the acme repository. */
+const folderOk = (over: Partial<FolderInspection> = {}): FolderInspection => ({
+  ok: true,
+  reason: null,
+  path: 'C:\\work\\acme',
+  isGitRepo: true,
+  repoRoot: 'C:\\work\\acme',
+  defaultBranch: 'main',
+  suggestedName: 'acme',
+  suggestedTestCommand: 'pnpm test',
+  existingProjectId: null,
+  ...over,
+});
+
+/** An ordinary folder with no git. */
+const plainFolder = (path = 'C:\\docs\\notes'): FolderInspection =>
+  folderOk({
+    path,
+    isGitRepo: false,
+    repoRoot: null,
+    defaultBranch: null,
+    suggestedName: 'notes',
+    suggestedTestCommand: null,
+  });
+
 function mount(handlers: Parameters<typeof createFakeClient>[0]) {
   const fake = createFakeClient(handlers);
   const rt = createRuntime(fake.client);
@@ -51,7 +76,9 @@ function mount(handlers: Parameters<typeof createFakeClient>[0]) {
 }
 
 const typePath = (value: string) =>
-  fireEvent.change(screen.getByLabelText('Git リポジトリのフォルダ'), { target: { value } });
+  fireEvent.change(screen.getByLabelText('フォルダ'), { target: { value } });
+
+const kindLine = () => document.querySelector('[data-project-kind]');
 
 beforeEach(() => {
   useUi.setState({ projectId: null });
@@ -67,19 +94,20 @@ describe('repo inspection helpers', () => {
     expect(dirtyText(null)).toBeNull();
   });
 
-  it('offers the root of the repository when a subfolder was given', () => {
-    const sub = { ...failedInspection('リポジトリのルートではなく…'), repoRoot: 'C:\\work\\acme' };
-    expect(suggestedRoot(sub, 'C:\\work\\acme\\src')).toBe('C:\\work\\acme');
-    expect(suggestedRoot(sub, 'c:\\work\\acme\\')).toBeNull();
-    expect(suggestedRoot(failedInspection('見つかりません'), 'C:\\x')).toBeNull();
-    expect(suggestedRoot(repoOk(), 'C:\\work\\acme')).toBeNull();
+  it('makes the root of a repository code and any other folder a folder', () => {
+    expect(projectKindOf(folderOk())).toBe('code');
+    expect(projectKindOf(folderOk({ path: 'c:\\work\\acme\\' }))).toBe('code');
+    expect(projectKindOf(folderOk({ path: 'C:\\work\\acme\\docs' }))).toBe('folder');
+    expect(projectKindOf(plainFolder())).toBe('folder');
+    expect(failedFolder('見つかりません')).toMatchObject({ ok: false, reason: '見つかりません', path: null });
   });
 });
 
-describe('<NewProjectForm> with project.inspectRepo', () => {
-  it('validates the folder first, prefills what it found and warns about a dirty tree', async () => {
+describe('<NewProjectForm> with project.inspectFolder', () => {
+  it('adds the root of a repository as code, prefilled, and warns about a dirty tree', async () => {
     let created: unknown = null;
     const { fake } = mount({
+      'project.inspectFolder': () => folderOk(),
       'project.inspectRepo': () => repoOk({ isDirty: true, defaultBranch: 'main', currentBranch: 'feature-x' }),
       'project.create': (p) => {
         created = p;
@@ -88,11 +116,12 @@ describe('<NewProjectForm> with project.inspectRepo', () => {
       'workspace.create': () => ({ branch: 'feature-x' }),
     });
     typePath('C:\\work\\acme');
-    expect(await screen.findByText('git リポジトリ', {}, { timeout: 2000 })).toBeInTheDocument();
+    await waitFor(() => expect(kindLine()).toHaveAttribute('data-project-kind', 'code'), { timeout: 2000 });
     // Exactly the contract's params: no guessing of alternative names.
-    expect(fake.calls.filter((c) => c.method === 'project.inspectRepo').map((c) => c.params)).toEqual([
+    expect(fake.calls.filter((c) => c.method === 'project.inspectFolder').map((c) => c.params)).toEqual([
       { path: 'C:\\work\\acme' },
     ]);
+    expect(kindLine()).toHaveTextContent('コード');
     expect(screen.getByText('feature-x（既定は main）')).toBeInTheDocument();
     expect(screen.getByTestId('dirty-warning')).toHaveTextContent('未コミットの変更があります');
     expect(screen.getByLabelText('テストコマンド')).toHaveValue('pnpm test');
@@ -112,43 +141,92 @@ describe('<NewProjectForm> with project.inspectRepo', () => {
     );
   });
 
-  it('blocks a folder that is not a repository before creating anything', async () => {
-    const { fake } = mount({
-      'project.inspectRepo': () => failedInspection('このフォルダは git リポジトリではありません（git init が必要です）'),
+  it('adds an ordinary folder as a folder: no branch, no test command, no checkout', async () => {
+    let created: unknown = null;
+    const { fake, onDone } = mount({
+      'project.inspectFolder': () => plainFolder(),
+      'project.create': (p) => {
+        created = p;
+        return { ...PROJECT, name: 'notes', repoPath: null, folderPath: 'C:\\docs\\notes', defaultBranch: null };
+      },
     });
-    typePath('C:\\tmp');
+    typePath('C:\\docs\\notes');
+    await waitFor(() => expect(kindLine()).toHaveAttribute('data-project-kind', 'folder'), { timeout: 2000 });
+    expect(kindLine()).toHaveTextContent('エージェントがこのフォルダを直接書き換えます');
+    expect(screen.queryByLabelText('既定ブランチ')).toBeNull();
+    expect(screen.queryByLabelText('テストコマンド')).toBeNull();
+    expect(fake.calls.some((c) => c.method === 'project.inspectRepo')).toBe(false);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'プロジェクトを追加' }));
+    });
+    await waitFor(() => expect(created).toEqual({ name: 'notes', folderPath: 'C:\\docs\\notes' }));
+    expect(fake.calls.some((c) => c.method === 'workspace.create')).toBe(false);
+    expect(onDone).toHaveBeenCalled();
+  });
+
+  it('blocks a folder that cannot be used, with the reason, before creating anything', async () => {
+    const { fake } = mount({
+      'project.inspectFolder': () =>
+        failedFolder('アプリのデータフォルダを含む場所は追加できません。その中の作業用のフォルダを指定してください'),
+    });
+    typePath('C:\\Users\\me');
     expect(
-      await screen.findByText('このフォルダは git リポジトリではありません（git init が必要です）', {}, { timeout: 2000 }),
+      await screen.findByText(
+        'アプリのデータフォルダを含む場所は追加できません。その中の作業用のフォルダを指定してください',
+        {},
+        { timeout: 2000 },
+      ),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'プロジェクトを追加' })).toBeDisabled();
     expect(fake.calls.some((c) => c.method === 'project.create')).toBe(false);
   });
 
-  it('offers the repository root for a subfolder and checks it again', async () => {
-    const { fake } = mount({
-      'project.inspectRepo': (p) =>
-        p.path === 'C:\\work\\acme'
-          ? repoOk()
-          : {
-              ...failedInspection('リポジトリのルートではなく、その中のフォルダです。リポジトリのルートを指定してください'),
-              repoRoot: 'C:\\work\\acme',
-            },
+  it('drops what an earlier path filled in when the folder changes', async () => {
+    mount({
+      'project.inspectFolder': (p) =>
+        p.path === 'C:\\work\\acme' ? folderOk() : failedFolder('フォルダが見つかりません'),
+      'project.inspectRepo': () => repoOk(),
     });
-    typePath('C:\\work\\acme\\src');
-    const use = await screen.findByRole('button', { name: 'ルート C:\\work\\acme を使う' }, { timeout: 2000 });
-    expect(screen.getByRole('button', { name: 'プロジェクトを追加' })).toBeDisabled();
+    typePath('C:\\work\\acme');
+    await waitFor(() => expect(screen.getByLabelText('テストコマンド')).toHaveValue('pnpm test'), {
+      timeout: 2000,
+    });
+    typePath('C:\\work\\gone');
+    expect(await screen.findByText('フォルダが見つかりません', {}, { timeout: 2000 })).toBeInTheDocument();
+    expect(screen.queryByLabelText('テストコマンド')).toBeNull();
+    typePath('C:\\work\\acme');
+    await waitFor(() => expect(screen.getByLabelText('テストコマンド')).toHaveValue('pnpm test'), {
+      timeout: 2000,
+    });
+  });
+
+  it('takes a folder inside a repository as a folder, and offers the repository as code', async () => {
+    const { fake } = mount({
+      'project.inspectFolder': (p) =>
+        p.path === 'C:\\work\\acme' ? folderOk() : folderOk({ path: p.path as string, suggestedName: 'docs' }),
+      'project.inspectRepo': () => repoOk(),
+    });
+    typePath('C:\\work\\acme\\docs');
+    const use = await screen.findByRole(
+      'button',
+      { name: 'リポジトリ C:\\work\\acme をコードとして追加する' },
+      { timeout: 2000 },
+    );
+    expect(kindLine()).toHaveAttribute('data-project-kind', 'folder');
+    expect(screen.getByRole('button', { name: 'プロジェクトを追加' })).toBeEnabled();
     await act(async () => {
       fireEvent.click(use);
     });
-    expect(screen.getByLabelText('Git リポジトリのフォルダ')).toHaveValue('C:\\work\\acme');
-    expect(await screen.findByText('git リポジトリ')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'プロジェクトを追加' })).toBeEnabled();
-    expect(fake.calls.filter((c) => c.method === 'project.inspectRepo')).toHaveLength(2);
+    expect(screen.getByLabelText('フォルダ')).toHaveValue('C:\\work\\acme');
+    await waitFor(() => expect(kindLine()).toHaveAttribute('data-project-kind', 'code'));
+    expect(screen.getByLabelText('既定ブランチ')).toBeInTheDocument();
+    expect(fake.calls.filter((c) => c.method === 'project.inspectFolder')).toHaveLength(2);
   });
 
-  it('points at the project that already uses the repository instead of adding it twice', async () => {
+  it('points at the project that already uses the folder instead of adding it twice', async () => {
     const { fake, onDone } = mount({
       'project.list': () => ({ items: [PROJECT] }),
+      'project.inspectFolder': () => folderOk({ existingProjectId: PROJECT.id }),
       'project.inspectRepo': () => repoOk({ existingProjectId: PROJECT.id }),
     });
     typePath('C:\\work\\acme');
@@ -164,14 +242,14 @@ describe('<NewProjectForm> with project.inspectRepo', () => {
   it('falls back to validating on create when the daemon cannot inspect', async () => {
     const { fake } = mount({});
     typePath('C:\\work\\acme');
-    await waitFor(() => expect(fake.calls.some((c) => c.method === 'project.inspectRepo')).toBe(true), {
+    await waitFor(() => expect(fake.calls.some((c) => c.method === 'project.inspectFolder')).toBe(true), {
       timeout: 2000,
     });
     // not_implemented → no verdict: the hint stays and creating is still possible.
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0));
     });
-    expect(screen.getByText('リポジトリのルート（.git があるフォルダ）を絶対パスで指定します。')).toBeInTheDocument();
+    expect(screen.getByText('エクスプローラーの「パスのコピー」を貼り付けられます')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'プロジェクトを追加' })).toBeEnabled();
   });
 });

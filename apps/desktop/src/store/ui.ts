@@ -2,7 +2,10 @@ import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
 /** Tabs of the settings dialog: what to set, and what was used. */
-export type SettingsTab = 'general' | 'usage';
+export type SettingsTab = 'general' | 'projects' | 'usage';
+
+/** The screen of the settings' projects tab: the list, adding one, or one project's settings. */
+export type ProjectsView = { kind: 'list' } | { kind: 'new' } | { kind: 'edit'; projectId: string };
 /** How 利用統計 shows the use: bars, or a table of the figures. */
 export type UsageView = 'chart' | 'table';
 
@@ -57,6 +60,7 @@ export interface UiState {
   settingsOpen: boolean;
   /** Tab of the settings dialog (back to 一般 when it closes). */
   settingsTab: SettingsTab;
+  projectsView: ProjectsView;
   /** Chart or table under 利用統計 (kept). */
   usageView: UsageView;
   shortcutsOpen: boolean;
@@ -152,6 +156,9 @@ interface UiActions {
   /** Open (on a tab) or close the settings dialog. */
   setSettingsOpen: (open: boolean, tab?: SettingsTab) => void;
   setSettingsTab: (tab: SettingsTab) => void;
+  setProjectsView: (v: ProjectsView) => void;
+  /** Open the settings on the projects tab (on one project's settings when given). */
+  openProjects: (projectId?: string) => void;
   setUsageView: (view: UsageView) => void;
   setShortcutsOpen: (open: boolean) => void;
   setModelPickerOpen: (open: boolean) => void;
@@ -212,6 +219,7 @@ const initial: UiState = {
   palettePages: [],
   settingsOpen: false,
   settingsTab: 'general',
+  projectsView: { kind: 'list' },
   usageView: 'chart',
   shortcutsOpen: false,
   modelPickerOpen: false,
@@ -399,7 +407,14 @@ export const createUiStore = () =>
           set((s) => ({ palettePages: s.palettePages.slice(0, -1), paletteQuery: '' })),
         setSettingsOpen: (settingsOpen, tab) =>
           set({ settingsOpen, settingsTab: tab ?? (settingsOpen ? get().settingsTab : 'general') }),
-        setSettingsTab: (settingsTab) => set({ settingsTab }),
+        setSettingsTab: (settingsTab) => set({ settingsTab, projectsView: { kind: 'list' } }),
+        setProjectsView: (projectsView) => set({ projectsView }),
+        openProjects: (projectId) =>
+          set({
+            settingsOpen: true,
+            settingsTab: 'projects',
+            projectsView: projectId ? { kind: 'edit', projectId } : { kind: 'list' },
+          }),
         setUsageView: (usageView) => set({ usageView }),
         setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
         setModelPickerOpen: (modelPickerOpen) => set({ modelPickerOpen }),

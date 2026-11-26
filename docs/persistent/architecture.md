@@ -274,7 +274,7 @@ Orchestrator は**セッション種別ではなく役割**（concept §3.1）�
 - **やり直し**：子の `task.retry` は同じ会話・同じ作業場所で新しい Run（trigger `retry`、Runtime のセッションを再開）。親から動かす規則は `session.send` と同じ（§2.4）。予算は有効なら使い続け、返却済みなら呼び出し元から切り出し直す。chat の子には `session.send` で伝える。
 - **Runtime への入力**：`writeRoot` = 作業場所、`readRoots` = プロジェクトの `folderPath` / `repoPath`（存在し、作業場所でも ACC_HOME を含むものでもないもの）。ゲート（`runtime/policy.ts`、コマンドは `commandPolicy.ts` の `readable`）は読み取り root の中の読み取りを作業場所の中と同じに扱い、書き込みは `outside_write` のまま、中の資格情報（名前で判定）は拒否、ACC_HOME を含む root は無視する。プロンプトは作業場所ごとの 1 段落で、git・コミット・worktree に触れるのは git のワークスペースだけ。子には「最後に何をしたかをまとめる（成果物として残る）／人の判断が要れば質問を残して区切る」を添える。
 - `task.spawnWorker` の会話の題も Task 名だけ（「Worker:」なし）。判断の記録にブランチ名・ランタイム名を書かない。
-- `project.inspectFolder`：絶対パス・存在・フォルダかを日本語の理由つきで確かめ、git の中ならリポジトリのルート・既定ブランチ・テストコマンド、登録済みのプロジェクト（`folderPath` か `repoPath` が一致）を返す。読み取りだけ。
+- `project.inspectFolder`：絶対パス・存在・フォルダか・アプリのデータフォルダ（`ACC_HOME`）を含まないか・その中でないかを日本語の理由つきで確かめ、git の中ならリポジトリのルート・既定ブランチ・テストコマンド、登録済みのプロジェクト（`folderPath` か `repoPath` が一致）を返す。読み取りだけ。`project.create` / `update` の `folderPath` も、`ACC_HOME` を含む場所（ホームフォルダ・ドライブのルート）は `invalid_params` で断る（エージェントがそこに書けると、データベースとトークンに届くため。中のフォルダはデモのプロジェクトが使うので、ここでは断らない）。
 
 ### 2.15 成果物とコードの工程（T3）
 

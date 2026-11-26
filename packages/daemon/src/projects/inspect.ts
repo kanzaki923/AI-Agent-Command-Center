@@ -2,6 +2,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import type { FolderInspection, RepoInspection } from '@acc/protocol';
 import type { DaemonContext } from '../core/context';
+import { isInside } from '../runtime/policy';
 import { branchExists, currentBranch, git, gitOut, repoRoot, statusLines } from '../workspace/git';
 
 const EMPTY: Omit<RepoInspection, 'ok' | 'reason'> = {
@@ -81,6 +82,13 @@ export async function inspectFolder(ctx: DaemonContext, path: string): Promise<F
   if (!existsSync(path)) return fail('フォルダが見つかりません');
   if (!statSync(path).isDirectory()) return fail('ファイルではなくフォルダを指定してください');
   const abs = resolve(path);
+  // Same rule as a folder workspace (checkFolder): agents must not reach the daemon's data.
+  if (isInside(abs, ctx.paths.home)) return fail('アプリのデータフォルダの中は追加できません');
+  if (isInside(ctx.paths.home, abs)) {
+    return fail(
+      'アプリのデータフォルダを含む場所は追加できません。その中の作業用のフォルダを指定してください',
+    );
+  }
   const root = await repoRoot(abs).catch(() => null);
   const rootPath = root ? resolve(root) : null;
   const defaultBranch = rootPath

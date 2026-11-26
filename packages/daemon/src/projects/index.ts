@@ -4,6 +4,7 @@ import type { Actor, Project } from '@acc/protocol';
 import { defineMethod } from '../api/registry';
 import { forbidden, invalidParams } from '../core/errors';
 import { defineModule } from '../module';
+import { isInside } from '../runtime/policy';
 import { inspectFolder, inspectRepo } from './inspect';
 
 export { detectTestCommand, inspectFolder, inspectRepo } from './inspect';
@@ -12,6 +13,17 @@ function checkRepoPath(path: string | null | undefined, field = 'repoPath'): voi
   if (path == null) return;
   if (!isAbsolute(path)) throw invalidParams(`${field} must be an absolute path: ${path}`);
   if (!existsSync(path)) throw invalidParams(`${field} does not exist: ${path}`);
+}
+
+/**
+ * A project's folder bounds where its agents may write: it must not hold the daemon's data
+ * (a home folder or a drive root would hand them the database, tokens and other worktrees).
+ */
+function checkProjectFolder(path: string | null | undefined, home: string): void {
+  checkRepoPath(path, 'folderPath');
+  if (path != null && isInside(home, path)) {
+    throw invalidParams('アプリのデータフォルダを含む場所はプロジェクトのフォルダにできません');
+  }
 }
 
 /**
@@ -61,9 +73,10 @@ export const projectsModule = defineModule({
       defineMethod('project.create', {
         handler: (p, call) =>
           db.transaction(() => {
-            checkRepoPath(p.repoPath);
-            checkRepoPath(p.folderPath, 'folderPath');
+            // Who may set it comes before whether it is valid.
             checkHumanOnly(p, call.actor);
+            checkRepoPath(p.repoPath);
+            checkProjectFolder(p.folderPath, ctx.paths.home);
             const now = ctx.clock.iso();
             const project = repos.projects.insert({
               id: ctx.ids.next('project'),
@@ -106,9 +119,10 @@ export const projectsModule = defineModule({
         scope: (p) => ({ projectIds: [p.projectId] }),
         handler: (p, call) =>
           db.transaction(() => {
-            checkRepoPath(p.repoPath);
-            checkRepoPath(p.folderPath, 'folderPath');
+            // Who may set it comes before whether it is valid.
             checkHumanOnly(p, call.actor);
+            checkRepoPath(p.repoPath);
+            checkProjectFolder(p.folderPath, ctx.paths.home);
             const changes: string[] = [];
             const project = repos.projects.update(p.projectId, (cur) => {
               const next: Project = { ...cur };

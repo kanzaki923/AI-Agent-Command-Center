@@ -1,10 +1,10 @@
-import type { RepoInspection } from '@acc/protocol';
+import type { FolderInspection, RepoInspection } from '@acc/protocol';
 
 /**
  * `project.inspectRepo` (protocol `RepoInspection`) as the project form reads it: whether
  * the folder can become a project, and what to prefill.
  */
-export type { RepoInspection };
+export type { FolderInspection, RepoInspection };
 
 /** A failed check in the protocol's shape (the call itself failed, e.g. a bad path). */
 export function failedInspection(reason: string): RepoInspection {
@@ -21,14 +21,37 @@ export function failedInspection(reason: string): RepoInspection {
   };
 }
 
+/** A failed folder check in the protocol's shape. */
+export function failedFolder(reason: string): FolderInspection {
+  return {
+    ok: false,
+    reason,
+    path: null,
+    isGitRepo: false,
+    repoRoot: null,
+    defaultBranch: null,
+    suggestedName: null,
+    suggestedTestCommand: null,
+    existingProjectId: null,
+  };
+}
+
 /**
- * The folder is inside a repository but is not its root: the daemon names the root, and
- * the form offers to use it instead (null otherwise).
+ * What a folder becomes as a project: the root of a git repository is code (agents work in
+ * their own worktree), anything else an ordinary folder (agents write in it directly).
  */
-export function suggestedRoot(i: RepoInspection | null, typed: string): string | null {
-  if (!i || i.ok || !i.repoRoot) return null;
-  const norm = (p: string) => p.trim().replace(/[\\/]+$/, '').toLowerCase();
-  return norm(i.repoRoot) === norm(typed) ? null : i.repoRoot;
+export type ProjectKind = 'code' | 'folder';
+
+const normPath = (p: string) =>
+  p
+    .trim()
+    .replace(/[\\/]+$/, '')
+    .toLowerCase();
+
+export function projectKindOf(f: FolderInspection): ProjectKind {
+  return f.isGitRepo && f.repoRoot && f.path && normPath(f.repoRoot) === normPath(f.path)
+    ? 'code'
+    : 'folder';
 }
 
 /** Warning for uncommitted changes (null when clean or unknown). */

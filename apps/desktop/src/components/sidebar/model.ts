@@ -114,10 +114,15 @@ export function groupTrees(
   }
   const groups: SidebarGroup[] = [{ project: null, trees: byKey.get('') ?? [] }];
   if (grouped) {
+    // Trees without a heading come before every heading: under one, they read as its own.
+    const quiet: SidebarGroup[] = [];
+    const headed: SidebarGroup[] = [];
     for (const p of projects) {
       const list = byKey.get(p.id) ?? [];
-      groups.push({ project: p, trees: list, ...(quietGroup(p, list) ? { quiet: true } : {}) });
+      if (quietGroup(p, list)) quiet.push({ project: p, trees: list, quiet: true });
+      else headed.push({ project: p, trees: list });
     }
+    groups.push(...quiet, ...headed);
   }
   return { groups, older: byKey.get('older') ?? [] };
 }

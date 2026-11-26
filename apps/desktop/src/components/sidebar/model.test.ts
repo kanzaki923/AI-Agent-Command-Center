@@ -148,4 +148,22 @@ describe('quiet project groups (ui-rework spec §5)', () => {
       ['acme-web', false],
     ]);
   });
+
+  it('puts the trees without a heading before every heading, so none reads as part of another project', () => {
+    const now = Date.now();
+    const empty = project('prj_0', 'notes');
+    const p2 = project('prj_2', 'acme-web');
+    const p1 = project('prj_1', '市場レポート');
+    const same = session({ title: '市場レポート', projectId: p1.id, state: 'working' });
+    const login = session({ title: 'ログイン改善', projectId: p2.id, state: 'working' });
+    const forest = buildForest([same, login]);
+    const ids = new Set([empty.id, p1.id, p2.id]);
+    const { groups } = groupTrees(forest, [empty, p2, p1], (t) => groupKeyOf(t, now, true, ids));
+    expect(groups.map((g) => [g.project?.name ?? null, g.quiet ?? false])).toEqual([
+      [null, false],
+      ['市場レポート', true],
+      ['notes', false],
+      ['acme-web', false],
+    ]);
+  });
 });

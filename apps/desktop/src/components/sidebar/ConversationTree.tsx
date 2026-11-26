@@ -82,6 +82,7 @@ function GroupHeading({
 
 function ProjectMenu({ project }: { project: Project }) {
   const setProjectDialog = useUi((s) => s.setProjectDialog);
+  const openProjects = useUi((s) => s.openProjects);
   const setProject = useUi((s) => s.setProject);
   return (
     <Menu>
@@ -107,9 +108,9 @@ function ProjectMenu({ project }: { project: Project }) {
         </MenuItem>
         <MenuItem
           icon={<Pencil size={14} strokeWidth={1.75} />}
-          onSelect={() => setProjectDialog({ kind: 'edit', projectId: project.id })}
+          onSelect={() => openProjects(project.id)}
         >
-          プロジェクトを編集
+          プロジェクトの設定
         </MenuItem>
         <MenuSeparator />
         <MenuItem icon={<FolderPlus size={14} strokeWidth={1.75} />} onSelect={() => setProjectDialog({ kind: 'new' })}>

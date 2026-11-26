@@ -1,5 +1,5 @@
 import type { Project, SettingsView, WorkspaceSpec } from '@acc/protocol';
-import { ArrowUp, Check, ChevronDown, Layers, MessageSquare } from 'lucide-react';
+import { ArrowUp, Check, ChevronDown, FolderPlus, Layers, MessageSquare, Settings2 } from 'lucide-react';
 import { type ReactNode, useRef, useState } from 'react';
 import { promptConnectionThen } from '../../app/connect';
 import { startConversation } from '../../daemon/actions';
@@ -219,6 +219,19 @@ export function Draft() {
                         {p.name}
                       </MenuItem>
                     ))}
+                    <MenuSeparator />
+                    <MenuItem
+                      icon={<FolderPlus size={13} strokeWidth={1.75} />}
+                      onSelect={() => useUi.getState().setProjectDialog({ kind: 'new' })}
+                    >
+                      プロジェクトを追加…
+                    </MenuItem>
+                    <MenuItem
+                      icon={<Settings2 size={13} strokeWidth={1.75} />}
+                      onSelect={() => useUi.getState().openProjects(project?.id)}
+                    >
+                      プロジェクトの設定
+                    </MenuItem>
                   </MenuContent>
                 </Menu>
                 <span role="radiogroup" aria-label="作業場所" className="flex items-center gap-0.5">

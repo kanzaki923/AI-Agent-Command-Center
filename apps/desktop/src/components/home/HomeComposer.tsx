@@ -238,7 +238,7 @@ const KINDS: { kind: WorkspaceKind; label: string }[] = [
  * Where the work should happen: 自動 (the assistant decides), a folder, or a project's code —
  * a folder or code is not a wish: the daemon starts the work there. A folder or code shows
  * the project it comes from (a menu when there are several).
- * Code without any repository yet opens 「プロジェクトを追加」.
+ * A folder or code without any such project yet opens 「プロジェクトを追加」.
  */
 function WorkspaceToggle({
   kind,
@@ -290,19 +290,16 @@ function WorkspaceToggle({
         {KINDS.map(({ kind: k, label }) => {
           const Icon = k === 'none' ? Sparkles : WORKSPACE_META[k].icon;
           const none = k !== 'none' && candidates(projects, k).length === 0;
-          const unavailable = none && k === 'folder';
           const on = kind === k;
           return (
-            <Tooltip key={k} content={unavailable ? `${label}のプロジェクトがありません` : label}>
+            <Tooltip key={k} content={label}>
               <button
                 type="button"
                 role="radio"
                 aria-checked={on}
                 aria-label={label}
-                aria-disabled={unavailable || undefined}
                 data-workspace={k}
                 onClick={() => {
-                  if (unavailable) return;
                   if (none) {
                     useUi.getState().setProjectDialog({ kind: 'new' });
                     return;
