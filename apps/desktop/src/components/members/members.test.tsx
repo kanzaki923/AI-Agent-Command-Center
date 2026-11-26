@@ -1,7 +1,7 @@
-import type { Character, CharacterDetail, CharacterMemory, Session } from '@acc/protocol';
+import type { Character, CharacterDetail, CharacterMemory, DigestStatus, Session } from '@acc/protocol';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ASK_TIMEOUT_MS, askMember, mentionOf } from '../../daemon/members';
+import { ASK_TIMEOUT_MS, askMember, digestLine, mentionOf } from '../../daemon/members';
 import { RuntimeProvider, createRuntime } from '../../daemon/runtime';
 import { useToasts } from '../../store/toast';
 import { useUi } from '../../store/ui';
@@ -33,12 +33,14 @@ const member = (over: Partial<Character> = {}): Character => ({
 const HAKU = member();
 const LUNA = member({ id: 'chr_00000000000000000000000002', name: 'ルナ', face: '🌙', tone: 1, sortKey: 2 });
 
-function mount(ui: React.ReactNode, { members = [HAKU, LUNA], sessions = [] as Session[], page, without = [] }: {
+function mount(ui: React.ReactNode, { members = [HAKU, LUNA], sessions = [] as Session[], page, without = [], extra = {} }: {
   members?: Character[];
   sessions?: Session[];
   page?: CharacterDetail;
   /** Methods this daemon does not implement. */
   without?: string[];
+  /** More methods, or other answers. */
+  extra?: Parameters<typeof createFakeClient>[0];
 } = {}) {
   const fake = createFakeClient({
     'character.list': () => ({ items: members }),
@@ -51,6 +53,7 @@ function mount(ui: React.ReactNode, { members = [HAKU, LUNA], sessions = [] as S
     'session.list': () => ({ items: sessions, nextCursor: null }),
     'project.list': () => ({ items: [] }),
     'home.get': () => homeSnapshot(),
+    ...extra,
   });
   for (const m of without) delete fake.handlers[m];
   render(
@@ -503,5 +506,73 @@ describe('a remark in the conversation', () => {
     expect(screen.getByText('まだ読み込み中')).toBeInTheDocument();
     expect(screen.getByText('メンバー')).toBeInTheDocument();
     expect(document.querySelector('[data-face]')).toHaveTextContent('?');
+  });
+});
+
+describe('how sorting memories stands, on the page of a member', () => {
+  const NOW = Date.parse('2026-11-26T10:00:00Z');
+  const status = (over: Partial<DigestStatus> = {}): DigestStatus => ({
+    enabled: true,
+    model: 'openai/gpt-6-luna',
+    offline: false,
+    newLines: 6,
+    personAtWork: 0,
+    enough: true,
+    quietAt: null,
+    retryAt: null,
+    pausedUntil: null,
+    limitReached: false,
+    last: null,
+    lastError: null,
+    ...over,
+  });
+
+  it('says first what holds it back, then what there is and when', () => {
+    const line = (over: Partial<DigestStatus>) => digestLine(status(over), NOW);
+    expect(line({ enabled: false })).toMatchObject({ text: '記憶はオフ', tone: 'muted' });
+    expect(line({ offline: true })).toMatchObject({ text: '整理のモデルがありません', tone: 'warn' });
+    const retry = new Date(NOW + 30 * 60_000).toISOString();
+    expect(line({ lastError: '接続できませんでした', retryAt: retry })).toMatchObject({
+      text: '失敗: 接続できませんでした',
+      tone: 'fail',
+    });
+    // A failure that no longer holds anything back is not shown as one.
+    expect(line({ lastError: '接続できませんでした' }).tone).not.toBe('fail');
+    expect(line({ limitReached: true })).toMatchObject({ text: '今日の上限に達しました', tone: 'warn' });
+    expect(line({ newLines: 0, enough: false }).text).toBe('新しく覚えることはありません');
+    expect(line({ newLines: 2, enough: false }).text).toBe('まだ少なめ（2 行）');
+    const quiet = new Date(NOW + 12 * 60_000).toISOString();
+    expect(line({ quietAt: quiet }).text).toMatch(/ごろ整理$/);
+    expect(line({}).text).toBe('まもなく整理');
+  });
+
+  it('shows the line and sorts now on demand, saying how it went', async () => {
+    useUi.setState({ mode: 'member', memberId: HAKU.id });
+    let calls = 0;
+    mount(<MemberPage />, {
+      extra: {
+        'character.digestStatus': () => status({ offline: false, newLines: 2, enough: false }),
+        'character.digest': () => {
+          calls++;
+          return { outcome: 'nothing_new' };
+        },
+      },
+    });
+    const block = await screen.findByText('まだ少なめ（2 行）');
+    expect(block.closest('[data-digest-state]')).not.toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '今すぐ整理' }));
+    });
+    expect(calls).toBe(1);
+    await waitFor(() =>
+      expect(useToasts.getState().toasts.at(-1)?.title).toBe('新しく覚えることはありませんでした'),
+    );
+  });
+
+  it('opens the settings when there is no model to sort with', async () => {
+    useUi.setState({ mode: 'member', memberId: HAKU.id, settingsOpen: false });
+    mount(<MemberPage />, { extra: { 'character.digestStatus': () => status({ offline: true }) } });
+    fireEvent.click(await screen.findByText('整理のモデルがありません'));
+    expect(useUi.getState()).toMatchObject({ settingsOpen: true, settingsTab: 'general' });
   });
 });

@@ -106,6 +106,11 @@ export class BackgroundBackoff {
     return this.now() >= this.until;
   }
 
+  /** Until when background work waits (ms since epoch), or null when it may run. */
+  pausedUntil(): number | null {
+    return this.now() >= this.until ? null : this.until;
+  }
+
   ok(): void {
     this.failures = 0;
     this.until = 0;

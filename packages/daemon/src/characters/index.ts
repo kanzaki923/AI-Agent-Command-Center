@@ -299,6 +299,13 @@ CREATE INDEX messages_aside_character ON messages(json_extract(data, '$.meta.cha
           return { outcome: await digest.digest(p.characterId, { force: true }) };
         },
       }),
+
+      defineMethod('character.digestStatus', {
+        handler: (p) => {
+          if (!service.get(p.characterId)) throw notFound('character', p.characterId);
+          return digest.status(p.characterId);
+        },
+      }),
     );
     return { start: () => digest.start(), stop: () => digest.stop() };
   },

@@ -58,6 +58,8 @@ export const qk = {
   characters: ['character', 'list'] as const,
   /** character.get: one member's page. */
   character: (characterId: string) => ['character', 'get', characterId] as const,
+  /** character.digestStatus: how sorting a member's memories stands. */
+  digestStatus: (characterId: string) => ['character', 'digestStatus', characterId] as const,
   /** schedule.preview of one trigger. */
   schedulePreview: (trigger: unknown) => ['schedule.preview', trigger] as const,
 };

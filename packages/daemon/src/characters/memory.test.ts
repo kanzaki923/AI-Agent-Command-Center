@@ -299,6 +299,61 @@ describe('when sorting happens', () => {
   });
 });
 
+describe("a member's page says how sorting stands", () => {
+  it('when it will sort, what waits, and why the last one failed', async () => {
+    const clock = createManualClock(Date.UTC(2026, 10, 5, 1));
+    const d = await createTestDaemon({ clock });
+    cleanups.push(() => d.cleanup());
+    d.ctx.service('llm').mock.chunkDelayMs = 0;
+    const { haku } = await setup(d);
+    spy(d, 'mock/talk');
+    const status = () => d.call(HUMAN, 'character.digestStatus', { characterId: haku.id });
+
+    expect(await status()).toMatchObject({
+      enabled: true,
+      model: 'mock/sorter',
+      offline: false,
+      newLines: 0,
+      enough: false,
+      quietAt: null,
+      last: null,
+      lastError: null,
+    });
+    await talk(d, haku.id, ['雨だね', 'なにしよう']);
+    const talking = await status();
+    expect(talking.enough).toBe(true);
+    expect(talking.newLines).toBeGreaterThanOrEqual(4);
+    // Quiet everywhere for 30 minutes from the last turn.
+    expect(Date.parse(talking.quietAt!) - clock.now()).toBe(DIGEST_IDLE_MS);
+
+    // The sorting model cannot be reached: the reason and the retry time are on the page.
+    d.ctx.service('llm').mock.define('mock/sorter', () => {
+      throw new Error('接続できませんでした');
+    });
+    expect((await d.call(HUMAN, 'character.digest', { characterId: haku.id })).outcome).toBe('failed');
+    const failed = await status();
+    expect(failed).toMatchObject({
+      lastError: '接続できませんでした',
+      last: { outcome: 'failed', model: 'mock/sorter' },
+    });
+    expect(Date.parse(failed.retryAt!)).toBeGreaterThan(clock.now());
+
+    // A sorting that works clears the reason.
+    sorter(d, { self: [{ text: '雨の日は昼寝' }] });
+    expect((await d.call(HUMAN, 'character.digest', { characterId: haku.id })).outcome).toBe('done');
+    expect(await status()).toMatchObject({ lastError: null, newLines: 0, last: { outcome: 'done' } });
+  });
+
+  it('says so when there is no model to sort with', async () => {
+    const d = await daemon();
+    const haku = await d.call(HUMAN, 'character.create', { name: 'ハク' });
+    expect(await d.call(HUMAN, 'character.digestStatus', { characterId: haku.id })).toMatchObject({
+      model: 'mock/memory',
+      offline: true,
+    });
+  });
+});
+
 describe('helpers', () => {
   it('says when a memory is from', () => {
     const now = '2026-11-05T03:00:00.000Z';

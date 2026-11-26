@@ -1,4 +1,6 @@
 import {
+  DigestOutcome,
+  type DigestStatus,
   MEMORY_LIMITS,
   type Character,
   type CharacterMemory,
@@ -31,7 +33,6 @@ const LINE_CHARS = 1_200;
 /** The built-in offline model (no connection, or the demo). */
 export const MOCK_MEMORY_MODEL = 'mock/memory';
 
-export type DigestOutcome = 'done' | 'nothing_new' | 'off' | 'limit' | 'rejected' | 'failed';
 
 /** Material of one sorting: lines to read and where each conversation was read up to. */
 export interface Material {
@@ -216,6 +217,8 @@ export function mockDigest(user: string): string {
 export class MemoryDigest {
   private readonly chains = new Map<string, Promise<DigestOutcome>>();
   private readonly failedAt = new Map<string, number>();
+  /** Why the newest failed sorting of a member failed (for its page; not kept across restarts). */
+  private readonly failedWhy = new Map<string, string>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly backoff: BackgroundBackoff;
   private closed = false;
@@ -431,6 +434,45 @@ export class MemoryDigest {
     return lines;
   }
 
+  /**
+   * How sorting this member stands, for its page: the model, what waits, when it will be
+   * quiet long enough, whether it waits after a failure or a limit, and the newest sorting.
+   */
+  status(characterId: string): DigestStatus {
+    const { ctx } = this;
+    const now = ctx.clock.now();
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const model = this.model();
+    const material = this.material(characterId);
+    const sessions = this.members.sessionsOf(characterId, 500);
+    const last = sessions.some((s) => s.activeRunId)
+      ? now
+      : Math.max(0, ...sessions.map((s) => Date.parse(s.lastActivityAt)));
+    const quiet = last + DIGEST_IDLE_MS;
+    const failed = this.failedAt.get(characterId);
+    const paused = this.backoff.pausedUntil();
+    const row = ctx.db.get<{ ts: string; outcome: string; model: string | null }>(
+      'SELECT ts, outcome, model FROM character_digests WHERE character_id = ? ORDER BY id DESC LIMIT 1',
+      [characterId],
+    );
+    return {
+      enabled: ctx.settings.get().members.memory,
+      model,
+      offline: model === MOCK_MEMORY_MODEL,
+      newLines: material.lines.length,
+      personAtWork: material.personAtWork,
+      enough: material.lines.length >= DIGEST_MIN_LINES || material.personAtWork > 0,
+      quietAt: last > 0 && quiet > now ? iso(quiet) : null,
+      retryAt: failed && failed + DIGEST_RETRY_MS > now ? iso(failed + DIGEST_RETRY_MS) : null,
+      pausedUntil: paused ? iso(paused) : null,
+      limitReached: backgroundLimitReached(ctx),
+      last: row
+        ? { at: row.ts, outcome: DigestOutcome.parse(row.outcome), model: row.model ?? model }
+        : null,
+      lastError: this.failedWhy.get(characterId) ?? null,
+    };
+  }
+
   /** The model of a sorting (`settings.background`). */
   model(): string {
     return backgroundModel(this.ctx, MOCK_MEMORY_MODEL);
@@ -503,6 +545,7 @@ export class MemoryDigest {
       }
     } catch (err) {
       this.failedAt.set(characterId, ctx.clock.now());
+      this.failedWhy.set(characterId, (err as Error).message);
       this.backoff.failed();
       this.book(characterId, model, 0, 'failed');
       ctx.log.warn('memory digest failed', { characterId, error: (err as Error).message });
@@ -512,6 +555,7 @@ export class MemoryDigest {
     const reply = parseDigestReply(text);
     if (!reply) {
       this.failedAt.set(characterId, ctx.clock.now());
+      this.failedWhy.set(characterId, '整理のモデルの返事を読めませんでした');
       this.backoff.failed();
       this.book(characterId, model, costUsd, 'failed');
       return 'failed';
@@ -543,6 +587,7 @@ export class MemoryDigest {
       this.markRead(characterId, material.marks);
       this.book(characterId, model, costUsd, rejected ? 'rejected' : 'done');
       this.failedAt.delete(characterId);
+      this.failedWhy.delete(characterId);
       return rejected ? 'rejected' : 'done';
     });
   }

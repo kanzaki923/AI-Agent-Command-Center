@@ -1,7 +1,20 @@
 import { MEMORY_LIMITS, type Character, type CharacterMemory, type MemoryChange, type MemoryKind } from '@acc/protocol';
-import { Briefcase, HeartHandshake, Pencil, PenLine, Plus, Trash2, UserRound, UsersRound } from 'lucide-react';
+import { Briefcase, HeartHandshake, Pencil, PenLine, Plus, RefreshCw, Trash2, UserRound, UsersRound } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
-import { addMemory, deleteMemory, memoryWhen, updateMemory, useAllMembers } from '../../daemon/members';
+import {
+  type DigestTone,
+  addMemory,
+  deleteMemory,
+  digestLine,
+  digestNow,
+  memoryWhen,
+  updateMemory,
+  useAllMembers,
+  useDigestStatus,
+} from '../../daemon/members';
+import { useNow } from '../../hooks/useNow';
+import { formatTimestamp } from '../../lib/format';
+import { useUi } from '../../store/ui';
 import { type AppRuntime, useRuntime } from '../../daemon/runtime';
 import { toast } from '../../store/toast';
 import { cn } from '../../lib/cn';
@@ -220,5 +233,70 @@ export function MemoryChanges({ changes }: { changes: MemoryChange[] }) {
         </li>
       ))}
     </ul>
+  );
+}
+
+const DIGEST_TONE: Record<DigestTone, string> = {
+  muted: 'text-fg-3',
+  warn: 'text-st-awaiting_approval',
+  fail: 'text-st-failed',
+};
+
+/**
+ * How sorting this member's memories stands, in one line, and 今すぐ整理: the page says why
+ * nothing was remembered yet (no model, a failure, a limit, too little) or when it will be.
+ * Without a model to sort with, the line opens the settings.
+ */
+export function DigestState({ member }: { member: Character }) {
+  const rt = useRuntime();
+  const status = useDigestStatus(member.id).data;
+  const setSettingsOpen = useUi((s) => s.setSettingsOpen);
+  const [busy, setBusy] = useState(false);
+  const now = useNow();
+  // An older daemon has no status: nothing to show.
+  if (!status) return null;
+  const line = digestLine(status, now);
+  const last = status.last ? `前回 ${formatTimestamp(status.last.at, now, true)}` : null;
+  const hint = [line.hint, last].filter(Boolean).join('\n') || null;
+  const text = (
+    <span className={cn('min-w-0 truncate', DIGEST_TONE[line.tone])} data-digest-tone={line.tone}>
+      {line.text}
+    </span>
+  );
+  return (
+    <div className="mt-4 flex flex-col" data-digest-state>
+      <div className="mb-1 flex h-5 items-center justify-between">
+        <span className="text-micro text-fg-3">記憶の整理</span>
+        {status.enabled && !member.archivedAt && (
+          <Tooltip content="今すぐ整理">
+            <button
+              type="button"
+              aria-label="今すぐ整理"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                void digestNow(rt, member).finally(() => setBusy(false));
+              }}
+              className="flex size-5 items-center justify-center rounded-sm text-fg-3 hover:bg-hover hover:text-fg disabled:opacity-50"
+            >
+              <RefreshCw size={12} strokeWidth={2} className={cn(busy && 'animate-spin')} />
+            </button>
+          </Tooltip>
+        )}
+      </div>
+      <Tooltip content={hint}>
+        {status.offline && status.enabled ? (
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true, 'general')}
+            className="flex min-w-0 text-left text-meta hover:underline"
+          >
+            {text}
+          </button>
+        ) : (
+          <span className="flex min-w-0 text-meta">{text}</span>
+        )}
+      </Tooltip>
+    </div>
   );
 }

@@ -16,7 +16,7 @@ import { toast } from '../../store/toast';
 import { useUi } from '../../store/ui';
 import { ModelPicker } from '../focus/ModelPicker';
 import { formatSpend } from '../settings/UsageStats';
-import { MemoryChanges, Memories } from './Memories';
+import { DigestState, MemoryChanges, Memories } from './Memories';
 import { IconButton } from '../ui/Button';
 import { MEMBER_TONES, MemberFace, toneColor } from '../ui/Face';
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger, Popover, PopoverContent, PopoverTrigger } from '../ui/Menu';
@@ -305,6 +305,7 @@ export function MemberPage() {
               </span>
             </div>
           )}
+          <DigestState member={member} />
           <div className="mt-4 mb-1 text-micro text-fg-3">出た会話</div>
           {(page?.sessions ?? []).map((s) => (
             <SessionRow key={s.id} session={s} />

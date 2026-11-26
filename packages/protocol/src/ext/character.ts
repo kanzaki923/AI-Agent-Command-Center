@@ -97,7 +97,51 @@ export const CharacterDetail = z.object({
 });
 export type CharacterDetail = z.infer<typeof CharacterDetail>;
 
-export const characterDomain = { Character, CharacterDetail, CharacterMemory, MemoryChange } as const;
+/** Outcome of one sorting of a member's memories (`character.digest`). */
+export const DigestOutcome = z.enum(['done', 'nothing_new', 'off', 'limit', 'rejected', 'failed']);
+export type DigestOutcome = z.infer<typeof DigestOutcome>;
+
+/**
+ * How sorting a member's memories stands (`character.digestStatus`): the facts the member's
+ * page needs to say why nothing was remembered yet, and when it will be.
+ */
+export const DigestStatus = z.object({
+  /** settings.members.memory. */
+  enabled: z.boolean(),
+  /** The model a sorting calls now (settings.background, else the cheapest of the roster). */
+  model: z.string(),
+  /** No model to call: the offline sorter keeps memories and adds little. */
+  offline: z.boolean(),
+  /** Lines waiting to be sorted (said or heard since the last sorting). */
+  newLines: z.int().min(0),
+  /** The person's remarks among them in work (enough by themselves to sort). */
+  personAtWork: z.int().min(0),
+  /** Enough new to sort (the daemon's threshold; `character.digest` sorts any amount). */
+  enough: z.boolean(),
+  /** When it will have been quiet long enough everywhere; null when it already has. */
+  quietAt: Timestamp.nullable(),
+  /** A member whose sorting failed waits until then. */
+  retryAt: Timestamp.nullable(),
+  /** All background work waits until then after failures in a row. */
+  pausedUntil: Timestamp.nullable(),
+  /** Today's background limit (or the daily limit) is reached. */
+  limitReached: z.boolean(),
+  /** The newest sorting. */
+  last: z
+    .object({ at: Timestamp, outcome: DigestOutcome, model: z.string() })
+    .nullable(),
+  /** Why the newest failed sorting failed (kept while the daemon runs). */
+  lastError: z.string().nullable(),
+});
+export type DigestStatus = z.infer<typeof DigestStatus>;
+
+export const characterDomain = {
+  Character,
+  CharacterDetail,
+  CharacterMemory,
+  MemoryChange,
+  DigestStatus,
+} as const;
 
 const Face = z
   .string()
@@ -219,13 +263,18 @@ export const characterMethods = {
   },
   'character.digest': {
     params: params({ characterId: CharacterId }),
-    result: z.object({
-      outcome: z.enum(['done', 'nothing_new', 'off', 'limit', 'rejected', 'failed']),
-    }),
+    result: z.object({ outcome: DigestOutcome }),
     description:
       'Sort out what a member said and heard since the last time into its memories now (normally done when it has been quiet for a while).',
     tool: false,
     mutates: true,
+  },
+  'character.digestStatus': {
+    params: params({ characterId: CharacterId }),
+    result: DigestStatus,
+    description:
+      "How sorting a member's memories stands: the model, what waits to be sorted, when it will be, and why the last one failed.",
+    tool: false,
   },
 } as const satisfies Record<string, MethodDef>;
 
